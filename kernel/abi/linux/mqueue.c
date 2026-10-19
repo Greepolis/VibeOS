@@ -743,13 +743,16 @@ static long linux_sys_mq_getsetattr(uint64_t fd, uint64_t new_uptr, uint64_t old
         ((unsigned char *)&out)[i] = 0;
     }
     linux_ipc_lock();
-    out.mq_flags = f->flags & VIBEOS_O_NONBLOCK;
     out.mq_maxmsg = g_mq[q].maxmsg;
     out.mq_msgsize = g_mq[q].msgsize;
     out.mq_curmsgs = g_mq[q].curmsgs;
-    if (new_uptr != 0u) {
-        f->flags = (f->flags & ~(uint32_t)VIBEOS_O_NONBLOCK) | ((uint32_t)in.mq_flags & VIBEOS_O_NONBLOCK);
-    }
+    /* The description's flags in one step, the old ones from that same step:
+     * F_SETFL and FIONBIO change them without this lock, and a read-modify-
+     * write here lost their update or they lost this one (M-112, M-101). */
+    out.mq_flags = (new_uptr != 0u
+                        ? vibeos_file_change_flags(f, VIBEOS_O_NONBLOCK,
+                                                   (uint32_t)in.mq_flags & VIBEOS_O_NONBLOCK)
+                        : __atomic_load_n(&f->flags, __ATOMIC_ACQUIRE)) & VIBEOS_O_NONBLOCK;
     linux_ipc_unlock();
     vibeos_file_put(f);
     if (old_uptr != 0u && linux_ipc_out(old_uptr, &out, sizeof(out)) != 0) {

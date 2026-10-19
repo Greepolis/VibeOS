@@ -195,7 +195,7 @@ again itself.
 | M-109 | L | `msgctl(IPC_INFO/MSG_INFO)` copied `linux_msginfo_t` uninitialised: two padding bytes of kernel stack to the program | **fixed** (2026-10-19) | zeroed before it is filled, as shm.c's IPC_INFO is. The test fills the stack with 0xA5 first (`dirty_stack`): without it the host's stack was zero where the struct landed and the sabotage went NOT RED. `ipc-msg-l7.txt` case red |
 | M-110 | L | (agent) Global tables with no per-process quota: 256 NT objects, 512 futex waiters (futex_waitv up to 128 a wait), 64 pipes of up to 1 MiB each, `g_undo[512]`; M-092 covered timers, locks and inotify | **to verify** | |
 | M-111 | L | (agent) splice: peek, write and read in three holds of `g_pipe_lock`; `room = capacity - pending` can wrap after F_SETPIPE_SZ shrinks a pipe | **to verify** | |
-| M-112 | L | `mq_getsetattr` rewrites `f->flags` whole: the sibling of M-101 | **open** | |
+| M-112 | L | `mq_getsetattr` rewrites `f->flags` whole: the sibling of M-101 | **fixed** (2026-10-19) | through `vibeos_file_change_flags`, the old flags taken from the same step. Every write of a description's flags after its creation now goes through that function (grep: the only other is the allocation). Not a case, for M-101's reason: the host tests have no threads |
 | M-113 | L | (agent) `shmget` looks a key up twice without checking permissions again | **to verify** | |
 | M-114 | L | (agent, uncertain) `linux_shm_attached` counts regions at offset 0: a munmap of a segment's head may miscount | **to verify** | |
 | M-115 | L | (agent) NT mutant: owned and published before it is initialised | **to verify** | |
