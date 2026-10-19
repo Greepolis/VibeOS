@@ -41,6 +41,7 @@ typedef struct {
 } linux_semundo_t;
 
 #define LINUX_SEM_UNDOS 512u
+#define LINUX_SEM_UNDOS_PER_PROCESS (LINUX_SEM_UNDOS / 4u)   /* M-110 */
 
 static linux_ipc_obj_t g_sem_obj[LINUX_IPC_SLOTS];
 static linux_semset_t g_sem[LINUX_IPC_SLOTS];
@@ -109,17 +110,21 @@ static long linux_sys_semget(uint64_t key, uint64_t nsems_arg, uint64_t flg) {
 /* The entry for (tgid, id, num), made if `make`; 0 if there is none or no room. */
 static linux_semundo_t *undo_of(uint32_t tgid, uint32_t id, uint16_t num, int make) {
     linux_semundo_t *free = 0;
-    uint32_t i;
+    uint32_t i, mine = 0;
 
     for (i = 0; i < LINUX_SEM_UNDOS; i++) {
         if (g_undo[i].tgid == tgid && g_undo[i].id == id && g_undo[i].num == num) {
             return &g_undo[i];
         }
+        mine += g_undo[i].tgid == tgid;
         if (!free && g_undo[i].tgid == 0u) {
             free = &g_undo[i];
         }
     }
-    if (!make || !free) {
+    /* A process holds a quarter of the table at most: one process's SEM_UNDO
+     * operations across many semaphores used to take every entry, and every
+     * other process's semop with SEM_UNDO failed (M-110, as M-092). */
+    if (!make || !free || mine >= LINUX_SEM_UNDOS_PER_PROCESS) {
         return 0;
     }
     free->tgid = tgid;

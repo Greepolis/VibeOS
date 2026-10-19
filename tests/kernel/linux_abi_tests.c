@@ -3991,6 +3991,33 @@ static uint64_t sops_of(uint32_t n, const int16_t *triples) {
     return u;
 }
 
+/* No process holds more than a quarter of the SEM_UNDO table (M-110): 128
+ * adjustments, then ENOSPC for it and not for the next process. */
+static void t_sem_undo_share(void) {
+    long s;
+    uint32_t i;
+    int a, b;
+    long r = 0;
+    int16_t op[3];
+
+    a = fresh(410);
+    s = SYS3(64, LINUX_IPC_PRIVATE, 200u, 0666);
+    for (i = 0; i < 128u && r == 0; i++) {
+        op[0] = (int16_t)i;
+        op[1] = 1;
+        op[2] = LINUX_SEM_UNDO;
+        r = SYS3(65, (uint64_t)s, sops_of(1, op), 1);
+    }
+    expect(s >= 0 && r == 0, "a process keeps 128 undo adjustments");
+    op[0] = 128;
+    expect(SYS3(65, (uint64_t)s, sops_of(1, op), 1) == -VIBEOS_ENOSPC,
+           "a 129th is ENOSPC: a quarter of the table is its share");
+    b = kf_spawn(411, 411);
+    kf_set_current(b);
+    expect(SYS3(65, (uint64_t)s, sops_of(1, op), 1) == 0, "another process still has room");
+    kf_set_current(a);
+}
+
 static void t_ipc_sem(void) {
     uint64_t ds = kf_ualloc(sizeof(linux_semid64_ds_t)), vals = kf_ualloc(64), si = kf_ualloc(sizeof(linux_seminfo_t));
     const linux_semid64_ds_t *st = (const linux_semid64_ds_t *)kf_uptr(ds);
@@ -6529,6 +6556,7 @@ int test_linux_handlers(void) {
     t_sched_l6();
     t_ipc_msg();
     t_ipc_sem();
+    t_sem_undo_share();
     t_ipc_shm();
     t_mqueue();
     t_splice();
