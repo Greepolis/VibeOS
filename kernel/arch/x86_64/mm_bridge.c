@@ -2566,6 +2566,12 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
         if (zero == (uint32_t)(g_current_task + 1)) {
             hw_panic("stack fault under this task's own mm lock: a user store made while holding it");
         }
+        /* Answer a pending TLB flush before faulting again, as ks_mm_lock's
+         * waiters do (b39c801). A kernel-mode store - a syscall copying out to
+         * a stack page not grown yet - retries with interrupts off, so it never
+         * takes the IPI, and the lock's holder may be in a shootdown waiting
+         * for exactly this core (M-107). */
+        hw_tlb_service_flush();
         return 1;   /* somebody is changing this address space: fault again */
     }
     region = vibeos_vma_find(&ps->vmas, page_va);
