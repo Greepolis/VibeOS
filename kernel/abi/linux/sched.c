@@ -37,6 +37,15 @@ static int sched_target(uint64_t pid, long *err) {
     return t;
 }
 
+/* The thread id `pid` named, for the check made where a change is applied:
+ * the slot sched_target found was found under the scheduler's lock, and the
+ * lock let go before the change - an exit and a fork between the two put
+ * another thread in the slot, and the change landed on it (M-116). A slot's
+ * new tenant never has the old one's id. */
+static uint32_t sched_tid(uint64_t pid, int t) {
+    return VIBEOS_ARG_INT(pid) == 0 ? ks_id(t)->pid : (uint32_t)pid;
+}
+
 /* Whether the caller may change `t`'s scheduling: the superuser, or a caller
  * whose effective user is the target's real or effective one (Linux's
  * check_same_owner, which also stands for CAP_SYS_NICE here). */
@@ -62,8 +71,8 @@ static int sched_is_rt(uint32_t policy) {
  * priority's range for the policy, who may change whom, and an unprivileged
  * caller's ceiling - RLIMIT_RTPRIO for a real-time priority, and never a way
  * out of reset-on-fork. */
-static long sched_apply(int t, uint32_t policy, uint32_t prio, int reset_on_fork, int keep_nice,
-                        int nice) {
+static long sched_apply(int t, uint32_t tid, uint32_t policy, uint32_t prio, int reset_on_fork,
+                        int keep_nice, int nice) {
     vibeos_cred_t me;
     const vibeos_procstate_t *mps = ks_current() >= 0 ? ks_ps(ks_current()) : 0;
 
@@ -96,6 +105,10 @@ static long sched_apply(int t, uint32_t policy, uint32_t prio, int reset_on_fork
     /* Under the scheduler's lock: the picker reads class and priority under
      * it, on every core. */
     ks_lock(ks_sched_lock(), __func__);
+    if (ks_id(t)->pid != tid) {
+        ks_unlock(ks_sched_lock());
+        return -VIBEOS_ESRCH;   /* gone since it was found, and the slot reused */
+    }
     if (ks_task_set_class(t, sched_is_rt(policy) ? VIBEOS_SCHED_REALTIME : VIBEOS_SCHED_NORMAL,
                           prio) != 0) {
         ks_unlock(ks_sched_lock());
@@ -125,7 +138,7 @@ static long linux_sys_sched_setscheduler(uint64_t pid, uint64_t policy, uint64_t
     if ((t = sched_target(pid, &err)) < 0) {
         return err;
     }
-    return sched_apply(t, pol & ~(uint32_t)LINUX_SCHED_RESET_ON_FORK, (uint32_t)p.sched_priority,
+    return sched_apply(t, sched_tid(pid, t), pol & ~(uint32_t)LINUX_SCHED_RESET_ON_FORK, (uint32_t)p.sched_priority,
                        (pol & LINUX_SCHED_RESET_ON_FORK) != 0u, 1, 0);
 }
 
@@ -143,7 +156,7 @@ static long linux_sys_sched_setparam(uint64_t pid, uint64_t uparam) {
     if ((t = sched_target(pid, &err)) < 0) {
         return err;
     }
-    return sched_apply(t, ks_id(t)->sched_policy, (uint32_t)p.sched_priority,
+    return sched_apply(t, sched_tid(pid, t), ks_id(t)->sched_policy, (uint32_t)p.sched_priority,
                        ks_id(t)->sched_reset_on_fork, 1, 0);
 }
 
@@ -281,7 +294,7 @@ static long linux_sys_sched_setattr(uint64_t pid, uint64_t uattr, uint64_t flags
     if (a.sched_nice < -20 || a.sched_nice > 19) {
         return -VIBEOS_EINVAL;
     }
-    return sched_apply(t, a.sched_policy, a.sched_priority,
+    return sched_apply(t, sched_tid(pid, t), a.sched_policy, a.sched_priority,
                        (a.sched_flags & LINUX_SCHED_FLAG_RESET_ON_FORK) != 0u,
                        sched_is_rt(a.sched_policy), a.sched_nice);
 }
@@ -345,8 +358,12 @@ static long linux_sys_sched_setaffinity(uint64_t pid, uint64_t len, uint64_t uma
         return -VIBEOS_EINVAL;
     }
     ks_lock(ks_sched_lock(), __func__);
-    err = ks_task_set_affinity(t, mask == ks_cpus_online_mask() ? 0u : (uint32_t)mask) == 0
-              ? 0 : -VIBEOS_EINVAL;
+    if (ks_id(t)->pid != sched_tid(pid, t)) {
+        err = -VIBEOS_ESRCH;   /* gone since it was found, and the slot reused (M-116) */
+    } else {
+        err = ks_task_set_affinity(t, mask == ks_cpus_online_mask() ? 0u : (uint32_t)mask) == 0
+                  ? 0 : -VIBEOS_EINVAL;
+    }
     ks_unlock(ks_sched_lock());
     /* A caller that has just been told it may not run here is not running
      * here when the call returns, as on Linux - LTP's getcpu01 pins itself and
