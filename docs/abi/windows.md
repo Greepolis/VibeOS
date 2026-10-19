@@ -62,7 +62,7 @@ names the architecture, every user pointer is judged before it is used, and
 | W0 | This plan; the oracle built and run under Wine on the host, its results recorded; the registry's format | the list of tests per area, and Wine's own answers |
 | W1 | PE32+ loader and process start; `ntdll` minimal (`NtWriteFile` to the console, `NtTerminateProcess`) | a program of ours prints "hello" |
 | W2 | Object manager and handles: `NtClose`, `NtDuplicateObject`, events, mutants, semaphores, `NtWaitForSingleObject`/`Multiple` | `ntdll:om`, `ntdll:sync`, `kernel32:sync` |
-| W3 | Memory: `NtAllocateVirtualMemory`, `Free`, `Protect`, `Query`; sections and views | `ntdll:virtual`, `kernel32:virtual` |
+| W3 | Memory: `NtAllocateVirtualMemory`, `Free`, `Protect`, `Query`; sections and views; and, from the reviews, an address space shared as one object between CLONE_VM processes (M-100), a page cache that knows files by node so a view maps from its handle (M-106), kernel stacks in a region of their own with guard pages and #PF/#DF on IST stacks (M-108) | `ntdll:virtual`, `kernel32:virtual` |
 | W4 | Files: `NtCreateFile`, `Read`, `Write`, `QueryInformationFile`, directories; `\??\C:\` onto the VFS, names without case | `ntdll:file`, `ntdll:directory`, `kernel32:file` |
 | W5 | Threads and exceptions: `NtCreateThreadEx`, TLS, SEH through `KiUserExceptionDispatcher`, APCs, alertable waits | `ntdll:exception`, `ntdll:thread`, `kernel32:thread` |
 | W6 | Processes: `NtCreateUserProcess`, environment, command line, exit codes | `kernel32:process` |
