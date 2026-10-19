@@ -634,9 +634,16 @@ static long linux_sys_msgctl(uint64_t id, uint64_t cmd, uint64_t buf) {
         case LINUX_IPC_INFO:
         case LINUX_MSG_INFO: {
             linux_msginfo_t mi;
+            uint8_t *raw = (uint8_t *)&mi;
             uint32_t k, msgs = 0;
             uint64_t bytes = 0;
 
+            /* Every byte, the two after msgseg included: they went to the
+             * program as whatever the kernel stack held (M-109), as shm.c's
+             * IPC_INFO already knew. */
+            for (k = 0; k < (uint32_t)sizeof(mi); k++) {
+                raw[k] = 0;
+            }
             linux_ipc_lock();
             for (k = 0; k < LINUX_IPC_SLOTS; k++) {
                 if (g_msg_obj[k].used) {

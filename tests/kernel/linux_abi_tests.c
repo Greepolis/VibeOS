@@ -3775,6 +3775,18 @@ static uint64_t msg_of(int64_t type, const char *text) {
 }
 
 /* Write `text` to a file under /proc: the bytes written, or the error. */
+/* The stack below this frame, filled with a byte no handler writes on its own:
+ * a structure a handler leaves partly uninitialised then copies it out, where a
+ * stack that happened to be zero would have shown nothing. */
+static __attribute__((noinline)) void dirty_stack(void) {
+    volatile uint8_t junk[16384];
+    uint32_t i;
+
+    for (i = 0; i < sizeof(junk); i++) {
+        junk[i] = 0xA5;
+    }
+}
+
 static long proc_write(const char *path, const char *text) {
     long fd = SYS2(2, ustr(path), 1), n;
 
@@ -3892,6 +3904,20 @@ static void t_ipc_msg(void) {
            "MSG_INFO: the highest index, and the queues in use");
     expect(SYS3(71, 0, LINUX_IPC_INFO, mi) >= 0 && info->msgmni == 32 &&
            info->msgmnb == 16384u, "IPC_INFO: the limits");
+    {
+        /* The two bytes after msgseg are padding, and they are the kernel's
+         * to fill with zeros, not with what its stack held (M-109). */
+        const uint8_t *b = (const uint8_t *)info;
+
+        memset((void *)info, 0xA5, sizeof(*info));
+        /* The host's stack is often zero where the handler's struct lands,
+         * which forgives a missing memset: fill it first. */
+        dirty_stack();
+        expect(SYS3(71, 0, LINUX_IPC_INFO, mi) >= 0 &&
+                   b[offsetof(linux_msginfo_t, msgseg) + 2u] == 0u &&
+                   b[offsetof(linux_msginfo_t, msgseg) + 3u] == 0u,
+               "IPC_INFO writes its padding as zeros");
+    }
     expect(SYS3(71, (uint64_t)q, 42, ds) == -VIBEOS_EINVAL &&
            SYS3(71, (uint64_t)q, LINUX_IPC_STAT | LINUX_IPC_64, ds) == -VIBEOS_EINVAL,
            "an unknown command, IPC_64 included: EINVAL, as Linux on x86-64");

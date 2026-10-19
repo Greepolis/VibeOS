@@ -58,3 +58,9 @@
                 r = VIBEOS_ARG_INT(cmd) == LINUX_IPC_STAT ? 0 : (long)g_msg_obj[s].id;
 +++ new
                 r = 0;
+
+### msgctl's IPC_INFO copies its padding unwritten (M-109; the test fills the stack first, without which the host's zeros hid it)
+--- old
+            for (k = 0; k < (uint32_t)sizeof(mi); k++) {
++++ new
+            for (k = 0; k < 0u; k++) {
