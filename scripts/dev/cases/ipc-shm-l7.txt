@@ -41,6 +41,16 @@
 
 ### a segment is found by key whatever size is asked for
 --- old
-        } else if (size > g_shm[s].size) {
+    if (size > g_shm[s].size) {
+        return -VIBEOS_EINVAL;   /* asks for more than the segment has */
 +++ new
-        } else if (0) {
+    if (0) {
+        return -VIBEOS_EINVAL;   /* asks for more than the segment has */
+
+### a segment found by key is handed out without the permission question (M-113: both looks share shm_existing now)
+--- old
+    r = linux_ipc_may(&g_shm_obj[s], (uint32_t)flg, c);
+    return r == 0 ? (long)g_shm_obj[s].id : r;
++++ new
+    r = 0;
+    return r == 0 ? (long)g_shm_obj[s].id : r;

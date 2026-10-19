@@ -4055,6 +4055,10 @@ static void t_ipc_shm(void) {
     m = SYS3(29, 88, 6000, LINUX_IPC_CREAT | 0600);
     expect(m >= 0 && SYS3(29, 88, 7000, 0) == -VIBEOS_EINVAL && SYS3(29, 88, 100, 0) == m,
            "by key: more than it has is EINVAL, less finds it");
+    ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 1000u;
+    expect(SYS3(29, 88, 100, 0400) == -VIBEOS_EACCES,
+           "by key, root's 0600 segment is not another user's to read (M-113)");
+    ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 0u;
     a = SYS3(30, (uint64_t)m, 0, 0);
     b = SYS3(30, (uint64_t)m, 0, 0);
     expect(a > 0 && b > 0 && a != b, "two attachments, at two addresses");

@@ -84,6 +84,24 @@ static void shm_reap(void) {
     }
 }
 
+/* shmget's answer for a key that names a segment already: EEXIST under
+ * IPC_EXCL, EINVAL for more than it has, the permission question, then its
+ * id. One function for both places that find one - the first look, and the
+ * second after the file was made outside the lock, which answered with the id
+ * and asked nothing (M-113). Under the IPC lock. */
+static long shm_existing(int s, uint64_t size, uint64_t flg, const vibeos_cred_t *c) {
+    long r;
+
+    if ((flg & LINUX_IPC_CREAT) && (flg & LINUX_IPC_EXCL)) {
+        return -VIBEOS_EEXIST;
+    }
+    if (size > g_shm[s].size) {
+        return -VIBEOS_EINVAL;   /* asks for more than the segment has */
+    }
+    r = linux_ipc_may(&g_shm_obj[s], (uint32_t)flg, c);
+    return r == 0 ? (long)g_shm_obj[s].id : r;
+}
+
 static long linux_sys_shmget(uint64_t key, uint64_t size, uint64_t flg) {
     vibeos_cred_t c;
     vibeos_file_t *f = 0;
@@ -105,16 +123,7 @@ static long linux_sys_shmget(uint64_t key, uint64_t size, uint64_t flg) {
     linux_ipc_lock();
     s = linux_ipc_lookup(g_shm_obj, LINUX_IPC_SLOTS, (int32_t)(uint32_t)key);
     if (s >= 0) {
-        if ((flg & LINUX_IPC_CREAT) && (flg & LINUX_IPC_EXCL)) {
-            r = -VIBEOS_EEXIST;
-        } else if (size > g_shm[s].size) {
-            r = -VIBEOS_EINVAL;   /* asks for more than the segment has */
-        } else {
-            r = linux_ipc_may(&g_shm_obj[s], (uint32_t)flg, &c);
-            if (r == 0) {
-                r = (long)g_shm_obj[s].id;
-            }
-        }
+        r = shm_existing(s, size, flg, &c);
         linux_ipc_unlock();
         return r;
     }
@@ -144,7 +153,7 @@ static long linux_sys_shmget(uint64_t key, uint64_t size, uint64_t flg) {
     /* Looked for again: another process may have made the key meanwhile. */
     s = linux_ipc_lookup(g_shm_obj, LINUX_IPC_SLOTS, (int32_t)(uint32_t)key);
     if (s >= 0) {
-        r = (flg & LINUX_IPC_EXCL) ? -VIBEOS_EEXIST : (long)g_shm_obj[s].id;
+        r = shm_existing(s, size, flg, &c);
     } else {
         r = linux_ipc_new(&g_shm_ns, g_shm_obj, LINUX_IPC_SLOTS, (int32_t)(uint32_t)key, flg, &c);
         if (r >= 0) {
