@@ -4081,6 +4081,26 @@ static void t_ipc_shm(void) {
            "an unaligned address without SHM_RND, and one that is taken, without SHM_REMAP: EINVAL");
     expect(SYS3(30, (uint64_t)m, 0, LINUX_SHM_REMAP) == -VIBEOS_EINVAL, "SHM_REMAP with no address: EINVAL");
 
+    /* An attachment whose head is unmapped is still one (M-114): the rest
+     * starts further into the segment, and counting only regions at offset 0
+     * reaped a removed segment that was still mapped. */
+    {
+        long m2 = SYS3(29, LINUX_IPC_PRIVATE, 8192, LINUX_IPC_CREAT | 0600);
+        long c2 = m2 >= 0 ? SYS3(30, (uint64_t)m2, 0, 0) : -1;
+
+        expect(c2 > 0 && SYS2(11, (uint64_t)c2, 4096) == 0 &&
+                   SYS3(31, (uint64_t)m2, LINUX_IPC_STAT, ds) == 0 && st->shm_nattch == 1u,
+               "an attachment with its first page unmapped is still counted");
+        expect(SYS3(31, (uint64_t)m2, LINUX_IPC_RMID, 0) == 0 &&
+                   SYS3(29, 777, 4096, 0) == -VIBEOS_ENOENT &&   /* shmget reaps first */
+                   SYS3(31, (uint64_t)m2, LINUX_IPC_STAT, ds) == 0,
+               "and a segment removed while so attached is kept, past the next shmget's reaping");
+        (void)SYS2(11, (uint64_t)c2 + 4096u, 4096);
+        expect(SYS3(29, 777, 4096, 0) == -VIBEOS_ENOENT &&
+                   SYS3(31, (uint64_t)m2, LINUX_IPC_STAT, ds) == -VIBEOS_EINVAL,
+               "unmapped at last, it goes at the next reaping");
+    }
+
     /* A fork's child has the attachment too. */
     {
         long pid = SYS0(57);

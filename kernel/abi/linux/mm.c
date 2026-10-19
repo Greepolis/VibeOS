@@ -1364,9 +1364,22 @@ uint32_t linux_shm_attached(uint32_t tag) {
     for (k = 0; k < n; k++) {
         const vibeos_vma_t *v;
 
+        const vibeos_vma_t *prev = 0;
+
         ks_mm_lock(held[k]);
-        for (v = held[k]->vmas.head; v; v = v->next) {
-            count += v->backing == VIBEOS_BACKING_SHARED && v->backing_id == tag && v->backing_offset == 0u;
+        /* An attachment is a run of the segment's regions, each going on where
+         * the one before stopped. Counting the regions at offset 0 missed one
+         * whose head had been unmapped - the rest starts further in - and a
+         * segment marked for removal was then reaped while still mapped
+         * (M-114). A run starts at any region that does not continue the one
+         * before it; a hole unmapped in the middle makes two, as Linux counts
+         * a split attachment twice. */
+        for (v = held[k]->vmas.head; v; prev = v, v = v->next) {
+            int continues = prev && prev->backing == VIBEOS_BACKING_SHARED &&
+                            prev->backing_id == tag && prev->base + prev->len == v->base &&
+                            prev->backing_offset + prev->len == v->backing_offset;
+
+            count += v->backing == VIBEOS_BACKING_SHARED && v->backing_id == tag && !continues;
         }
         ks_mm_unlock(held[k]);
         ks_procstate_put(held[k]);

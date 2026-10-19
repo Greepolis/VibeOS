@@ -32,3 +32,9 @@
         flags |= remap ? LINUX_MAP_FIXED : LINUX_MAP_FIXED_NOREPLACE;
 +++ new
         flags |= LINUX_MAP_FIXED;
+
+### an attachment is counted only at offset 0 (M-114)
+--- old
+            count += v->backing == VIBEOS_BACKING_SHARED && v->backing_id == tag && !continues;
++++ new
+            count += v->backing == VIBEOS_BACKING_SHARED && v->backing_id == tag && v->backing_offset == 0u && !continues;
