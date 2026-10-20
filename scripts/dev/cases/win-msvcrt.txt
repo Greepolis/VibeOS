@@ -60,44 +60,6 @@
 +++ new
                     for (k = 0; k < count; k++) {
 
-### free does not merge with the block before it
---- old
-    if (b->psize) {
-        blk *pv = prev_blk(b);
-+++ new
-    if (0) {
-        blk *pv = prev_blk(b);
-
-### free does not merge with the block after it
---- old
-    if (!(nx->size & HEAP_USED)) {
-        list_remove(h, (fblk *)nx);
-        b->size += bsize(nx);
-    }
-+++ new
-    if (0) {
-        list_remove(h, (fblk *)nx);
-        b->size += bsize(nx);
-    }
-
-### realloc copies half of what it moves
---- old
-    vc_memcpy(q, p, old);
-+++ new
-    vc_memcpy(q, p, old / 2);
-
-### realloc grows in place over a neighbour that is in use
---- old
-        if (!(nx->size & HEAP_USED) && bsize(b) + bsize(nx) >= need) {
-+++ new
-        if (bsize(b) + bsize(nx) >= need) {
-
-### blocks are 8-byte aligned, not 16
---- old
-    size_t need = (n + 16u + 15u) & ~(size_t)15;
-+++ new
-    size_t need = (n + 16u + 7u) & ~(size_t)7;
-
 ### a tie rounds to the lower digit (glibc rounds to even, msvcrt away from zero)
 --- old
     up = dig[keep] >= '5';

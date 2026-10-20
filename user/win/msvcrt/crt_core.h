@@ -119,29 +119,6 @@ int vc_vsprintf(char *buf, const char *fmt, va_list ap);
 /* sscanf; returns the conversions stored, or -1 if the input ended first. */
 int vc_vsscanf(const char *s, const char *fmt, va_list ap);
 
-/* ---- the heap ------------------------------------------------------------ */
-
-/* First-fit over an arena the caller owns, 16-byte aligned, coalescing on free.
- * No locking: a process has one thread until W5, and a lock is added with the
- * second one rather than before it (CLAUDE.md's rule is that a layer with
- * mutable statics and more than one caller locks itself; this has one). */
-typedef struct {
-    uint8_t *base;
-    size_t size;
-    void *free_head;
-} vc_heap;
-
-void vc_heap_init(vc_heap *h, void *arena, size_t size);
-void *vc_heap_alloc(vc_heap *h, size_t n);
-void *vc_heap_calloc(vc_heap *h, size_t count, size_t size);
-void *vc_heap_realloc(vc_heap *h, void *p, size_t n);
-void vc_heap_free(vc_heap *h, void *p);
-/* Usable bytes behind a live allocation. */
-size_t vc_heap_usable(vc_heap *h, void *p);
-/* Walk every block and check the invariants. 0 if sound, else a code naming the
- * first that failed. Counts come back through the pointers if non-null. */
-int vc_heap_check(vc_heap *h, size_t *free_blocks, size_t *free_bytes, size_t *used_blocks);
-
 /* ---- the command line ---------------------------------------------------- */
 
 /* Split a UTF-16 command line into arguments by Microsoft's rules and write them

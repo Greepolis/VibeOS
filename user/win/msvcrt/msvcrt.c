@@ -239,26 +239,46 @@ int sscanf(const char *s, const char *fmt, ...) {
 
 /* ---- the heap ------------------------------------------------------------ */
 
-/* 2 MiB in the DLL's own .bss. It costs the file nothing, but not the process:
- * the kernel fills every page of an image when it maps it, so 16 MiB here - the
- * first size - was 4096 frames for every Windows program before it ran a line.
- * On Windows the pages would not exist until touched; here they do until the
- * mapper learns to leave .bss to the fault, and NtAllocateVirtualMemory (W3)
- * is what makes the heap grow. */
-static uint8_t g_arena[2u << 20] __attribute__((aligned(16)));
-static vc_heap g_heap;
+/* The process heap, as Microsoft's msvcrt has it: malloc is HeapAlloc on
+ * GetProcessHeap, so a program that frees with HeapFree what malloc gave it is
+ * right to. It used to be a 2 MiB arena of msvcrt's own in its .bss - paid for
+ * at load by every Windows program, and a ceiling none could pass; the process
+ * heap grows on NtAllocateVirtualMemory (W3 step 3). */
+#define HEAP_ZERO_MEMORY 0x00000008u
 
-static vc_heap *heap(void) {
-    if (!g_heap.base) {
-        vc_heap_init(&g_heap, g_arena, sizeof g_arena);
-    }
-    return &g_heap;
+static void *heap(void) {
+    uint64_t peb = vibeos_nt_rd64(vibeos_nt_teb() + VIBEOS_TEB_PEB);
+
+    return (void *)(uintptr_t)vibeos_nt_rd64(peb + VIBEOS_PEB_PROCESS_HEAP);
 }
 
-void *malloc(size_t n) { return vc_heap_alloc(heap(), n); }
-void *calloc(size_t count, size_t size) { return vc_heap_calloc(heap(), count, size); }
-void *realloc(void *p, size_t n) { return vc_heap_realloc(heap(), p, n); }
-void free(void *p) { vc_heap_free(heap(), p); }
+void *malloc(size_t n) { return RtlAllocateHeap(heap(), 0, n); }
+
+void *calloc(size_t count, size_t size) {
+    if (count && size > (size_t)-1 / count) {
+        return NULL;   /* the product would wrap */
+    }
+    return RtlAllocateHeap(heap(), HEAP_ZERO_MEMORY, count * size);
+}
+
+/* realloc(NULL, n) is malloc, realloc(p, 0) frees and answers NULL - msvcrt's
+ * rules - and a failed one leaves the block as it was. */
+void *realloc(void *p, size_t n) {
+    if (!p) {
+        return malloc(n);
+    }
+    if (n == 0) {
+        (void)RtlFreeHeap(heap(), 0, p);
+        return NULL;
+    }
+    return RtlReAllocateHeap(heap(), 0, p, n);
+}
+
+void free(void *p) {
+    if (p) {
+        (void)RtlFreeHeap(heap(), 0, p);
+    }
+}
 
 char *_strdup(const char *s) {
     size_t n;
