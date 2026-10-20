@@ -432,6 +432,16 @@ Order, each a commit with host tests and sabotage cases:
    tail as a committed demand-zero range instead of allocating it whole -
    ntdll_test.exe and its DLLs each cost about ten megabytes before a line ran,
    and the reclaim that caused is where the winetest boots met M-070.
+   *Done:* a page no byte of the file reaches (`vibeos_elf_page_all_zero`) is a
+   region made on first touch rather than a frame cleared at exec - in the high
+   window only, where NT images and the native programs live. The low window,
+   where Linux programs link, lies over the kernel's identity map: a page
+   nobody mapped there is present for ring 0, a program's first store to it is
+   a protection fault, and the first boot that deferred it there killed every
+   static Linux program on its first store to .bss. A page a base relocation
+   reaches is built at exec as before (`vibeos_pe_page_relocated`). mprotect
+   takes an untouched page and mlock makes one, as Linux faults it in; the
+   boot counts the pages left (`pages_deferred`) and fails at zero.
 5. **Data sections.** SEC_COMMIT sections backed by an unnamed tmpfs file (as
    SysV shared memory is), file-backed views, NtOpenSection, NtQuerySection,
    NtUnmapViewOfSection.

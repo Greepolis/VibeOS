@@ -53,6 +53,9 @@ loader, objects and waits, memory, files, threads and exceptions, processes, the
   NtAllocateVirtualMemory instead of living in a 512 KiB arena; msvcrt's
   malloc is on it. Host-tested with a randomised soak in
   `tests/win/ntrtl_tests.c`; hello.exe makes it grow at boot.
+- `kernel/arch/x86_64/mm_bridge.c` (`hw_map_elf_image`): an image's zero-fill
+  `.bss` in the high window is left to the page fault; the boot counts the
+  pages (`pages_deferred`).
 
 ## Where the oracle stands
 
@@ -63,5 +66,5 @@ W2".
 
 ## Next checkpoint
 
-- W3: memory - the rest of it: lazy `.bss`, data sections, and the reviews' M-106, M-100 and M-108 - measured by `ntdll:virtual` and `kernel32:virtual`. It also
+- W3: memory - the rest of it: data sections, and the reviews' M-106, M-100 and M-108 - measured by `ntdll:virtual` and `kernel32:virtual`. It also
   removes the memory pressure under which the winetest boots met M-070.
