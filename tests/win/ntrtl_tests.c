@@ -147,6 +147,11 @@ static void t_dos_error(void) {
           "OBJECT_NAME_NOT_FOUND: ERROR_FILE_NOT_FOUND");
     CHECK(RtlNtStatusToDosError(0x40000000) == 698u,
           "OBJECT_NAME_EXISTS: ERROR_OBJECT_NAME_EXISTS");
+    CHECK(RtlNtStatusToDosError((int32_t)0xC0000018u) == 487u &&
+              RtlNtStatusToDosError((int32_t)0xC00000A0u) == 487u &&
+              RtlNtStatusToDosError((int32_t)0xC0000045u) == 87u,
+          "the memory services': CONFLICTING_ADDRESSES and MEMORY_NOT_ALLOCATED are "
+          "ERROR_INVALID_ADDRESS, INVALID_PAGE_PROTECTION ERROR_INVALID_PARAMETER");
     CHECK(RtlNtStatusToDosError((int32_t)0xD0000008u) == 6u, "0xD... is 0xC...");
     CHECK(RtlNtStatusToDosError((int32_t)0xC0070005u) == 5u, "facility 7: the low word");
     CHECK(RtlNtStatusToDosError((int32_t)0xE0001234u) == 0xE0001234u,

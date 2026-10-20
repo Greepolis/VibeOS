@@ -868,3 +868,67 @@ int vibeos_kernel32_main(uint64_t instance, uint32_t reason, void *reserved) {
     (void)reserved;
     return 1;
 }
+
+/* ---- virtual memory (W3) ------------------------------------------------------------------
+ * The Nt calls with Win32's shape: an address back instead of a status, the
+ * status as the last error. The one rule kernel32 adds is VirtualFree's: a
+ * release names the whole allocation, so its size must be zero. */
+
+void *VirtualAllocEx(uint64_t process, void *addr, uint64_t size, uint32_t type,
+                     uint32_t protect) {
+    uint64_t base = (uint64_t)(uintptr_t)addr, len = size;
+    NTSTATUS_T st = NtAllocateVirtualMemory(process, &base, 0, &len, type, protect);
+
+    if (failed(st)) {
+        return (void *)(uintptr_t)fail(st);
+    }
+    return (void *)(uintptr_t)base;
+}
+
+void *VirtualAlloc(void *addr, uint64_t size, uint32_t type, uint32_t protect) {
+    return VirtualAllocEx(VIBEOS_NT_CURRENT_PROCESS, addr, size, type, protect);
+}
+
+BOOL32 VirtualFreeEx(uint64_t process, void *addr, uint64_t size, uint32_t type) {
+    uint64_t base = (uint64_t)(uintptr_t)addr, len = size;
+    NTSTATUS_T st;
+
+    if (type == VIBEOS_NT_MEM_RELEASE && size != 0u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    st = NtFreeVirtualMemory(process, &base, &len, type);
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 VirtualFree(void *addr, uint64_t size, uint32_t type) {
+    return VirtualFreeEx(VIBEOS_NT_CURRENT_PROCESS, addr, size, type);
+}
+
+BOOL32 VirtualProtectEx(uint64_t process, void *addr, uint64_t size, uint32_t protect,
+                        uint32_t *old) {
+    uint64_t base = (uint64_t)(uintptr_t)addr, len = size;
+    NTSTATUS_T st = NtProtectVirtualMemory(process, &base, &len, protect, old);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 VirtualProtect(void *addr, uint64_t size, uint32_t protect, uint32_t *old) {
+    return VirtualProtectEx(VIBEOS_NT_CURRENT_PROCESS, addr, size, protect, old);
+}
+
+/* The bytes written - the structure's size - or 0 with the last error set. */
+uint64_t VirtualQueryEx(uint64_t process, const void *addr, void *info, uint64_t len) {
+    uint64_t got = 0;
+    NTSTATUS_T st = NtQueryVirtualMemory(process, (uint64_t)(uintptr_t)addr,
+                                         VIBEOS_NT_MEMORY_BASIC_INFORMATION, info, len, &got);
+
+    if (failed(st)) {
+        return (uint64_t)fail(st);
+    }
+    return got;
+}
+
+uint64_t VirtualQuery(const void *addr, void *info, uint64_t len) {
+    return VirtualQueryEx(VIBEOS_NT_CURRENT_PROCESS, addr, info, len);
+}

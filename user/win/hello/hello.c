@@ -14,6 +14,10 @@
  *  - the system time is after 1970, in 1601's count: the epoch conversion.
  *  - the performance counter runs at the frequency it says.
  *  - SystemBasicInformation says a page is 4096 bytes and there is a processor.
+ *  - memory from NtAllocateVirtualMemory is there on first touch, for this
+ *    program's store and for the kernel's into a page nobody touched; a
+ *    reservation is committed a page at a time, protected, decommitted and
+ *    released, each as NtQueryVirtualMemory reports it (W3).
  *  - a service no step has written answers STATUS_NOT_IMPLEMENTED, as Linux's
  *    syscall 1999 answers ENOSYS: the count the boot reports is seen moving.
  *  - an absolute address the linker wrote into read-only data points where the
@@ -53,6 +57,93 @@ static int g_target;
 /* Written by the linker as an absolute address; right only once relocated.
  * volatile, so the compiler reads it rather than folding the comparison. */
 static int *const volatile g_target_ptr = &g_target;
+
+/* Virtual memory (W3): committed memory made on first touch - by this program's
+ * store, and by the kernel's, which has to accept a page nobody has touched yet
+ * - a reservation committed a page at a time, a protection changed, a decommit
+ * and a release, each checked through NtQueryVirtualMemory. Null, or the
+ * failure line. */
+static const char *vm_check(void) {
+    vibeos_nt_memory_basic_t m;
+    volatile uint8_t *p;
+    uint64_t base = 0, size = 0x10000u, got = 0, b2 = 0, s2 = 0x10000u, c, cs;
+    uint32_t old = 0;
+    int64_t *t;
+
+    if (NtAllocateVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, &base, 0, &size,
+                                VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                                VIBEOS_NT_PAGE_READWRITE) != VIBEOS_STATUS_SUCCESS ||
+        base == 0u || (base & 0xFFFFu) != 0u || size != 0x10000u) {
+        return "NT_HELLO_FAIL vm_allocate\n";
+    }
+    p = (volatile uint8_t *)(uintptr_t)base;
+    p[0x3123] = 0x5Au;
+    if (p[0x3123] != 0x5Au || p[0x5000] != 0u) {
+        return "NT_HELLO_FAIL vm_first_touch\n";
+    }
+    /* The kernel stores into a committed page nobody has touched. */
+    t = (int64_t *)(uintptr_t)(base + 0x8000u);
+    if (NtQuerySystemTime(t) != VIBEOS_STATUS_SUCCESS || (uint64_t)*t < VIBEOS_NT_EPOCH_DELTA) {
+        return "NT_HELLO_FAIL vm_kernel_store\n";
+    }
+    if (NtQueryVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, base + 0x10u, VIBEOS_NT_MEMORY_BASIC_INFORMATION,
+                             &m, sizeof(m), &got) != VIBEOS_STATUS_SUCCESS || got != sizeof(m) ||
+        m.base_address != base || m.allocation_base != base || m.region_size != 0x10000u ||
+        m.state != VIBEOS_NT_MEM_COMMIT || m.protect != VIBEOS_NT_PAGE_READWRITE ||
+        m.type != VIBEOS_NT_MEM_PRIVATE) {
+        return "NT_HELLO_FAIL vm_query\n";
+    }
+    c = base;
+    cs = 0x1000u;
+    if (NtProtectVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, &c, &cs, VIBEOS_NT_PAGE_READONLY, &old) !=
+            VIBEOS_STATUS_SUCCESS || old != VIBEOS_NT_PAGE_READWRITE ||
+        NtQueryVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, base, VIBEOS_NT_MEMORY_BASIC_INFORMATION,
+                             &m, sizeof(m), &got) != VIBEOS_STATUS_SUCCESS ||
+        m.protect != VIBEOS_NT_PAGE_READONLY || m.region_size != 0x1000u) {
+        return "NT_HELLO_FAIL vm_protect\n";
+    }
+    /* A reservation, then one page of it. */
+    if (NtAllocateVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, &b2, 0, &s2, VIBEOS_NT_MEM_RESERVE,
+                                VIBEOS_NT_PAGE_READWRITE) != VIBEOS_STATUS_SUCCESS ||
+        b2 == base || (b2 & 0xFFFFu) != 0u) {
+        return "NT_HELLO_FAIL vm_reserve\n";
+    }
+    c = b2 + 0x4000u;
+    cs = 0x10u;
+    if (NtAllocateVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, &c, 0, &cs, VIBEOS_NT_MEM_COMMIT,
+                                VIBEOS_NT_PAGE_READWRITE) != VIBEOS_STATUS_SUCCESS ||
+        c != b2 + 0x4000u || cs != 0x1000u) {
+        return "NT_HELLO_FAIL vm_commit\n";
+    }
+    p = (volatile uint8_t *)(uintptr_t)c;
+    p[0xFFF] = 0xA5u;
+    if (p[0xFFF] != 0xA5u ||
+        NtQueryVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, b2, VIBEOS_NT_MEMORY_BASIC_INFORMATION,
+                             &m, sizeof(m), &got) != VIBEOS_STATUS_SUCCESS ||
+        m.state != VIBEOS_NT_MEM_RESERVE || m.region_size != 0x4000u) {
+        return "NT_HELLO_FAIL vm_reserved_query\n";
+    }
+    cs = 0x1000u;
+    if (NtFreeVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, &c, &cs, VIBEOS_NT_MEM_DECOMMIT) !=
+            VIBEOS_STATUS_SUCCESS ||
+        NtQueryVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, c, VIBEOS_NT_MEMORY_BASIC_INFORMATION,
+                             &m, sizeof(m), &got) != VIBEOS_STATUS_SUCCESS ||
+        m.state != VIBEOS_NT_MEM_RESERVE) {
+        return "NT_HELLO_FAIL vm_decommit\n";
+    }
+    s2 = 0;
+    size = 0;
+    if (NtFreeVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, &b2, &s2, VIBEOS_NT_MEM_RELEASE) !=
+            VIBEOS_STATUS_SUCCESS || s2 != 0x10000u ||
+        NtFreeVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, &base, &size, VIBEOS_NT_MEM_RELEASE) !=
+            VIBEOS_STATUS_SUCCESS ||
+        NtQueryVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, base, VIBEOS_NT_MEMORY_BASIC_INFORMATION,
+                             &m, sizeof(m), &got) != VIBEOS_STATUS_SUCCESS ||
+        m.state != VIBEOS_NT_MEM_FREE) {
+        return "NT_HELLO_FAIL vm_release\n";
+    }
+    return 0;
+}
 
 int nt_hello_start(void) {
     uint64_t teb = vibeos_nt_teb();
@@ -99,6 +190,12 @@ int nt_hello_start(void) {
     }
     if (NtYieldExecution() != VIBEOS_STATUS_NOT_IMPLEMENTED) {
         return fail("NT_HELLO_FAIL not_implemented\n");
+    }
+    {
+        const char *why = vm_check();
+        if (why) {
+            return fail(why);
+        }
     }
     /* The line the gate reads, and the count NtWriteFile reports for it. */
     {

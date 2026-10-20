@@ -1,0 +1,33 @@
+# Committed memory made on first touch, at boot (docs/abi/windows.md W3 steps 1
+# and 2): hello.exe allocates with NtAllocateVirtualMemory, stores into a page
+# nobody has touched, and has the kernel store into another (vm_check).
+#
+#  1. the page fault serves only the stack's growth area. The program's first
+#     store kills it, and the gate names the fault before the missing line:
+#     seen as deliberate_ring3_faults=3_expected=2, unexpected_cpu_fault.
+#  2. the user range check accepts only the stack's untouched pages. The
+#     kernel's store is refused as a bad pointer: seen as
+#     nt_program_did_not_run=vm_kernel_store.
+#
+# Both red on 2026-10-20.
+#
+# Target source: kernel/arch/x86_64/mm_bridge.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/mm_bridge.c scripts/dev/cases/mm-demand-boot.txt
+
+### the page fault serves only the stack
+--- old
+        if (!r || r->state != VIBEOS_VMA_DEMAND) {
+            return 0;
+        }
++++ new
+        if (1) {
+            return 0;
+        }
+
+### the range check accepts only the stack's untouched pages
+--- old
+    r = vibeos_vma_find(&t->ps->vmas, va);
+    return r && r->state == VIBEOS_VMA_DEMAND && (r->prot & VIBEOS_PROT_USER) &&
++++ new
+    r = vibeos_vma_find(&t->ps->vmas, va);
+    return 0 && r && r->state == VIBEOS_VMA_DEMAND && (r->prot & VIBEOS_PROT_USER) &&

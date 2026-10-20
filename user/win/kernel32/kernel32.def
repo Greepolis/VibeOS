@@ -58,6 +58,14 @@ TlsAlloc
 TlsFree
 TlsGetValue
 TlsSetValue
+VirtualAlloc
+VirtualAllocEx
+VirtualFree
+VirtualFreeEx
+VirtualProtect
+VirtualProtectEx
+VirtualQuery
+VirtualQueryEx
 WaitForMultipleObjects
 WaitForMultipleObjectsEx
 WaitForSingleObject

@@ -65,6 +65,16 @@ NT_IMPORT NTSTATUS_T NtMapViewOfSection(uint64_t section, uint64_t process, uint
                                         uint64_t *size, uint32_t inherit, uint32_t allocation,
                                         uint32_t protection);
 
+/* Virtual memory (W3). */
+NT_IMPORT NTSTATUS_T NtAllocateVirtualMemory(uint64_t process, uint64_t *base, uint64_t zero_bits,
+                                             uint64_t *size, uint32_t type, uint32_t protect);
+NT_IMPORT NTSTATUS_T NtFreeVirtualMemory(uint64_t process, uint64_t *base, uint64_t *size,
+                                         uint32_t type);
+NT_IMPORT NTSTATUS_T NtProtectVirtualMemory(uint64_t process, uint64_t *base, uint64_t *size,
+                                            uint32_t protect, uint32_t *old);
+NT_IMPORT NTSTATUS_T NtQueryVirtualMemory(uint64_t process, uint64_t address, uint32_t cls,
+                                          void *buf, uint64_t len, uint64_t *ret_len);
+
 /* What kernel32 is written on (W2): the synchronisation objects, the waits and
  * Sleep. */
 NT_IMPORT NTSTATUS_T NtCreateEvent(uint64_t *event, uint32_t access, void *attributes,
