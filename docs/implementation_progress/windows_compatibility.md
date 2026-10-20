@@ -49,6 +49,10 @@ loader, objects and waits, memory, files, threads and exceptions, processes, the
   tests in `tests/kernel/nt_abi_tests.c` (`t_virtual_memory`); hello.exe uses
   them at boot. Gaps are listed in [../abi/windows.md](../abi/windows.md), W3
   step 2.
+- `user/win/ntdll/rtl/heap.c`: the process heap grows a segment at a time on
+  NtAllocateVirtualMemory instead of living in a 512 KiB arena; msvcrt's
+  malloc is on it. Host-tested with a randomised soak in
+  `tests/win/ntrtl_tests.c`; hello.exe makes it grow at boot.
 
 ## Where the oracle stands
 
@@ -59,6 +63,5 @@ W2".
 
 ## Next checkpoint
 
-- W3: memory - the rest of it: a heap that grows, lazy `.bss`, data
-  sections, and the reviews' M-106, M-100 and M-108 - measured by `ntdll:virtual` and `kernel32:virtual`. It also
+- W3: memory - the rest of it: lazy `.bss`, data sections, and the reviews' M-106, M-100 and M-108 - measured by `ntdll:virtual` and `kernel32:virtual`. It also
   removes the memory pressure under which the winetest boots met M-070.

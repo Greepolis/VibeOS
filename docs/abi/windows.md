@@ -419,6 +419,15 @@ Order, each a commit with host tests and sabotage cases:
 3. **A heap that grows.** RtlCreateHeap and the process heap on
    NtAllocateVirtualMemory instead of ntdll's 512 KiB `.bss` arena; msvcrt's
    2 MiB arena likewise. This is what makes an NT process cost what it uses.
+   *Done:* the heap takes segments of at least a megabyte from
+   NtAllocateVirtualMemory (`vibeos_rtl_pages`) when nothing on its free list
+   fits, and never gives them back; a pointer is the heap's only inside a
+   segment. msvcrt's malloc is RtlAllocateHeap on the process heap, as
+   Microsoft's is, and its own arena is gone - its randomised soak now runs
+   against ntdll's heap, with segments handed out apart, below the others and
+   not at all. hello.exe mallocs three megabytes at boot and frees a malloc'd
+   block with HeapFree (`nt_heap_did_not_grow`). HeapCreate - a heap other
+   than the process's - is still to come.
 4. **Lazy `.bss` for images.** The mapper fills an image's zero-initialised
    tail as a committed demand-zero range instead of allocating it whole -
    ntdll_test.exe and its DLLs each cost about ten megabytes before a line ran,
