@@ -61,6 +61,10 @@ typedef struct vibeos_exec_stats {
      * because a ratio with one half missing is a number nobody can act on. */
     uint64_t pages_from_cache;
     uint64_t pages_copied;
+    /* Pages of zero-fill .bss left to the page fault (W3 step 4): neither
+     * mapped nor copied at exec, made when first touched. A boot that defers
+     * none has lost the mechanism, and the gate says so. */
+    uint64_t pages_deferred;
 
     /* Resident cache pages compared against the file they came from, and how
      * many no longer matched. Once image pages are shared rather than copied,

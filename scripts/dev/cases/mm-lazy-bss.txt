@@ -1,0 +1,60 @@
+# An image's zero-fill .bss left to the page fault (docs/abi/windows.md W3
+# step 4): which pages qualify (kernel/core/elf.c, kernel/core/pe.c, proved by
+# tests/kernel/loader_tests.c and pe_tests.c), and what Linux's mprotect and
+# mlock do with a page nobody has touched (kernel/abi/linux/mm.c and
+# kernel/abi/mem/umem.c, proved by t_untouched_bss in linux_abi_tests.c).
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/core/elf.c, kernel/core/pe.c, kernel/abi/linux/mm.c, kernel/abi/mem/umem.c
+# Run: for f in kernel/core/elf.c kernel/core/pe.c kernel/abi/linux/mm.c kernel/abi/mem/umem.c; do SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py $f scripts/dev/cases/mm-lazy-bss.txt; done
+
+### a page with file bytes in it is zero-fill
+--- old
+        if (s->filesz != 0u && page_va < s->vaddr + s->filesz &&
+            s->vaddr < page_va + VIBEOS_ELF_PAGE_SIZE) {
+            return 0;
+        }
++++ new
+
+### a page in a hole is zero-fill
+--- old
+    return covering != 0u;
+}
++++ new
+    return 1;
+}
+
+### a relocation straddling into a page does not count for it
+--- old
+        if (block_va == page_va || block_va + VIBEOS_ELF_PAGE_SIZE == page_va) {
+            return 1;
+        }
++++ new
+        if (block_va == page_va) {
+            return 1;
+        }
+
+### mprotect refuses an untouched page
+--- old
+            if (!vibeos_vmspace_mapped(&v, va) && !vibeos_umem_untouched(me, ks_ps(me), va)) {
++++ new
+            if (!vibeos_vmspace_mapped(&v, va) && !(0 && vibeos_umem_untouched(me, ks_ps(me), va))) {
+
+### mlock does not make an untouched page
+--- old
+        if (on && vibeos_umem_make(me, ps, va) != 0) {
++++ new
+        if (on && (0 && vibeos_umem_make(me, ps, va)) != 0) {
+
+### an untouched page is never found
+--- old
+    if (!r || r->state != VIBEOS_VMA_DEMAND) {
+        return 0;
+    }
+    e = vibeos_vmspace_entry(&v, va & ~0xFFFull);
++++ new
+    if (1 || !r || r->state != VIBEOS_VMA_DEMAND) {
+        return 0;
+    }
+    e = vibeos_vmspace_entry(&v, va & ~0xFFFull);

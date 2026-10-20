@@ -6027,6 +6027,33 @@ static void t_madvise_populate(void) {
            "populating for an access the region refuses is EINVAL");
 }
 
+/* An image's .bss is a region made on first touch since W3 step 4: the
+ * loader leaves its pages to the page fault. A program sees mapped memory, so
+ * mprotect takes an untouched page (its new protection is what the fault then
+ * makes it with), and mlock makes it, as Linux faults a locked range in. */
+static void t_untouched_bss(void) {
+    const uint64_t bss = 0x38000000ull;
+    const vibeos_prot_t rw = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE | VIBEOS_PROT_USER);
+    uint8_t x = 'B', y = 0;
+    int me = fresh(203);
+
+    expect(vibeos_vma_insert_alloc(&ks_ps(me)->vmas, bss, 4u * 4096u, rw, 0u, VIBEOS_VMA_DEMAND,
+                                   0u, 0u) == 0 && entry_of(me, bss) == 0u,
+           "a .bss region as the loader leaves it: described, nothing made");
+    expect(SYS3(10, bss, 4096, 1 /* PROT_READ */) == 0 && entry_of(me, bss) == 0u &&
+               kf_peek(bss, &y, 1) == 0 && y == 0 && kf_poke(bss, &x, 1) != 0,
+           "mprotect takes an untouched page; made afterwards, it is read-only and zero");
+    expect(SYS3(10, bss + 4096u, 4096, 3) == 0 && kf_poke(bss + 4096u, &x, 1) == 0,
+           "and one made read-write stays writable");
+    expect(SYS2(149, bss + 2u * 4096u, 4096) == 0 &&
+               (entry_of(me, bss + 2u * 4096u) & VIBEOS_PTE_LOCKED) &&
+               kf_peek(bss + 2u * 4096u, &y, 1) == 0 && y == 0,
+           "mlock makes an untouched page and locks it, zeroed");
+    expect(SYS3(28, bss + 3u * 4096u, 4096, 23 /* MADV_POPULATE_WRITE */) == 0 &&
+               (entry_of(me, bss + 3u * 4096u) & 2u),
+           "MADV_POPULATE_WRITE makes one writable");
+}
+
 /* mlockall(MCL_FUTURE) (M-104): what is mapped afterwards is locked as it is
  * made - mmap, brk, mremap's growth - and a mapping RLIMIT_MEMLOCK cannot hold
  * is not made; munlockall ends it, and a child does not inherit it. */
@@ -6531,6 +6558,7 @@ int test_linux_handlers(void) {
     t_mmap_shared();
     t_memory_calls();
     t_madvise_populate();
+    t_untouched_bss();
     t_mlockall_future();
     t_credentials();
     t_fork_snapshot_and_groups();

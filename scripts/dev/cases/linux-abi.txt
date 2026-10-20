@@ -2,7 +2,7 @@
 
 ### mprotect accepts a page munmap has freed
 --- old
-            if (!vibeos_vmspace_mapped(&v, va)) {
+            if (!vibeos_vmspace_mapped(&v, va) && !vibeos_umem_untouched(me, ks_ps(me), va)) {
                 ks_log(VIBEOS_LOG_WARN, 13u, va, len,
                        "mprotect refused: page not mapped");
                 rc = -VIBEOS_EFAULT;

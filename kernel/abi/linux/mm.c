@@ -655,7 +655,9 @@ static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint
                     const uint64_t *e = vibeos_vmspace_entry(&v, va);
                     int here = e && (*e & VIBEOS_PTE_LOCKED);
 
-                    locked += here || (va >= addr && va < end && vibeos_vmspace_mapped(&v, va));
+                    locked += here || (va >= addr && va < end &&
+                                       (vibeos_vmspace_mapped(&v, va) ||
+                                        vibeos_umem_untouched(me, ps, va)));
                 }
             }
             if (locked * 4096ull > ps->rlim_cur[VIBEOS_RLIM_MEMLOCK]) {
@@ -664,6 +666,11 @@ static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint
         }
     }
     for (va = addr; va < end; va += 4096ull) {
+        /* Locked means here: a page a region promises is made first, as
+         * Linux faults it in, or there would be nothing to lock. */
+        if (on && vibeos_umem_make(me, ps, va) != 0) {
+            return -VIBEOS_ENOMEM;
+        }
         if (vibeos_vmspace_set_locked(&v, va, on) < 0) {
             return -VIBEOS_EAGAIN;   /* a page in swap that could not be brought back */
         }
@@ -1004,7 +1011,10 @@ static long linux_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
          * the entry was present. A page munmap has freed is not mapped at all,
          * and stays a fault - which is what the ABI self-test checks. */
         for (va = addr; va < end; va += 4096ull) {
-            if (!vibeos_vmspace_mapped(&v, va)) {
+            /* A page a region promises and nobody has touched - an image's
+             * .bss since W3 - is mapped as far as the program can tell, and
+             * takes the region's new protection when it is made. */
+            if (!vibeos_vmspace_mapped(&v, va) && !vibeos_umem_untouched(me, ks_ps(me), va)) {
                 ks_log(VIBEOS_LOG_WARN, 13u, va, len,
                        "mprotect refused: page not mapped");
                 rc = -VIBEOS_EFAULT;

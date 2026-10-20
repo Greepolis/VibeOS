@@ -117,6 +117,13 @@ int vibeos_pe_check_relocs(const vibeos_pe_image_t *pe, const uint8_t *relocs,
  * through `read` - not from the page - so an entry straddling two pages comes
  * out right whichever is filled first. Relocations already checked by
  * vibeos_pe_check_relocs. */
+/* Does a base relocation write into this page - an entry of its block, or of
+ * the block before it, which may straddle into it? A loader that leaves a
+ * zero-fill page to the page fault must not leave one of these: the fault would
+ * make zeros where the relocation wrote the image's delta. Conservative: a
+ * block for the page is a yes. */
+int vibeos_pe_page_relocated(const vibeos_pe_image_t *pe, const uint8_t *relocs, uint32_t len,
+                             uint64_t page_va);
 void vibeos_pe_relocate_page(const vibeos_pe_image_t *pe, const uint8_t *relocs,
                              uint32_t len, vibeos_elf_read_fn read, void *ctx,
                              uint64_t page_va, uint8_t *page);

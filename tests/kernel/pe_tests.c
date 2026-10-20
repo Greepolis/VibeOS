@@ -342,6 +342,17 @@ static void t_relocation(void) {
            "a value straddling two pages - the second all .bss - moves, both halves");
     expect(t_rd64(ref + 0x2FFCu) == 0u && t_rd64(ref + 0x2010u) == T_BASE + 0x1000u,
            "at its own base nothing is touched");
+    /* The page the straddling value reaches is .bss alone - and must still be
+     * built at exec when the image moved, not left to the page fault, or the
+     * value's high half would be zeros (W3 step 4). */
+    expect(vibeos_elf_page_all_zero(&at.layout, to + 0x3000u) == 1 &&
+               vibeos_pe_page_relocated(&at, rel, rlen, to + 0x3000u) == 1 &&
+               vibeos_pe_page_relocated(&at, rel, rlen, to + 0x2000u) == 1,
+           "a zero-fill page a relocation reaches is a relocated page");
+    expect(vibeos_pe_page_relocated(&at, rel, rlen, to + 0x1000u) == 0 &&
+               vibeos_pe_page_relocated(&at, rel, rlen, to + 0x4000u) == 0 &&
+               vibeos_pe_page_relocated(&pe, rel, rlen, T_BASE + 0x3000u) == 0,
+           "a page no block names, and any page of an image that did not move, is not");
     {
         uint32_t k, other = 0;
         for (k = 0; k < sizeof(img); k++) {

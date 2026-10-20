@@ -339,6 +339,30 @@ int vibeos_elf_parse_read(const void *image, uint64_t len,
     return rc;
 }
 
+int vibeos_elf_page_all_zero(const vibeos_elf_image_t *img, uint64_t page_va) {
+    uint32_t i, covering = 0;
+
+    if (!img) {
+        return 0;
+    }
+    for (i = 0; i < img->count; i++) {
+        const vibeos_elf_segment_t *s = &img->seg[i];
+
+        if (s->memsz == 0u || page_va + VIBEOS_ELF_PAGE_SIZE <= s->vaddr ||
+            page_va >= s->vaddr + s->memsz) {
+            continue;   /* this segment does not reach the page */
+        }
+        covering++;
+        /* Any of the file's bytes in the page, from this segment: the file's
+         * part of the segment is [vaddr, vaddr + filesz). */
+        if (s->filesz != 0u && page_va < s->vaddr + s->filesz &&
+            s->vaddr < page_va + VIBEOS_ELF_PAGE_SIZE) {
+            return 0;
+        }
+    }
+    return covering != 0u;
+}
+
 int vibeos_elf_page_file_offset(const vibeos_elf_image_t *img, uint64_t page_va,
                                 uint64_t *out_off) {
     uint32_t i;

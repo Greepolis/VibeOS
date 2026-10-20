@@ -3024,6 +3024,13 @@ def main():
                     problems.append(
                         f"exec_copies_more_than_it_maps from_cache={from_cache}"
                         f"_copied={copied}")
+            # Zero-fill .bss left to the page fault (W3 step 4). Every boot
+            # runs programs with static arrays, so none deferred is the
+            # mechanism gone, with every boot still green - each page would
+            # simply be allocated and cleared at exec again.
+            dm = re.search(r"pages_deferred=0x([0-9a-f]+)", text)
+            if dm is None or int(dm.group(1), 16) == 0:
+                problems.append("exec_deferred_no_bss")
 
             # Every resident cache page still holds what its file holds.
             #

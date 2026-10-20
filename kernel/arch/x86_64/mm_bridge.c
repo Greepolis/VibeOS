@@ -1909,6 +1909,38 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
             }
         }
 
+        /* A page the file never reaches - .bss past the last byte of it - is
+         * a region made on first touch, as the stack's untouched pages are
+         * (W3 step 4). Allocated and cleared here, it cost every process every
+         * page of every static array it declared, read or not: ntdll_test.exe
+         * and its DLLs ten megabytes before a line ran. Not for a page a base
+         * relocation writes into, which must hold the delta and not zeros.
+         *
+         * And only in the high window. The low one - where Linux programs
+         * link, at 0x400000 - lies over the kernel's identity map, so a page
+         * nobody mapped there is present for ring 0, and the program's first
+         * store to it arrives as a protection fault on a present page: the
+         * copy-on-write path's, which refuses it, and the demand path is never
+         * asked. The first boot with this unrestricted killed BusyBox, DYN.ELF
+         * and every static Linux program on its first store to .bss (err=7,
+         * cr2 in .bss). Such a page is allocated here as it always was. */
+        if (vmas && va >= VIBEOS_HW_IDENTITY_LIMIT && vibeos_elf_page_all_zero(img, va) &&
+            !(moved && vibeos_pe_page_relocated(reloc->pe, reloc->relocs, reloc->len, va))) {
+            vibeos_prot_t rp = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
+
+            if (flags & VIBEOS_ELF_W) {
+                rp = (vibeos_prot_t)(rp | VIBEOS_PROT_WRITE);
+            }
+            if (flags & VIBEOS_ELF_X) {
+                rp = (vibeos_prot_t)(rp | VIBEOS_PROT_EXEC);
+            }
+            if (vibeos_vma_insert_alloc(vmas, va, 4096ull, rp, 0u, VIBEOS_VMA_DEMAND, 0u, 0u) != 0) {
+                return -1;   /* as below: no region, no image */
+            }
+            vibeos_exec_stats()->pages_deferred++;
+            continue;
+        }
+
         page = (uint8_t *)hw_alloc_page();
         if (!page) {
             return -1;

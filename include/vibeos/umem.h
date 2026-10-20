@@ -32,6 +32,16 @@ uint64_t vibeos_umem_place(vibeos_procstate_t *ps, uint64_t bytes, uint64_t alig
  * pages. 0, or a negative errno (-ENOMEM when a region could not be split). */
 long vibeos_umem_unmap(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
 
+/* A page a region promises and nothing has made yet: in a region made on first
+ * touch (W3), with no entry. mprotect and mlock ask, because "mapped" no
+ * longer means "there" - an image's .bss is such a region until it is reached. */
+int vibeos_umem_untouched(int me, vibeos_procstate_t *ps, uint64_t va);
+
+/* Make such a page now, as the first touch would: 0 if it is there afterwards
+ * (made, or there already, or not a page a region promises), -1 if no frame
+ * could be had. */
+int vibeos_umem_make(int me, vibeos_procstate_t *ps, uint64_t va);
+
 /* Give the pages of [addr, end) that exist the protection `prot`: present
  * ones, swapped ones, copy-on-write ones as the page-table layer keeps each.
  * The region list is the caller's to have changed first. */

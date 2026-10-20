@@ -266,6 +266,13 @@ uint64_t vibeos_elf_build_stack(void *buf, uint64_t buf_len, uint64_t stack_top,
 int vibeos_elf_page_file_offset(const vibeos_elf_image_t *img, uint64_t page_va,
                                 uint64_t *out_off);
 
+/* Is every byte of this page zero-fill - covered by some segment, and by none
+ * of them with bytes from the file? Such a page is .bss past the last byte the
+ * file supplies, and a loader may leave it to the page fault (docs/abi/
+ * windows.md W3 step 4) rather than allocate and clear it at exec. 0 for a page
+ * in a hole, and for one any segment fills from the file even in part. */
+int vibeos_elf_page_all_zero(const vibeos_elf_image_t *img, uint64_t page_va);
+
 /* Fill one page of the image. `dst` must be VIBEOS_ELF_PAGE_SIZE bytes and is
  * fully written: bytes backed by the file are copied, everything else - .bss
  * and padding either side - is zeroed. */

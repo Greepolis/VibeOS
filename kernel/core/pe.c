@@ -436,6 +436,28 @@ static void pe_relocate_block(const vibeos_pe_image_t *pe, const uint8_t *blk, u
     }
 }
 
+int vibeos_pe_page_relocated(const vibeos_pe_image_t *pe, const uint8_t *relocs, uint32_t len,
+                             uint64_t page_va) {
+    uint32_t at = 0;
+
+    if (!pe || pe->delta == 0 || !relocs) {
+        return 0;
+    }
+    while (at + 8u <= len) {
+        uint32_t size = rd32(relocs + at + 4u);
+        uint64_t block_va = pe->image_base + rd32(relocs + at);
+
+        if (size < 8u || size > len - at) {
+            return 1;   /* never trusted: a page it cannot rule out is relocated */
+        }
+        if (block_va == page_va || block_va + VIBEOS_ELF_PAGE_SIZE == page_va) {
+            return 1;
+        }
+        at += size;
+    }
+    return 0;
+}
+
 void vibeos_pe_relocate_page(const vibeos_pe_image_t *pe, const uint8_t *relocs,
                              uint32_t len, vibeos_elf_read_fn read, void *ctx,
                              uint64_t page_va, uint8_t *page) {

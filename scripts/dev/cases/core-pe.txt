@@ -65,8 +65,10 @@
 ### the tail of a value that starts on the page before is left unmoved
 --- old
         if (block_va == page_va || block_va + VIBEOS_ELF_PAGE_SIZE == page_va) {
+            pe_relocate_block(pe, relocs + at, size, read, ctx, page_va, page);
 +++ new
         if (block_va == page_va) {
+            pe_relocate_block(pe, relocs + at, size, read, ctx, page_va, page);
 
 ### a 32-bit image's relocation type is accepted
 --- old

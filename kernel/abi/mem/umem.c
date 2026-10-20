@@ -170,3 +170,24 @@ void vibeos_umem_protect_pages(int me, uint64_t addr, uint64_t end, vibeos_prot_
         ks_tlb_flush_page(va);
     }
 }
+
+int vibeos_umem_untouched(int me, vibeos_procstate_t *ps, uint64_t va) {
+    const vibeos_vma_t *r = vibeos_vma_find(&ps->vmas, va);
+    vibeos_vmspace_t v = ks_vm(me);
+    const uint64_t *e;
+
+    if (!r || r->state != VIBEOS_VMA_DEMAND) {
+        return 0;
+    }
+    e = vibeos_vmspace_entry(&v, va & ~0xFFFull);
+    return !e || *e == 0u;
+}
+
+int vibeos_umem_make(int me, vibeos_procstate_t *ps, uint64_t va) {
+    const vibeos_vma_t *r = vibeos_vma_find(&ps->vmas, va);
+
+    if (!vibeos_umem_untouched(me, ps, va)) {
+        return 0;
+    }
+    return ks_map_anon(me, va & ~0xFFFull, r->prot) == 0 ? 0 : -1;
+}

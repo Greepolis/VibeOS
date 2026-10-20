@@ -417,6 +417,51 @@ static void case_file_offset_refuses_a_hole(void) {
            "a page in a hole was claimed as file-backed");
 }
 
+/* Which pages are .bss alone, and may be left to the page fault (W3 step 4).
+ * A yes here is a page the program finds zeroed when it first reaches it, so a
+ * wrong yes hands it zeros where the file had bytes: the cases are mostly
+ * about it saying no. */
+static void case_all_zero_pages(void) {
+    vibeos_elf_image_t im;
+
+    memset(g_img, 0, sizeof(g_img));
+    build_ehdr(g_img, 2, BASE, 2);
+    /* .data: a page and a half from the file, then .bss to four pages. */
+    build_phdr(g_img, 0, PF_R | PF_W, 0x1000, BASE, 0x1800, 0x4000, 0x1000);
+    /* A segment that is .bss alone, after a hole. */
+    build_phdr(g_img, 1, PF_R | PF_W, 0x0, BASE + 0x10000ull, 0, 0x2000, 0x1000);
+    if (!expect(vibeos_elf_parse_ex(g_img, sizeof(g_img), 0, BASE,
+                                    BASE + 0x100000ull, 0, &im) == VIBEOS_ELF_OK,
+                "a segment with a bss tail, and one of bss alone, were refused")) {
+        return;
+    }
+    expect(vibeos_elf_page_all_zero(&im, BASE) == 0, "a page of file bytes is not zero-fill");
+    expect(vibeos_elf_page_all_zero(&im, BASE + 0x1000ull) == 0,
+           "the page the file ends in is not zero-fill: half of it is the file's");
+    expect(vibeos_elf_page_all_zero(&im, BASE + 0x2000ull) == 1 &&
+               vibeos_elf_page_all_zero(&im, BASE + 0x3000ull) == 1,
+           "the pages past the file's last byte are zero-fill");
+    expect(vibeos_elf_page_all_zero(&im, BASE + 0x4000ull) == 0 &&
+               vibeos_elf_page_all_zero(&im, BASE + 0x8000ull) == 0,
+           "a page in a hole is no segment's, not a zero-fill one");
+    expect(vibeos_elf_page_all_zero(&im, BASE + 0x10000ull) == 1 &&
+               vibeos_elf_page_all_zero(&im, BASE + 0x11000ull) == 1,
+           "a segment with no file bytes is zero-fill throughout");
+
+    /* Two segments in one page: .bss of the first, file bytes of the second. */
+    memset(g_img, 0, sizeof(g_img));
+    build_ehdr(g_img, 2, BASE, 2);
+    build_phdr(g_img, 0, PF_R | PF_W, 0x1000, BASE, 0x100, 0x1800, 0x1000);
+    build_phdr(g_img, 1, PF_R | PF_W, 0x2000, BASE + 0x1C00ull, 0x100, 0x100, 0x1000);
+    if (!expect(vibeos_elf_parse_ex(g_img, sizeof(g_img), 0, BASE,
+                                    BASE + 0x100000ull, 0, &im) == VIBEOS_ELF_OK,
+                "two segments sharing a page were refused")) {
+        return;
+    }
+    expect(vibeos_elf_page_all_zero(&im, BASE + 0x1000ull) == 0,
+           "a page one segment fills with zeros and another with the file is not zero-fill");
+}
+
 static void case_file_offset_refuses_an_unaligned_segment(void) {
     vibeos_elf_image_t im;
     uint64_t off = 0;
@@ -612,6 +657,7 @@ int test_loader(void) {
     case_file_offset_refuses_the_bss_tail();
     case_file_offset_refuses_a_shared_page();
     case_file_offset_refuses_a_hole();
+    case_all_zero_pages();
     case_file_offset_refuses_an_unaligned_segment();
     case_startup_block();
     case_no_interpreter_omits_at_base();
