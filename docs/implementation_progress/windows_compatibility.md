@@ -34,6 +34,22 @@ loader, objects and waits, memory, files, threads and exceptions, processes, the
   still placeholders that export nothing.
 - `scripts/dev/winetest-run.sh`: Wine's tests on VibeOS, against Wine's answers.
 
+## What W3 has added so far (2026-10-20)
+
+- Regions with a state (`include/vibeos/vma.h`): present, committed and made
+  on first touch, or reserved with no access; each carries its allocation's
+  base and protection and the protection as Windows spelled it. The page
+  fault makes a committed page (`hw_stack_grow` in `mm_bridge.c`), and the
+  user range check accepts one nobody has touched yet.
+- `kernel/abi/mem/umem.c`: placing, releasing and RLIMIT_AS for every
+  personality, lifted out of Linux's mm.c.
+- `kernel/abi/nt/memory.c`: NtAllocateVirtualMemory, NtFreeVirtualMemory,
+  NtProtectVirtualMemory and NtQueryVirtualMemory; kernel32's VirtualAlloc,
+  VirtualFree, VirtualProtect and VirtualQuery with their `Ex` forms. Host
+  tests in `tests/kernel/nt_abi_tests.c` (`t_virtual_memory`); hello.exe uses
+  them at boot. Gaps are listed in [../abi/windows.md](../abi/windows.md), W3
+  step 2.
+
 ## Where the oracle stands
 
 `ntdll:om`, `ntdll:sync` and `kernel32:sync` run and report their failures,
@@ -43,6 +59,6 @@ W2".
 
 ## Next checkpoint
 
-- W3: memory - `NtAllocateVirtualMemory` and its family, lazy `.bss`, a heap
-  that grows - measured by `ntdll:virtual` and `kernel32:virtual`. It also
+- W3: memory - the rest of it: a heap that grows, lazy `.bss`, data
+  sections, and the reviews' M-106, M-100 and M-108 - measured by `ntdll:virtual` and `kernel32:virtual`. It also
   removes the memory pressure under which the winetest boots met M-070.

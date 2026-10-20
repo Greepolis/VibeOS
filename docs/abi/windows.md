@@ -403,6 +403,19 @@ Order, each a commit with host tests and sabotage cases:
    region protection and back (PAGE_GUARD and PAGE_NOCACHE recorded), and
    MemoryBasicInformation as Windows fills it. kernel32's VirtualAlloc family
    over them.
+   *Done:* `kernel/abi/nt/memory.c`, on `kernel/abi/mem/umem.c` - placing,
+   releasing and RLIMIT_AS lifted out of Linux's mm.c, which asks the same
+   questions. A region keeps the protection as Windows spelled it
+   (`user_prot`), so PAGE_EXECUTE and PAGE_GUARD read back as given. kernel32
+   has VirtualAlloc, VirtualFree, VirtualProtect and VirtualQuery with their
+   `Ex` forms. The fake kernel makes a committed page on first touch as the
+   machine does. hello.exe exercises it at boot: a store into a page nobody
+   touched, the kernel's store into another, a reservation committed a page
+   at a time, protected, decommitted and released; sabotaging either half of
+   the demand fault turns the boot red. Not enforced: PAGE_GUARD and
+   PAGE_NOCACHE (recorded and reported), MEM_TOP_DOWN (placed as anything
+   else), ZeroBits (refused: the arena is above 4 GiB), MEM_WRITE_WATCH and
+   MEM_LARGE_PAGES (STATUS_NOT_SUPPORTED).
 3. **A heap that grows.** RtlCreateHeap and the process heap on
    NtAllocateVirtualMemory instead of ntdll's 512 KiB `.bss` arena; msvcrt's
    2 MiB arena likewise. This is what makes an NT process cost what it uses.
