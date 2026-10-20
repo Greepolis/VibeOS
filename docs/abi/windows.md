@@ -355,3 +355,69 @@ heap that grows are W3's, and W3 is where the pressure goes away. Evidence in
   gate died before booting - three gates on one `efi_root` each taking the
   previous winetest run's executables off, two of them the same file. Fixed in
   the gate, then 6 of 6 with those executables put back on purpose.
+
+## W3 (2026-10-20): planned, in progress
+
+Measured by `ntdll:virtual` (Wine on Linux: 1,779 tests, 205 todo, 0 failures)
+and `kernel32:virtual` (Wine itself does not finish it: 679 failures printed, no
+summary - so the target there is to run as far as Wine does and fail where it
+fails). Twenty-three services are W3's in the registry; the ones the tests reach
+first are NtAllocateVirtualMemory, NtFreeVirtualMemory, NtProtectVirtualMemory,
+NtQueryVirtualMemory, and the data sections.
+
+**The mechanism W3 needs is one the memory manager was designed for and never
+built.** `VIBEOS_BACKING_ANON` is documented as "zero-filled on first touch",
+and only the user stack is: mmap maps every page at once. Windows' model has
+two states mmap never needed:
+
+- *reserved*: address space set aside with no pages and no access - a touch is
+  an access violation, and the range is not free for anybody else's mapping;
+- *committed*: pages promised, made on first touch.
+
+Both are region states, not page-table states. CLAUDE.md records why: an
+earlier attempt to reserve without backing could not be told apart from a range
+munmap had just freed. A region that says what it is can be. And Windows asks
+per region for what it was allocated as - its allocation base and protection -
+which NtQueryVirtualMemory reports, and which therefore has to be kept.
+
+Order, each a commit with host tests and sabotage cases:
+
+1. **Demand-zero and reserved regions.** A region flag for "reserved" and one
+   for "committed, made on touch"; the page fault maps a zeroed page in a
+   committed region as `hw_stack_grow` does for the stack - which becomes one
+   case of it - and refuses a reserved one. Every path that walks entries (fork,
+   munmap, mprotect, page-out, the range check, mincore) is asked what it does
+   with a region that has no pages yet. The allocation base and protection ride
+   on the region, and regions of different allocations never merge.
+2. **The four services**, with their Windows rules: reservations at 64 KiB
+   granularity, commits at page granularity inside a reservation, MEM_RESET,
+   MEM_TOP_DOWN, release only of a whole reservation by its base, PAGE_* to
+   region protection and back (PAGE_GUARD and PAGE_NOCACHE recorded), and
+   MemoryBasicInformation as Windows fills it. kernel32's VirtualAlloc family
+   over them.
+3. **A heap that grows.** RtlCreateHeap and the process heap on
+   NtAllocateVirtualMemory instead of ntdll's 512 KiB `.bss` arena; msvcrt's
+   2 MiB arena likewise. This is what makes an NT process cost what it uses.
+4. **Lazy `.bss` for images.** The mapper fills an image's zero-initialised
+   tail as a committed demand-zero range instead of allocating it whole -
+   ntdll_test.exe and its DLLs each cost about ten megabytes before a line ran,
+   and the reclaim that caused is where the winetest boots met M-070.
+5. **Data sections.** SEC_COMMIT sections backed by an unnamed tmpfs file (as
+   SysV shared memory is), file-backed views, NtOpenSection, NtQuerySection,
+   NtUnmapViewOfSection.
+6. **Views from the handle's file (M-106's remainder).** The page cache learns
+   files by mount and node, so a view is mapped from the description its handle
+   holds and never goes back to the name.
+7. **One address space for CLONE_VM processes (M-100).** The region list, its
+   lock and the break become one counted object that a CLONE_VM child shares
+   with its parent instead of copying; threads already share it through the
+   process state.
+8. **Kernel stacks with guard pages (M-108).** A region of their own in every
+   address space's kernel half, an unmapped page below each stack, and #PF and
+   #DF on IST stacks so that an overflow faults on a stack that exists and the
+   panic names the task. The canary stays as a second line.
+9. **The oracle.** `ntdll:virtual` and `kernel32:virtual` through
+   `winetest-run.sh`, against Wine's answers; the work list they leave.
+
+Steps 1 to 5 are the NT personality's; 6 to 8 are the reviews' findings that
+need the same memory work, scheduled here on 2026-10-19.
