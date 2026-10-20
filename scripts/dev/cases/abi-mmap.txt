@@ -31,13 +31,13 @@
         base = addr;
     } else {
 +++ new
-        base = linux_mmap_place(ps, pages);
+        base = vibeos_umem_place(ps, pages * 4096ull, 4096ull);
     } else {
 
 ### MAP_FIXED leaves what was there
 --- old
         } else {
-            if ((r = linux_unmap_range(me, ps, addr, addr + bytes)) != 0) {
+            if ((r = vibeos_umem_unmap(me, ps, addr, addr + bytes)) != 0) {
                 return r;
             }
         }
@@ -46,7 +46,7 @@
 
 ### MAP_FIXED_NOREPLACE replaces
 --- old
-            if (linux_region_in(ps, addr, bytes)) {
+            if (vibeos_umem_region_in(ps, addr, bytes)) {
                 return -VIBEOS_EEXIST;
             }
 +++ new
@@ -69,26 +69,15 @@
 
 ### a hint is ignored
 --- old
-        if (base == 0u || !ks_user_fixed_ok(base, bytes) || linux_region_in(ps, base, bytes)) {
+        if (base == 0u || !ks_user_fixed_ok(base, bytes) || vibeos_umem_region_in(ps, base, bytes)) {
 +++ new
         if (1) {
 
 ### a hint is taken even when the range is in use
 --- old
-        if (base == 0u || !ks_user_fixed_ok(base, bytes) || linux_region_in(ps, base, bytes)) {
+        if (base == 0u || !ks_user_fixed_ok(base, bytes) || vibeos_umem_region_in(ps, base, bytes)) {
 +++ new
         if (base == 0u || !ks_user_fixed_ok(base, bytes)) {
-
-### the arena does not step over what is already mapped
---- old
-        v = linux_region_in(ps, base, bytes);
-        if (!v) {
-            break;
-        }
-        base = v->base + v->len;
-+++ new
-        (void)v;
-        break;
 
 ### a file's bytes are not read into its mapping
 --- old

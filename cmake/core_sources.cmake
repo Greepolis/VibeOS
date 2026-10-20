@@ -145,6 +145,9 @@ set(VIBEOS_ABI_FILES_SOURCES
     kernel/abi/files/socket.c
     kernel/abi/files/sockopt.c
     kernel/abi/files/unixsock.c
+    # And the address space as every personality changes it (W3): placing,
+    # releasing, RLIMIT_AS - mmap's and NtAllocateVirtualMemory's alike.
+    kernel/abi/mem/umem.c
 )
 
 # The Linux syscall personality. Portable since docs/abi/ A2: it reaches the

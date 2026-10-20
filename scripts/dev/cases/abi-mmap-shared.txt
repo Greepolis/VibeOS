@@ -41,7 +41,7 @@
 
 ### msync does not look for a hole in the range
 --- old
-    if (!linux_regions_cover(ps, addr, end)) {
+    if (!vibeos_umem_covered(ps, addr, end)) {
         r = -VIBEOS_ENOMEM;
     } else if (flags & LINUX_MS_INVALIDATE) {
 +++ new

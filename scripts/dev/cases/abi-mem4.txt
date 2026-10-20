@@ -81,7 +81,7 @@
 
 ### madvise does not look for a hole
 --- old
-    if (!linux_regions_cover(ps, addr, end)) {
+    if (!vibeos_umem_covered(ps, addr, end)) {
         r = -VIBEOS_ENOMEM;
     }
     /* MADV_POPULATE_READ and _WRITE: every page there now, as an access would
@@ -119,7 +119,7 @@
 ### mremap grows over what is after the mapping
 --- old
         if (ks_user_fixed_ok(old + old_len, new_len - old_len) &&
-            !linux_region_in(ps, old + old_len, new_len - old_len)) {
+            !vibeos_umem_region_in(ps, old + old_len, new_len - old_len)) {
 +++ new
         if (ks_user_fixed_ok(old + old_len, new_len - old_len)) {
 
@@ -132,7 +132,7 @@
 
 ### mremap leaves the old range described
 --- old
-            if (linux_unmap_range(me, ps, old, old + old_len) == 0) {
+            if (vibeos_umem_unmap(me, ps, old, old + old_len) == 0) {
 +++ new
             if (1) {
 

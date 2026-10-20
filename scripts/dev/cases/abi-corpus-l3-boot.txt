@@ -16,17 +16,17 @@
 
 ### mmap ignores MAP_FIXED
 --- old
-            if ((r = linux_unmap_range(me, ps, addr, addr + bytes)) != 0) {
+            if ((r = vibeos_umem_unmap(me, ps, addr, addr + bytes)) != 0) {
                 return r;
             }
         }
         base = addr;
 +++ new
-            if ((r = linux_unmap_range(me, ps, addr, addr + bytes)) != 0) {
+            if ((r = vibeos_umem_unmap(me, ps, addr, addr + bytes)) != 0) {
                 return r;
             }
         }
-        base = linux_mmap_place(ps, pages);
+        base = vibeos_umem_place(ps, pages * 4096ull, 4096ull);
 
 ### a shared mapping of a file is made private
 --- old

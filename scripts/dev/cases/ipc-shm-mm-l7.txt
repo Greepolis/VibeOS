@@ -19,7 +19,7 @@
 
 ### shmdt unmaps nothing
 --- old
-    r = linux_unmap_range(me, ps, addr, end);
+    r = vibeos_umem_unmap(me, ps, addr, end);
     ks_mm_unlock(ps);
     return r < 0 ? r : (long)tag;
 +++ new

@@ -25,14 +25,6 @@
                           tag, 0) != 0) {
     }
 
-### munmap unmaps whatever the region list said
---- old
-    if (vibeos_vma_remove(&ps->vmas, addr, end - addr) == VIBEOS_VMA_REFUSED) {
-        return -VIBEOS_ENOMEM;
-    }
-+++ new
-    (void)vibeos_vma_remove(&ps->vmas, addr, end - addr);
-
 ### the region list says 0 for a split it could not make
 --- old
                 return VIBEOS_VMA_REFUSED;

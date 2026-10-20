@@ -4,68 +4,12 @@
  * places a mapping where the program says and maps a file's contents. */
 
 #include "linux_internal.h"
+#include "vibeos/umem.h"
 
-/* Does any region of the process overlap [base, base + len)? The first one
- * that does, or null. Under the process's mm lock. */
-static vibeos_vma_t *linux_region_in(vibeos_procstate_t *ps, uint64_t base, uint64_t len) {
-    vibeos_vma_t *v;
-
-    for (v = ps->vmas.head; v; v = v->next) {
-        if (v->base < base + len && base < v->base + v->len) {
-            return v;
-        }
-    }
-    return 0;
-}
-
-/* Defined with the calls of L3 step 4, further down; mmap and msync, above
- * them, ask the same questions. Declared here because a use above a definition
+/* Defined with the calls of L3 step 4, further down; mmap, above them,
+ * asks the same question. Declared here because a use above a definition
  * compiles as an implicit declaration and fails three hundred lines later. */
-static int linux_regions_cover(vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
 static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end, int on);
-static long linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
-
-/* RLIMIT_AS: may `more` bytes be added to what the process's regions describe?
- * The limit was kept and reported and never asked (external review,
- * 2026-10-07). Under the mm lock. */
-static int linux_as_room(const vibeos_procstate_t *ps, uint64_t more) {
-    const vibeos_vma_t *v;
-    uint64_t total = more;
-
-    if (ps->rlim_cur[VIBEOS_RLIM_AS] == VIBEOS_RLIM_INFINITY) {
-        return 1;
-    }
-    for (v = ps->vmas.head; v; v = v->next) {
-        total += v->len;
-    }
-    return total <= ps->rlim_cur[VIBEOS_RLIM_AS];
-}
-
-/* Address space for `pages` that nothing occupies, or 0. Under the mm lock.
- *
- * The arena is a cursor that only moves up, which was the whole of it while
- * every mapping came from here. Since docs/abi/ L3 a program can put a mapping
- * at an address it names, and that address can be ahead of the cursor - so the
- * cursor steps over whatever is already there rather than assuming nothing is.
- * A range whose mapping later fails stays a hole: address space, not memory. */
-static uint64_t linux_mmap_place(vibeos_procstate_t *ps, uint64_t pages) {
-    uint64_t base = __atomic_load_n(&ps->mmap_cur, __ATOMIC_ACQUIRE);
-    const uint64_t bytes = pages * 4096ull;
-    vibeos_vma_t *v;
-
-    for (;;) {
-        if (base + bytes < base || !ks_user_fixed_ok(base, bytes)) {
-            return 0u;
-        }
-        v = linux_region_in(ps, base, bytes);
-        if (!v) {
-            break;
-        }
-        base = v->base + v->len;
-    }
-    __atomic_store_n(&ps->mmap_cur, base + bytes, __ATOMIC_RELEASE);
-    return base;
-}
 
 /* brk(0) reports the break; brk(addr) moves it, mapping fresh pages or giving
  * them back. Runs with the process's mm_busy claimed; see linux_sys_brk. */
@@ -82,7 +26,7 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
     /* RLIMIT_DATA (L2 step 4): the heap may not grow past it. A refused brk
      * answers with the break as it was, which is how Linux says no. */
     if (new_brk > ps->brk_cur && (new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA] ||
-                                  !linux_as_room(ps, new_brk - ps->brk_cur))) {
+                                  !vibeos_umem_as_room(ps, new_brk - ps->brk_cur))) {
         return (long)ps->brk_cur;   /* RLIMIT_DATA, and RLIMIT_AS since 2026-10-07 */
     }
     if (new_brk > ps->brk_cur) {
@@ -113,7 +57,7 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
          * (M-104). */
         if (ps->mlock_future &&
             linux_lock_range(me, ps, ps->brk_cur, new_brk, 1) != 0) {
-            (void)linux_unmap_range(me, ps, ps->brk_cur, new_brk);
+            (void)vibeos_umem_unmap(me, ps, ps->brk_cur, new_brk);
             return (long)ps->brk_cur;
         }
     } else if (new_brk < ps->brk_cur) {
@@ -134,7 +78,7 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
         vibeos_vmspace_t v = ks_vm(me);
 
         if (vibeos_vma_remove(&ps->vmas, new_brk, ps->brk_cur - new_brk) == VIBEOS_VMA_REFUSED) {
-            return (long)ps->brk_cur;   /* nothing changed: see linux_unmap_range */
+            return (long)ps->brk_cur;   /* nothing changed: see vibeos_umem_unmap */
         }
         for (va = new_brk; va < ps->brk_cur; va += 4096ull) {
             (void)vibeos_vmspace_unmap(&v, va);
@@ -184,71 +128,6 @@ static vibeos_prot_t linux_prot_of(uint64_t prot) {
         p = (vibeos_prot_t)(p | VIBEOS_PROT_EXEC);
     }
     return p;
-}
-
-/* Take [addr, end) out of the caller's address space: the regions first, so
- * nothing is described after it has stopped existing, then the pages. munmap's
- * body, and what a mapping at a fixed address does to whatever was there. Under
- * the mm lock. */
-static long linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end) {
-    vibeos_vmspace_t v = ks_vm(me);
-    uint64_t va;
-
-    /* The middle of a region needs a descriptor to split it with, and the
-     * pool can be empty: then nothing is unmapped and the caller says ENOMEM,
-     * as Linux does past its map count. Unmapping anyway left the pages gone
-     * and a region still describing them. */
-    if (vibeos_vma_remove(&ps->vmas, addr, end - addr) == VIBEOS_VMA_REFUSED) {
-        return -VIBEOS_ENOMEM;
-    }
-    for (va = addr; va < end; va += 4096ull) {
-        /* One call, and it is the last page-table write that lived outside
-         * kernel/mm/vmspace.c.
-         *
-         * The two rules this used to get wrong are now properties of the
-         * layer rather than of this loop. It freed the frame outright, which
-         * is correct only for a page nobody else has - and after a fork that
-         * is the rare case, so unmapping a copy-on-write page put it back on
-         * the free list while another process was still running from it. And
-         * it decided ownership by asking whether the page was present and
-         * user-reachable, the same inference that freed the kernel's identity
-         * map from teardown; munmap had simply never been pointed at a
-         * low-window address by anything that mattered.
-         *
-         * That premature free was chased three times from the far end and
-         * presented as something different each time: a musl program tripping
-         * over its own malloc bins, init printing a pointer where a pid
-         * belonged, a forked child reading back something it had not
-         * written. */
-        if (vibeos_vmspace_unmap(&v, va) == 1) {
-            ks_log(VIBEOS_LOG_DEBUG, 45u, va, 0, "munmap released a page (a0 = address)");
-        }
-    }
-    /* A shootdown still does not belong here, and the gap it left is closed a
-     * different way.
-     *
-     * The need was real and this comment used to end by admitting it was
-     * unmet: a thread of this process on another core still holds the old
-     * translation for an address whose frame has just been handed back, so it
-     * can write into memory that now belongs to somebody else. An external
-     * review found the admission and was right to call it a defect rather than
-     * a note.
-     *
-     * A synchronous barrier is still the wrong answer, for the measured reason:
-     * it was tried, and two runs in twenty-four failed with `tlb_acks below
-     * shootdowns`. `syscall` clears IF, so a target cannot take the IPI until
-     * it returns to ring 3, and munmap runs far more often than fork.
-     *
-     * What changed is that asking is not the only option. The frame is parked
-     * instead - vb.release_deferred - and released once every other core has
-     * loaded CR3, which flushes its whole TLB. Nobody waits for anybody; the
-     * timer makes every core quiescent on its own. The same shape as the dead
-     * kernel stack a core parks until it is provably running on another.
-     *
-     * Drained here as well as on the timer so a machine doing nothing but
-     * unmapping still gives frames back. */
-    ks_tlb_drain();
-    return 0;
 }
 
 /* mmap(addr, len, prot, flags, fd, offset).
@@ -318,25 +197,25 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
             return -VIBEOS_ENOMEM;
         }
         if (flags & LINUX_MAP_FIXED_NOREPLACE) {
-            if (linux_region_in(ps, addr, bytes)) {
+            if (vibeos_umem_region_in(ps, addr, bytes)) {
                 return -VIBEOS_EEXIST;
             }
         } else {
-            if ((r = linux_unmap_range(me, ps, addr, addr + bytes)) != 0) {
+            if ((r = vibeos_umem_unmap(me, ps, addr, addr + bytes)) != 0) {
                 return r;
             }
         }
         base = addr;
     } else {
         base = addr & ~0xFFFull;
-        if (base == 0u || !ks_user_fixed_ok(base, bytes) || linux_region_in(ps, base, bytes)) {
-            base = linux_mmap_place(ps, pages);   /* a hint is a hint */
+        if (base == 0u || !ks_user_fixed_ok(base, bytes) || vibeos_umem_region_in(ps, base, bytes)) {
+            base = vibeos_umem_place(ps, pages * 4096ull, 4096ull);   /* a hint is a hint */
         }
         if (base == 0u) {
             return -VIBEOS_ENOMEM;
         }
     }
-    if (!linux_as_room(ps, bytes)) {
+    if (!vibeos_umem_as_room(ps, bytes)) {
         return -VIBEOS_ENOMEM;   /* RLIMIT_AS, as Linux answers it */
     }
     for (i = 0; f && shared && i < pages && r == 0; i++) {
@@ -511,7 +390,7 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
                                 (uint64_t)r + ((len + 0xFFFull) & ~0xFFFull), 1) != 0) {
         /* mlockall(MCL_FUTURE): a mapping that cannot be locked is not made.
          * Linux says EAGAIN (M-104). */
-        (void)linux_unmap_range(ks_current(), ps, (uint64_t)r,
+        (void)vibeos_umem_unmap(ks_current(), ps, (uint64_t)r,
                                 (uint64_t)r + ((len + 0xFFFull) & ~0xFFFull));
         r = -VIBEOS_EAGAIN;
     }
@@ -550,7 +429,7 @@ static long linux_sys_msync(uint64_t addr, uint64_t len, uint64_t flags) {
     }
     end = (addr + len + 0xFFFull) & ~0xFFFull;
     ks_mm_lock(ps);
-    if (!linux_regions_cover(ps, addr, end)) {
+    if (!vibeos_umem_covered(ps, addr, end)) {
         r = -VIBEOS_ENOMEM;
     } else if (flags & LINUX_MS_INVALIDATE) {
         /* "Throw the other mappings' copies away" cannot be done to a page
@@ -573,19 +452,6 @@ static long linux_sys_msync(uint64_t addr, uint64_t len, uint64_t flags) {
 /* ---- the rest of the memory calls (docs/abi/ L3 step 4) --------------------------- */
 
 /* Is every page of [addr, end) inside some region? Under the mm lock. */
-static int linux_regions_cover(vibeos_procstate_t *ps, uint64_t addr, uint64_t end) {
-    uint64_t va;
-
-    for (va = addr; va < end;) {
-        vibeos_vma_t *v = vibeos_vma_find(&ps->vmas, va);
-        if (!v) {
-            return 0;
-        }
-        va = v->base + v->len;
-    }
-    return 1;
-}
-
 /* The caller, as a process with memory; 0 if it is not one. */
 static vibeos_procstate_t *linux_mm_caller(int *me) {
     *me = ks_current();
@@ -647,7 +513,7 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
     }
     ks_mm_lock(ps);
     v = ks_vm(me);
-    if (!linux_regions_cover(ps, addr, end)) {
+    if (!vibeos_umem_covered(ps, addr, end)) {
         r = -VIBEOS_ENOMEM;
     }
     /* MADV_POPULATE_READ and _WRITE: every page there now, as an access would
@@ -750,7 +616,7 @@ static long linux_sys_mincore(uint64_t addr, uint64_t len, uint64_t vec_uptr) {
 
         ks_mm_lock(ps);
         v = ks_vm(me);
-        if (!linux_regions_cover(ps, va, end)) {
+        if (!vibeos_umem_covered(ps, va, end)) {
             r = -VIBEOS_ENOMEM;
         }
         for (; r == 0 && n < sizeof(out) && va < end; n++, va += 4096ull) {
@@ -770,7 +636,7 @@ static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint
     vibeos_vmspace_t v = ks_vm(me);
     uint64_t va;
 
-    if (!linux_regions_cover(ps, addr, end)) {
+    if (!vibeos_umem_covered(ps, addr, end)) {
         return -VIBEOS_ENOMEM;
     }
     /* RLIMIT_MEMLOCK, for everybody but the superuser - Linux's CAP_IPC_LOCK.
@@ -940,7 +806,7 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
     }
     kind = reg->backing;
     prot = reg->prot;
-    if (new_len > old_len && !linux_as_room(ps, new_len - old_len)) {
+    if (new_len > old_len && !vibeos_umem_as_room(ps, new_len - old_len)) {
         return -VIBEOS_ENOMEM;   /* RLIMIT_AS: what it grows by is more address space */
     }
     if (kind == VIBEOS_BACKING_SHARED) {
@@ -949,7 +815,7 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
     if (!(flags & LINUX_MREMAP_FIXED)) {
         if (new_len <= old_len) {
             if (new_len < old_len) {
-                long u = linux_unmap_range(me, ps, old + new_len, old + old_len);
+                long u = vibeos_umem_unmap(me, ps, old + new_len, old + old_len);
 
                 if (u != 0) {
                     return u;
@@ -962,7 +828,7 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
         }
         /* Room after it: grow where it stands. */
         if (ks_user_fixed_ok(old + old_len, new_len - old_len) &&
-            !linux_region_in(ps, old + old_len, new_len - old_len)) {
+            !vibeos_umem_region_in(ps, old + old_len, new_len - old_len)) {
             for (i = old_len; i < new_len; i += 4096ull) {
                 if (ks_map_anon(me, old + i, prot) != 0) {
                     break;
@@ -976,7 +842,7 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
                  * (M-104). */
                 if (ps->mlock_future &&
                     linux_lock_range(me, ps, old + old_len, old + new_len, 1) != 0) {
-                    (void)linux_unmap_range(me, ps, old + old_len, old + new_len);
+                    (void)vibeos_umem_unmap(me, ps, old + old_len, old + new_len);
                     return -VIBEOS_EAGAIN;
                 }
                 return (long)old;
@@ -990,7 +856,7 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
         if (!(flags & LINUX_MREMAP_MAYMOVE)) {
             return -VIBEOS_ENOMEM;
         }
-        base = linux_mmap_place(ps, new_len / 4096ull);
+        base = vibeos_umem_place(ps, new_len, 4096ull);
         if (base == 0u) {
             return -VIBEOS_ENOMEM;
         }
@@ -1006,7 +872,7 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
             return -VIBEOS_ENOMEM;
         }
         {
-            long u = linux_unmap_range(me, ps, new_addr, new_addr + new_len);
+            long u = vibeos_umem_unmap(me, ps, new_addr, new_addr + new_len);
 
             if (u != 0) {
                 return u;
@@ -1042,7 +908,7 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
         const uint64_t region_off = reg->backing_offset + (old - reg->base);
 
         if (vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, region_id, region_off) == 0) {
-            if (linux_unmap_range(me, ps, old, old + old_len) == 0) {
+            if (vibeos_umem_unmap(me, ps, old, old + old_len) == 0) {
                 /* The moved pages kept their marks; what the move grew by is
                  * locked under MCL_FUTURE. The old mapping is gone by now, so a
                  * lock that cannot be had leaves the growth unlocked rather
@@ -1177,17 +1043,10 @@ static long linux_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
             rc = -VIBEOS_EFAULT;
         }
 
-        /* Through L1, which does the compare-exchange, preserves everything a
-         * permission change does not alter (the frame, the ownership mark, the
-         * copy-on-write mark), keeps a copy-on-write page read-only until its
-         * fault makes the copy, updates a swapped entry's saved permissions,
-         * and shoots down the other cores when it narrows. */
+        /* The page tables carry the decision out (see vibeos_umem_protect_pages),
+         * with the list's own reading of the protection. */
         if (rc == 0) {
-            vibeos_prot_t p = linux_prot_of(prot);   /* the list's own reading */
-            for (va = addr; va < end; va += 4096ull) {
-                (void)vibeos_vmspace_protect(&v, va, p);
-                ks_tlb_flush_page(va);
-            }
+            vibeos_umem_protect_pages(me, addr, end, linux_prot_of(prot));
         }
         ks_mm_unlock(ks_ps(me));
         return rc;
@@ -1226,7 +1085,7 @@ static long linux_sys_munmap(uint64_t addr, uint64_t len) {
      * frames that belonged to somebody else. */
     ks_mm_lock(ks_ps(me));
     {
-        long r = linux_unmap_range(me, ks_ps(me), addr, end);
+        long r = vibeos_umem_unmap(me, ks_ps(me), addr, end);
 
         ks_mm_unlock(ks_ps(me));
         return r;
@@ -1338,7 +1197,7 @@ long linux_shm_unmap(uint64_t addr) {
         ks_mm_unlock(ps);
         return -VIBEOS_EINVAL;   /* no attachment starts there */
     }
-    r = linux_unmap_range(me, ps, addr, end);
+    r = vibeos_umem_unmap(me, ps, addr, end);
     ks_mm_unlock(ps);
     return r < 0 ? r : (long)tag;
 }

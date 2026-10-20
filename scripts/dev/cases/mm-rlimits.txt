@@ -14,7 +14,7 @@
 
 ### mmap does not ask RLIMIT_AS
 --- old
-    if (!linux_as_room(ps, bytes)) {
+    if (!vibeos_umem_as_room(ps, bytes)) {
         return -VIBEOS_ENOMEM;   /* RLIMIT_AS, as Linux answers it */
     }
 +++ new
