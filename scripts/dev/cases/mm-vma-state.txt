@@ -1,0 +1,50 @@
+# A region's state, its allocation and its spelled protection (docs/abi/windows.md
+# W3 step 1), proved by the "W3" block of tests/kernel/vma_tests.c.
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/mm/vma.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/mm/vma.c scripts/dev/cases/mm-vma-state.txt
+
+### two allocations side by side merge into one
+--- old
+    if (a->state != b->state || a->user_prot != b->user_prot ||
+        a->alloc_base != b->alloc_base || a->alloc_prot != b->alloc_prot) {
++++ new
+    if (a->state != b->state || a->user_prot != b->user_prot) {
+
+### a reservation and a commit beside it merge
+--- old
+    if (a->state != b->state || a->user_prot != b->user_prot ||
++++ new
+    if (a->user_prot != b->user_prot ||
+
+### a page spelled differently merges with its neighbours
+--- old
+    if (a->state != b->state || a->user_prot != b->user_prot ||
++++ new
+    if (a->state != b->state ||
+
+### a split forgets the state
+--- old
+    hi->state = v->state;            /* both halves are what the whole was */
++++ new
+    hi->state = VIBEOS_VMA_PRESENT;
+
+### a split forgets the spelled protection
+--- old
+    hi->user_prot = v->user_prot;
++++ new
+    hi->user_prot = 0u;
+
+### a split forgets the allocation
+--- old
+    hi->alloc_base = v->alloc_base;
++++ new
+    hi->alloc_base = 0u;
+
+### a change of the spelling alone is taken as no change
+--- old
+        if (cur->prot == want && (!set_prot || cur->user_prot == user_prot) &&
++++ new
+        if (cur->prot == want &&

@@ -262,9 +262,9 @@ int test_vma(void) {
 
         memset(&w, 0, sizeof(w));
         /* A reservation of four pages, the middle two committed. */
-        if (vibeos_vma_insert_alloc(&w, 0x100000ull, 4ull * PAGE, RW, VIBEOS_VMA_RESERVED,
+        if (vibeos_vma_insert_alloc(&w, 0x100000ull, 4ull * PAGE, RW, 0u, VIBEOS_VMA_RESERVED,
                                     0x100000ull, 0x04u) != 0 ||
-            vibeos_vma_set_state(&w, 0x101000ull, 2ull * PAGE, VIBEOS_VMA_DEMAND) != 0) {
+            vibeos_vma_change(&w, 0x101000ull, 2ull * PAGE, VIBEOS_VMA_CHANGE_STATE, RW, 0u, VIBEOS_VMA_DEMAND) != 0) {
             printf("FAIL:vma a reservation and a commit inside it\n");
             goto fail;
         }
@@ -281,26 +281,45 @@ int test_vma(void) {
             goto fail;
         }
         /* Decommitted again, the three are one reservation once more. */
-        if (vibeos_vma_set_state(&w, 0x101000ull, 2ull * PAGE, VIBEOS_VMA_RESERVED) != 0 ||
+        if (vibeos_vma_change(&w, 0x101000ull, 2ull * PAGE, VIBEOS_VMA_CHANGE_STATE, RW, 0u, VIBEOS_VMA_RESERVED) != 0 ||
             walk_count(&w) != 1u) {
             printf("FAIL:vma decommitting merges the reservation back into one region\n");
             goto fail;
         }
         /* A second allocation right after it is not merged into it, though
          * everything else about the two is alike. */
-        if (vibeos_vma_insert_alloc(&w, 0x104000ull, PAGE, RW, VIBEOS_VMA_RESERVED,
+        if (vibeos_vma_insert_alloc(&w, 0x104000ull, PAGE, RW, 0u, VIBEOS_VMA_RESERVED,
                                     0x104000ull, 0x04u) != 0 || walk_count(&w) != 2u) {
             printf("FAIL:vma two allocations side by side stay two regions\n");
             goto fail;
         }
-        if (vibeos_vma_set_state(&w, 0x105000ull, PAGE, VIBEOS_VMA_DEMAND) == 0) {
+        if (vibeos_vma_change(&w, 0x105000ull, PAGE, VIBEOS_VMA_CHANGE_STATE, RW, 0u, VIBEOS_VMA_DEMAND) == 0) {
             printf("FAIL:vma a state change outside every region is refused\n");
+            goto fail;
+        }
+        /* The protection as Windows spelled it: PAGE_READWRITE | PAGE_GUARD on
+         * one page of a committed range. The machine's protection is the same
+         * on both sides, so only the spelling can keep the guard page apart. */
+        if (vibeos_vma_change(&w, 0x100000ull, 4ull * PAGE,
+                              VIBEOS_VMA_CHANGE_STATE | VIBEOS_VMA_CHANGE_PROT, RW, 0x04u,
+                              VIBEOS_VMA_DEMAND) != 0 ||
+            vibeos_vma_change(&w, 0x102000ull, PAGE, VIBEOS_VMA_CHANGE_PROT, RW, 0x104u,
+                              VIBEOS_VMA_DEMAND) != 0) {
+            printf("FAIL:vma a change of the spelled protection alone\n");
+            goto fail;
+        }
+        if (vibeos_vma_find(&w, 0x102000ull)->user_prot != 0x104u ||
+            vibeos_vma_find(&w, 0x101000ull)->user_prot != 0x04u ||
+            vibeos_vma_find(&w, 0x103000ull)->user_prot != 0x04u || walk_count(&w) != 4u) {
+            printf("FAIL:vma a page spelled differently is a region of its own\n");
             goto fail;
         }
         memset(&child, 0, sizeof(child));
         if (vibeos_vma_clone(&child, &w) != 0 ||
             vibeos_vma_find(&child, 0x104000ull)->alloc_base != 0x104000ull ||
-            vibeos_vma_find(&child, 0x100000ull)->state != VIBEOS_VMA_RESERVED) {
+            vibeos_vma_find(&child, 0x100000ull)->state != VIBEOS_VMA_DEMAND ||
+            vibeos_vma_find(&child, 0x104000ull)->state != VIBEOS_VMA_RESERVED ||
+            vibeos_vma_find(&child, 0x102000ull)->user_prot != 0x104u) {
             printf("FAIL:vma fork's copy keeps states and allocations\n");
             goto fail;
         }

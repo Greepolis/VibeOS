@@ -45,8 +45,11 @@ typedef struct vibeos_vma {
     /* W3: the state above, and the allocation the region belongs to - its base
      * and the protection it was asked for, which NtQueryVirtualMemory reports
      * and which keeps two allocations from merging into one. 0 for a region no
-     * personality allocated that way. */
+     * personality allocated that way. `user_prot` is the protection as the
+     * personality spelled it - PAGE_EXECUTE, PAGE_GUARD, which `prot` cannot
+     * say - reported back as it was given; 0 when nobody spelled one. */
     uint32_t state;
+    uint32_t user_prot;
     uint32_t alloc_prot;
     uint64_t alloc_base;
     struct vibeos_vma *next;
@@ -99,17 +102,22 @@ int vibeos_vma_insert(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
                       uint32_t backing_id, uint64_t backing_offset);
 
 /* Add an anonymous region of an allocation: its state (DEMAND or RESERVED, or
- * PRESENT when the caller maps it), the allocation's base and the protection
- * it was asked for. As vibeos_vma_insert otherwise. */
+ * PRESENT when the caller maps it), its protection in both spellings, the
+ * allocation's base and the protection it was asked for. As vibeos_vma_insert
+ * otherwise. */
 int vibeos_vma_insert_alloc(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
-                            vibeos_prot_t prot, vibeos_vma_state_t state,
+                            vibeos_prot_t prot, uint32_t user_prot, vibeos_vma_state_t state,
                             uint64_t alloc_base, uint32_t alloc_prot);
 
-/* Change the state of [base, base+len) - commit (DEMAND), decommit (RESERVED) -
- * splitting as protect does. The same all-or-nothing rule: every page of the
- * range must be in a region, or nothing changes and the answer is negative. */
-int vibeos_vma_set_state(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
-                         vibeos_vma_state_t state);
+/* Change [base, base+len): its protection (`prot` and `user_prot` together) if
+ * `what` has VIBEOS_VMA_CHANGE_PROT, its state - commit (DEMAND), decommit
+ * (RESERVED) - if it has VIBEOS_VMA_CHANGE_STATE; splitting as protect does.
+ * The same all-or-nothing rule: every page of the range must be in a region,
+ * or nothing changes and the answer is negative. */
+#define VIBEOS_VMA_CHANGE_PROT  1u
+#define VIBEOS_VMA_CHANGE_STATE 2u
+int vibeos_vma_change(vibeos_vma_list_t *list, uint64_t base, uint64_t len, uint32_t what,
+                      vibeos_prot_t prot, uint32_t user_prot, vibeos_vma_state_t state);
 
 /* The region containing `va`, or null. */
 vibeos_vma_t *vibeos_vma_find(vibeos_vma_list_t *list, uint64_t va);

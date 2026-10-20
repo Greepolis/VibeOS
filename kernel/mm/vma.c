@@ -101,7 +101,8 @@ static int vma_same_kind(const vibeos_vma_t *a, uint64_t a_end, const vibeos_vma
      * committed range beside a reserved one is two answers to
      * NtQueryVirtualMemory, and two allocations side by side are released
      * one at a time (docs/abi/windows.md W3). */
-    if (a->state != b->state || a->alloc_base != b->alloc_base || a->alloc_prot != b->alloc_prot) {
+    if (a->state != b->state || a->user_prot != b->user_prot ||
+        a->alloc_base != b->alloc_base || a->alloc_prot != b->alloc_prot) {
         return 0;
     }
     if (b->backing == VIBEOS_BACKING_ANON) {
@@ -211,6 +212,7 @@ int vibeos_vma_insert_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t le
     t.backing_id = backing_id;
     t.backing_offset = backing_offset;
     t.state = VIBEOS_VMA_PRESENT;
+    t.user_prot = 0;
     t.alloc_prot = 0;
     t.alloc_base = 0;
     return vma_insert_tmpl(list, base, len, &t);
@@ -254,6 +256,7 @@ static vibeos_vma_t *vma_split(vibeos_vma_list_t *list, vibeos_vma_t *v,
      * here once rather than at each caller. */
     hi->backing_offset = v->backing_offset + (at - v->base);
     hi->state = v->state;            /* both halves are what the whole was */
+    hi->user_prot = v->user_prot;
     hi->alloc_prot = v->alloc_prot;
     hi->alloc_base = v->alloc_base;
     hi->next = v->next;
@@ -329,8 +332,10 @@ uint64_t vibeos_vma_remove_locked(vibeos_vma_list_t *list, uint64_t base, uint64
     return removed;
 }
 
-static int vma_change_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
-                             int set_prot, vibeos_prot_t prot, int set_state, uint32_t state) {
+static int vma_change_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t len, uint32_t what,
+                             vibeos_prot_t prot, uint32_t user_prot, uint32_t state) {
+    const int set_prot = (what & VIBEOS_VMA_CHANGE_PROT) != 0u;
+    const int set_state = (what & VIBEOS_VMA_CHANGE_STATE) != 0u;
     vibeos_vma_t *prev = 0, *cur;
     vibeos_prot_t want;
     uint64_t end, covered = 0;
@@ -372,7 +377,8 @@ static int vma_change_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t le
         /* The ceiling stays: what may never be writable is not made so by
          * changing what it is now (VIBEOS_PROT_NOWRITE). */
         want = set_prot ? (vibeos_prot_t)(prot | (cur->prot & VIBEOS_PROT_NOWRITE)) : cur->prot;
-        if (cur->prot == want && (!set_state || cur->state == state)) {
+        if (cur->prot == want && (!set_prot || cur->user_prot == user_prot) &&
+            (!set_state || cur->state == state)) {
             prev = cur;
             cur = cur->next;
             continue;
@@ -391,6 +397,9 @@ static int vma_change_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t le
             }
         }
         cur->prot = want;
+        if (set_prot) {
+            cur->user_prot = user_prot;
+        }
         if (set_state) {
             cur->state = state;
         }
@@ -405,7 +414,7 @@ static int vma_change_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t le
 
 int vibeos_vma_protect_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
                        vibeos_prot_t prot) {
-    return vma_change_locked(list, base, len, 1, prot, 0, 0);
+    return vma_change_locked(list, base, len, VIBEOS_VMA_CHANGE_PROT, prot, 0u, 0u);
 }
 
 int vibeos_vma_clone_locked(vibeos_vma_list_t *dst, const vibeos_vma_list_t *src) {
@@ -455,7 +464,7 @@ void vibeos_vma_clear_locked(vibeos_vma_list_t *list) {
 }
 
 int vibeos_vma_insert_alloc(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
-                            vibeos_prot_t prot, vibeos_vma_state_t state,
+                            vibeos_prot_t prot, uint32_t user_prot, vibeos_vma_state_t state,
                             uint64_t alloc_base, uint32_t alloc_prot) {
     vibeos_vma_t t;
     int r;
@@ -465,6 +474,7 @@ int vibeos_vma_insert_alloc(vibeos_vma_list_t *list, uint64_t base, uint64_t len
     t.backing_id = 0;
     t.backing_offset = 0;
     t.state = (uint32_t)state;
+    t.user_prot = user_prot;
     t.alloc_prot = alloc_prot;
     t.alloc_base = alloc_base;
     vma_lock();
@@ -473,11 +483,11 @@ int vibeos_vma_insert_alloc(vibeos_vma_list_t *list, uint64_t base, uint64_t len
     return r;
 }
 
-int vibeos_vma_set_state(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
-                         vibeos_vma_state_t state) {
+int vibeos_vma_change(vibeos_vma_list_t *list, uint64_t base, uint64_t len, uint32_t what,
+                      vibeos_prot_t prot, uint32_t user_prot, vibeos_vma_state_t state) {
     int r;
     vma_lock();
-    r = vma_change_locked(list, base, len, 0, (vibeos_prot_t)0, 1, (uint32_t)state);
+    r = vma_change_locked(list, base, len, what, prot, user_prot, (uint32_t)state);
     vma_unlock();
     return r;
 }
