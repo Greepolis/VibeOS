@@ -1,6 +1,6 @@
 /* The Rtl core's five hooks, answered on Windows' side of the machine
  * (docs/abi/windows.md W2): the TEB and PEB through %gs, and the kernel through
- * NtWriteFile and NtTerminateProcess. tests/win/ntrtl_host.c answers the same
+ * NtWriteFile, NtTerminateProcess and NtAllocateVirtualMemory. tests/win/ntrtl_host.c answers the same
  * hooks on the Linux host; nothing else in rtl/ knows which it is running on. */
 
 #include "rtl_internal.h"
@@ -42,4 +42,17 @@ void vibeos_rtl_dbg_write(const char *buf, size_t len) {
         return;                         /* no standard error to write to */
     }
     (void)NtWriteFile(h, 0, 0, 0, &iosb, buf, (uint32_t)len, 0, 0);
+}
+
+/* Committed memory, made by the page fault when it is first touched (W3): a
+ * segment the heap has not reached costs nothing. */
+void *vibeos_rtl_pages(size_t bytes) {
+    uint64_t base = 0, size = bytes;
+
+    if (NtAllocateVirtualMemory(VIBEOS_NT_CURRENT_PROCESS, &base, 0, &size,
+                                VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                                VIBEOS_NT_PAGE_READWRITE) != VIBEOS_STATUS_SUCCESS) {
+        return 0;
+    }
+    return (void *)(uintptr_t)base;
 }

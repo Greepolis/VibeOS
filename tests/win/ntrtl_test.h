@@ -34,13 +34,21 @@ extern int g_host_contention;
 extern char g_host_dbg[4096];
 extern size_t g_host_dbg_len;
 extern int g_host_dbg_writes;
+extern size_t g_host_pages_gap;
+extern int g_host_pages_below;
+extern size_t g_host_pages_budget;
+extern int g_host_pages_calls;
+extern uint8_t *g_host_pages_last;
 
-/* What the heap has free now, to assert that a test gave back everything it took. */
-static inline size_t heap_free_bytes(void) {
-    size_t f;
+/* What the heap has handed out now, to assert that a test gave back everything
+ * it took. Bytes in use, not bytes free: the heap may grow during the test, and
+ * then more is free afterwards than before with nothing leaked. */
+static inline size_t heap_used_bytes(void) {
+    size_t f, total;
 
     vibeos_rtl_heap_stats(&f, 0, 0);
-    return f;
+    (void)vibeos_rtl_heap_check(&total);
+    return total - f;
 }
 
 /* ASCII to UTF-16 into buf, which must be large enough. */

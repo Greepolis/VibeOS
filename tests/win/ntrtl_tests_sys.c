@@ -15,7 +15,7 @@
 /* ---- handle tables ------------------------------------------------------------------------ */
 
 static void t_handles(void) {
-    size_t before = heap_free_bytes();
+    size_t before = heap_used_bytes();
     vibeos_rtl_handle_table_t t;
     vibeos_rtl_handle_t *h[40], *got;
     uint32_t idx, i;
@@ -26,7 +26,7 @@ static void t_handles(void) {
     CHECK(t.MaxHandleCount == 40 && t.HandleSize == 24 && t.FreeHandles == 0 && t.CommittedHandles == 0 &&
               t.UnCommittedHandles == 0 && t.MaxReservedHandles == 0 && t.Reserved[0] == 0,
           "initialising fills in the counts and clears everything else");
-    CHECK(heap_free_bytes() == before, "an unused table owns no memory");
+    CHECK(heap_used_bytes() == before, "an unused table owns no memory");
     CHECK(RtlIsValidIndexHandle(&t, 0, &got) == 0, "nothing is valid in a table with no entries");
 
     for (i = 0; i < 40; i++) {
@@ -77,7 +77,7 @@ static void t_handles(void) {
     CHECK(((uint8_t *)got)[8] == 0 && ((uintptr_t)got->Next & 1) == 0, "and comes back clean and not allocated");
 
     CHECK(RtlDestroyHandleTable(&t) == 0, "destroy returns STATUS_SUCCESS");
-    CHECK(t.CommittedHandles == 0 && heap_free_bytes() == before, "and gives the reservation back");
+    CHECK(t.CommittedHandles == 0 && heap_used_bytes() == before, "and gives the reservation back");
 
     /* An entry that cannot hold the free-list link, and a table of none. */
     RtlInitializeHandleTable(8, 4, &t);
@@ -98,7 +98,7 @@ static void t_handles(void) {
     RtlInitializeHandleTable(0x10000000u, 0x1000, &t);
     CHECK(RtlAllocateHandle(&t, &idx) == 0, "a reservation larger than the arena fails cleanly");
     RtlDestroyHandleTable(&t);
-    CHECK(heap_free_bytes() == before, "nothing leaked");
+    CHECK(heap_used_bytes() == before, "nothing leaked");
 }
 
 /* ---- PE images ----------------------------------------------------------------------------- */
@@ -419,7 +419,7 @@ static vibeos_ntstatus_t getvar(vibeos_wchar_t *env, const char *name, vibeos_wc
 }
 
 static void t_environment(void) {
-    size_t before = heap_free_bytes();
+    size_t before = heap_used_bytes();
     vibeos_wchar_t *env = 0, *old, out[32];
     vibeos_ntstatus_t st;
     uint16_t len;
@@ -532,13 +532,13 @@ static void t_environment(void) {
     }
     g_host_params_present = 1;
     memset(g_host_params, 0, sizeof(g_host_params));
-    CHECK(heap_free_bytes() == before, "no environment block leaked");
+    CHECK(heap_used_bytes() == before, "no environment block leaked");
 }
 
 /* ---- critical sections ------------------------------------------------------------------------ */
 
 static void t_critsec(void) {
-    size_t before = heap_free_bytes();
+    size_t before = heap_used_bytes();
     vibeos_rtl_critical_section_t cs;
     void *me = (void *)(uintptr_t)0x1234, *other = (void *)(uintptr_t)0x5678;
     vibeos_ntstatus_t st;
@@ -588,7 +588,7 @@ static void t_critsec(void) {
     CHECK(RtlLeaveCriticalSection(&cs) == 0 && cs.LockCount == -1, "and left");
 
     CHECK(RtlDeleteCriticalSection(&cs) == 0, "delete returns STATUS_SUCCESS");
-    CHECK(cs.DebugInfo == 0 && heap_free_bytes() == before, "and releases the debug record");
+    CHECK(cs.DebugInfo == 0 && heap_used_bytes() == before, "and releases the debug record");
     g_host_thread = (void *)(uintptr_t)0x1234;
 }
 
@@ -683,7 +683,7 @@ static void t_paths(void) {
         {"C:\\Dir", "x", "\\??\\C:\\Dir\\x", "x"},
     };
     unsigned i;
-    size_t before = heap_free_bytes();
+    size_t before = heap_used_bytes();
 
     g_host_params_present = 1;
     memset(g_host_params, 0, sizeof(g_host_params));
@@ -734,7 +734,7 @@ static void t_paths(void) {
               "\"%s\": the relative name is zeroed", c->dos);
         RtlFreeUnicodeString(&nt);
     }
-    CHECK(heap_free_bytes() == before, "RtlFreeUnicodeString gives every result buffer back");
+    CHECK(heap_used_bytes() == before, "RtlFreeUnicodeString gives every result buffer back");
 
     {
         vibeos_wchar_t in[40];
@@ -768,7 +768,7 @@ static void t_paths(void) {
     }
     g_host_params_present = 1;
     memset(g_host_params, 0, sizeof(g_host_params));
-    CHECK(heap_free_bytes() == before, "nothing leaked");
+    CHECK(heap_used_bytes() == before, "nothing leaked");
 }
 
 /* ---- DbgPrint --------------------------------------------------------------------------------- */

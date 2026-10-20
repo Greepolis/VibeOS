@@ -25,9 +25,50 @@
 
 ### a large free block is handed out whole instead of split
 --- old
-        if (cur->h.size - need >= MIN_BLK) {
+            if (cur->h.size - need >= MIN_BLK) {
 +++ new
-        if (0) {
+            if (0) {
+
+### the heap does not grow when nothing fits (W3 step 3)
+--- old
+        if (grown || !grow(need)) {
++++ new
+        if (grown || !(0 && grow(need))) {
+
+### a segment is the minimum size whatever was asked for
+--- old
+    size_t bytes = need < VIBEOS_RTL_SEGMENT ? VIBEOS_RTL_SEGMENT
+                                             : (need + 0xFFFFu) & ~(size_t)0xFFFFu;
++++ new
+    size_t bytes = VIBEOS_RTL_SEGMENT;
+
+### a new segment goes on the list without merging
+--- old
+    insert_free((freeblk_t *)mem);
+    return 1;
++++ new
+    ((freeblk_t *)mem)->h.magic = M_FREE;
+    ((freeblk_t *)mem)->next = g_free;
+    g_free = (freeblk_t *)mem;
+    return 1;
+
+### the segments are not kept in address order
+--- old
+    for (i = g_nseg; i > 0 && g_seg[i - 1].base > mem; i--) {
++++ new
+    for (i = g_nseg; 0; i--) {
+
+### any address with a header is taken as the heap's
+--- old
+    if (!b || (((uintptr_t)b) & 15u) != 0 || !ours(b - HDR)) {
++++ new
+    if (!b || (((uintptr_t)b) & 15u) != 0 || (0 && !ours(b - HDR))) {
+
+### a request of any size is rounded
+--- old
+    if (size > VIBEOS_RTL_ALLOC_MAX) {
++++ new
+    if (0) {
 
 # ==== string.c ====
 

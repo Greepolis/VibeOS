@@ -41,3 +41,51 @@ void vibeos_rtl_dbg_write(const char *buf, size_t len) {
     g_host_dbg_len += len;
     g_host_dbg[g_host_dbg_len] = 0;
 }
+
+/* The heap's memory: a pool handed out upwards from its middle, with what a
+ * test can change about it - a gap left before each segment, so that two
+ * segments are not adjacent and an address between them is nobody's; `below`,
+ * so that the next segment comes from under every other one, as nothing
+ * promises it will not; and a budget, so that the machine can run out. */
+#define HOST_POOL (64u << 20)
+static uint8_t g_host_pool[HOST_POOL] __attribute__((aligned(16)));
+static size_t g_host_pool_hi = HOST_POOL / 2u, g_host_pool_lo = HOST_POOL / 2u;
+size_t g_host_pages_gap;
+int g_host_pages_below;
+size_t g_host_pages_budget = (size_t)-1;
+int g_host_pages_calls;
+uint8_t *g_host_pages_last;
+
+void *vibeos_rtl_pages(size_t bytes) {
+    size_t at;
+
+    g_host_pages_calls++;
+    if (bytes > g_host_pages_budget) {
+        return 0;
+    }
+    if (g_host_pages_below) {
+        if (bytes + g_host_pages_gap > g_host_pool_lo) {
+            return 0;
+        }
+        at = g_host_pool_lo - bytes;
+        g_host_pool_lo = at - g_host_pages_gap;
+    } else {
+        at = g_host_pool_hi + g_host_pages_gap;
+        if (at > HOST_POOL || bytes > HOST_POOL - at) {
+            return 0;
+        }
+        g_host_pool_hi = at + bytes;
+        /* What was there before is the heap's to overwrite, as on Windows. A
+         * gap is filled with something that looks like an allocated block's
+         * header, so that only knowing which memory is a segment tells it
+         * apart. */
+        memset(g_host_pool + at - g_host_pages_gap, 0, g_host_pages_gap);
+        if (g_host_pages_gap >= 32u) {
+            uint64_t fake[2] = { 64u, 0x41425255524C4F00ull };
+            memcpy(g_host_pool + at - 32u, fake, sizeof(fake));
+        }
+    }
+    g_host_pages_budget -= g_host_pages_budget == (size_t)-1 ? 0 : bytes;
+    g_host_pages_last = g_host_pool + at;
+    return g_host_pages_last;
+}

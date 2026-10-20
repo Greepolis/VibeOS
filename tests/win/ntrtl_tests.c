@@ -16,19 +16,26 @@ int g_checks;
 /* ---- the allocator --------------------------------------------------------------------- */
 
 static void t_heap(void) {
-    size_t full, largest, blocks;
+    size_t total0, total, used0, largest, blocks;
     void *a, *b, *c, *big, *held[64];
-    int i;
+    int i, calls;
     char local;
 
-    vibeos_rtl_heap_stats(&full, &largest, &blocks);
-    CHECK(full == VIBEOS_RTL_ARENA_SIZE && blocks == 1, "a fresh arena is one block, all of it (%zu, %zu)",
-          full, blocks);
+    /* Nothing has been asked for yet, so nothing has been taken: the heap is
+     * memory obtained when needed, not an arena paid for at load. */
+    CHECK(vibeos_rtl_heap_check(&total0) == 0 && total0 == 0 && g_host_pages_calls == 0,
+          "a heap nobody has used holds no memory (%zu bytes, %d segments asked for)", total0,
+          g_host_pages_calls);
+    used0 = heap_used_bytes();
 
     a = vibeos_rtl_alloc(1);
     b = vibeos_rtl_alloc(100);
     c = vibeos_rtl_alloc(0);
     CHECK(a && b && c, "small allocations succeed, a zero-byte one included");
+    CHECK(g_host_pages_calls == 1 && vibeos_rtl_heap_check(&total) == 0 &&
+              total == VIBEOS_RTL_SEGMENT,
+          "the first allocation takes one segment of the minimum size (%d, %zu)",
+          g_host_pages_calls, total);
     CHECK(((uintptr_t)a & 15u) == 0 && ((uintptr_t)b & 15u) == 0 && ((uintptr_t)c & 15u) == 0,
           "blocks are 16-byte aligned");
     CHECK(a != b && b != c && a != c, "blocks are distinct");
@@ -40,12 +47,12 @@ static void t_heap(void) {
     /* Freeing the middle one last must merge all three back with the tail. */
     vibeos_rtl_free(a);
     vibeos_rtl_free(c);
-    vibeos_rtl_heap_stats(&full, 0, &blocks);
+    vibeos_rtl_heap_stats(0, 0, &blocks);
     CHECK(blocks == 2, "two free blocks while b is held (%zu)", blocks);
     vibeos_rtl_free(b);
-    vibeos_rtl_heap_stats(&full, &largest, &blocks);
-    CHECK(blocks == 1 && full == VIBEOS_RTL_ARENA_SIZE && largest == VIBEOS_RTL_ARENA_SIZE,
-          "everything free again is one block (%zu blocks, %zu bytes)", blocks, full);
+    vibeos_rtl_heap_stats(0, &largest, &blocks);
+    CHECK(blocks == 1 && largest == VIBEOS_RTL_SEGMENT && heap_used_bytes() == used0,
+          "everything free again is one block, the whole segment (%zu blocks)", blocks);
 
     /* A pointer that is not ours, a double free and an interior pointer change nothing. */
     a = vibeos_rtl_alloc(64);
@@ -54,18 +61,59 @@ static void t_heap(void) {
     vibeos_rtl_free(0);
     vibeos_rtl_free(a);
     vibeos_rtl_free(a);
-    vibeos_rtl_heap_stats(&full, 0, &blocks);
-    CHECK(full == VIBEOS_RTL_ARENA_SIZE && blocks == 1, "foreign, interior and double frees are ignored (%zu)",
-          full);
+    CHECK(heap_used_bytes() == used0 && vibeos_rtl_heap_check(0) == 0,
+          "foreign, interior and double frees are ignored");
 
-    /* The whole arena in one request cannot be met (headers), a smaller one can,
-     * and what is freed is allocatable again. */
-    CHECK(vibeos_rtl_alloc(VIBEOS_RTL_ARENA_SIZE) == 0, "a request for the whole arena fails");
-    CHECK(vibeos_rtl_alloc((size_t)-1) == 0, "an absurd request fails without wrapping");
-    big = vibeos_rtl_alloc(VIBEOS_RTL_ARENA_SIZE - 64);
-    CHECK(big != 0, "nearly the whole arena can be had");
-    CHECK(vibeos_rtl_alloc(4096) == 0, "and then nothing else can");
+    /* More than a segment: the heap grows by what was asked, in 64 KiB pieces,
+     * and a contiguous next segment joins the run before it. */
+    calls = g_host_pages_calls;
+    big = vibeos_rtl_alloc((size_t)3 << 20);
+    CHECK(big && g_host_pages_calls == calls + 1 && vibeos_rtl_heap_check(&total) == 0 &&
+              total == VIBEOS_RTL_SEGMENT + ((((size_t)3 << 20) + 16u + 0xFFFFu) & ~(size_t)0xFFFFu),
+          "a request past what the heap holds is given a segment its size (%zu)", total);
+    memset(big, 0x77, (size_t)3 << 20);
     vibeos_rtl_free(big);
+    vibeos_rtl_heap_stats(0, &largest, &blocks);
+    CHECK(blocks == 1 && largest == total, "two adjacent segments free are one block");
+
+    /* A segment that is not adjacent: the address between them is nobody's,
+     * though the bytes there look like an allocated block (ntrtl_host.c). */
+    g_host_pages_gap = 0x10000u;
+    c = vibeos_rtl_alloc(largest + 4096u);
+    g_host_pages_gap = 0;
+    CHECK(c && (uint8_t *)c - 16 == g_host_pages_last, "a new segment past a gap");
+    CHECK(vibeos_rtl_size(g_host_pages_last - 16) == (size_t)-1 &&
+              !RtlFreeHeap(vibeos_rtl_process_heap(), 0, g_host_pages_last - 16),
+          "an address between two segments is not the heap's, whatever is written there");
+    vibeos_rtl_free(c);
+    vibeos_rtl_heap_stats(0, 0, &blocks);
+    CHECK(blocks == 2 && vibeos_rtl_heap_check(&total) == 0 && heap_used_bytes() == used0,
+          "two runs apart stay two free blocks, and all is given back");
+
+    /* A segment below every other, right under the first: it joins the run
+     * above it, and the walk of the heap still finds every block. */
+    g_host_pages_below = 1;
+    vibeos_rtl_heap_stats(0, &largest, 0);
+    c = vibeos_rtl_alloc(largest + 4096u);
+    g_host_pages_below = 0;
+    vibeos_rtl_heap_check(&total);
+    CHECK(c && g_host_pages_last == (uint8_t *)c - 16 && vibeos_rtl_heap_check(0) == 0,
+          "a segment below the others is walked in its place (check %d)", vibeos_rtl_heap_check(0));
+    vibeos_rtl_free(c);
+    vibeos_rtl_heap_stats(0, 0, &blocks);
+    CHECK(blocks == 2 && heap_used_bytes() == used0 && vibeos_rtl_heap_check(0) == 0,
+          "and freed, it is one block with the run it touches");
+
+    /* Out of memory: what the heap holds can still be had; more cannot. */
+    g_host_pages_budget = 0;
+    CHECK(vibeos_rtl_alloc(total) == 0, "with nothing more to be had, a request past the heap fails");
+    a = vibeos_rtl_alloc(100);
+    CHECK(a != 0, "and what it holds is still handed out");
+    vibeos_rtl_free(a);
+    g_host_pages_budget = (size_t)-1;
+    CHECK(vibeos_rtl_alloc((size_t)-1) == 0 && vibeos_rtl_alloc(VIBEOS_RTL_ALLOC_MAX + 1u) == 0,
+          "an absurd request fails without wrapping");
+
     for (i = 0; i < 64; i++) {
         held[i] = vibeos_rtl_alloc(1000 + (size_t)i);
         memset(held[i], i, 1000 + (size_t)i);
@@ -82,8 +130,157 @@ static void t_heap(void) {
     for (i = 1; i < 64; i += 2) {
         vibeos_rtl_free(held[i]);
     }
-    vibeos_rtl_heap_stats(&full, 0, &blocks);
-    CHECK(full == VIBEOS_RTL_ARENA_SIZE && blocks == 1, "freed in an interleaved order, it coalesces fully");
+    vibeos_rtl_heap_stats(0, 0, &blocks);
+    CHECK(heap_used_bytes() == used0 && blocks == 2 && vibeos_rtl_heap_check(0) == 0,
+          "freed in an interleaved order, it coalesces fully");
+}
+
+/* ---- the heap, at length ----------------------------------------------------------------
+ * Thousands of allocations, reallocations and frees of random sizes in a random
+ * order, some large enough to make the heap grow and some with a gap before the
+ * new segment, checked against a model kept here - which blocks are live, their
+ * sizes and their contents - and against the heap's own walk of every block.
+ * Lifted from msvcrt's tests of its own arena when msvcrt's malloc moved onto
+ * this heap (W3 step 3). */
+
+static uint64_t soak_next(uint64_t *r) {
+    *r ^= *r << 13;
+    *r ^= *r >> 7;
+    *r ^= *r << 17;
+    return *r;
+}
+
+static size_t soak_size(uint64_t *r) {
+    switch (soak_next(r) % 200u) {
+    case 0: return 0;
+    case 1: return ((size_t)2 << 20) + (size_t)(soak_next(r) % (3u << 20));   /* grows the heap */
+    case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9:
+        return 1000u + (size_t)(soak_next(r) % 30000u);
+    default: return 1u + (size_t)(soak_next(r) % 3000u);
+    }
+}
+
+typedef struct {
+    uint8_t *p;
+    size_t n;
+    uint8_t tag;
+} soak_slot;
+
+static void soak_fill(soak_slot *s) {
+    size_t i;
+    for (i = 0; i < s->n; i++) {
+        s->p[i] = (uint8_t)(s->tag + i * 7u);
+    }
+}
+
+static int soak_intact(const soak_slot *s, size_t n) {
+    size_t i;
+    for (i = 0; i < n; i++) {
+        if (s->p[i] != (uint8_t)(s->tag + i * 7u)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int soak_audit(const soak_slot *slots, int n) {
+    int i, k;
+
+    if (vibeos_rtl_heap_check(0) != 0) {
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        if (!slots[i].p) {
+            continue;
+        }
+        if (((uintptr_t)slots[i].p & 15u) != 0 || vibeos_rtl_size(slots[i].p) != slots[i].n ||
+            !soak_intact(&slots[i], slots[i].n)) {
+            return 0;
+        }
+        for (k = i + 1; k < n; k++) {
+            if (slots[k].p && slots[i].p < slots[k].p + (slots[k].n ? slots[k].n : 1) &&
+                slots[k].p < slots[i].p + (slots[i].n ? slots[i].n : 1)) {
+                return 0;   /* two live blocks overlap */
+            }
+        }
+    }
+    return 1;
+}
+
+static void t_heap_soak(uint64_t seed, int ops) {
+    static soak_slot slots[200];
+    void *h = vibeos_rtl_process_heap();
+    uint64_t r = seed;
+    size_t used0 = heap_used_bytes();
+    int i, allocs = 0, reallocs = 0, large = 0, grew0 = g_host_pages_calls, audits_ok = 1;
+
+    memset(slots, 0, sizeof(slots));
+    for (i = 0; i < ops; i++) {
+        soak_slot *s = &slots[soak_next(&r) % 200u];
+        unsigned what = (unsigned)(soak_next(&r) % 10u);
+
+        g_host_pages_gap = (soak_next(&r) % 4u) == 0 ? 0x10000u : 0;
+        if (!s->p && what < 8) {
+            size_t n = soak_size(&r);
+            uint8_t *p = RtlAllocateHeap(h, what == 7 ? 0x8u : 0u, n);
+
+            if (p) {
+                size_t k;
+                for (k = 0; what == 7 && k < n; k++) {
+                    if (p[k]) {
+                        CHECK(0, "seed 0x%llx op %d: HEAP_ZERO_MEMORY left a byte", (unsigned long long)seed, i);
+                        break;
+                    }
+                }
+                allocs++;
+                large += n >= ((size_t)2 << 20);
+                s->p = p;
+                s->n = n;
+                s->tag = (uint8_t)soak_next(&r);
+                soak_fill(s);
+            }
+        } else if (s->p && what < 6) {
+            size_t n = soak_size(&r), keep = n < s->n ? n : s->n;
+            uint8_t *p = RtlReAllocateHeap(h, 0, s->p, n);
+
+            reallocs++;
+            if (p) {
+                s->p = p;
+                CHECK(soak_intact(s, keep), "seed 0x%llx op %d: a reallocation lost the contents",
+                      (unsigned long long)seed, i);
+                s->n = n;
+                s->tag = (uint8_t)soak_next(&r);
+                soak_fill(s);
+            } else {
+                CHECK(soak_intact(s, s->n), "seed 0x%llx op %d: a failed reallocation damaged the block",
+                      (unsigned long long)seed, i);
+            }
+        } else if (s->p) {
+            CHECK(RtlFreeHeap(h, 0, s->p), "seed 0x%llx op %d: a live block was refused", (unsigned long long)seed, i);
+            s->p = 0;
+        }
+        if (i % 97 == 0 && audits_ok && !soak_audit(slots, 200)) {
+            CHECK(0, "seed 0x%llx op %d: the heap disagrees with the model (check %d)",
+                  (unsigned long long)seed, i, vibeos_rtl_heap_check(0));
+            audits_ok = 0;
+        }
+    }
+    g_host_pages_gap = 0;
+    CHECK(soak_audit(slots, 200), "seed 0x%llx: the heap disagrees with the model at the end",
+          (unsigned long long)seed);
+    for (i = 0; i < 200; i++) {
+        if (slots[i].p) {
+            RtlFreeHeap(h, 0, slots[i].p);
+        }
+    }
+    CHECK(heap_used_bytes() == used0 && vibeos_rtl_heap_check(0) == 0,
+          "seed 0x%llx: everything given back (%zu bytes still used)", (unsigned long long)seed,
+          heap_used_bytes() - used0);
+    /* Large blocks were had, whether the heap grew for them now or an earlier
+     * run had already made the room - t_heap is what asserts that it grows. */
+    CHECK(allocs > ops / 10 && reallocs > ops / 20 && large > 0,
+          "seed 0x%llx: the soak exercised the heap - %d allocations (%d large), %d reallocations, "
+          "%d new segments", (unsigned long long)seed, allocs, large, reallocs, g_host_pages_calls - grew0);
 }
 
 /* HeapAlloc's family: Microsoft documents that HeapSize answers the size that
@@ -91,7 +288,7 @@ static void t_heap(void) {
  * contents up to the smaller size. */
 static void t_heap_api(void) {
     void *h = vibeos_rtl_process_heap();
-    size_t full, blocks;
+    size_t used0 = heap_used_bytes();
     uint8_t *a, *b, *z;
     int i, zero = 1;
 
@@ -135,8 +332,7 @@ static void t_heap_api(void) {
           "an interior pointer is refused and not freed");
     CHECK(RtlFreeHeap(h, 0, b) && !RtlFreeHeap(h, 0, b), "a double free is refused");
     CHECK(RtlFreeHeap(h, 0, 0), "freeing null succeeds");
-    vibeos_rtl_heap_stats(&full, 0, &blocks);
-    CHECK(full == VIBEOS_RTL_ARENA_SIZE && blocks == 1, "everything came back");
+    CHECK(heap_used_bytes() == used0 && vibeos_rtl_heap_check(0) == 0, "everything came back");
 }
 
 /* The pairs Wine's ntdll/tests/error.c checks on Windows. */
@@ -199,7 +395,7 @@ static void t_init(void) {
 }
 
 static void t_create_free(void) {
-    size_t before = heap_free_bytes();
+    size_t before = heap_used_bytes();
     vibeos_ustring_t u;
     vibeos_wchar_t w[16];
 
@@ -210,7 +406,7 @@ static void t_create_free(void) {
           "a terminated copy in a buffer of its own");
     RtlFreeUnicodeString(&u);
     CHECK(u.Length == 0 && u.MaximumLength == 0 && u.Buffer == 0, "free zeroes the string");
-    CHECK(heap_free_bytes() == before, "and gives the buffer back");
+    CHECK(heap_used_bytes() == before, "and gives the buffer back");
     RtlFreeUnicodeString(&u);                  /* freeing the freed is harmless */
 
     CHECK(RtlCreateUnicodeString(&u, wide(w, "")) == 1 && u.Length == 0 && u.MaximumLength == 2 && u.Buffer[0] == 0,
@@ -224,11 +420,11 @@ static void t_create_free(void) {
         for (size_t i = 0; i < 39999; i++) huge[i] = 'z';
         CHECK(RtlCreateUnicodeString(&u, huge) == 0, "a source that cannot be a UNICODE_STRING is refused");
     }
-    CHECK(heap_free_bytes() == before, "no refusal leaked");
+    CHECK(heap_used_bytes() == before, "no refusal leaked");
 }
 
 static void t_duplicate(void) {
-    size_t before = heap_free_bytes();
+    size_t before = heap_used_bytes();
     vibeos_ustring_t src, dst;
     vibeos_wchar_t w[16];
     vibeos_ntstatus_t st;
@@ -276,7 +472,7 @@ static void t_duplicate(void) {
         CHECK(st == (vibeos_ntstatus_t)VIBEOS_STATUS_NAME_TOO_LONG,
               "a terminator that would overflow MaximumLength is STATUS_NAME_TOO_LONG (%08x)", (unsigned)st);
     }
-    CHECK(heap_free_bytes() == before, "nothing leaked");
+    CHECK(heap_used_bytes() == before, "nothing leaked");
 }
 
 static void t_compare(void) {
@@ -552,6 +748,8 @@ int main(void) {
     setvbuf(stdout, 0, _IONBF, 0);
     t_heap();
     t_heap_api();
+    t_heap_soak(0x5EED0001ull, 20000);
+    t_heap_soak(0x9E3779B97F4A7C15ull, 20000);
     t_dos_error();
     t_init();
     t_create_free();

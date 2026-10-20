@@ -18,26 +18,35 @@
 #include "vibeos_ntdll.h"
 
 /* ---- the allocator (heap.c) ------------------------------------------------------
- * Behind these two functions so that RtlAllocateHeap can replace it when W3 gives
- * the process a heap. A pointer that is not ours is ignored by free: the process
- * parameters and an environment block the kernel built are not in the arena, and
- * a program that frees one must leak it, not corrupt the free list. */
+ * The process heap, which RtlAllocateHeap and the rest of Rtl share. A pointer
+ * that is not ours is ignored by free: the process parameters and an
+ * environment block the kernel built are not in the heap, and a program that
+ * frees one must leak it, not corrupt the free list. */
 void *vibeos_rtl_alloc(size_t size);
 void vibeos_rtl_free(void *p);
 /* Bytes free, the largest free block and the number of free blocks - for the
  * tests, which assert that everything allocated can be given back. */
 void vibeos_rtl_heap_stats(size_t *free_bytes, size_t *largest, size_t *blocks);
 /* The size a block was asked for, or (size_t)-1 if the pointer is not one of
- * ours; and the arena's address, which is the process heap's handle. */
+ * ours; and the process heap's handle. */
 size_t vibeos_rtl_size(const void *p);
 void *vibeos_rtl_process_heap(void);
-/* 512 KiB, not the 4 MiB it was written with: the arena is ntdll's .bss, and
- * the kernel fills every page of an image when it maps it, so every NT process
- * paid a thousand frames for it before running a line. W3's
- * NtAllocateVirtualMemory is where a real heap grows instead (merge review, W2). */
-#define VIBEOS_RTL_ARENA_SIZE (512u * 1024u)
+/* Walk every block the heap holds: 0 if its invariants hold, else which broke.
+ * `total` is the bytes the segments hold, free and allocated. For the tests. */
+int vibeos_rtl_heap_check(size_t *total);
+/* The heap grows a segment at a time, each at least this - a megabyte that
+ * costs only the pages that are touched - and at most this many of them. */
+#define VIBEOS_RTL_SEGMENT      (1u << 20)
+#define VIBEOS_RTL_SEGMENTS_MAX 256u
+/* The largest request: past it the rounding could wrap, and no segment would
+ * be had for it anyway. */
+#define VIBEOS_RTL_ALLOC_MAX    ((size_t)1 << 40)
 
 /* ---- the hooks ------------------------------------------------------------------ */
+
+/* `bytes` of fresh read-write memory, 16-byte aligned at least, for the heap -
+ * NtAllocateVirtualMemory on Windows' side; null if there is none. */
+void *vibeos_rtl_pages(size_t bytes);
 
 /* PEB->ProcessParameters, as a byte block read through VIBEOS_RUPP_*; NULL when
  * the process has none. */
