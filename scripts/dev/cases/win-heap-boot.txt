@@ -1,0 +1,20 @@
+# The process heap grows, at boot (docs/abi/windows.md W3 step 3): hello.exe
+# mallocs three megabytes - more than the first segment - and frees with
+# HeapFree a block malloc gave it, then prints NT_HEAP_OK.
+#
+#  1. the heap never asks for another segment. The first segment cannot hold
+#     the three megabytes. Expect nt_heap_did_not_grow=heap_grow.
+#
+#     NOT RED on its first run: hello.exe asked for the three megabytes first,
+#     and the first segment is sized to the first request, so nothing needed
+#     a second one. A small block is asked for first now; red, with the reason
+#     above, on 2026-10-20.
+#
+# Target source: user/win/ntdll/rtl/heap.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py user/win/ntdll/rtl/heap.c scripts/dev/cases/win-heap-boot.txt
+
+### the heap does not grow past its first segment
+--- old
+        if (grown || !grow(need)) {
++++ new
+        if (grown || (g_nseg != 0 && (0 && grow(need))) || (g_nseg == 0 && !grow(need))) {

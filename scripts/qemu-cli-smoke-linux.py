@@ -3626,6 +3626,14 @@ def main():
                 # ntdll's loader and called.
                 if "NT_DLL_OK: msvcrt printf 42 loaded" not in text:
                     problems.append("nt_dll_not_loaded")
+                # The process heap grows on NtAllocateVirtualMemory (W3 step
+                # 3), and malloc is on it. Printed after NT_HELLO_OK, so it
+                # needs its own assertion: a failure here would leave that
+                # line standing.
+                elif "NT_HEAP_OK" not in text:
+                    failed = re.search(r"NT_HELLO_FAIL (heap_\w+)", text)
+                    problems.append("nt_heap_did_not_grow" +
+                                    ("=" + failed.group(1) if failed else ""))
             stubcall = os.path.join(efi_root, "win", "stubcall.exe")
             if os.path.exists(stubcall):
                 # A function no DLL exports is bound to a stub that names it

@@ -52,6 +52,8 @@ static int fail(const char *line) {
 
 /* From our msvcrt.dll, which ntdll's loader brings in from /win (W2). */
 __declspec(dllimport) int printf(const char *format, ...);
+__declspec(dllimport) void *malloc(size_t n);
+__declspec(dllimport) void free(void *p);
 
 static int g_target;
 /* Written by the linker as an absolute address; right only once relocated.
@@ -210,5 +212,27 @@ int nt_hello_start(void) {
     /* A second DLL, loaded from the disk, linked and initialised: its printf
      * formats and writes through the same NtWriteFile. */
     printf("NT_DLL_OK: msvcrt printf %d %s\n", 42, "loaded");
+    /* The process heap grows (W3 step 3): three megabytes from malloc, past
+     * anything the old arenas held, and malloc's memory is the process
+     * heap's - HeapFree takes it. The small block comes first: the heap's
+     * first segment is sized to its first request, so three megabytes asked
+     * for first would never need a second one - the sabotage of growth went
+     * NOT RED that way. */
+    {
+        void *small = malloc(100);
+        volatile uint8_t *big = malloc((size_t)3 << 20);
+        void *ph = (void *)(uintptr_t)vibeos_nt_rd64(peb + VIBEOS_PEB_PROCESS_HEAP);
+
+        if (!big || !small) {
+            return fail("NT_HELLO_FAIL heap_grow\n");
+        }
+        big[0] = 1;
+        big[((size_t)3 << 20) - 1u] = 2;
+        if (big[0] != 1 || big[((size_t)3 << 20) - 1u] != 2 || !RtlFreeHeap(ph, 0, small)) {
+            return fail("NT_HELLO_FAIL heap_shared\n");
+        }
+        free((void *)big);
+        printf("NT_HEAP_OK: the process heap grew to hold %d MiB, and malloc is HeapAlloc\n", 3);
+    }
     return 0;
 }
