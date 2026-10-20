@@ -26,6 +26,6 @@
 
 ### the region list drops it on a change of protection
 --- old
-        want = (vibeos_prot_t)(prot | (cur->prot & VIBEOS_PROT_NOWRITE));
+        want = set_prot ? (vibeos_prot_t)(prot | (cur->prot & VIBEOS_PROT_NOWRITE)) : cur->prot;
 +++ new
-        want = prot;
+        want = set_prot ? prot : cur->prot;

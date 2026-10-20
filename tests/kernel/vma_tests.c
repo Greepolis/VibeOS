@@ -255,6 +255,59 @@ int test_vma(void) {
         vibeos_vma_clear(&f);
     }
 
+    /* ---- W3: a region's state and its allocation ------------------------ */
+    {
+        vibeos_vma_list_t w;
+        vibeos_vma_t *v;
+
+        memset(&w, 0, sizeof(w));
+        /* A reservation of four pages, the middle two committed. */
+        if (vibeos_vma_insert_alloc(&w, 0x100000ull, 4ull * PAGE, RW, VIBEOS_VMA_RESERVED,
+                                    0x100000ull, 0x04u) != 0 ||
+            vibeos_vma_set_state(&w, 0x101000ull, 2ull * PAGE, VIBEOS_VMA_DEMAND) != 0) {
+            printf("FAIL:vma a reservation and a commit inside it\n");
+            goto fail;
+        }
+        if (walk_count(&w) != 3u || !ordered(&w) ||
+            vibeos_vma_find(&w, 0x100000ull)->state != VIBEOS_VMA_RESERVED ||
+            vibeos_vma_find(&w, 0x101000ull)->state != VIBEOS_VMA_DEMAND ||
+            vibeos_vma_find(&w, 0x103000ull)->state != VIBEOS_VMA_RESERVED) {
+            printf("FAIL:vma a commit inside a reservation is three regions, each its state\n");
+            goto fail;
+        }
+        v = vibeos_vma_find(&w, 0x102000ull);
+        if (v->alloc_base != 0x100000ull || v->alloc_prot != 0x04u) {
+            printf("FAIL:vma a split keeps the allocation's base and protection\n");
+            goto fail;
+        }
+        /* Decommitted again, the three are one reservation once more. */
+        if (vibeos_vma_set_state(&w, 0x101000ull, 2ull * PAGE, VIBEOS_VMA_RESERVED) != 0 ||
+            walk_count(&w) != 1u) {
+            printf("FAIL:vma decommitting merges the reservation back into one region\n");
+            goto fail;
+        }
+        /* A second allocation right after it is not merged into it, though
+         * everything else about the two is alike. */
+        if (vibeos_vma_insert_alloc(&w, 0x104000ull, PAGE, RW, VIBEOS_VMA_RESERVED,
+                                    0x104000ull, 0x04u) != 0 || walk_count(&w) != 2u) {
+            printf("FAIL:vma two allocations side by side stay two regions\n");
+            goto fail;
+        }
+        if (vibeos_vma_set_state(&w, 0x105000ull, PAGE, VIBEOS_VMA_DEMAND) == 0) {
+            printf("FAIL:vma a state change outside every region is refused\n");
+            goto fail;
+        }
+        memset(&child, 0, sizeof(child));
+        if (vibeos_vma_clone(&child, &w) != 0 ||
+            vibeos_vma_find(&child, 0x104000ull)->alloc_base != 0x104000ull ||
+            vibeos_vma_find(&child, 0x100000ull)->state != VIBEOS_VMA_RESERVED) {
+            printf("FAIL:vma fork's copy keeps states and allocations\n");
+            goto fail;
+        }
+        vibeos_vma_clear(&child);
+        vibeos_vma_clear(&w);
+    }
+
     return 0;
 
 fail:

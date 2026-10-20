@@ -2188,6 +2188,24 @@ int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
 
 static int hw_stack_may_reach(uint64_t va);
 
+/* An address the fault would give a page to: the stack's growth area, or a
+ * region made on first touch (W3) that allows the access. Read without the mm
+ * lock: this is a check before a copy that is itself fault-safe, and the fault
+ * decides under the lock. */
+static int hw_demand_may_reach(const hw_task_t *t, uint64_t va, int need_write) {
+    const vibeos_vma_t *r;
+
+    if (hw_stack_may_reach(va)) {
+        return 1;
+    }
+    if (!t->ps) {
+        return 0;
+    }
+    r = vibeos_vma_find(&t->ps->vmas, va);
+    return r && r->state == VIBEOS_VMA_DEMAND && (r->prot & VIBEOS_PROT_USER) &&
+           (!need_write || (r->prot & VIBEOS_PROT_WRITE));
+}
+
 int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                              uint32_t *why) {
     static const uint32_t shifts[3] = {39u, 30u, 21u};
@@ -2216,8 +2234,8 @@ int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
 
         for (level = 0; level < 3u; level++) {
             e = tbl[(page >> shifts[level]) & 0x1FFu];
-            if ((e & PTE_PRESENT) == 0 && hw_stack_may_reach(page)) {
-                grows = 1;   /* no table yet: an untouched part of the stack */
+            if ((e & PTE_PRESENT) == 0 && hw_demand_may_reach(t, page, need_write)) {
+                grows = 1;   /* no table yet: an untouched part of the stack, or of a demand region */
                 break;
             }
             if ((e & PTE_PRESENT) == 0 || (e & PTE_USER) == 0) {
@@ -2234,7 +2252,7 @@ int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
          * (hw_stack_grow). Refused here, a read() into a large buffer on the
          * stack - which is where programs keep them - would be EFAULT for
          * every page the program had not happened to touch first. */
-        if (!grows && (e & PTE_PS) == 0 && hw_stack_may_reach(page) &&
+        if (!grows && (e & PTE_PS) == 0 && hw_demand_may_reach(t, page, need_write) &&
             tbl[(page >> 12) & 0x1FFu] == 0ull) {
             grows = 1;
         }
@@ -2544,15 +2562,27 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
     uint64_t *entry;
     uint32_t zero = 0;
     void *page;
-    int done = 0;
+    int done = 0, stack;
 
-    if (!ps || !hw_stack_may_reach(page_va)) {
+    if (!ps) {
         return 0;
+    }
+    /* The stack's growth area, or a region made on first touch (W3's committed
+     * memory, an image's zero tail): the same fault, a zeroed page. Looked at
+     * once here, without the lock, to leave every other fault alone - and
+     * again under it below, where it decides. */
+    stack = hw_stack_may_reach(page_va);
+    if (!stack) {
+        const vibeos_vma_t *r = vibeos_vma_find(&ps->vmas, page_va);
+
+        if (!r || r->state != VIBEOS_VMA_DEMAND) {
+            return 0;
+        }
     }
     /* RLIMIT_STACK: the stack grows no further from its top than the limit
      * says - kept and reported, and never asked, until the external review of
      * 2026-10-07. Past it the fault is the program's, a SIGSEGV, as on Linux. */
-    if (ps->rlim_cur[VIBEOS_RLIM_STACK] != VIBEOS_RLIM_INFINITY &&
+    if (stack && ps->rlim_cur[VIBEOS_RLIM_STACK] != VIBEOS_RLIM_INFINITY &&
         VIBEOS_HW_USER_STACK_TOP - page_va > ps->rlim_cur[VIBEOS_RLIM_STACK]) {
         return 0;
     }
@@ -2579,11 +2609,22 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
     if (entry && *entry != 0ull) {
         done = 1;   /* mapped while this waited for the lock */
     } else if (region && region->backing == VIBEOS_BACKING_ANON &&
-               (region->prot & VIBEOS_PROT_WRITE) && (region->prot & VIBEOS_PROT_USER) &&
+               (region->prot & VIBEOS_PROT_USER) && region->state != VIBEOS_VMA_RESERVED &&
+               (region->state == VIBEOS_VMA_DEMAND || (stack && (region->prot & VIBEOS_PROT_WRITE))) &&
                (page = hw_alloc_page()) != 0) {
+        /* A demand region's page takes the region's own protection - a
+         * committed PAGE_READONLY page reads as zeros and refuses a store; the
+         * stack's is read-write and never executable, as it always was. */
+        uint64_t leaf = PTE_PRESENT | PTE_USER;
+
+        if (region->prot & VIBEOS_PROT_WRITE) {
+            leaf |= PTE_WRITE;
+        }
+        if (!(region->prot & VIBEOS_PROT_EXEC) || stack) {
+            leaf |= PTE_NX;
+        }
         /* Zeroed already: the allocator hands out nothing else. */
-        if (hw_map_page(&t->proc.as, page_va, (uint64_t)(uintptr_t)page,
-                        PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX) == 0) {
+        if (hw_map_page(&t->proc.as, page_va, (uint64_t)(uintptr_t)page, leaf) == 0) {
             vibeos_mm_stats()->stack_grown++;
             done = 1;
             /* mlockall(MCL_FUTURE) covers the stack as it grows (M-104). Not

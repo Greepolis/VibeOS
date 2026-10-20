@@ -389,6 +389,14 @@ Order, each a commit with host tests and sabotage cases:
    munmap, mprotect, page-out, the range check, mincore) is asked what it does
    with a region that has no pages yet. The allocation base and protection ride
    on the region, and regions of different allocations never merge.
+   *Done:* `vibeos_vma_state_t` and `vibeos_vma_insert_alloc` /
+   `vibeos_vma_set_state` in `kernel/mm/vma.c`; `hw_stack_grow` serves a
+   DEMAND region with the region's own protection and leaves a RESERVED one to
+   fault, and `hw_user_range_why` accepts an untouched DEMAND page as it does
+   an untouched stack page. munmap, page-out and mincore skip empty entries
+   already; mprotect changes the region and the page takes it when made; fork
+   copies the region whole. Nothing creates such a region before step 2, so
+   the boot cannot see it yet - host tests and sabotage cover the region list.
 2. **The four services**, with their Windows rules: reservations at 64 KiB
    granularity, commits at page granularity inside a reservation, MEM_RESET,
    MEM_TOP_DOWN, release only of a whole reservation by its base, PAGE_* to
