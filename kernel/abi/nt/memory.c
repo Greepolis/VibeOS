@@ -382,6 +382,13 @@ static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_
          * is not made so by asking. */
         for (va = start; (prot & VIBEOS_PROT_WRITE) && va < end; va = c->base + c->len) {
             c = vibeos_vma_find(&ps->vmas, va);
+            /* nt_in_alloc walked this range under the same lock and found a
+             * region at every step - a guarantee held by another function,
+             * which is asked again here rather than trusted (CodeQL #312). */
+            if (!c) {
+                st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
+                break;
+            }
             if (c->prot & VIBEOS_PROT_NOWRITE) {
                 st = VIBEOS_STATUS_ACCESS_DENIED;
                 break;
