@@ -25,3 +25,9 @@
 +++ new
     (void)vibeos_vma_remove(&ps->vmas, addr, end - addr);
 
+
+### placement ignores the alignment
+--- old
+        base = (base + mask) & ~mask;
++++ new
+        (void)mask;

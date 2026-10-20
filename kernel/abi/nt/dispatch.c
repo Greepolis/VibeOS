@@ -24,6 +24,8 @@ extern const vibeos_row_t nt_sync_rows[];
 extern const uint32_t nt_sync_row_count;
 extern const vibeos_row_t nt_section_rows[];
 extern const uint32_t nt_section_row_count;
+extern const vibeos_row_t nt_memory_rows[];
+extern const uint32_t nt_memory_row_count;
 
 static const struct {
     const vibeos_row_t *rows;
@@ -35,6 +37,7 @@ static const struct {
     { nt_object_rows, &nt_object_row_count },
     { nt_sync_rows, &nt_sync_row_count },
     { nt_section_rows, &nt_section_row_count },
+    { nt_memory_rows, &nt_memory_row_count },
 };
 
 int nt_user_ok(uint64_t base, uint64_t len, int write) {

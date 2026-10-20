@@ -1,0 +1,139 @@
+# NtAllocateVirtualMemory, NtFreeVirtualMemory, NtProtectVirtualMemory and
+# NtQueryVirtualMemory (docs/abi/windows.md W3 step 2), proved by t_virtual_memory
+# in tests/kernel/nt_abi_tests.c on the fake kernel's page tables - which make a
+# committed page on first touch, as the machine's page fault does.
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/abi/nt/memory.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/memory.c scripts/dev/cases/nt-memory.txt
+
+### a reservation is placed at the page, not at 64 KiB
+--- old
+            start = vibeos_umem_place(ps, end, VIBEOS_NT_ALLOCATION_GRANULARITY);
++++ new
+            start = vibeos_umem_place(ps, end, 4096u);
+
+### a reservation at an address is not rounded down to 64 KiB
+--- old
+            start = want & ~(VIBEOS_NT_ALLOCATION_GRANULARITY - 1u);
++++ new
+            start = want & ~0xFFFull;
+
+### a reservation over another is taken
+--- old
+            } else if (vibeos_umem_region_in(ps, start, end - start)) {
++++ new
+            } else if (0) {
+
+### a reservation is committed
+--- old
+                                    commit ? VIBEOS_VMA_DEMAND : VIBEOS_VMA_RESERVED,
++++ new
+                                    VIBEOS_VMA_DEMAND,
+
+### a commit outside every reservation is taken
+--- old
+        if (!r || r->alloc_base == 0u || !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
+            st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
+        } else if (vibeos_vma_change(&ps->vmas, start, end - start,
+                                     VIBEOS_VMA_CHANGE_PROT | VIBEOS_VMA_CHANGE_STATE, prot,
++++ new
+        if (!r) {
+            st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
+        } else if (vibeos_vma_change(&ps->vmas, start, end - start,
+                                     VIBEOS_VMA_CHANGE_PROT | VIBEOS_VMA_CHANGE_STATE, prot,
+
+### a commit leaves the pages already made as they were
+--- old
+            vibeos_umem_protect_pages(me, start, end, prot);   /* the pages already made */
++++ new
+            (void)prot;
+
+### copy-on-write private memory is allocated
+--- old
+    if (!copy_ok && (base == VIBEOS_NT_PAGE_WRITECOPY || base == VIBEOS_NT_PAGE_EXECUTE_WRITECOPY)) {
++++ new
+    if (0) {
+
+### a guarded no-access page is allowed
+--- old
+        (base == VIBEOS_NT_PAGE_NOACCESS && (page & NT_PAGE_MODIFIERS))) {
++++ new
+        0) {
+
+### a reset is taken inside an allocation
+--- old
+    if ((type & (VIBEOS_NT_MEM_RESET | VIBEOS_NT_MEM_RESET_UNDO)) &&
+        (type & (VIBEOS_NT_MEM_COMMIT | VIBEOS_NT_MEM_RESERVE))) {
++++ new
+    if (0) {
+
+### a release anywhere in the allocation releases it
+--- old
+            if (start != ab) {
++++ new
+            if (0) {
+
+### a release of part of an allocation is taken
+--- old
+            } else if (end != alloc_end) {
++++ new
+            } else if (0) {
+
+### a decommit leaves the pages mapped
+--- old
+                (void)vibeos_vmspace_unmap(&v, va);
++++ new
+                (void)v;
+
+### a decommit leaves the range committed
+--- old
+                                     VIBEOS_PROT_NONE, 0u, VIBEOS_VMA_RESERVED) != 0) {
++++ new
+                                     VIBEOS_PROT_NONE, 0u, VIBEOS_VMA_DEMAND) != 0) {
+
+### protecting a reserved page is allowed
+--- old
+    } else if (reserved) {
+        st = VIBEOS_STATUS_NOT_COMMITTED;
++++ new
+    } else if (0) {
+        st = VIBEOS_STATUS_NOT_COMMITTED;
+
+### the old protection is the new one
+--- old
+        old = nt_protect_of(r);
++++ new
+        old = (uint32_t)protect;
+
+### a protection change leaves the pages as they were
+--- old
+        if (st == VIBEOS_STATUS_SUCCESS) {
+            vibeos_umem_protect_pages(me, start, end, prot);
+        }
++++ new
+
+### the spelling is not kept
+--- old
+    if (r->user_prot != 0u) {
++++ new
+    if (0) {
+
+### a query runs past a change of state
+--- old
+               n->alloc_base == r->alloc_base && n->state == r->state &&
++++ new
+               n->alloc_base == r->alloc_base &&
+
+### free memory runs to the end of the address space
+--- old
+            if (n->base > page && n->base < next) {
++++ new
+            if (0) {
+
+### a short buffer is filled
+--- old
+    if (len < sizeof(mbi)) {
++++ new
+    if (0) {

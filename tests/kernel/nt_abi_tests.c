@@ -811,6 +811,247 @@ static void t_blocks(void) {
            "arguments larger than the parameters' pages are refused");
 }
 
+/* ---- virtual memory (W3 step 2) ------------------------------------------------ */
+
+static long valloc(uint64_t *base, uint64_t *size, uint64_t zero_bits, uint32_t type,
+                   uint32_t prot) {
+    uint64_t b = kf_ualloc(8), s = kf_ualloc(8);
+    uint64_t rest[2] = { type, prot };
+    long r;
+
+    *(uint64_t *)kf_uptr(b) = *base;
+    *(uint64_t *)kf_uptr(s) = *size;
+    kf_next_sp(stack_args(rest, 2));
+    r = nt(VIBEOS_NT_NR_NtAllocateVirtualMemory, VIBEOS_NT_CURRENT_PROCESS, b, zero_bits, s, 0);
+    *base = *(uint64_t *)kf_uptr(b);
+    *size = *(uint64_t *)kf_uptr(s);
+    return r;
+}
+
+static long vfree(uint64_t *base, uint64_t *size, uint32_t type) {
+    uint64_t b = kf_ualloc(8), s = kf_ualloc(8);
+    long r;
+
+    *(uint64_t *)kf_uptr(b) = *base;
+    *(uint64_t *)kf_uptr(s) = *size;
+    r = nt(VIBEOS_NT_NR_NtFreeVirtualMemory, VIBEOS_NT_CURRENT_PROCESS, b, s, type, 0);
+    *base = *(uint64_t *)kf_uptr(b);
+    *size = *(uint64_t *)kf_uptr(s);
+    return r;
+}
+
+static long vprotect(uint64_t base, uint64_t size, uint32_t prot, uint32_t *old) {
+    uint64_t b = kf_ualloc(8), s = kf_ualloc(8), o = kf_ualloc(8);
+    uint64_t rest[1] = { o };
+    long r;
+
+    *(uint64_t *)kf_uptr(b) = base;
+    *(uint64_t *)kf_uptr(s) = size;
+    *(uint32_t *)kf_uptr(o) = 0xEEEEu;
+    kf_next_sp(stack_args(rest, 1));
+    r = nt(VIBEOS_NT_NR_NtProtectVirtualMemory, VIBEOS_NT_CURRENT_PROCESS, b, s, prot, 0);
+    *old = *(uint32_t *)kf_uptr(o);
+    return r;
+}
+
+static long vquery(uint64_t va, uint32_t cls, uint64_t len, vibeos_nt_memory_basic_t *mbi) {
+    uint64_t buf = kf_ualloc(64), got = kf_ualloc(8);
+    uint64_t rest[2] = { len, got };
+    long r;
+
+    memset(kf_uptr(buf), 0xA5, 64);
+    kf_next_sp(stack_args(rest, 2));
+    r = nt(VIBEOS_NT_NR_NtQueryVirtualMemory, VIBEOS_NT_CURRENT_PROCESS, va, cls, buf, 0);
+    memcpy(mbi, kf_uptr(buf), sizeof(*mbi));
+    if (r == ST(VIBEOS_STATUS_SUCCESS) && *(uint64_t *)kf_uptr(got) != sizeof(*mbi)) {
+        return -1;   /* the length written is the structure's */
+    }
+    return r;
+}
+
+static void t_virtual_memory(void) {
+    vibeos_nt_memory_basic_t m;
+    uint64_t a, as, b, bs, c, cs, x, xs;
+    uint32_t old;
+    uint8_t byte = 0x5A, y = 0;
+
+    fresh(43);
+    /* Reserved and committed at once, wherever there is room: at 64 KiB, the
+     * size by the page, and nothing made until it is touched. */
+    a = 0;
+    as = 0x2800;
+    expect(valloc(&a, &as, 0, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                  VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_SUCCESS) &&
+               a != 0u && (a & 0xFFFFu) == 0u && as == 0x3000u,
+           "reserve and commit: at 64 KiB, by the page");
+    expect(kf_peek(a + 0x1000u, &y, 1) == 0 && y == 0 && kf_poke(a + 0x2FFFu, &byte, 1) == 0 &&
+               kf_peek(a + 0x2FFFu, &y, 1) == 0 && y == byte,
+           "committed memory reads as zeros and keeps what is written, made on first touch");
+    expect(kf_poke(a + 0x3000u, &byte, 1) != 0, "and not a byte past it");
+    expect(vquery(a + 0x123u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.base_address == a && m.allocation_base == a &&
+               m.allocation_protect == VIBEOS_NT_PAGE_READWRITE && m.region_size == 0x3000u &&
+               m.state == VIBEOS_NT_MEM_COMMIT && m.protect == VIBEOS_NT_PAGE_READWRITE &&
+               m.type == VIBEOS_NT_MEM_PRIVATE,
+           "MEMORY_BASIC_INFORMATION of a committed allocation");
+    x = a + 0x2000u;
+    xs = 0x1000u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READONLY) ==
+               ST(VIBEOS_STATUS_SUCCESS) && kf_poke(a + 0x2FFFu, &byte, 1) != 0 &&
+               kf_peek(a + 0x2FFFu, &y, 1) == 0 && y == byte,
+           "a commit over a page already made gives it the new protection, contents kept");
+
+    /* The next one at the next 64 KiB, though the last ended three pages in. */
+    b = 0;
+    bs = 16u * 4096u;
+    expect(valloc(&b, &bs, 0, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_SUCCESS) && b == a + 0x10000u && bs == 0x10000u,
+           "a reservation starts at the next 64 KiB");
+    expect(kf_peek(b, &y, 1) != 0, "reserved memory has no access");
+    expect(vquery(b + 0x5000u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.base_address == b + 0x5000u && m.allocation_base == b &&
+               m.allocation_protect == VIBEOS_NT_PAGE_READWRITE && m.region_size == 0xB000u &&
+               m.state == VIBEOS_NT_MEM_RESERVE && m.protect == 0u,
+           "a reservation reports no protection, and its allocation's");
+
+    /* Committed a piece at a time, inside the reservation. */
+    c = b + 0x2100u;
+    cs = 0x1000u;
+    expect(valloc(&c, &cs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READONLY) ==
+               ST(VIBEOS_STATUS_SUCCESS) && c == b + 0x2000u && cs == 0x2000u,
+           "a commit inside a reservation, by the page: the range the bytes touch");
+    expect(kf_peek(b + 0x2000u, &y, 1) == 0 && y == 0 && kf_poke(b + 0x2000u, &byte, 1) != 0 &&
+               kf_peek(b + 0x1000u, &y, 1) != 0,
+           "a read-only commit reads zeros and refuses a store; the rest stays reserved");
+    expect(vquery(b, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.state == VIBEOS_NT_MEM_RESERVE && m.region_size == 0x2000u &&
+               vquery(b + 0x3000u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.base_address == b + 0x3000u && m.state == VIBEOS_NT_MEM_COMMIT &&
+               m.protect == VIBEOS_NT_PAGE_READONLY && m.region_size == 0x1000u &&
+               m.allocation_base == b,
+           "a query stops where the state stops, and starts at the page asked about");
+    x = b + 0x20000u;
+    xs = 0x1000u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a commit where nothing is reserved is refused");
+    x = b + 0xF000u;
+    xs = 0x2000u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a commit running past its reservation is refused");
+    x = b + 0x4321u;
+    xs = 0x100u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a reservation over another is refused");
+    x = b + 0x34567u;
+    xs = 0x100u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_SUCCESS) && x == b + 0x30000u && xs == 0x5000u,
+           "a reservation at an address: down to 64 KiB, and up to the page past the end");
+
+    /* The requests Windows refuses before anything is looked at. */
+    x = 0;
+    xs = 0x1000u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_WRITECOPY) ==
+               ST(VIBEOS_STATUS_INVALID_PAGE_PROTECTION) &&
+               valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, 0x3u) ==
+               ST(VIBEOS_STATUS_INVALID_PAGE_PROTECTION) &&
+               valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT,
+                      VIBEOS_NT_PAGE_NOACCESS | VIBEOS_NT_PAGE_GUARD) ==
+               ST(VIBEOS_STATUS_INVALID_PAGE_PROTECTION),
+           "copy-on-write private memory, two protections at once, a guarded no-access page");
+    expect(valloc(&x, &xs, 0, 0u, VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+               valloc(&x, &xs, 0, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_RESET,
+                      VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+               valloc(&x, &xs, 25, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER_3) &&
+               valloc(&x, &xs, 0, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_WRITE_WATCH,
+                      VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_NOT_SUPPORTED),
+           "no type, a reset in an allocation, ZeroBits past 21, a write watch");
+    xs = 0;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER), "a size of zero");
+    x = 0;
+    xs = 0x1000u;
+    expect(nt(VIBEOS_NT_NR_NtFreeVirtualMemory, 4, kf_ualloc(8), kf_ualloc(8),
+              VIBEOS_NT_MEM_RELEASE, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
+           "another process is W6's");
+
+    /* Protection: of committed pages, the old one the first page's. */
+    expect(vprotect(b + 0x2800u, 0x100u, VIBEOS_NT_PAGE_READWRITE, &old) ==
+               ST(VIBEOS_STATUS_SUCCESS) && old == VIBEOS_NT_PAGE_READONLY &&
+               kf_poke(b + 0x2000u, &byte, 1) == 0,
+           "a protection change: the old one back, and a page touched before takes the new");
+    expect(vprotect(b + 0x3000u, 0x1000u, VIBEOS_NT_PAGE_READWRITE | VIBEOS_NT_PAGE_GUARD, &old) ==
+               ST(VIBEOS_STATUS_SUCCESS) && old == VIBEOS_NT_PAGE_READONLY &&
+               vquery(b + 0x3000u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.protect == (VIBEOS_NT_PAGE_READWRITE | VIBEOS_NT_PAGE_GUARD) &&
+               m.region_size == 0x1000u,
+           "PAGE_GUARD is recorded and reported as it was given");
+    expect(vprotect(b + 0x1000u, 0x2000u, VIBEOS_NT_PAGE_READWRITE, &old) ==
+               ST(VIBEOS_STATUS_NOT_COMMITTED) && old == 0xEEEEu,
+           "a range with a reserved page in it is not protected, and nothing is written");
+    expect(vprotect(a + 0x20000000u, 0x1000u, VIBEOS_NT_PAGE_READWRITE, &old) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES) &&
+               vprotect(a, 0x1000u, 0x6u, &old) == ST(VIBEOS_STATUS_INVALID_PAGE_PROTECTION),
+           "free memory, and a protection that is two");
+    expect(vprotect(a + 0x2000u, 0x10000u, VIBEOS_NT_PAGE_READONLY, &old) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a range running out of its allocation is refused");
+
+    /* Decommit: the pages go, the range stays reserved, and a commit again is
+     * fresh zeros. */
+    x = b + 0x2000u;
+    xs = 0x1000u;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_DECOMMIT) == ST(VIBEOS_STATUS_SUCCESS) &&
+               x == b + 0x2000u && xs == 0x1000u && kf_peek(b + 0x2000u, &y, 1) != 0 &&
+               vquery(b + 0x2000u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.state == VIBEOS_NT_MEM_RESERVE,
+           "a decommit leaves the range reserved, with no access");
+    x = b + 0x2000u;
+    xs = 0x1000u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_SUCCESS) && kf_peek(b + 0x2000u, &y, 1) == 0 && y == 0,
+           "committed again, the page is zeros - not what was written before");
+
+    /* Release: the whole allocation, by its base. */
+    x = b + 0x1000u;
+    xs = 0;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_FREE_VM_NOT_AT_BASE),
+           "a release not at the allocation's base");
+    x = b;
+    xs = 0x1000u;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_UNABLE_TO_FREE_VM),
+           "a release of part of an allocation");
+    x = b;
+    xs = 0;
+    expect(vfree(&x, &xs, 0u) == ST(VIBEOS_STATUS_INVALID_PARAMETER_4) &&
+               vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE | VIBEOS_NT_MEM_DECOMMIT) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER_4),
+           "a free type that is neither, or both");
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS) && x == b &&
+               xs == 0x10000u && kf_peek(b + 0x2000u, &y, 1) != 0,
+           "released whole, by its base: the size is the allocation's");
+    expect(vquery(b + 0x4000u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.state == VIBEOS_NT_MEM_FREE && m.protect == VIBEOS_NT_PAGE_NOACCESS &&
+               m.allocation_base == 0u && m.base_address == b + 0x4000u &&
+               m.region_size == 0x2C000u,
+           "free memory runs to the next region");
+    x = b;
+    xs = 0;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_MEMORY_NOT_ALLOCATED),
+           "released twice: nothing is allocated there");
+
+    expect(vquery(a, 1u, sizeof(m), &m) == ST(VIBEOS_STATUS_INVALID_INFO_CLASS) &&
+               vquery(a, 0, sizeof(m) - 1u, &m) == ST(VIBEOS_STATUS_INFO_LENGTH_MISMATCH) &&
+               vquery(ks_user_top(), 0, sizeof(m), &m) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "a class not written, a short buffer, an address past user memory");
+    expect(kf_uaccess_under_mm() == 0u,
+           "no store into the program's memory under its own mm lock");
+}
+
 int test_nt_abi(void) {
     g_fail = 0;
     t_registry();
@@ -827,5 +1068,6 @@ int test_nt_abi(void) {
     t_sections();
     t_open_file_permissions();
     t_object_share();
+    t_virtual_memory();
     return g_fail ? -1 : 0;
 }

@@ -178,6 +178,10 @@ void ks_page_free(void *page, const char *why);
 uint64_t ks_heap_base(void);
 uint64_t ks_mmap_base(void);
 uint64_t ks_stack_bytes(void);
+/* The end of the user window a personality allocates in - the first address
+ * past it - for an answer about "the rest of the address space" (W3's
+ * NtQueryVirtualMemory of free memory). */
+uint64_t ks_user_top(void);
 
 /* ---- processes ------------------------------------------------------------------
  *

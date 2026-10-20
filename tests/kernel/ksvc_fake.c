@@ -117,6 +117,28 @@ static void kf_mm_reset(void) {
 
 static int kf_mm_va(uint64_t va) { return va >= KF_MM_LO && va < KF_MM_HI; }
 
+
+/* A page of a region made on first touch (W3) that nothing has touched: the
+ * machine's page fault gives it a zeroed page with the region's protection
+ * (hw_stack_grow), and its range check accepts it beforehand. The fake does
+ * both, so that a host test sees committed memory as a program does - a fake
+ * that refused it would be stricter than the machine, and a test above it could
+ * not fail where the machine does. 1 if `va` is such a page and the access is
+ * one the region allows; `make` maps it. */
+static int kf_demand(uint64_t va, int write, int make) {
+    const vibeos_vma_t *r;
+
+    if (g_cur < 0 || !g_t[g_cur].has_as || !g_t[g_cur].ps) {
+        return 0;
+    }
+    r = vibeos_vma_find(&g_t[g_cur].ps->vmas, va);
+    if (!r || r->state != VIBEOS_VMA_DEMAND || !(r->prot & VIBEOS_PROT_USER) ||
+        (write && !(r->prot & VIBEOS_PROT_WRITE))) {
+        return 0;
+    }
+    return !make || ks_map_anon(g_cur, va & ~0xFFFull, r->prot) == 0;
+}
+
 /* The host memory behind one mapped address of the current task, or null. A
  * store to a page that is read-only because it is shared takes the fault the
  * kernel's own store would take.
@@ -136,6 +158,9 @@ static uint8_t *kf_mm_ptr_as(uint64_t va, int write, int ring3) {
         return 0;
     }
     e = vibeos_vmspace_entry(&g_t[g_cur].as, va);
+    if ((!e || *e == 0u) && kf_demand(va, write, 1)) {
+        e = vibeos_vmspace_entry(&g_t[g_cur].as, va);   /* the fault made it */
+    }
     if (!e || !(*e & KF_PTE_PRESENT) || (ring3 && !(*e & KF_PTE_USER))) {
         return 0;
     }
@@ -1029,6 +1054,9 @@ int ks_user_ok(uint64_t base, uint64_t len, int write) {
         }
         for (va = base & ~0xFFFull; va < end; va += 4096ull) {
             uint64_t *e = vibeos_vmspace_entry(&g_t[g_cur].as, va);
+            if ((!e || *e == 0u) && kf_demand(va, write, 0)) {
+                continue;   /* untouched, and the fault would make it */
+            }
             if (!e || !(*e & KF_PTE_PRESENT) || !(*e & KF_PTE_USER) ||
                 (write && !(*e & (KF_PTE_WRITE | KF_PTE_COW)))) {
                 return 0;
@@ -1245,6 +1273,7 @@ void *ks_page_alloc(void) { return malloc(4096); }
 void ks_page_free(void *page, const char *why) { (void)why; free(page); }
 uint64_t ks_heap_base(void) { return 0x10000000ull; }
 uint64_t ks_mmap_base(void) { return 0x20000000ull; }
+uint64_t ks_user_top(void) { return KF_MM_HI; }
 uint64_t ks_stack_bytes(void) { return 16384ull; }
 
 vibeos_procstate_t *ks_procstate_new(void) {

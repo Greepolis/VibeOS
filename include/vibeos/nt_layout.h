@@ -55,6 +55,17 @@
 #define VIBEOS_STATUS_BUFFER_TOO_SMALL       0xC0000023u
 #define VIBEOS_STATUS_FILE_RENAMED           0xC00000D5u   /* Wine's ntstatus.h; not in mingw-w64's */
 #define VIBEOS_STATUS_QUOTA_EXCEEDED         0xC0000044u
+/* The memory services' (W3). */
+#define VIBEOS_STATUS_CONFLICTING_ADDRESSES  0xC0000018u
+#define VIBEOS_STATUS_UNABLE_TO_FREE_VM      0xC000001Au
+#define VIBEOS_STATUS_NOT_COMMITTED          0xC000002Du
+#define VIBEOS_STATUS_INVALID_PAGE_PROTECTION 0xC0000045u
+#define VIBEOS_STATUS_FREE_VM_NOT_AT_BASE    0xC000009Fu
+#define VIBEOS_STATUS_MEMORY_NOT_ALLOCATED   0xC00000A0u
+#define VIBEOS_STATUS_NOT_SUPPORTED          0xC00000BBu
+#define VIBEOS_STATUS_INVALID_PARAMETER_2    0xC00000F0u
+#define VIBEOS_STATUS_INVALID_PARAMETER_3    0xC00000F1u
+#define VIBEOS_STATUS_INVALID_PARAMETER_4    0xC00000F2u
 
 /* OBJECT_ATTRIBUTES on x64: 48 bytes. */
 #define VIBEOS_OA_LENGTH          0x00u
@@ -215,6 +226,54 @@ typedef struct {
 } vibeos_nt_system_basic_t;
 
 #define VIBEOS_NT_SYSTEM_BASIC_INFORMATION 0u
+
+/* MEMORY_BASIC_INFORMATION, NtQueryVirtualMemory's MemoryBasicInformation
+ * (class 0): 48 bytes on x64. */
+typedef struct {
+    uint64_t base_address;
+    uint64_t allocation_base;
+    uint32_t allocation_protect;
+    uint16_t partition_id;
+    uint16_t pad;
+    uint64_t region_size;
+    uint32_t state;
+    uint32_t protect;
+    uint32_t type;
+    uint32_t pad2;
+} vibeos_nt_memory_basic_t;
+
+#define VIBEOS_NT_MEMORY_BASIC_INFORMATION 0u
+
+/* AllocationType, FreeType, and MEMORY_BASIC_INFORMATION's State and Type. */
+#define VIBEOS_NT_MEM_COMMIT      0x00001000u
+#define VIBEOS_NT_MEM_RESERVE     0x00002000u
+#define VIBEOS_NT_MEM_DECOMMIT    0x00004000u
+#define VIBEOS_NT_MEM_RELEASE     0x00008000u
+#define VIBEOS_NT_MEM_FREE        0x00010000u
+#define VIBEOS_NT_MEM_PRIVATE     0x00020000u
+#define VIBEOS_NT_MEM_MAPPED      0x00040000u
+#define VIBEOS_NT_MEM_RESET       0x00080000u
+#define VIBEOS_NT_MEM_TOP_DOWN    0x00100000u
+#define VIBEOS_NT_MEM_WRITE_WATCH 0x00200000u
+#define VIBEOS_NT_MEM_IMAGE       0x01000000u
+#define VIBEOS_NT_MEM_RESET_UNDO  0x01000000u   /* AllocationType's, not Type's */
+#define VIBEOS_NT_MEM_LARGE_PAGES 0x20000000u
+
+/* Page protections: one of the first eight, with modifiers. */
+#define VIBEOS_NT_PAGE_NOACCESS          0x001u
+#define VIBEOS_NT_PAGE_READONLY          0x002u
+#define VIBEOS_NT_PAGE_READWRITE         0x004u
+#define VIBEOS_NT_PAGE_WRITECOPY         0x008u
+#define VIBEOS_NT_PAGE_EXECUTE           0x010u
+#define VIBEOS_NT_PAGE_EXECUTE_READ      0x020u
+#define VIBEOS_NT_PAGE_EXECUTE_READWRITE 0x040u
+#define VIBEOS_NT_PAGE_EXECUTE_WRITECOPY 0x080u
+#define VIBEOS_NT_PAGE_GUARD             0x100u
+#define VIBEOS_NT_PAGE_NOCACHE           0x200u
+#define VIBEOS_NT_PAGE_WRITECOMBINE      0x400u
+
+/* Windows reserves address space in pieces of this; it commits by the page. */
+#define VIBEOS_NT_ALLOCATION_GRANULARITY 0x10000ull
 
 /* 100-ns intervals between 1601-01-01 and 1970-01-01: Windows counts from the
  * first, the kernel's clock from the second. */
