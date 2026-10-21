@@ -6054,6 +6054,27 @@ static void t_untouched_bss(void) {
            "MADV_POPULATE_WRITE makes one writable");
 }
 
+/* A description's node is the file that was opened, whatever its path names
+ * later (M-106): what an image section is read by since W3 step 6. Renamed
+ * away and replaced at its name, the file the descriptor holds is still the
+ * one asked about - its node, its size - and never the new one at the path. */
+static void t_description_node(void) {
+    vibeos_fs_node_t n;
+    vibeos_file_t *f;
+    long fd, other;
+    int me = fresh(204);
+
+    fd = tmp_open("/tmp/img", 0x42 /* O_RDWR|O_CREAT */, 0644);
+    expect(fd >= 0 && SYS3(1, (uint64_t)fd, ustr("abcde"), 5) == 5, "a five-byte file");
+    f = vibeos_fdtable_get(&ks_ps(me)->files, (int)fd);
+    expect(f && SYS2(82, ustr("/tmp/img"), ustr("/tmp/away")) == 0, "renamed away");
+    other = tmp_open("/tmp/img", 0x42, 0644);
+    expect(other >= 0 && SYS3(1, (uint64_t)other, ustr("0123456789"), 10) == 10,
+           "and another file, ten bytes, at its old name");
+    expect(f && vibeos_file_node(f, &n) == 0 && n.id == f->node && n.size == 5u,
+           "the description's node is the file it opened: five bytes, not ten");
+}
+
 /* mlockall(MCL_FUTURE) (M-104): what is mapped afterwards is locked as it is
  * made - mmap, brk, mremap's growth - and a mapping RLIMIT_MEMLOCK cannot hold
  * is not made; munlockall ends it, and a child does not inherit it. */
@@ -6570,6 +6591,7 @@ int test_linux_handlers(void) {
     t_memory_calls();
     t_madvise_populate();
     t_untouched_bss();
+    t_description_node();
     t_mlockall_future();
     t_credentials();
     t_fork_snapshot_and_groups();

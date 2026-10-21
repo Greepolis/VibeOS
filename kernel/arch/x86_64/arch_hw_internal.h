@@ -509,6 +509,10 @@ void hw_tlbq_drain(void);
 void *hw_alloc_user_page(void);
 long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
                                 uint32_t *out_id);
+/* The same, for a file already resolved: its mount and node, which are what
+ * is read - the path only keys the cache's identity table (M-106). */
+long hw_read_file_node(vibeos_fsmount_t *m, const char *path, const vibeos_fs_node_t *node,
+                       void *buf, uint32_t cap, uint32_t *out_id);
 vibeos_vmspace_t hw_vm(const vibeos_hw_aspace_t *as);
 int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa,
                        uint64_t leaf_flags);
@@ -580,8 +584,9 @@ int hw_pe_start_blocks(hw_proc_t *p, hw_procstate_t *ps, uint64_t exe_base,
                        const char *const *argv, const char *path);
 /* An image probed, and one mapped into a running process (W2): ks_pe_probe and
  * ks_map_pe_image's work. */
-int hw_pe_probe(const char *path, uint64_t *image_size);
-int hw_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size);
+struct vibeos_file;
+int hw_pe_probe(const struct vibeos_file *f, uint64_t *image_size);
+int hw_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint64_t *size);
 /* Where a PE program may be placed: below the stack's guard page. */
 #define VIBEOS_HW_PE_EXE_END (VIBEOS_HW_USER_STACK_FLOOR - 4096ull)
 /* Where our ntdll may be: above the heap's start, below the mapping area. */

@@ -231,6 +231,12 @@ uint32_t vibeos_file_change_flags(vibeos_file_t *f, uint32_t clear, uint32_t set
  * (M-106). */
 int vibeos_file_still_at_path(const vibeos_file_t *f);
 
+/* The node a regular file's description holds, as the filesystem says it is
+ * now (getattr) - or as the description last saw it, from a filesystem that
+ * cannot say. Never looked up by its name: the point of asking is to read the
+ * file that was opened, whatever the path names now (M-106). 0, or negative. */
+int vibeos_file_node(const vibeos_file_t *f, vibeos_fs_node_t *out);
+
 /* One fewer. The last runs ops->release, then frees the slot. A put with no
  * reference to give back is counted (VIBEOS_MBZ_FILE_PUT_UNDERFLOW), not clamped:
  * it is a descriptor released twice, and clamping would hide the second owner. */

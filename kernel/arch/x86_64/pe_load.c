@@ -17,6 +17,7 @@
 #include "vibeos/abi_nt.h"
 #include "vibeos/exec_stats.h"
 #include "arch_hw_internal.h"
+#include "vibeos/file.h"
 
 /* The base-relocation directory of the image being mapped, read whole: an exec
  * holds g_exec_lock, so this is one exec's at a time. Wine's test programs
@@ -244,7 +245,10 @@ static int hw_range_free(const vibeos_vma_list_t *l, uint64_t base, uint64_t len
 
 /* The image's headers into the staging buffer: its length, and its cache
  * identity in *id; or a negated errno. Under g_ntmap_lock. */
-static long hw_ntmap_read(const char *path, uint32_t *id) {
+/* The image a description holds, by its node (M-106): whatever its path names
+ * now, these are the bytes of the file that was opened. */
+static long hw_ntmap_read(const vibeos_file_t *f, uint32_t *id) {
+    vibeos_fs_node_t node;
     long n;
 
     if (!g_ntmap_hdr) {
@@ -253,18 +257,21 @@ static long hw_ntmap_read(const char *path, uint32_t *id) {
             return -VIBEOS_ENOMEM;
         }
     }
-    n = hw_read_file_cached(path, g_ntmap_hdr, HW_NTMAP_WINDOW, id);
+    if (vibeos_file_node(f, &node) != 0) {
+        return -VIBEOS_ENOENT;
+    }
+    n = hw_read_file_node(f->mnt, f->path, &node, g_ntmap_hdr, HW_NTMAP_WINDOW, id);
     return n > 0 ? n : -VIBEOS_ENOENT;
 }
 
-int hw_pe_probe(const char *path, uint64_t *image_size) {
+int hw_pe_probe(const vibeos_file_t *f, uint64_t *image_size) {
     vibeos_pe_image_t *pe = &g_ntmap_pe;
     uint32_t id = 0;
     long n;
     int rc = 0;
 
     ks_lock_preemptible(&g_ntmap_lock);
-    n = hw_ntmap_read(path, &id);
+    n = hw_ntmap_read(f, &id);
     if (n < 0) {
         rc = (int)n;
     } else if (vibeos_pe_parse(g_ntmap_hdr, (uint64_t)n < HW_NTMAP_WINDOW ? (uint64_t)n
@@ -278,7 +285,7 @@ int hw_pe_probe(const char *path, uint64_t *image_size) {
     return rc;
 }
 
-int hw_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size) {
+int hw_map_pe_image(int slot, const vibeos_file_t *f, uint64_t *base, uint64_t *size) {
     hw_task_t *t = &g_tasks[slot];
     hw_procstate_t *ps = t->ps;
     vibeos_pe_image_t *pe = &g_ntmap_pe;
@@ -292,7 +299,7 @@ int hw_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size) 
         return -VIBEOS_EINVAL;
     }
     ks_lock_preemptible(&g_ntmap_lock);
-    n = hw_ntmap_read(path, &id);
+    n = hw_ntmap_read(f, &id);
     if (n < 0) {
         ks_unlock_preemptible(&g_ntmap_lock);
         return (int)n;
@@ -324,7 +331,7 @@ int hw_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size) 
     }
     rc = hw_pe_map_one(&t->proc, ps, g_ntmap_hdr, window, (uint64_t)n, id,
                        place, place + span, place, place + span,
-                       (pe->characteristics & VIBEOS_PE_FILE_DLL) ? 1 : 0, path, pe,
+                       (pe->characteristics & VIBEOS_PE_FILE_DLL) ? 1 : 0, f->path, pe,
                        g_ntmap_relocs);
     /* Read out before the lock goes: the next caller reuses the description. */
     image_base = pe->image_base;

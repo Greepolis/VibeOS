@@ -269,7 +269,7 @@ static long nt_create_section(uint64_t out, uint64_t want, uint64_t oa, uint64_t
         vibeos_file_put(file);
         return NT_STATUS(VIBEOS_STATUS_FILE_RENAMED);
     }
-    pr = ks_pe_probe(file->path, &size);
+    pr = ks_pe_probe(file, &size);
     if (pr != 0) {
         vibeos_file_put(file);
         return NT_STATUS(pr == -VIBEOS_ENOENT ? VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND
@@ -445,17 +445,16 @@ static long nt_map_view_of_section(uint64_t sec_h, uint64_t process, uint64_t ba
         vibeos_file_put(file);
         return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
     }
-    /* The same question as at creation, and here it matters most: a section
-     * can be held for ever before it is mapped, and a file renamed over its
-     * name meanwhile would be the one mapped (M-106). What remains is the
-     * moment between this look and the mapper's own lookup, inside one call;
-     * mapping from the description itself closes that, with a page cache
-     * that knows files by node rather than by name. */
+    /* The same question as at creation. The mapper reads the description's
+     * node, not the path, so a rename after this look changes nothing it
+     * reads (M-106); what the look still guards is FAT, where a node is a
+     * directory slot, and a file unlinked and replaced leaves the slot naming
+     * another file - so a section whose name has moved is refused. */
     if (!vibeos_file_still_at_path(file)) {
         vibeos_file_put(file);
         return NT_STATUS(VIBEOS_STATUS_FILE_RENAMED);
     }
-    rc = ks_map_pe_image(me, file->path, &base, &size);
+    rc = ks_map_pe_image(me, file, &base, &size);
     vibeos_file_put(file);
     if (rc < 0) {
         return NT_STATUS(rc == -VIBEOS_ENOMEM ? VIBEOS_STATUS_NO_MEMORY

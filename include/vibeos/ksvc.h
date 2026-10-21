@@ -277,8 +277,12 @@ void ks_tls_set(int slot, uint64_t base);
  * address space it spans - 0, -ENOENT or -ENOEXEC; and map it into `slot`'s
  * address space where it asks if it can, somewhere else otherwise, relocated -
  * 0 at its own base, 1 moved, or a negated errno. */
-int ks_pe_probe(const char *path, uint64_t *image_size);
-int ks_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size);
+/* The image a section's file is - read through the description, by its node,
+ * and never by its path again (M-106): a rename after the section was made
+ * cannot change what is mapped. */
+struct vibeos_file;
+int ks_pe_probe(const struct vibeos_file *f, uint64_t *image_size);
+int ks_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint64_t *size);
 uint64_t ks_gs_get(int slot);
 /* 0, or -1 for a base that is neither 0 nor a user address: the kernel's entry
  * decides whose %gs is loaded by whether it points into the kernel. */

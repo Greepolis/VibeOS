@@ -3,6 +3,7 @@
 #include "vibeos/file.h"
 #include "vibeos/mbz.h"
 #include "vibeos/filelock.h"
+#include "vibeos/abi_linux.h"   /* the kernel's errno values */
 
 static vibeos_file_t g_files[VIBEOS_FILE_MAX];
 static void (*g_lock)(void);
@@ -95,6 +96,24 @@ int vibeos_file_still_at_path(const vibeos_file_t *f) {
         tail++;
     }
     return vibeos_fs_lookup(m, tail, &node) == 0 && node.id == f->node;
+}
+
+int vibeos_file_node(const vibeos_file_t *f, vibeos_fs_node_t *out) {
+    vibeos_fs_node_t held;
+    int r;
+
+    if (!f || !f->mnt || f->isdir || f->node == 0u) {
+        return -VIBEOS_EINVAL;
+    }
+    held.id = f->node;
+    held.size = f->size;
+    held.is_dir = 0;
+    r = vibeos_fs_getattr(f->mnt, &held, out);
+    if (r == -VIBEOS_ENOSYS) {
+        *out = held;   /* the description's own idea; never the name's */
+        r = 0;
+    }
+    return r;
 }
 
 uint32_t vibeos_file_change_flags(vibeos_file_t *f, uint32_t clear, uint32_t set) {

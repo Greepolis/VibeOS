@@ -8,7 +8,7 @@
 
 ### an image section is made over a file that is no image
 --- old
-    pr = ks_pe_probe(file->path, &size);
+    pr = ks_pe_probe(file, &size);
 +++ new
     pr = 0;
 
@@ -40,10 +40,10 @@
 
 ### a view is mapped from whatever the name now names (M-106)
 --- old
-     * that knows files by node rather than by name. */
+     * another file - so a section whose name has moved is refused. */
     if (!vibeos_file_still_at_path(file)) {
 +++ new
-     * that knows files by node rather than by name. */
+     * another file - so a section whose name has moved is refused. */
     if (0) {
 
 ### a section is made from whatever the name now names (M-106)

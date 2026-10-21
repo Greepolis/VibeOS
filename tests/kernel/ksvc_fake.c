@@ -1362,11 +1362,13 @@ long ks_read_file_cached(const char *path, void *buf, uint32_t cap, uint32_t *ou
 static uint8_t g_kf_pe[1u << 18];
 static uint64_t g_kf_pe_next = KF_PE_DLL_BASE + 0x01000000ull;
 
-static long kf_pe_read(const char *path, vibeos_pe_image_t *pe) {
+/* The image a description holds, by its node, as the machine reads it (M-106):
+ * never by the path, which a test may have pointed at another file. */
+static long kf_pe_read(const vibeos_file_t *f, vibeos_pe_image_t *pe) {
     vibeos_fs_node_t n;
     long len;
 
-    if (kf_fs_lookup(0, path, &n) != 0) {
+    if (vibeos_file_node(f, &n) != 0) {
         return -VIBEOS_ENOENT;
     }
     len = kf_fs_read_at(0, &n, 0, g_kf_pe, sizeof(g_kf_pe));
@@ -1377,9 +1379,9 @@ static long kf_pe_read(const char *path, vibeos_pe_image_t *pe) {
     return len;
 }
 
-int ks_pe_probe(const char *path, uint64_t *image_size) {
+int ks_pe_probe(const struct vibeos_file *f, uint64_t *image_size) {
     vibeos_pe_image_t pe;
-    long n = kf_pe_read(path, &pe);
+    long n = kf_pe_read(f, &pe);
 
     if (n < 0) {
         return (int)n;
@@ -1388,9 +1390,9 @@ int ks_pe_probe(const char *path, uint64_t *image_size) {
     return 0;
 }
 
-int ks_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size) {
+int ks_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint64_t *size) {
     vibeos_pe_image_t pe;
-    long n = kf_pe_read(path, &pe);
+    long n = kf_pe_read(f, &pe);
 
     (void)slot;
     if (n < 0) {

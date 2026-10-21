@@ -1,0 +1,13 @@
+# The node a description holds (kernel/fs/file.c, vibeos_file_node), which an
+# image section is read by since docs/abi/windows.md W3 step 6 (M-106): proved
+# by t_description_node in tests/kernel/linux_abi_tests.c, on tmpfs.
+#
+# Target source: kernel/fs/file.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/fs/file.c scripts/dev/cases/fs-description-node.txt
+
+### the node is looked up by the name the description had
+--- old
+    r = vibeos_fs_getattr(f->mnt, &held, out);
++++ new
+    r = vibeos_fs_lookup(f->mnt, f->path + f->tail + (f->path[f->tail] == '/'), out);
+    (void)held;

@@ -96,22 +96,20 @@ static void hw_file_id_fill(uint32_t slot, const char *path, const vibeos_fs_nod
     g_cached_files[slot].node = *node;
 }
 
-static uint32_t hw_file_id(const char *path) {
-    vibeos_fs_node_t node;
+/* The identity for `path`, whose node is `node` - looked up by the caller, or
+ * held by a description (M-106). */
+static uint32_t hw_file_id_node(const char *path, const vibeos_fs_node_t *nodep) {
+    vibeos_fs_node_t node = *nodep;
     uint32_t i, id = 0, len = 0;
     int stale = 0;
 
-    if (!path) {
+    if (!path || node.is_dir) {
         return 0;
     }
     while (path[len]) {
         len++;
     }
     if (len >= sizeof(g_cached_files[0].path)) {
-        return 0;
-    }
-    /* Outside the lock: a lookup reads the disk. */
-    if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0 || node.is_dir) {
         return 0;
     }
     hw_spin_lock_named(&g_file_id_lock, __func__);
@@ -164,6 +162,75 @@ static uint32_t hw_file_id(const char *path) {
                "(a0 = identities)");
     }
     return id;
+}
+
+static uint32_t hw_file_id(const char *path) {
+    vibeos_fs_node_t node;
+
+    /* Outside the identity lock: a lookup reads the disk. */
+    if (!path || vibeos_fs_lookup(&g_rootfs, path, &node) != 0 || node.is_dir) {
+        return 0;
+    }
+    return hw_file_id_node(path, &node);
+}
+
+/* A whole file into `buf` by its node, uncached: the size, or -1 if it does
+ * not fit or a read failed. */
+static long hw_read_node_whole(vibeos_fsmount_t *m, const vibeos_fs_node_t *node, void *buf,
+                               uint32_t cap) {
+    uint64_t off = 0;
+
+    if (node->size > (uint64_t)cap) {
+        return -1;
+    }
+    while (off < node->size) {
+        uint32_t take = node->size - off < 65536u ? (uint32_t)(node->size - off) : 65536u;
+        long n = vibeos_fs_read_at(m, node, off, (uint8_t *)buf + off, take);
+
+        if (n <= 0) {
+            return -1;   /* short is the end, and the node said there was more */
+        }
+        off += (uint64_t)n;
+    }
+    return (long)node->size;
+}
+
+long hw_read_file_node(vibeos_fsmount_t *m, const char *path, const vibeos_fs_node_t *node,
+                       void *buf, uint32_t cap, uint32_t *out_id) {
+    uint8_t *out = (uint8_t *)buf;
+    uint64_t off;
+    uint32_t id;
+
+    if (out_id) {
+        *out_id = 0u;
+    }
+    /* The cache keys the boot volume's files; another mount's is read whole. */
+    if (!m || m->ops != g_rootfs.ops || m->fs != g_rootfs.fs ||
+        (id = hw_file_id_node(path, node)) == 0u) {
+        return hw_read_node_whole(m ? m : &g_rootfs, node, buf, cap);
+    }
+    for (off = 0; off < node->size; off += 4096ull) {
+        uint64_t phys = 0, take = node->size - off < 4096ull ? node->size - off : 4096ull, k;
+        const uint8_t *src;
+
+        if (vibeos_cache_get_ref(id, off, &phys) != 0) {
+            return hw_read_node_whole(m, node, buf, cap);   /* by the node, still */
+        }
+        if (off < (uint64_t)cap) {
+            if (off + take > (uint64_t)cap) {
+                take = (uint64_t)cap - off;
+            }
+            src = (const uint8_t *)(uintptr_t)phys;
+            for (k = 0; k < take; k++) {
+                out[off + k] = src[k];
+            }
+        }
+        (void)vibeos_frame_put(phys);
+    }
+    if (out_id) {
+        *out_id = id;
+    }
+    return (long)node->size;
 }
 
 /* Read a whole file, a page at a time, through the cache.
