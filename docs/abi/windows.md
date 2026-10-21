@@ -461,6 +461,12 @@ Order, each a commit with host tests and sabotage cases:
 6. **Views from the handle's file (M-106's remainder).** The page cache learns
    files by mount and node, so a view is mapped from the description its handle
    holds and never goes back to the name.
+   *Done:* the mapper reads an image by the description's node
+   (`vibeos_file_node`, getattr, never a lookup by name), and the page cache's
+   identity is given for that node (`hw_read_file_node`); the look at the name
+   stays for FAT, whose nodes are directory slots (M-106, fixed). A boot of
+   this step also found M-117: kill(pid, 0) answered for a process whose last
+   thread was on its way out.
 7. **One address space for CLONE_VM processes (M-100).** The region list, its
    lock and the break become one counted object that a CLONE_VM child shares
    with its parent instead of copying; threads already share it through the
