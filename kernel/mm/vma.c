@@ -483,6 +483,16 @@ int vibeos_vma_insert_alloc(vibeos_vma_list_t *list, uint64_t base, uint64_t len
     return r;
 }
 
+int vibeos_vma_insert_like(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
+                           const vibeos_vma_t *t) {
+    int r;
+
+    vma_lock();
+    r = vma_insert_tmpl(list, base, len, t);
+    vma_unlock();
+    return r;
+}
+
 int vibeos_vma_change(vibeos_vma_list_t *list, uint64_t base, uint64_t len, uint32_t what,
                       vibeos_prot_t prot, uint32_t user_prot, vibeos_vma_state_t state) {
     int r;

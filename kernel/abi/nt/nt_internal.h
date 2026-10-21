@@ -106,7 +106,11 @@ typedef struct nt_ob {
         } sem;
         struct {
             vibeos_file_t *file;  /* a reference: the image's file             */
-            uint64_t image_size;
+            uint64_t image_size;  /* an image's span, a data section's size */
+            uint32_t data;        /* a data section (W3), not an image        */
+            uint32_t shared;      /* its views map the file's own pages       */
+            uint32_t protect;     /* the section's page protection            */
+            uint32_t attributes;  /* SEC_*, as NtQuerySection reports them    */
         } sec;
     } u;
 } nt_ob_t;
@@ -144,6 +148,13 @@ uint32_t nt_handle_install(vibeos_file_t *f, uint32_t access, uint32_t attribute
 uint32_t nt_handle_ref(uint64_t h, const vibeos_file_ops_t *ops, uint32_t need,
                        vibeos_file_t **out, uint32_t *granted);
 uint32_t nt_close_handle(uint64_t h);
+
+/* ---- memory (memory.c, W3) ---------------------------------------------------------- */
+
+/* A PAGE_* protection as a region's, or -1 for one Windows refuses. `copy_ok`:
+ * whether the copy-on-write pair is allowed - by views and protection changes,
+ * not by private memory being allocated. */
+int nt_prot_to_region(uint32_t page, int copy_ok, vibeos_prot_t *out);
 
 /* ---- creating objects and waiting on them (sync.c) ---------------------------------- */
 

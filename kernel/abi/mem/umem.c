@@ -12,6 +12,8 @@
 #include "vibeos/ksvc.h"
 #include "vibeos/vmspace.h"
 #include "vibeos/abi_linux.h"   /* the kernel's errno values */
+#include "vibeos/fileops.h"
+#include "vibeos/vfs.h"
 
 /* Does any region of the process overlap [base, base + len)? The first one
  * that does, or null. Under the process's mm lock. */
@@ -190,4 +192,116 @@ int vibeos_umem_make(int me, vibeos_procstate_t *ps, uint64_t va) {
         return 0;
     }
     return ks_map_anon(me, va & ~0xFFFull, r->prot) == 0 ? 0 : -1;
+}
+
+static uint32_t g_memfd_seq;
+
+/* A file on /tmp nothing will find, gone with its last reference: a name of
+ * `stem` and a number, tried until one is free. Linux's memfd_create and
+ * shmget, and NT's sections of memory alone (W3 step 5): memory with a file's
+ * interface, on the filesystem here that keeps its files in pages it can
+ * share. Lifted out of the Linux personality's fs.c when NT needed it. */
+vibeos_file_t *vibeos_umem_hidden_file(const char *stem, long *err) {
+    char path[40];
+    vibeos_path_t w;
+    vibeos_file_t *f;
+    uint32_t seq, n, k, tries;
+
+    *err = -VIBEOS_EEXIST;
+    for (tries = 0; tries < 8u && *err == -VIBEOS_EEXIST; tries++) {
+        char digits[10];
+
+        /* The bound before the byte: a stem of 24 or more is cut there
+         * without reading past it (code scanning #278). */
+        for (n = 0; n < 24u && stem[n]; n++) {
+            path[n] = stem[n];
+        }
+        seq = __sync_add_and_fetch(&g_memfd_seq, 1u);
+        for (k = 0; k == 0u || seq != 0u; seq /= 10u) {
+            digits[k++] = (char)('0' + seq % 10u);
+        }
+        while (k > 0u) {
+            path[n++] = digits[--k];
+        }
+        path[n] = 0;
+        *err = vibeos_path_walk("/", "/", path,
+                                vibeos_open_walk_flags(VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_RDWR), &w);
+        if (*err != 0) {
+            return 0;
+        }
+        f = vibeos_open_path(&w, VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_RDWR, 0600u, err);
+        if (f) {
+            f->unlink_on_release = 1;
+            *err = 0;
+            return f;
+        }
+    }
+    return 0;
+}
+
+long vibeos_umem_map_file(int me, vibeos_procstate_t *ps, uint64_t base, uint64_t len,
+                          vibeos_file_t *f, uint64_t off, int shared, const vibeos_vma_t *t) {
+    const vibeos_prot_t access = t->prot;
+    const vibeos_prot_t fill = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE | VIBEOS_PROT_USER);
+    const uint64_t pages = (len + 0xFFFull) / 4096ull;
+    vibeos_vmspace_t v = ks_vm(me);
+    vibeos_vma_t r = *t;
+    uint64_t i;
+    long rc = 0;
+
+    if (shared && !f->ops->share_page) {
+        return -VIBEOS_ENODEV;   /* a file not kept in pages has none to share */
+    }
+    for (i = 0; shared && i < pages && rc == 0; i++) {
+        /* The file's own page, which comes held: the mapping takes a
+         * reference of its own and the one it came with is given back. */
+        void *page = 0;
+        int s = f->ops->share_page(f, off + i * 4096ull, &page);
+
+        if (s == 1) {
+            break;   /* past the file's last page: nothing there to share */
+        }
+        if (s < 0) {
+            rc = s;
+            break;
+        }
+        if (ks_map_page(me, base + i * 4096ull, page,
+                        (vibeos_prot_t)(access | VIBEOS_PROT_SHARED)) != 0) {
+            rc = -VIBEOS_ENOMEM;
+        }
+        ks_page_unhold(page);
+    }
+    /* Private: a page of the process's own for each, written while it is
+     * still writable, then given its protection. A short read is the end of
+     * the file, and the rest stays zeros. */
+    for (i = 0; !shared && i < pages && rc == 0; i++) {
+        long n;
+
+        if (ks_map_anon(me, base + i * 4096ull, fill) != 0) {
+            rc = -VIBEOS_ENOMEM;
+            break;
+        }
+        n = f->ops->pread ? f->ops->pread(f, base + i * 4096ull, 4096u, off + i * 4096ull)
+                          : -VIBEOS_EINVAL;
+        if (n < 0) {
+            rc = n;
+        }
+    }
+    r.backing = shared ? VIBEOS_BACKING_SHARED : VIBEOS_BACKING_FILE;
+    r.backing_offset = 0;
+    r.state = VIBEOS_VMA_PRESENT;
+    if (rc == 0 && vibeos_vma_insert_like(&ps->vmas, base, pages * 4096ull, &r) != 0) {
+        rc = -VIBEOS_ENOMEM;   /* no region, no mapping: rolled back below */
+    }
+    if (rc != 0) {
+        for (i = 0; i < pages; i++) {
+            (void)vibeos_vmspace_unmap(&v, base + i * 4096ull);
+        }
+        ks_tlb_drain();
+        return rc;
+    }
+    if (!shared && access != fill) {
+        vibeos_umem_protect_pages(me, base, base + pages * 4096ull, access);
+    }
+    return 0;
 }

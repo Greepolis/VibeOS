@@ -33,6 +33,7 @@
 #include "vibeos/frame.h"
 #include "vibeos/ptimer.h"
 #include "vibeos/account.h"
+#include "vibeos/umem.h"   /* the address space and the hidden file every personality shares */
 
 /* A Linux sigset_t numbers its bits from zero, this kernel by signal; the two
  * meet only through these (see sig.c). */
@@ -275,7 +276,6 @@ vibeos_procstate_t *linux_ps_hold(int slot);
 
 /* A file on /tmp that is gone with its last reference, under a name that
  * starts with `stem` (fs.c): what memfd_create and shmget make. */
-vibeos_file_t *linux_hidden_file(const char *stem, long *err);
 int linux_ipc_parse(const char *buf, uint32_t len, int64_t *out);
 void linux_mq_reset(void);
 /* POSIX message queues (mqueue.c): a queue's description, and the tunables

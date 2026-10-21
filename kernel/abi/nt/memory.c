@@ -35,7 +35,7 @@
  * guard on a page nobody may touch. `copy_ok` says whether the copy-on-write
  * pair is allowed - not for private memory being allocated, where Windows
  * answers STATUS_INVALID_PAGE_PROTECTION. */
-static int nt_prot_of(uint32_t page, int copy_ok, vibeos_prot_t *out) {
+int nt_prot_to_region(uint32_t page, int copy_ok, vibeos_prot_t *out) {
     const uint32_t base = page & 0xFFu;
     const vibeos_prot_t r = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
 
@@ -185,7 +185,7 @@ static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }
     if (!(type & (VIBEOS_NT_MEM_RESET | VIBEOS_NT_MEM_RESET_UNDO)) &&
-        nt_prot_of((uint32_t)protect, 0, &prot) != 0) {
+        nt_prot_to_region((uint32_t)protect, 0, &prot) != 0) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PAGE_PROTECTION);
     }
     /* The arena is above four gigabytes, and ZeroBits asks for an address
@@ -245,7 +245,8 @@ static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64
         r = vibeos_vma_find(&ps->vmas, start);
         /* Inside one allocation of this personality's: an image's pages, or
          * address space nobody reserved, are not committed by asking. */
-        if (!r || r->alloc_base == 0u || !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
+        if (!r || r->alloc_base == 0u || r->backing != VIBEOS_BACKING_ANON ||
+            !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
             st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
         } else if (vibeos_vma_change(&ps->vmas, start, end - start,
                                      VIBEOS_VMA_CHANGE_PROT | VIBEOS_VMA_CHANGE_STATE, prot,
@@ -297,6 +298,8 @@ static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t s
     r = vibeos_vma_find(&ps->vmas, start);
     if (!r || r->alloc_base == 0u) {
         st = VIBEOS_STATUS_MEMORY_NOT_ALLOCATED;
+    } else if (r->backing != VIBEOS_BACKING_ANON) {
+        st = VIBEOS_STATUS_UNABLE_TO_DELETE_SECTION;   /* a view: NtUnmapViewOfSection's */
     } else {
         ab = r->alloc_base;
         alloc_end = nt_alloc_end(ps, ab);
@@ -361,7 +364,7 @@ static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_
     if (size == 0u || size > ~0ull - 0xFFFull - want) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }
-    if (nt_prot_of((uint32_t)protect, 1, &prot) != 0) {
+    if (nt_prot_to_region((uint32_t)protect, 1, &prot) != 0) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PAGE_PROTECTION);
     }
     start = want & ~0xFFFull;

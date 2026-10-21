@@ -6262,7 +6262,18 @@ static void t_memory_calls(void) {
     fd = SYS2(319, ustr("results"), 1 /* MFD_CLOEXEC */);
     expect(fd >= 0 && SYS3(72, (uint64_t)fd, 1 /* F_GETFD */, 0) == 1 && SYS2(77, (uint64_t)fd, 4096) == 0,
            "memfd_create gives a descriptor, close-on-exec when asked, to a file that can be sized");
-    snprintf(path, sizeof(path), "/tmp/.memfd-%u", 1u);
+    /* Its name is a stem and a number the whole kernel counts - NT's sections
+     * of memory alone take them too (W3) - so it is looked for, not assumed. */
+    {
+        unsigned k;
+
+        for (k = 1; k < 1000u; k++) {
+            snprintf(path, sizeof(path), "/tmp/.memfd-%u", k);
+            if (tmp_stat(path, 1, &st) == 0) {
+                break;
+            }
+        }
+    }
     m = MMAP(0, 4096, 3, MAP_SH, fd, 0);
     expect(m > 0 && kf_poke((uint64_t)m + 5u, &x, 1) == 0 && SYS4(17, (uint64_t)fd, buf, 1, 5) == 1 &&
            ((uint8_t *)kf_uptr(buf))[0] == 'A', "mapped shared, it is memory with a file's interface");

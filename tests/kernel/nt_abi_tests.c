@@ -661,8 +661,9 @@ static void t_sections(void) {
                ST(VIBEOS_STATUS_NOT_IMPLEMENTED), "writing is W4's: refused, not opened read-only");
     expect(open_file(&fh, 0x00120089u, "\\??\\C:\\win\\text.txt") == ST(VIBEOS_STATUS_SUCCESS) &&
            fh >= 16u, "a file opened to read, by its NT path");
-    expect(create_section(&sh, 0x08000000u /* SEC_COMMIT */, fh) ==
-               ST(VIBEOS_STATUS_NOT_IMPLEMENTED), "a data section is W3's");
+    expect(create_section(&sh, 0x08000000u /* SEC_COMMIT */, fh) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, sh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a data section of a file, read-only (W3; t_data_sections has the rest)");
     expect(create_section(&sh, 0x01000000u, fh) == ST(VIBEOS_STATUS_INVALID_IMAGE_FORMAT),
            "an image section of a file that is no image is refused at creation");
     expect(create_section(&sh, 0x01000000u, 8) == ST(VIBEOS_STATUS_OBJECT_TYPE_MISMATCH),
@@ -1052,6 +1053,223 @@ static void t_virtual_memory(void) {
            "no store into the program's memory under its own mm lock");
 }
 
+/* ---- data sections (W3 step 5) ------------------------------------------------- */
+
+static long sec_create(uint64_t *h, uint64_t oa, uint64_t size, uint32_t protect, uint32_t attributes,
+                       uint64_t file) {
+    uint64_t out = kf_ualloc(8), sz = 0;
+    uint64_t rest[3] = { protect, attributes, file };
+    long r;
+
+    if (size != 0u) {
+        sz = kf_ualloc(8);
+        *(uint64_t *)kf_uptr(sz) = size;
+    }
+    kf_next_sp(stack_args(rest, 3));
+    r = nt(VIBEOS_NT_NR_NtCreateSection, out, 0x000F001Fu, oa, sz, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+/* A view: at *base (0: anywhere), from `off` (all ones: no offset pointer),
+ * *size bytes (0: to the end); the base and size it got come back. */
+static long sec_map(uint64_t sec, uint64_t *base, uint64_t off, uint64_t *size, uint32_t protect) {
+    uint64_t b = kf_ualloc(8), s = kf_ualloc(8), o = 0;
+    uint64_t rest[6];
+    long r;
+
+    if (off != ~0ull) {
+        o = kf_ualloc(8);
+        *(uint64_t *)kf_uptr(o) = off;
+    }
+    rest[0] = 0;          /* CommitSize        */
+    rest[1] = o;          /* SectionOffset     */
+    rest[2] = s;          /* ViewSize          */
+    rest[3] = 1;          /* InheritDisposition */
+    rest[4] = 0;          /* AllocationType    */
+    rest[5] = protect;    /* Win32Protect      */
+    *(uint64_t *)kf_uptr(b) = *base;
+    *(uint64_t *)kf_uptr(s) = *size;
+    kf_next_sp(stack_args(rest, 6));
+    r = nt(VIBEOS_NT_NR_NtMapViewOfSection, sec, VIBEOS_NT_CURRENT_PROCESS, b, 0, 0);
+    *base = *(uint64_t *)kf_uptr(b);
+    *size = *(uint64_t *)kf_uptr(s);
+    return r;
+}
+
+static long sec_unmap(uint64_t base) {
+    return nt(VIBEOS_NT_NR_NtUnmapViewOfSection, VIBEOS_NT_CURRENT_PROCESS, base, 0, 0, 0);
+}
+
+static long sec_query(uint64_t sec, uint32_t cls, uint64_t len, vibeos_nt_section_basic_t *out) {
+    uint64_t buf = kf_ualloc(32), got = kf_ualloc(8);
+    uint64_t rest[1] = { got };
+    long r;
+
+    kf_next_sp(stack_args(rest, 1));
+    r = nt(VIBEOS_NT_NR_NtQuerySection, sec, cls, buf, len, 0);
+    memcpy(out, kf_uptr(buf), sizeof(*out));
+    return r;
+}
+
+static void t_data_sections(void) {
+    vibeos_nt_section_basic_t sb;
+    vibeos_nt_memory_basic_t m;
+    uint64_t s1, s2, s3, fh, b1 = 0, z1 = 0, b2 = 0, z2 = 0, b3 = 0, z3 = 0, bx, zx, x, xs;
+    uint8_t q = 'Q', w = 'W', y = 0;
+    char text[12];
+
+    fresh(44);
+    /* Memory alone, named: two views of it are one memory. */
+    expect(sec_create(&s1, oattr("\\BaseNamedObjects\\vibesec", 0), 0x5000u,
+                      VIBEOS_NT_PAGE_READWRITE, 0x08000000u, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a section of memory alone, named, five pages");
+    expect(sec_map(s1, &b1, ~0ull, &z1, VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_SUCCESS) &&
+               sec_map(s1, &b2, 0, &z2, VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_SUCCESS) &&
+               b1 != b2 && (b1 & 0xFFFFu) == 0u && (b2 & 0xFFFFu) == 0u && z1 == 0x5000u && z2 == 0x5000u,
+           "two views, at 64 KiB, the whole section each");
+    expect(kf_peek(b1 + 0x4FFFu, &y, 1) == 0 && y == 0 && kf_poke(b1 + 0x1234u, &q, 1) == 0 &&
+               kf_peek(b2 + 0x1234u, &y, 1) == 0 && y == 'Q',
+           "zeros to begin with, and a store through one view is in the other");
+    expect(kf_poke(b1 + 0x5000u, &q, 1) != 0, "and nothing past the section's last page");
+    expect(vquery(b2 + 0x10u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) && m.base_address == b2 &&
+               m.allocation_base == b2 && m.type == VIBEOS_NT_MEM_MAPPED &&
+               m.state == VIBEOS_NT_MEM_COMMIT && m.protect == VIBEOS_NT_PAGE_READWRITE &&
+               m.region_size == 0x5000u,
+           "a view is an allocation of its own, mapped memory");
+
+    /* Copy-on-write: the process's own copy, which nobody else sees. */
+    expect(sec_map(s1, &b3, ~0ull, &z3, VIBEOS_NT_PAGE_WRITECOPY) == ST(VIBEOS_STATUS_SUCCESS) &&
+               kf_peek(b3 + 0x1234u, &y, 1) == 0 && y == 'Q' && kf_poke(b3 + 0x1234u, &w, 1) == 0 &&
+               kf_peek(b1 + 0x1234u, &y, 1) == 0 && y == 'Q' &&
+               kf_peek(b3 + 0x1234u, &y, 1) == 0 && y == 'W',
+           "a copy-on-write view starts with the section's bytes and keeps its stores");
+
+    /* Opened by its name: the same memory. */
+    {
+        uint64_t out = kf_ualloc(8), bo = 0, zo = 0;
+
+        expect(nt(VIBEOS_NT_NR_NtOpenSection, out, 0x0004u /* SECTION_MAP_READ */,
+                  oattr("\\BaseNamedObjects\\vibesec", 0), 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "NtOpenSection finds it by its name");
+        s2 = *(uint64_t *)kf_uptr(out);
+        expect(sec_map(s2, &bo, ~0ull, &zo, VIBEOS_NT_PAGE_READONLY) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   kf_peek(bo + 0x1234u, &y, 1) == 0 && y == 'Q' && kf_poke(bo, &q, 1) != 0,
+               "a read-only view through it: the same bytes, and no store");
+        bx = 0;
+        zx = 0;
+        expect(sec_map(s2, &bx, ~0ull, &zx, VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+               "a handle with SECTION_MAP_READ alone maps no writable view");
+        expect(sec_unmap(bo) == ST(VIBEOS_STATUS_SUCCESS), "and the view goes");
+    }
+
+    /* What a view may not be. */
+    bx = 0;
+    zx = 0;
+    expect(sec_map(s1, &bx, 0x1000u, &zx, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_MAPPED_ALIGNMENT), "an offset off 64 KiB");
+    zx = 0x6000u;
+    expect(sec_map(s1, &bx, 0, &zx, VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_INVALID_VIEW_SIZE),
+           "a view longer than the section");
+    bx = b1;
+    zx = 0;
+    expect(sec_map(s1, &bx, ~0ull, &zx, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES), "at an address a view holds");
+    bx = 0;
+    expect(sec_map(s1, &bx, ~0ull, &zx, VIBEOS_NT_PAGE_EXECUTE_READ) ==
+               ST(VIBEOS_STATUS_SECTION_PROTECTION), "executable, of a section that is not");
+
+    expect(sec_query(s1, 0, sizeof(sb), &sb) == ST(VIBEOS_STATUS_SUCCESS) &&
+               sb.attributes == 0x08000000u && sb.size == 0x5000u,
+           "NtQuerySection: SEC_COMMIT, the size asked for");
+    expect(sec_query(s1, 1, 64, &sb) == ST(VIBEOS_STATUS_SECTION_NOT_IMAGE) &&
+               sec_query(s1, 0, sizeof(sb) - 1u, &sb) == ST(VIBEOS_STATUS_INFO_LENGTH_MISMATCH),
+           "an image's information of a data section, a short buffer");
+
+    /* A read-only section takes no writable view, whatever the handle may do. */
+    {
+        uint64_t sr = 0, br = 0, zr = 0;
+
+        expect(sec_create(&sr, 0, 0x1000u, VIBEOS_NT_PAGE_READONLY, 0x08000000u, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS) &&
+                   sec_map(sr, &br, ~0ull, &zr, VIBEOS_NT_PAGE_READWRITE) ==
+                   ST(VIBEOS_STATUS_SECTION_PROTECTION),
+               "a writable view of a read-only section, through a handle with every right");
+    }
+    /* A view in two regions - a protection changed on part of it - still goes
+     * whole; private memory is no view. */
+    {
+        uint32_t old = 0;
+        uint64_t pa = 0, pz = 0x1000u;
+
+        expect(vprotect(b2, 0x1000u, VIBEOS_NT_PAGE_READONLY, &old) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   old == VIBEOS_NT_PAGE_READWRITE,
+               "a protection changed on the first page of a view");
+        expect(valloc(&pa, &pz, 0, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                      VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   sec_unmap(pa) == ST(VIBEOS_STATUS_NOT_MAPPED_VIEW),
+               "NtUnmapViewOfSection of private memory is no view's");
+    }
+
+    /* A view is not private memory, and goes whole by its base. */
+    x = b1;
+    xs = 0;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_UNABLE_TO_DELETE_SECTION),
+           "NtFreeVirtualMemory does not release a view");
+    x = b1;
+    xs = 0x1000u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES), "nor commits into one");
+    /* Wine's NtUnmapViewOfSection takes the view an address is in, wherever in
+     * it, and so does this. */
+    expect(sec_unmap(b1 + 0x1000u) == ST(VIBEOS_STATUS_SUCCESS) && kf_peek(b1, &y, 1) != 0 &&
+               kf_peek(b1 + 0x4000u, &y, 1) != 0 && sec_unmap(b1) == ST(VIBEOS_STATUS_NOT_MAPPED_VIEW),
+           "a view is unmapped whole, from any address in it, once");
+    expect(nt(VIBEOS_NT_NR_NtClose, s1, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               kf_peek(b2 + 0x1234u, &y, 1) == 0 && y == 'Q',
+           "the section closed, a view of it keeps its memory");
+    expect(sec_unmap(b2 + 0x3000u) == ST(VIBEOS_STATUS_SUCCESS) && kf_peek(b2, &y, 1) != 0 &&
+               kf_peek(b2 + 0x3000u, &y, 1) != 0,
+           "a view of two regions is unmapped whole, from its second");
+
+    /* A file's: read-only or copy-on-write, of the file's size. */
+    kf_fs_add("/win", 0, 0, 1);
+    kf_fs_add("/win/text.txt", "twelve bytes", 12, 0);
+    kf_fs_add("/win/empty.txt", "", 0, 0);
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\win\\text.txt") == ST(VIBEOS_STATUS_SUCCESS),
+           "a text file opened to read");
+    expect(sec_create(&s3, 0, 0, VIBEOS_NT_PAGE_READWRITE, 0x08000000u, fh) ==
+               ST(VIBEOS_STATUS_ACCESS_DENIED), "a writable section of a file the handle may not write");
+    expect(sec_create(&s3, 0, 0x2000u, VIBEOS_NT_PAGE_READONLY, 0x08000000u, fh) ==
+               ST(VIBEOS_STATUS_SECTION_TOO_BIG), "a section longer than a file nobody can grow");
+    expect(sec_create(&s3, 0, 0, VIBEOS_NT_PAGE_WRITECOPY, 0x08000000u, fh) == ST(VIBEOS_STATUS_SUCCESS) &&
+               sec_query(s3, 0, sizeof(sb), &sb) == ST(VIBEOS_STATUS_SUCCESS) && sb.size == 12u &&
+               sb.attributes == (0x08000000u | 0x00800000u),
+           "a copy-on-write section of the file: its size, SEC_FILE");
+    bx = 0;
+    zx = 0;
+    expect(sec_map(s3, &bx, ~0ull, &zx, VIBEOS_NT_PAGE_WRITECOPY) == ST(VIBEOS_STATUS_SUCCESS) &&
+               zx == 0x1000u && kf_peek(bx, text, 12) == 0 && memcmp(text, "twelve bytes", 12) == 0 &&
+               kf_peek(bx + 12u, &y, 1) == 0 && y == 0 && kf_poke(bx, &w, 1) == 0,
+           "its view holds the file's bytes, zeros after them, and takes a store of its own");
+    {
+        uint64_t fe = 0, se = 0;
+
+        expect(open_file(&fe, 0x00120089u, "\\??\\C:\\win\\empty.txt") == ST(VIBEOS_STATUS_SUCCESS) &&
+                   sec_create(&se, 0, 0, VIBEOS_NT_PAGE_READONLY, 0x08000000u, fe) ==
+                       ST(VIBEOS_STATUS_MAPPED_FILE_SIZE_ZERO),
+               "an empty file and no size");
+    }
+    expect(sec_create(&s3, 0, 0, VIBEOS_NT_PAGE_READWRITE, 0x08000000u, 0) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER_4) &&
+               sec_create(&s3, 0, 0x1000u, VIBEOS_NT_PAGE_NOACCESS, 0x08000000u, 0) ==
+               ST(VIBEOS_STATUS_INVALID_PAGE_PROTECTION) &&
+               sec_create(&s3, 0, 0, VIBEOS_NT_PAGE_READONLY, 0x01000000u, 0) ==
+               ST(VIBEOS_STATUS_INVALID_FILE_FOR_SECTION),
+           "memory alone with no size, a section nobody may read, an image of no file");
+    expect(kf_uaccess_under_mm() == 0u, "no store into the program's memory under its own mm lock");
+}
+
 int test_nt_abi(void) {
     g_fail = 0;
     t_registry();
@@ -1069,5 +1287,6 @@ int test_nt_abi(void) {
     t_open_file_permissions();
     t_object_share();
     t_virtual_memory();
+    t_data_sections();
     return g_fail ? -1 : 0;
 }

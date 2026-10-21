@@ -109,6 +109,13 @@ int vibeos_vma_insert_alloc(vibeos_vma_list_t *list, uint64_t base, uint64_t len
                             vibeos_prot_t prot, uint32_t user_prot, vibeos_vma_state_t state,
                             uint64_t alloc_base, uint32_t alloc_prot);
 
+/* Add a region like `t` - every field of it but the range and the link - at
+ * [base, base+len). For a caller that has more to say than insert or
+ * insert_alloc carry: a view of a section is a file's pages, of an allocation,
+ * with a spelled protection (W3 step 5). As vibeos_vma_insert otherwise. */
+int vibeos_vma_insert_like(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
+                           const vibeos_vma_t *t);
+
 /* Change [base, base+len): its protection (`prot` and `user_prot` together) if
  * `what` has VIBEOS_VMA_CHANGE_PROT, its state - commit (DEMAND), decommit
  * (RESERVED) - if it has VIBEOS_VMA_CHANGE_STATE; splitting as protect does.

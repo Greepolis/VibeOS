@@ -14,6 +14,7 @@
 
 #include "vibeos/procstate.h"
 #include "vibeos/vma.h"
+#include "vibeos/file.h"
 
 /* The first region overlapping [base, base + len), or null. */
 vibeos_vma_t *vibeos_umem_region_in(vibeos_procstate_t *ps, uint64_t base, uint64_t len);
@@ -41,6 +42,21 @@ int vibeos_umem_untouched(int me, vibeos_procstate_t *ps, uint64_t va);
  * (made, or there already, or not a page a region promises), -1 if no frame
  * could be had. */
 int vibeos_umem_make(int me, vibeos_procstate_t *ps, uint64_t va);
+
+/* A file on /tmp that nothing names, gone with its last reference; `stem` is
+ * its path's prefix ("/tmp/.shm-"). Null with *err set when none could be made.
+ * Not under the mm lock: it walks a path. */
+vibeos_file_t *vibeos_umem_hidden_file(const char *stem, long *err);
+
+/* Map `len` bytes of file `f` from `off` at [base, base+len) of task `me`, and
+ * describe them with a region like `t` (its protection, spelling and
+ * allocation; the backing is set here). Shared: the file's own pages, which a
+ * store reaches - only a filesystem that keeps its files in pages can give
+ * them, -ENODEV otherwise; pages past the file's end are left out. Private:
+ * pages of the process's own, filled from the file, zeros past its end. All or
+ * nothing: 0, or a negative errno with nothing mapped. Under the mm lock. */
+long vibeos_umem_map_file(int me, vibeos_procstate_t *ps, uint64_t base, uint64_t len,
+                          vibeos_file_t *f, uint64_t off, int shared, const vibeos_vma_t *t);
 
 /* Give the pages of [addr, end) that exist the protection `prot`: present
  * ones, swapped ones, copy-on-write ones as the page-table layer keeps each.

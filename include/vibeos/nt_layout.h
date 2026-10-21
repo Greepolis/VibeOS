@@ -66,6 +66,17 @@
 #define VIBEOS_STATUS_INVALID_PARAMETER_2    0xC00000F0u
 #define VIBEOS_STATUS_INVALID_PARAMETER_3    0xC00000F1u
 #define VIBEOS_STATUS_INVALID_PARAMETER_4    0xC00000F2u
+#define VIBEOS_STATUS_INVALID_PARAMETER_6    0xC00000F4u
+/* The sections' (W3 step 5). */
+#define VIBEOS_STATUS_NOT_MAPPED_VIEW        0xC0000019u
+#define VIBEOS_STATUS_UNABLE_TO_DELETE_SECTION 0xC000001Bu
+#define VIBEOS_STATUS_INVALID_VIEW_SIZE      0xC000001Fu
+#define VIBEOS_STATUS_INVALID_FILE_FOR_SECTION 0xC0000020u
+#define VIBEOS_STATUS_SECTION_TOO_BIG        0xC0000040u
+#define VIBEOS_STATUS_SECTION_NOT_IMAGE      0xC0000049u
+#define VIBEOS_STATUS_SECTION_PROTECTION     0xC000004Eu
+#define VIBEOS_STATUS_MAPPED_FILE_SIZE_ZERO  0xC000011Eu
+#define VIBEOS_STATUS_MAPPED_ALIGNMENT       0xC0000220u
 
 /* OBJECT_ATTRIBUTES on x64: 48 bytes. */
 #define VIBEOS_OA_LENGTH          0x00u
@@ -243,6 +254,16 @@ typedef struct {
 } vibeos_nt_memory_basic_t;
 
 #define VIBEOS_NT_MEMORY_BASIC_INFORMATION 0u
+
+/* SECTION_BASIC_INFORMATION, NtQuerySection's class 0: 24 bytes on x64. */
+typedef struct {
+    uint64_t base_address;
+    uint32_t attributes;
+    uint32_t pad;
+    uint64_t size;
+} vibeos_nt_section_basic_t;
+
+#define VIBEOS_NT_SECTION_BASIC_INFORMATION 0u
 
 /* AllocationType, FreeType, and MEMORY_BASIC_INFORMATION's State and Type. */
 #define VIBEOS_NT_MEM_COMMIT      0x00001000u

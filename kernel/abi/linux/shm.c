@@ -141,7 +141,7 @@ static long linux_sys_shmget(uint64_t key, uint64_t size, uint64_t flg) {
     }
     linux_ipc_unlock();
     /* The file first, outside the lock: making it walks a path. */
-    f = linux_hidden_file("/tmp/.shm-", &err);
+    f = vibeos_umem_hidden_file("/tmp/.shm-", &err);
     if (!f) {
         return err;
     }

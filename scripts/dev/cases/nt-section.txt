@@ -1,5 +1,6 @@
-# Image sections (kernel/abi/nt/section.c, docs/abi/windows.md W2), broken one
-# rule at a time; caught by tests/kernel/nt_abi_tests.c on the host. NtOpenFile's
+# Image sections (kernel/abi/nt/section.c, docs/abi/windows.md W2) and data
+# sections (W3 step 5), broken one rule at a time; caught by
+# tests/kernel/nt_abi_tests.c on the host (t_sections, t_data_sections). NtOpenFile's
 # path rules are in nt-openfile.txt, whose target is file.c.
 #
 # Target source: kernel/abi/nt/section.c
@@ -13,9 +14,11 @@
 
 ### a data section is answered with an image
 --- old
-    if (!(attributes & NT_SEC_IMAGE) || file_h == 0u) {
+    if (!(attributes & NT_SEC_IMAGE)) {
+        return create_data_section(
 +++ new
-    if (file_h == 0u) {
+    if (0) {
+        return create_data_section(
 
 ### the console is taken for a file to map
 --- old
@@ -50,3 +53,90 @@
 +++ new
      * of another file (M-106). Asked again at every map, below. */
     if (0) {
+
+### views of memory alone are copies, not the section's pages
+--- old
+        rc = vibeos_umem_map_file(me, ps, base, len, file, off, shared, &t);
++++ new
+        rc = vibeos_umem_map_file(me, ps, base, len, file, off, 0 && shared, &t);
+
+### a copy-on-write view shares the section's pages
+--- old
+                     (protect & 0xFFu) != VIBEOS_NT_PAGE_WRITECOPY &&
++++ new
+                     1 &&
+
+### a writable view of a read-only section is made
+--- old
+        return s_write ? 0u : VIBEOS_STATUS_SECTION_PROTECTION;
+    case VIBEOS_NT_PAGE_WRITECOPY:
++++ new
+        return 0u;
+    case VIBEOS_NT_PAGE_WRITECOPY:
+
+### a handle's rights do not bound its views
+--- old
+    if ((granted & need) != need) {
++++ new
+    if (0) {
+
+### a view may start anywhere in the section
+--- old
+    if ((off & (VIBEOS_NT_ALLOCATION_GRANULARITY - 1u)) != 0u ||
++++ new
+    if (0 ||
+
+### a view may run past the section
+--- old
+    } else if (want_size > sec->size - off) {
++++ new
+    } else if (0) {
+
+### a view may be placed over another
+--- old
+        } else if (vibeos_umem_region_in(ps, base, len)) {
+            st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
+        }
+    } else {
+        base = vibeos_umem_place(ps, len, VIBEOS_NT_ALLOCATION_GRANULARITY);
++++ new
+        } else if (0) {
+            st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
+        }
+    } else {
+        base = vibeos_umem_place(ps, len, VIBEOS_NT_ALLOCATION_GRANULARITY);
+
+### a writable section is made of a file the handle may not write
+--- old
+            ((protect & (VIBEOS_NT_PAGE_READWRITE | VIBEOS_NT_PAGE_EXECUTE_READWRITE)) &&
+             !(granted & NT_FILE_WRITE_DATA))) {
++++ new
+            (0 && !(granted & NT_FILE_WRITE_DATA))) {
+
+### a file's section is taken longer than the file
+--- old
+        } else if (size > st.size) {
++++ new
+        } else if (0) {
+
+### an unmap takes only the view's first region
+--- old
+        for (end = ab; (r = vibeos_vma_find(&ps->vmas, end)) != 0 && r->alloc_base == ab;) {
+            end = r->base + r->len;
+        }
++++ new
+        r = vibeos_vma_find(&ps->vmas, ab);
+        end = r->base + r->len;
+
+### private memory is unmapped as a view
+--- old
+    if (!r || r->alloc_base == 0u || r->backing == VIBEOS_BACKING_ANON) {
++++ new
+    if (!r || r->alloc_base == 0u) {
+
+### NtQuerySection reports another size
+--- old
+        sbi.size = o->u.sec.image_size;
++++ new
+        sbi.size = o->u.sec.image_size + 1u;
+
