@@ -963,6 +963,14 @@ static void t_virtual_memory(void) {
                       VIBEOS_NT_PAGE_NOACCESS | VIBEOS_NT_PAGE_GUARD) ==
                ST(VIBEOS_STATUS_INVALID_PAGE_PROTECTION),
            "copy-on-write private memory, two protections at once, a guarded no-access page");
+    /* ZeroBits with an address the caller names: the address decides, and a
+     * conflict there is a conflict (Wine's ntdll:virtual). */
+    x = a;
+    xs = 0x1000u;
+    expect(valloc(&x, &xs, 12, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                  VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "ZeroBits does not hide a conflict at a named address");
+    x = 0;
     expect(valloc(&x, &xs, 0, 0u, VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
                valloc(&x, &xs, 0, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_RESET,
                       VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
@@ -1002,6 +1010,20 @@ static void t_virtual_memory(void) {
                ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
            "a range running out of its allocation is refused");
 
+    /* A decommit to the end, said from inside the allocation, is refused;
+     * one of two bytes takes the pages they fall in (Wine's ntdll:virtual). */
+    x = b + 0x1001u;
+    xs = 0;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_DECOMMIT) == ST(VIBEOS_STATUS_FREE_VM_NOT_AT_BASE) &&
+               x == b + 0x1001u && xs == 0u,
+           "a decommit of size zero not at the base's page, and nothing written back");
+    x = b + 0xffeu;
+    xs = 0;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_DECOMMIT) == ST(VIBEOS_STATUS_SUCCESS) && x == b &&
+               xs == 0u && kf_peek(b + 0x3000u, &y, 1) != 0 &&
+               vquery(b, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.state == VIBEOS_NT_MEM_RESERVE && m.region_size == 0x10000u,
+           "one from the base's page decommits the whole allocation and says size zero");
     /* Decommit: the pages go, the range stays reserved, and a commit again is
      * fresh zeros. */
     x = b + 0x2000u;

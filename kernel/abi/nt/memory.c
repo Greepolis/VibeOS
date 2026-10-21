@@ -188,11 +188,13 @@ static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64
         nt_prot_to_region((uint32_t)protect, 0, &prot) != 0) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PAGE_PROTECTION);
     }
-    /* The arena is above four gigabytes, and ZeroBits asks for an address
-     * below 2^(32 - ZeroBits) (or under a mask, past 31): nothing it could
-     * place would do. Refused as Windows refuses a request it has no room
-     * for. */
-    if (zero_bits != 0u) {
+    /* ZeroBits bounds where the kernel places an allocation - below 2^(32 -
+     * ZeroBits), or under a mask past 31 - and the arena is above four
+     * gigabytes, so nothing it could place would do: refused as Windows
+     * refuses a request it has no room for. An address the caller names is
+     * not placed, and Wine's test asks that a conflict there be a conflict
+     * whatever ZeroBits says (ntdll:virtual, W3 step 9). */
+    if (zero_bits != 0u && want == 0u) {
         return NT_STATUS(VIBEOS_STATUS_NO_MEMORY);
     }
 
@@ -304,7 +306,13 @@ static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t s
         ab = r->alloc_base;
         alloc_end = nt_alloc_end(ps, ab);
         end = size == 0u ? alloc_end : NT_PAGE_ROUND(want + size);
-        if (type == VIBEOS_NT_MEM_RELEASE) {
+        if (type == VIBEOS_NT_MEM_DECOMMIT && size == 0u && start != ab) {
+            /* "To the end of the allocation" is said from its base - its
+             * page, base + 0xffe being as good as the base: a size of zero
+             * from any other page is refused, as Windows does (Wine's
+             * ntdll:virtual, W3 step 9). */
+            st = VIBEOS_STATUS_FREE_VM_NOT_AT_BASE;
+        } else if (type == VIBEOS_NT_MEM_RELEASE) {
             if (start != ab) {
                 st = VIBEOS_STATUS_FREE_VM_NOT_AT_BASE;
             } else if (end != alloc_end) {
@@ -335,7 +343,10 @@ static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t s
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
-    if (nt_put64(base_u, start) != 0 || nt_put64(size_u, end - start) != 0) {
+    /* A decommit to the end reports a size of zero, as Windows since 1709
+     * does and Wine's test expects; everything else, the range it took. */
+    if (nt_put64(base_u, start) != 0 ||
+        nt_put64(size_u, type == VIBEOS_NT_MEM_DECOMMIT && size == 0u ? 0u : end - start) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);

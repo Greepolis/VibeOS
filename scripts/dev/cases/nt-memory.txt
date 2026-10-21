@@ -146,3 +146,21 @@
 +++ new
     } else if (0) {
         st = VIBEOS_STATUS_UNABLE_TO_DELETE_SECTION;   /* a view: NtUnmapViewOfSection's */
+
+### ZeroBits refuses a named address before its conflict is seen (W3 step 9)
+--- old
+    if (zero_bits != 0u && want == 0u) {
++++ new
+    if (zero_bits != 0u) {
+
+### a decommit of size zero is taken from inside the allocation (W3 step 9)
+--- old
+        if (type == VIBEOS_NT_MEM_DECOMMIT && size == 0u && start != ab) {
++++ new
+        if (0) {
+
+### a decommit to the end reports the range it took (W3 step 9)
+--- old
+        nt_put64(size_u, type == VIBEOS_NT_MEM_DECOMMIT && size == 0u ? 0u : end - start) != 0) {
++++ new
+        nt_put64(size_u, end - start) != 0) {
