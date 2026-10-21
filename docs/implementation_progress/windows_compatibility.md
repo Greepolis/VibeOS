@@ -56,6 +56,9 @@ loader, objects and waits, memory, files, threads and exceptions, processes, the
 - `kernel/arch/x86_64/mm_bridge.c` (`hw_map_elf_image`): an image's zero-fill
   `.bss` in the high window is left to the page fault; the boot counts the
   pages (`pages_deferred`).
+- `kernel/abi/nt/section.c`: data sections - of memory alone, shared by their
+  views, or of a file, copied - NtOpenSection, NtQuerySection and
+  NtUnmapViewOfSection; kernel32's file-mapping functions over them.
 
 ## Where the oracle stands
 
@@ -66,5 +69,5 @@ W2".
 
 ## Next checkpoint
 
-- W3: memory - the rest of it: data sections, and the reviews' M-106, M-100 and M-108 - measured by `ntdll:virtual` and `kernel32:virtual`. It also
+- W3: memory - the rest of it: the reviews' M-106, M-100 and M-108 - measured by `ntdll:virtual` and `kernel32:virtual`. It also
   removes the memory pressure under which the winetest boots met M-070.

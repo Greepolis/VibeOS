@@ -445,6 +445,19 @@ Order, each a commit with host tests and sabotage cases:
 5. **Data sections.** SEC_COMMIT sections backed by an unnamed tmpfs file (as
    SysV shared memory is), file-backed views, NtOpenSection, NtQuerySection,
    NtUnmapViewOfSection.
+   *Done:* a section of memory alone is a file on /tmp nothing names, and its
+   views map that file's own pages - one memory, however many views. A file's
+   section is read-only or copy-on-write, because NtOpenFile opens for reading
+   alone until W4, and its views are the process's own copies: a later change
+   to the file does not show through them, which is the gap. A view is an
+   allocation based at itself, bounded by the section's protection and the
+   handle's rights, placed at 64 KiB; NtUnmapViewOfSection takes it whole from
+   any address in it, as Wine's does, and NtFreeVirtualMemory refuses it.
+   kernel32 has CreateFileMapping, OpenFileMapping, MapViewOfFile(Ex) and
+   UnmapViewOfFile. hello.exe stores through one view and reads through
+   another at boot (`sec_shared`). Not yet: SectionImageInformation, a view
+   placed at an address for an image, unmapping an image's view, SEC_RESERVE
+   as anything but SEC_COMMIT.
 6. **Views from the handle's file (M-106's remainder).** The page cache learns
    files by mount and node, so a view is mapped from the description its handle
    holds and never goes back to the name.
