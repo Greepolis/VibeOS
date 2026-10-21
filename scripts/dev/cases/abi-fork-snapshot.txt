@@ -13,35 +13,43 @@
 
 ### fork copies the break after releasing the address-space lock
 --- old
-    cps->brk_cur = pps->brk_cur;
-    __atomic_store_n(&cps->mmap_cur,
-                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
-                     __ATOMIC_RELEASE);
+        cps->mm->brk_cur = pps->mm->brk_cur;
+        __atomic_store_n(&cps->mm->mmap_cur,
+                         __atomic_load_n(&pps->mm->mmap_cur, __ATOMIC_ACQUIRE),
+                         __ATOMIC_RELEASE);
+    }
     /* The parent's tables and list have both been read; release before the
      * child-only setup below. */
     ks_mm_unlock(pps);
 +++ new
-    __atomic_store_n(&cps->mmap_cur,
-                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
-                     __ATOMIC_RELEASE);
+        __atomic_store_n(&cps->mm->mmap_cur,
+                         __atomic_load_n(&pps->mm->mmap_cur, __ATOMIC_ACQUIRE),
+                         __ATOMIC_RELEASE);
+    }
     ks_mm_unlock(pps);
-    cps->brk_cur = pps->brk_cur;
+    if (!share) {
+        cps->mm->brk_cur = pps->mm->brk_cur;
+    }
 
 ### fork copies the mapping cursor after releasing it
 --- old
-    cps->brk_cur = pps->brk_cur;
-    __atomic_store_n(&cps->mmap_cur,
-                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
-                     __ATOMIC_RELEASE);
+        cps->mm->brk_cur = pps->mm->brk_cur;
+        __atomic_store_n(&cps->mm->mmap_cur,
+                         __atomic_load_n(&pps->mm->mmap_cur, __ATOMIC_ACQUIRE),
+                         __ATOMIC_RELEASE);
+    }
     /* The parent's tables and list have both been read; release before the
      * child-only setup below. */
     ks_mm_unlock(pps);
 +++ new
-    cps->brk_cur = pps->brk_cur;
+        cps->mm->brk_cur = pps->mm->brk_cur;
+    }
     ks_mm_unlock(pps);
-    __atomic_store_n(&cps->mmap_cur,
-                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
-                     __ATOMIC_RELEASE);
+    if (!share) {
+        __atomic_store_n(&cps->mm->mmap_cur,
+                         __atomic_load_n(&pps->mm->mmap_cur, __ATOMIC_ACQUIRE),
+                         __ATOMIC_RELEASE);
+    }
 
 ### setpgid joins a group nobody is in
 --- old
@@ -65,3 +73,14 @@
                 found = linux_task_live(i) && ks_id(i)->pgid == group && ks_id(i)->sid == sid;
 +++ new
                 found = linux_task_live(i) && ks_id(i)->pid == group && ks_id(i)->sid == sid;
+
+### a CLONE_VM child gets a copy of the address space's bookkeeping (M-100)
+--- old
+    if (cps && share) {
+        ks_mm_share(cps, pps);
+    }
++++ new
+    if (cps && share && 0) {
+        ks_mm_share(cps, pps);
+    }
+

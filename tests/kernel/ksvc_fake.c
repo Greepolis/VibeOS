@@ -49,6 +49,36 @@ typedef struct {
 
 static kf_task_t g_t[KF_SLOTS];
 static vibeos_procstate_t g_ps[KF_PROCS];
+/* Their address spaces' bookkeeping (M-100), one each at most. */
+static vibeos_mm_t g_kf_mm[KF_PROCS];
+
+static vibeos_mm_t *kf_mm_new(void) {
+    uint32_t i;
+    for (i = 0; i < KF_PROCS; i++) {
+        if (g_kf_mm[i].refs == 0u) {
+            memset(&g_kf_mm[i], 0, sizeof(g_kf_mm[i]));
+            g_kf_mm[i].refs = 1u;
+            return &g_kf_mm[i];
+        }
+    }
+    return 0;
+}
+
+static void kf_mm_put(vibeos_mm_t *m) {
+    if (m && m->refs) {
+        if (m->refs == 1u) {
+            vibeos_vma_clear(&m->vmas);
+        }
+        m->refs--;
+    }
+}
+
+void ks_mm_share(vibeos_procstate_t *child, vibeos_procstate_t *parent) {
+    vibeos_mm_t *own = child->mm;
+    parent->mm->refs++;
+    child->mm = parent->mm;
+    kf_mm_put(own);
+}
 static int g_cur = -1;
 static uint32_t g_next_pid_v = 100;
 static uint64_t g_ticks_v;
@@ -131,7 +161,7 @@ static int kf_demand(uint64_t va, int write, int make) {
     if (g_cur < 0 || !g_t[g_cur].has_as || !g_t[g_cur].ps) {
         return 0;
     }
-    r = vibeos_vma_find(&g_t[g_cur].ps->vmas, va);
+    r = vibeos_vma_find(&g_t[g_cur].ps->mm->vmas, va);
     if (!r || r->state != VIBEOS_VMA_DEMAND || !(r->prot & VIBEOS_PROT_USER) ||
         (write && !(r->prot & VIBEOS_PROT_WRITE))) {
         return 0;
@@ -520,6 +550,7 @@ uint32_t kf_net_udp_sent(uint32_t *last_payload_len) {
 
 static void kf_procstate_init(vibeos_procstate_t *ps) {
     memset(ps, 0, sizeof(*ps));
+    ps->mm = kf_mm_new();
     vibeos_fdtable_init(&ps->files);
     ps->cwd[0] = '/';
     ps->root[0] = '/';
@@ -527,8 +558,8 @@ static void kf_procstate_init(vibeos_procstate_t *ps) {
     linux_procstate_defaults(ps);
     ps->refs = 1u;
     ps->files_users = 1u;
-    ps->brk_cur = 0x10000000ull;
-    ps->mmap_cur = 0x20000000ull;
+    ps->mm->brk_cur = 0x10000000ull;
+    ps->mm->mmap_cur = 0x20000000ull;
 }
 
 static void kf_pipe_lock(void) {}
@@ -609,6 +640,7 @@ void kf_reset(void) {
     g_kbd_len = g_kbd_at = 0;
     vibeos_pipe_reset();
     memset(g_ps, 0, sizeof(g_ps));
+    memset(g_kf_mm, 0, sizeof(g_kf_mm));
     memset(g_user, 0, sizeof(g_user));
     memset(g_files, 0, sizeof(g_files));
     (void)vibeos_task_table_init(KF_SLOTS);
@@ -1112,7 +1144,7 @@ static int kf_could_fault(uint64_t va, uint64_t len) {
 int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len) {
     uint64_t d = (uint64_t)(uintptr_t)dst, s = (uint64_t)(uintptr_t)src, done = 0;
 
-    if (g_cur >= 0 && g_t[g_cur].ps && g_t[g_cur].ps->mm_busy && len != 0u &&
+    if (g_cur >= 0 && g_t[g_cur].ps && g_t[g_cur].ps->mm->mm_busy && len != 0u &&
         (kf_could_fault(d, len) || kf_could_fault(s, len))) {
         g_uaccess_under_mm++;
     }
@@ -1176,7 +1208,7 @@ int ks_copy_user_string(uint64_t uptr, char *dst, int max) {
     return 0;
 }
 
-void ks_mm_lock(vibeos_procstate_t *ps) { ps->mm_busy = 1u; }
+void ks_mm_lock(vibeos_procstate_t *ps) { ps->mm->mm_busy = 1u; }
 /* What a sibling thread does the instant the address-space lock is released:
  * the test's to supply, fired once. A fork that reads the parent's state after
  * letting go of the lock reads what this left (M-078). */
@@ -1185,7 +1217,7 @@ void kf_on_mm_unlock(void (*fn)(vibeos_procstate_t *ps)) { g_mm_unlock_hook = fn
 void ks_mm_unlock(vibeos_procstate_t *ps) {
     void (*fn)(vibeos_procstate_t *) = g_mm_unlock_hook;
 
-    ps->mm_busy = 0u;
+    ps->mm->mm_busy = 0u;
     if (fn) {
         g_mm_unlock_hook = 0;
         fn(ps);
@@ -1292,6 +1324,8 @@ void ks_procstate_put(vibeos_procstate_t *ps) {
         /* As the architecture's: the last reference closes a table nobody left. */
         if (ps->refs == 1u) {
             vibeos_fdtable_destroy(&ps->files);
+            kf_mm_put(ps->mm);
+            ps->mm = 0;
         }
         ps->refs--;
     }

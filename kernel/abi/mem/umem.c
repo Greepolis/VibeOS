@@ -20,7 +20,7 @@
 vibeos_vma_t *vibeos_umem_region_in(vibeos_procstate_t *ps, uint64_t base, uint64_t len) {
     vibeos_vma_t *v;
 
-    for (v = ps->vmas.head; v; v = v->next) {
+    for (v = ps->mm->vmas.head; v; v = v->next) {
         if (v->base < base + len && base < v->base + v->len) {
             return v;
         }
@@ -33,7 +33,7 @@ int vibeos_umem_covered(vibeos_procstate_t *ps, uint64_t addr, uint64_t end) {
     uint64_t va;
 
     for (va = addr; va < end;) {
-        vibeos_vma_t *v = vibeos_vma_find(&ps->vmas, va);
+        vibeos_vma_t *v = vibeos_vma_find(&ps->mm->vmas, va);
         if (!v) {
             return 0;
         }
@@ -52,7 +52,7 @@ int vibeos_umem_as_room(const vibeos_procstate_t *ps, uint64_t more) {
     if (ps->rlim_cur[VIBEOS_RLIM_AS] == VIBEOS_RLIM_INFINITY) {
         return 1;
     }
-    for (v = ps->vmas.head; v; v = v->next) {
+    for (v = ps->mm->vmas.head; v; v = v->next) {
         total += v->len;
     }
     return total <= ps->rlim_cur[VIBEOS_RLIM_AS];
@@ -68,7 +68,7 @@ int vibeos_umem_as_room(const vibeos_procstate_t *ps, uint64_t more) {
  * A range whose mapping later fails stays a hole: address space, not memory. */
 uint64_t vibeos_umem_place(vibeos_procstate_t *ps, uint64_t bytes, uint64_t align) {
     const uint64_t mask = align - 1u;
-    uint64_t base = __atomic_load_n(&ps->mmap_cur, __ATOMIC_ACQUIRE);
+    uint64_t base = __atomic_load_n(&ps->mm->mmap_cur, __ATOMIC_ACQUIRE);
     vibeos_vma_t *v;
 
     for (;;) {
@@ -86,7 +86,7 @@ uint64_t vibeos_umem_place(vibeos_procstate_t *ps, uint64_t bytes, uint64_t alig
         }
         base = v->base + v->len;
     }
-    __atomic_store_n(&ps->mmap_cur, base + bytes, __ATOMIC_RELEASE);
+    __atomic_store_n(&ps->mm->mmap_cur, base + bytes, __ATOMIC_RELEASE);
     return base;
 }
 
@@ -103,7 +103,7 @@ long vibeos_umem_unmap(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t e
      * pool can be empty: then nothing is unmapped and the caller says ENOMEM,
      * as Linux does past its map count. Unmapping anyway left the pages gone
      * and a region still describing them. */
-    if (vibeos_vma_remove(&ps->vmas, addr, end - addr) == VIBEOS_VMA_REFUSED) {
+    if (vibeos_vma_remove(&ps->mm->vmas, addr, end - addr) == VIBEOS_VMA_REFUSED) {
         return -VIBEOS_ENOMEM;
     }
     for (va = addr; va < end; va += 4096ull) {
@@ -174,7 +174,7 @@ void vibeos_umem_protect_pages(int me, uint64_t addr, uint64_t end, vibeos_prot_
 }
 
 int vibeos_umem_untouched(int me, vibeos_procstate_t *ps, uint64_t va) {
-    const vibeos_vma_t *r = vibeos_vma_find(&ps->vmas, va);
+    const vibeos_vma_t *r = vibeos_vma_find(&ps->mm->vmas, va);
     vibeos_vmspace_t v = ks_vm(me);
     const uint64_t *e;
 
@@ -186,7 +186,7 @@ int vibeos_umem_untouched(int me, vibeos_procstate_t *ps, uint64_t va) {
 }
 
 int vibeos_umem_make(int me, vibeos_procstate_t *ps, uint64_t va) {
-    const vibeos_vma_t *r = vibeos_vma_find(&ps->vmas, va);
+    const vibeos_vma_t *r = vibeos_vma_find(&ps->mm->vmas, va);
 
     if (!vibeos_umem_untouched(me, ps, va)) {
         return 0;
@@ -290,7 +290,7 @@ long vibeos_umem_map_file(int me, vibeos_procstate_t *ps, uint64_t base, uint64_
     r.backing = shared ? VIBEOS_BACKING_SHARED : VIBEOS_BACKING_FILE;
     r.backing_offset = 0;
     r.state = VIBEOS_VMA_PRESENT;
-    if (rc == 0 && vibeos_vma_insert_like(&ps->vmas, base, pages * 4096ull, &r) != 0) {
+    if (rc == 0 && vibeos_vma_insert_like(&ps->mm->vmas, base, pages * 4096ull, &r) != 0) {
         rc = -VIBEOS_ENOMEM;   /* no region, no mapping: rolled back below */
     }
     if (rc != 0) {

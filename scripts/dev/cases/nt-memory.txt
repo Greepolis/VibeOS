@@ -37,12 +37,12 @@
         if (!r || r->alloc_base == 0u || r->backing != VIBEOS_BACKING_ANON ||
             !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
             st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
-        } else if (vibeos_vma_change(&ps->vmas, start, end - start,
+        } else if (vibeos_vma_change(&ps->mm->vmas, start, end - start,
                                      VIBEOS_VMA_CHANGE_PROT | VIBEOS_VMA_CHANGE_STATE, prot,
 +++ new
         if (!r) {
             st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
-        } else if (vibeos_vma_change(&ps->vmas, start, end - start,
+        } else if (vibeos_vma_change(&ps->mm->vmas, start, end - start,
                                      VIBEOS_VMA_CHANGE_PROT | VIBEOS_VMA_CHANGE_STATE, prot,
 
 ### a commit leaves the pages already made as they were

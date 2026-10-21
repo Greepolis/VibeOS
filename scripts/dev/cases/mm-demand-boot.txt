@@ -26,8 +26,8 @@
 
 ### the range check accepts only the stack's untouched pages
 --- old
-    r = vibeos_vma_find(&t->ps->vmas, va);
+    r = vibeos_vma_find(&t->ps->mm->vmas, va);
     return r && r->state == VIBEOS_VMA_DEMAND && (r->prot & VIBEOS_PROT_USER) &&
 +++ new
-    r = vibeos_vma_find(&t->ps->vmas, va);
+    r = vibeos_vma_find(&t->ps->mm->vmas, va);
     return 0 && r && r->state == VIBEOS_VMA_DEMAND && (r->prot & VIBEOS_PROT_USER) &&

@@ -19,11 +19,11 @@
 
 ### munmap unmaps whatever the region list said
 --- old
-    if (vibeos_vma_remove(&ps->vmas, addr, end - addr) == VIBEOS_VMA_REFUSED) {
+    if (vibeos_vma_remove(&ps->mm->vmas, addr, end - addr) == VIBEOS_VMA_REFUSED) {
         return -VIBEOS_ENOMEM;
     }
 +++ new
-    (void)vibeos_vma_remove(&ps->vmas, addr, end - addr);
+    (void)vibeos_vma_remove(&ps->mm->vmas, addr, end - addr);
 
 
 ### placement ignores the alignment

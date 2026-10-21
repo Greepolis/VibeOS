@@ -4547,6 +4547,25 @@ static void t_clone_l6(void) {
         (void)kf_peek(word, &seen, 4u);       /* read through the parent's */
         expect(child >= 0 && seen == 9u, "and on the parent's memory: what it stores, the parent reads");
     }
+    /* One address space, as one object (M-100): what the child maps is in the
+     * parent's list - so the parent can change it, and does not map over it -
+     * and the break they move is one break. */
+    if (child >= 0) {
+        long cm, pm, b0, b1;
+
+        expect(ks_ps(child)->mm == ks_ps(me)->mm && ks_ps(me)->mm->refs == 2u,
+               "the child's address space is the parent's, counted twice");
+        kf_set_current(child);
+        cm = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+        b0 = SYS1(12, 0);
+        b1 = SYS1(12, (uint64_t)b0 + 8192u);
+        kf_set_current(me);
+        expect(cm > 0 && SYS3(10, (uint64_t)cm, 4096, 1) == 0,
+               "the parent changes the protection of a mapping its CLONE_VM child made");
+        pm = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+        expect(pm > 0 && pm != cm, "and its own next mapping goes around it");
+        expect(b1 == b0 + 8192 && SYS1(12, 0) == b1, "the break the child moved is the parent's");
+    }
 
     pid = sys(56, LINUX_CLONE_PARENT | 17u, 0, 0, 0, 0, 0, 0);
     child = slot_of_pid(pid);
@@ -5733,8 +5752,8 @@ static void t_processes(void) {
 /* ---- M-078, M-079 ------------------------------------------------------------------- */
 
 static void sibling_moves_the_break(vibeos_procstate_t *ps) {
-    ps->brk_cur += 0x5000u;
-    ps->mmap_cur += 0x9000u;
+    ps->mm->brk_cur += 0x5000u;
+    ps->mm->mmap_cur += 0x9000u;
 }
 
 static void t_fork_snapshot_and_groups(void) {
@@ -5747,17 +5766,17 @@ static void t_fork_snapshot_and_groups(void) {
     parent = fresh(151);
     (void)SYS1(12, 0x10000000ull + 8192u);
     (void)MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
-    brk0 = ks_ps(parent)->brk_cur;
-    cur0 = ks_ps(parent)->mmap_cur;
+    brk0 = ks_ps(parent)->mm->brk_cur;
+    cur0 = ks_ps(parent)->mm->mmap_cur;
     kf_on_mm_unlock(sibling_moves_the_break);
     pid = SYS0(57);
     child = slot_of_pid(pid);
-    expect(pid > 0 && child >= 0 && ks_ps(parent)->brk_cur == brk0 + 0x5000u,
+    expect(pid > 0 && child >= 0 && ks_ps(parent)->mm->brk_cur == brk0 + 0x5000u,
            "a sibling moved the break as fork let go of the lock");
-    expect(ks_ps(child)->brk_cur == brk0 && ks_ps(child)->mmap_cur == cur0,
+    expect(ks_ps(child)->mm->brk_cur == brk0 && ks_ps(child)->mm->mmap_cur == cur0,
            "the child's break and cursor belong to the address space it was given");
-    ks_ps(parent)->brk_cur = brk0;
-    ks_ps(parent)->mmap_cur = cur0;
+    ks_ps(parent)->mm->brk_cur = brk0;
+    ks_ps(parent)->mm->mmap_cur = cur0;
 
     /* M-080: a call on a descriptor acts on the descriptor's file, wherever
      * its name has gone - as Linux does - on a filesystem that can be asked by
@@ -6037,7 +6056,7 @@ static void t_untouched_bss(void) {
     uint8_t x = 'B', y = 0;
     int me = fresh(203);
 
-    expect(vibeos_vma_insert_alloc(&ks_ps(me)->vmas, bss, 4u * 4096u, rw, 0u, VIBEOS_VMA_DEMAND,
+    expect(vibeos_vma_insert_alloc(&ks_ps(me)->mm->vmas, bss, 4u * 4096u, rw, 0u, VIBEOS_VMA_DEMAND,
                                    0u, 0u) == 0 && entry_of(me, bss) == 0u,
            "a .bss region as the loader leaves it: described, nothing made");
     expect(SYS3(10, bss, 4096, 1 /* PROT_READ */) == 0 && entry_of(me, bss) == 0u &&
@@ -6104,9 +6123,9 @@ static void t_mlockall_future(void) {
         expect(SYS2(160, LINUX_RLIMIT_MEMLOCK, rl) == 0 && SYS1(105, 1000) == 0,
                "RLIMIT_MEMLOCK of a megabyte, and not root");
     }
-    regions = ks_ps(me)->vmas.count;
+    regions = ks_ps(me)->mm->vmas.count;
     big = MMAP(0, 2ull << 20, 3, MAP_PRIV_ANON, -1, 0);
-    expect(big == -VIBEOS_EAGAIN && ks_ps(me)->vmas.count == regions,
+    expect(big == -VIBEOS_EAGAIN && ks_ps(me)->mm->vmas.count == regions,
            "a mapping RLIMIT_MEMLOCK cannot hold is EAGAIN, and not made");
     pid = SYS0(57);
     child = slot_of_pid(pid);
@@ -6368,7 +6387,7 @@ static void t_memory_calls(void) {
             return;
         }
         saved = ps->cred;
-        for (reg = ps->vmas.head; reg; reg = reg->next) {
+        for (reg = ps->mm->vmas.head; reg; reg = reg->next) {
             total += reg->len;
         }
         ps->rlim_cur[VIBEOS_RLIM_AS] = total + 2u * 4096u;

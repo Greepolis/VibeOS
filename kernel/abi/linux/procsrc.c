@@ -207,7 +207,7 @@ static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
         const vibeos_vma_t *v;
         uint32_t n = 0;
 
-        for (v = ps->vmas.head; v && n < 4096u; v = v->next, n++) {
+        for (v = ps->mm->vmas.head; v && n < 4096u; v = v->next, n++) {
             out->vsize += v->len;
         }
     }
@@ -218,7 +218,7 @@ static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
         const vibeos_vma_t *v;
         uint32_t n = 0;
 
-        for (v = ps->vmas.head; v && n < 4096u; v = v->next, n++) {
+        for (v = ps->mm->vmas.head; v && n < 4096u; v = v->next, n++) {
             uint64_t va;
             for (va = v->base; va < v->base + v->len && out->rss < (1ull << 20); va += 4096u) {
                 out->rss += vibeos_vmspace_resident(&vm, va) == 1 ? 1u : 0u;
@@ -435,7 +435,7 @@ static int src_map(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out) {
         ((unsigned char *)out)[i] = 0;
     }
     ks_mm_lock(ps);
-    for (v = ps->vmas.head; v && n < 4096u; v = v->next, n++) {
+    for (v = ps->mm->vmas.head; v && n < 4096u; v = v->next, n++) {
         const char *name = 0;
 
         if (n != index) {
@@ -448,7 +448,7 @@ static int src_map(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out) {
                     ((v->prot & VIBEOS_PROT_WRITE) ? VIBEOS_PROCFS_MAP_W : 0u) |
                     ((v->prot & VIBEOS_PROT_EXEC) ? VIBEOS_PROCFS_MAP_X : 0u) |
                     ((v->prot & VIBEOS_PROT_SHARED) ? VIBEOS_PROCFS_MAP_SHARED : 0u);
-        if (v->backing == VIBEOS_BACKING_ANON && ps->brk_cur > v->base && ps->brk_cur <= out->end) {
+        if (v->backing == VIBEOS_BACKING_ANON && ps->mm->brk_cur > v->base && ps->mm->brk_cur <= out->end) {
             name = "[heap]";
         } else if (sp > v->base && sp <= out->end) {
             name = "[stack]";

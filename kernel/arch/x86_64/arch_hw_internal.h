@@ -507,6 +507,7 @@ void hw_write_cr3(uint64_t pml4_phys);
 void hw_tlb_service_flush(void);
 void hw_tlbq_drain(void);
 void *hw_alloc_user_page(void);
+void hw_mm_share(hw_procstate_t *child, hw_procstate_t *parent);
 long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
                                 uint32_t *out_id);
 /* The same, for a file already resolved: its mount and node, which are what

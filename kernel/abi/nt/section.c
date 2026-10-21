@@ -486,13 +486,13 @@ static long nt_unmap_view_of_section(uint64_t process, uint64_t base) {
     }
     ps = ks_ps(me);
     ks_mm_lock(ps);
-    r = vibeos_vma_find(&ps->vmas, base);
+    r = vibeos_vma_find(&ps->mm->vmas, base);
     if (!r || r->alloc_base == 0u || r->backing == VIBEOS_BACKING_ANON) {
         st = VIBEOS_STATUS_NOT_MAPPED_VIEW;   /* no view there, or private memory */
     } else {
         const uint64_t ab = r->alloc_base;
 
-        for (end = ab; (r = vibeos_vma_find(&ps->vmas, end)) != 0 && r->alloc_base == ab;) {
+        for (end = ab; (r = vibeos_vma_find(&ps->mm->vmas, end)) != 0 && r->alloc_base == ab;) {
             end = r->base + r->len;
         }
         if (vibeos_umem_unmap(me, ps, ab, end) != 0) {

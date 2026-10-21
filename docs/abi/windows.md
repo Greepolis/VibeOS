@@ -471,6 +471,9 @@ Order, each a commit with host tests and sabotage cases:
    lock and the break become one counted object that a CLONE_VM child shares
    with its parent instead of copying; threads already share it through the
    process state.
+   *Done:* `vibeos_mm_t`, pointed at by the process state; 128 uses moved
+   through it mechanically. A CLONE_VM child shares its parent's; exec makes a
+   new one, as it always made a new process state (M-100, fixed).
 8. **Kernel stacks with guard pages (M-108).** A region of their own in every
    address space's kernel half, an unmapped page below each stack, and #PF and
    #DF on IST stacks so that an overflow faults on a stack that exists and the

@@ -163,17 +163,17 @@
 
 ### mlockall forgets MCL_FUTURE (M-104)
 --- old
-    ps->mlock_future = on;
+    ps->mm->mlock_future = on;
 +++ new
-    ps->mlock_future = 0u * on;
+    ps->mm->mlock_future = 0u * on;
 
 ### brk grows unlocked under MCL_FUTURE (M-104)
 --- old
-        if (ps->mlock_future &&
-            linux_lock_range(me, ps, ps->brk_cur, new_brk, 1) != 0) {
+        if (ps->mm->mlock_future &&
+            linux_lock_range(me, ps, ps->mm->brk_cur, new_brk, 1) != 0) {
 +++ new
-        if (0 && ps->mlock_future &&
-            linux_lock_range(me, ps, ps->brk_cur, new_brk, 1) != 0) {
+        if (0 && ps->mm->mlock_future &&
+            linux_lock_range(me, ps, ps->mm->brk_cur, new_brk, 1) != 0) {
 
 ### mmap keeps a mapping MCL_FUTURE could not lock (M-104)
 --- old

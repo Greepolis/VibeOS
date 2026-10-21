@@ -35,7 +35,7 @@ void linux_procstate_defaults(vibeos_procstate_t *ps) {
     ps->rlim_cur[LINUX_RLIMIT_RTPRIO] = ps->rlim_max[LINUX_RLIMIT_RTPRIO] = 0;
     ps->personality = 0;
     ps->membarrier_reg = 0;
-    ps->mlock_future = 0;   /* new, fork and exec all come through here */
+    ps->mm->mlock_future = 0;   /* new, fork and exec all come through here */
 }
 
 /* RLIMIT_CPU as two timers on the process's CPU time: SIGXCPU when the soft

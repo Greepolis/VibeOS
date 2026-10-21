@@ -17,28 +17,28 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
     uint64_t new_brk, pages;
 
     if (addr == 0u) {
-        return (long)ps->brk_cur;
+        return (long)ps->mm->brk_cur;
     }
     if (addr < ks_heap_base() || addr >= ks_mmap_base()) {
-        return (long)ps->brk_cur; /* out of the heap arena: unchanged */
+        return (long)ps->mm->brk_cur; /* out of the heap arena: unchanged */
     }
     new_brk = (addr + 0xFFFull) & ~0xFFFull;
     /* RLIMIT_DATA (L2 step 4): the heap may not grow past it. A refused brk
      * answers with the break as it was, which is how Linux says no. */
-    if (new_brk > ps->brk_cur && (new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA] ||
-                                  !vibeos_umem_as_room(ps, new_brk - ps->brk_cur))) {
-        return (long)ps->brk_cur;   /* RLIMIT_DATA, and RLIMIT_AS since 2026-10-07 */
+    if (new_brk > ps->mm->brk_cur && (new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA] ||
+                                  !vibeos_umem_as_room(ps, new_brk - ps->mm->brk_cur))) {
+        return (long)ps->mm->brk_cur;   /* RLIMIT_DATA, and RLIMIT_AS since 2026-10-07 */
     }
-    if (new_brk > ps->brk_cur) {
-        pages = (new_brk - ps->brk_cur) / 4096ull;
-        if (ks_map_user_pages(me, ps->brk_cur, pages) != 0) {
+    if (new_brk > ps->mm->brk_cur) {
+        pages = (new_brk - ps->mm->brk_cur) / 4096ull;
+        if (ks_map_user_pages(me, ps->mm->brk_cur, pages) != 0) {
             return -VIBEOS_ENOMEM;
         }
         /* No region recorded, no growth: the pages go again and the break
          * stays where it was, as Linux answers a brk it cannot honour - not
          * pages mapped that no region describes (external review, 2026-10-07). */
-        if (vibeos_vma_insert(&ps->vmas, ps->brk_cur,
-                              new_brk - ps->brk_cur,
+        if (vibeos_vma_insert(&ps->mm->vmas, ps->mm->brk_cur,
+                              new_brk - ps->mm->brk_cur,
                               (vibeos_prot_t)(VIBEOS_PROT_READ |
                                               VIBEOS_PROT_WRITE |
                                               VIBEOS_PROT_USER),
@@ -46,21 +46,21 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
             vibeos_vmspace_t v = ks_vm(me);
             uint64_t va;
 
-            for (va = ps->brk_cur; va < new_brk; va += 4096ull) {
+            for (va = ps->mm->brk_cur; va < new_brk; va += 4096ull) {
                 (void)vibeos_vmspace_unmap(&v, va);
             }
             ks_tlb_drain();
-            return (long)ps->brk_cur;
+            return (long)ps->mm->brk_cur;
         }
         /* Under mlockall(MCL_FUTURE) the growth is locked as it is made, or it
          * is not made: past RLIMIT_MEMLOCK the break stays where it was
          * (M-104). */
-        if (ps->mlock_future &&
-            linux_lock_range(me, ps, ps->brk_cur, new_brk, 1) != 0) {
-            (void)vibeos_umem_unmap(me, ps, ps->brk_cur, new_brk);
-            return (long)ps->brk_cur;
+        if (ps->mm->mlock_future &&
+            linux_lock_range(me, ps, ps->mm->brk_cur, new_brk, 1) != 0) {
+            (void)vibeos_umem_unmap(me, ps, ps->mm->brk_cur, new_brk);
+            return (long)ps->mm->brk_cur;
         }
-    } else if (new_brk < ps->brk_cur) {
+    } else if (new_brk < ps->mm->brk_cur) {
         /* Shrinking used to remove the region and stop there.
          *
          * The page-table entries stayed present and the frames stayed
@@ -77,10 +77,10 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
         uint64_t va;
         vibeos_vmspace_t v = ks_vm(me);
 
-        if (vibeos_vma_remove(&ps->vmas, new_brk, ps->brk_cur - new_brk) == VIBEOS_VMA_REFUSED) {
-            return (long)ps->brk_cur;   /* nothing changed: see vibeos_umem_unmap */
+        if (vibeos_vma_remove(&ps->mm->vmas, new_brk, ps->mm->brk_cur - new_brk) == VIBEOS_VMA_REFUSED) {
+            return (long)ps->mm->brk_cur;   /* nothing changed: see vibeos_umem_unmap */
         }
-        for (va = new_brk; va < ps->brk_cur; va += 4096ull) {
+        for (va = new_brk; va < ps->mm->brk_cur; va += 4096ull) {
             (void)vibeos_vmspace_unmap(&v, va);
         }
         /* And the frames go through the same quarantine munmap uses: the
@@ -89,8 +89,8 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
          * underneath it. Draining here for the same reason munmap does. */
         ks_tlb_drain();
     }
-    ps->brk_cur = new_brk;
-    return (long)ps->brk_cur;
+    ps->mm->brk_cur = new_brk;
+    return (long)ps->mm->brk_cur;
 }
 
 static long linux_sys_brk(uint64_t addr) {
@@ -271,7 +271,7 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
      * away, and pages stayed mapped that no region described, which munmap,
      * mprotect and fork all decide by (external review, 2026-10-07). */
     if (r == 0 &&
-        vibeos_vma_insert(&ps->vmas, base, bytes,
+        vibeos_vma_insert(&ps->mm->vmas, base, bytes,
                           (shared && f && (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDWR)
                               ? (vibeos_prot_t)(access | VIBEOS_PROT_NOWRITE) : access,
                           shared ? VIBEOS_BACKING_SHARED
@@ -385,7 +385,7 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
          * fail the mmap when the lock cannot be had, and neither does this. */
         (void)linux_lock_range(ks_current(), ps, (uint64_t)r,
                                (uint64_t)r + ((len + 0xFFFull) & ~0xFFFull), 1);
-    } else if (r > 0 && ps->mlock_future &&
+    } else if (r > 0 && ps->mm->mlock_future &&
                linux_lock_range(ks_current(), ps, (uint64_t)r,
                                 (uint64_t)r + ((len + 0xFFFull) & ~0xFFFull), 1) != 0) {
         /* mlockall(MCL_FUTURE): a mapping that cannot be locked is not made.
@@ -524,7 +524,7 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
      * nothing maps yet inside a region - the stack's growth area - is mapped,
      * as touching it would. */
     for (va = addr; populate && r == 0 && va < end; va += 4096ull) {
-        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
+        const vibeos_vma_t *reg = vibeos_vma_find(&ps->mm->vmas, va);
 
         if (!reg || !(reg->prot & VIBEOS_PROT_READ) ||
             (advice == LINUX_MADV_POPULATE_WRITE &&
@@ -533,7 +533,7 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
         }
     }
     for (va = addr; populate && r == 0 && va < end; va += 4096ull) {
-        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
+        const vibeos_vma_t *reg = vibeos_vma_find(&ps->mm->vmas, va);
         int got = vibeos_vmspace_populate(&v, va, advice == LINUX_MADV_POPULATE_WRITE);
 
         if (got == 1 && reg && reg->backing == VIBEOS_BACKING_ANON) {
@@ -544,7 +544,7 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
         }
     }
     for (va = addr; discard && r == 0 && va < end; va += 4096ull) {
-        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
+        const vibeos_vma_t *reg = vibeos_vma_find(&ps->mm->vmas, va);
         const uint64_t *e = vibeos_vmspace_entry(&v, va);
 
         /* Every page of the range is in a region - that was asked a few
@@ -561,7 +561,7 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
         }
     }
     for (va = addr; discard && r == 0 && va < end; va += 4096ull) {
-        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
+        const vibeos_vma_t *reg = vibeos_vma_find(&ps->mm->vmas, va);
 
         if (!reg || reg->backing != VIBEOS_BACKING_ANON || !vibeos_vmspace_mapped(&v, va)) {
             continue;
@@ -650,7 +650,7 @@ static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint
             const vibeos_vma_t *reg;
             uint64_t locked = 0;
 
-            for (reg = ps->vmas.head; reg; reg = reg->next) {
+            for (reg = ps->mm->vmas.head; reg; reg = reg->next) {
                 for (va = reg->base; va < reg->base + reg->len; va += 4096ull) {
                     const uint64_t *e = vibeos_vmspace_entry(&v, va);
                     int here = e && (*e & VIBEOS_PTE_LOCKED);
@@ -737,7 +737,7 @@ static long linux_lock_all(int on) {
         return -VIBEOS_EINVAL;
     }
     ks_mm_lock(ps);
-    for (reg = ps->vmas.head; reg && r == 0; reg = reg->next) {
+    for (reg = ps->mm->vmas.head; reg && r == 0; reg = reg->next) {
         r = linux_lock_range(me, ps, reg->base, reg->base + reg->len, on);
     }
     ks_mm_unlock(ps);
@@ -753,7 +753,7 @@ static long linux_lock_future(uint32_t on) {
         return -VIBEOS_EINVAL;
     }
     ks_mm_lock(ps);
-    ps->mlock_future = on;
+    ps->mm->mlock_future = on;
     ks_mm_unlock(ps);
     return 0;
 }
@@ -803,7 +803,7 @@ static long linux_sys_munlockall(void) {
 static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, uint64_t old_len,
                                 uint64_t new_len, uint64_t flags, uint64_t new_addr) {
     vibeos_vmspace_t v = ks_vm(me);
-    const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, old);
+    const vibeos_vma_t *reg = vibeos_vma_find(&ps->mm->vmas, old);
     vibeos_backing_kind_t kind;
     vibeos_prot_t prot;
     uint64_t base, i, keep, moved;
@@ -844,10 +844,10 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
             /* The growth described, or the growth undone: an unrecorded
              * region is a failed mremap like an unmapped page is. */
             if (i == new_len &&
-                vibeos_vma_insert(&ps->vmas, old + old_len, new_len - old_len, reg->prot, kind, 0, 0) == 0) {
+                vibeos_vma_insert(&ps->mm->vmas, old + old_len, new_len - old_len, reg->prot, kind, 0, 0) == 0) {
                 /* Locked like any new mapping under MCL_FUTURE, or given back
                  * (M-104). */
-                if (ps->mlock_future &&
+                if (ps->mm->mlock_future &&
                     linux_lock_range(me, ps, old + old_len, old + new_len, 1) != 0) {
                     (void)vibeos_umem_unmap(me, ps, old + old_len, old + new_len);
                     return -VIBEOS_EAGAIN;
@@ -914,18 +914,18 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
         const uint32_t region_id = reg->backing_id;
         const uint64_t region_off = reg->backing_offset + (old - reg->base);
 
-        if (vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, region_id, region_off) == 0) {
+        if (vibeos_vma_insert(&ps->mm->vmas, base, new_len, region_prot, kind, region_id, region_off) == 0) {
             if (vibeos_umem_unmap(me, ps, old, old + old_len) == 0) {
                 /* The moved pages kept their marks; what the move grew by is
                  * locked under MCL_FUTURE. The old mapping is gone by now, so a
                  * lock that cannot be had leaves the growth unlocked rather
                  * than undoing a move that has happened (M-104). */
-                if (ps->mlock_future && new_len > old_len) {
+                if (ps->mm->mlock_future && new_len > old_len) {
                     (void)linux_lock_range(me, ps, base + old_len, base + new_len, 1);
                 }
                 return (long)base;
             }
-            (void)vibeos_vma_remove(&ps->vmas, base, new_len);
+            (void)vibeos_vma_remove(&ps->mm->vmas, base, new_len);
         }
     }
     for (i = keep; i < new_len; i += 4096ull) {
@@ -1027,7 +1027,7 @@ static long linux_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
          * anything changes. */
         if (rc == 0 && (prot & LINUX_PROT_WRITE)) {
             for (va = addr; va < end;) {
-                const vibeos_vma_t *reg = vibeos_vma_find(&ks_ps(me)->vmas, va);
+                const vibeos_vma_t *reg = vibeos_vma_find(&ks_ps(me)->mm->vmas, va);
 
                 if (!reg) {
                     break;   /* a hole: the list refuses the call below */
@@ -1046,7 +1046,7 @@ static long linux_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
          * region is a region like any other here - that is the point of
          * describing what was asked for. */
         if (rc == 0 &&
-            vibeos_vma_protect(&ks_ps(me)->vmas, addr, end - addr,
+            vibeos_vma_protect(&ks_ps(me)->mm->vmas, addr, end - addr,
                                linux_prot_of(prot)) != 0) {
             ks_log(VIBEOS_LOG_WARN, 15u, addr, len,
                    "mprotect refused: the range is not one this process asked for");
@@ -1168,7 +1168,7 @@ long linux_shm_map(vibeos_file_t *f, uint64_t addr, uint64_t len, int ro, int ex
          * may not make it writable (EACCES). */
         vibeos_vma_t *v;
 
-        for (v = ps->vmas.head; v; v = v->next) {
+        for (v = ps->mm->vmas.head; v; v = v->next) {
             if (v->base == (uint64_t)r && v->backing_id == tag) {
                 v->prot = (vibeos_prot_t)(v->prot | VIBEOS_PROT_NOWRITE);
             }
@@ -1192,7 +1192,7 @@ long linux_shm_unmap(uint64_t addr) {
         return -VIBEOS_EINVAL;
     }
     ks_mm_lock(ps);
-    for (v = ps->vmas.head; v; v = v->next) {
+    for (v = ps->mm->vmas.head; v; v = v->next) {
         if (v->base == addr && v->backing == VIBEOS_BACKING_SHARED && v->backing_id != 0u &&
             v->backing_offset == 0u) {
             tag = v->backing_id;
@@ -1243,7 +1243,7 @@ uint32_t linux_shm_attached(uint32_t tag) {
          * (M-114). A run starts at any region that does not continue the one
          * before it; a hole unmapped in the middle makes two, as Linux counts
          * a split attachment twice. */
-        for (v = held[k]->vmas.head; v; prev = v, v = v->next) {
+        for (v = held[k]->mm->vmas.head; v; prev = v, v = v->next) {
             int continues = prev && prev->backing == VIBEOS_BACKING_SHARED &&
                             prev->backing_id == tag && prev->base + prev->len == v->base &&
                             prev->backing_offset + prev->len == v->backing_offset;

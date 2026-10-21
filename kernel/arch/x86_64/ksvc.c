@@ -244,7 +244,7 @@ void ks_mm_lock(vibeos_procstate_t *ps) {
          * lock held by the very task that faulted is a store to user memory
          * made under it, which no amount of retrying ends (hw_stack_grow). */
         uint32_t me = (uint32_t)(hw_current_task() + 1);
-        if (__atomic_compare_exchange_n(&ps->mm_busy, &zero, me ? me : 1u, 0,
+        if (__atomic_compare_exchange_n(&ps->mm->mm_busy, &zero, me ? me : 1u, 0,
                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             if (rflags & 0x200ull) {
                 __asm__ __volatile__("sti" ::: "memory");
@@ -281,7 +281,7 @@ void ks_mm_lock(vibeos_procstate_t *ps) {
 }
 
 void ks_mm_unlock(vibeos_procstate_t *ps) {
-    __atomic_store_n(&ps->mm_busy, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&ps->mm->mm_busy, 0u, __ATOMIC_RELEASE);
 }
 
 vibeos_vmspace_t ks_vm(int slot) { return hw_vm(&g_tasks[slot].proc.as); }
@@ -434,6 +434,10 @@ int ks_fork_aspace(int child, int parent) {
         return -1;
     }
     return 0;
+}
+
+void ks_mm_share(vibeos_procstate_t *child, vibeos_procstate_t *parent) {
+    hw_mm_share(child, parent);
 }
 
 void ks_share_aspace(int child, int parent) {

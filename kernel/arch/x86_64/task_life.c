@@ -571,9 +571,9 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
      * away the regions just built for the new one. mprotect then refused the
      * RELRO that a C library performs on its own image during startup, which
      * is how the dynamic loader reported "RELRO protection failed". */
-    ps->vmas.head = 0;
-    ps->vmas.count = 0;
-    if (hw_map_elf_image(&p->as, &ps->vmas, &img, elf, file_id, len, 0) != 0) {
+    ps->mm->vmas.head = 0;
+    ps->mm->vmas.count = 0;
+    if (hw_map_elf_image(&p->as, &ps->mm->vmas, &img, elf, file_id, len, 0) != 0) {
         { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "map_image"); goto fail; }
     }
     p->entry = img.entry;
@@ -624,7 +624,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
              * of it is mapped. */
             { rc = hw_exec_refuse(VIBEOS_EXEC_INTERP_CHAIN, img.interp, "interp_chain"); goto fail; }
         }
-        if (hw_map_elf_image(&p->as, &ps->vmas, &interp, g_interp_elf,
+        if (hw_map_elf_image(&p->as, &ps->mm->vmas, &interp, g_interp_elf,
                              interp_id, (uint64_t)n, 0) != 0) {
             { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, img.interp, "map_interp"); goto fail; }
         }
@@ -674,7 +674,7 @@ stack:
      * two megabytes of which four pages exist yet. The page fault asks this
      * region whether an untouched address below is the stack's to take
      * (hw_stack_grow). */
-    if (vibeos_vma_insert(&ps->vmas, VIBEOS_HW_USER_STACK_FLOOR,
+    if (vibeos_vma_insert(&ps->mm->vmas, VIBEOS_HW_USER_STACK_FLOOR,
                           VIBEOS_HW_USER_STACK_TOP - VIBEOS_HW_USER_STACK_FLOOR,
                           (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
                                           VIBEOS_PROT_USER),
@@ -724,8 +724,8 @@ stack:
         { rc = hw_exec_refuse(VIBEOS_EXEC_ARGS_TOO_LARGE, path, "build_stack"); goto fail; }
     }
 layout:
-    ps->brk_cur = VIBEOS_HW_USER_HEAP_BASE;
-    __atomic_store_n(&ps->mmap_cur, VIBEOS_HW_USER_MMAP_BASE, __ATOMIC_RELEASE);
+    ps->mm->brk_cur = VIBEOS_HW_USER_HEAP_BASE;
+    __atomic_store_n(&ps->mm->mmap_cur, VIBEOS_HW_USER_MMAP_BASE, __ATOMIC_RELEASE);
     /* The denominator. A count of refusals with nothing to compare it against
      * says only that something went wrong somewhere. */
     vibeos_exec_stats()->loaded++;
@@ -747,7 +747,7 @@ fail:
      * There is one function that builds a process, so there is one function
      * that can take it apart, and a refusal added later cannot forget to. */
     hw_aspace_destroy_why(&p->as, "proc_create_failed");
-    vibeos_vma_clear(&ps->vmas);
+    vibeos_vma_clear(&ps->mm->vmas);
     p->as.pml4 = 0;
     p->entry = 0;
     p->user_sp = 0;
@@ -784,6 +784,63 @@ uint64_t hw_proc_cr3(const hw_proc_t *p) {
 
 static hw_procstate_t g_procstate[HW_PROCSTATE_SLOTS];
 
+/* The address spaces' bookkeeping (M-100): one per process state at most, so
+ * the same number of them. */
+static vibeos_mm_t g_mm[HW_PROCSTATE_SLOTS];
+
+static vibeos_mm_t *hw_mm_new(void) {
+    uint32_t i;
+
+    for (i = 0; i < HW_PROCSTATE_SLOTS; i++) {
+        uint32_t zero = 0;
+        vibeos_mm_t *m = &g_mm[i];
+
+        if (__atomic_compare_exchange_n(&m->refs, &zero, 1u, 0, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_RELAXED)) {
+            __atomic_store_n(&m->mm_busy, 0u, __ATOMIC_RELEASE);
+            m->brk_cur = 0;
+            __atomic_store_n(&m->mmap_cur, 0ull, __ATOMIC_RELEASE);
+            m->vmas.head = 0;
+            m->vmas.count = 0;
+            m->mlock_future = 0;
+            return m;
+        }
+    }
+    return 0;
+}
+
+/* The last reference empties the region list before the object is published
+ * free, as the process state's last one used to. */
+static void hw_mm_put(vibeos_mm_t *m) {
+    uint32_t r;
+
+    if (!m) {
+        return;
+    }
+    for (;;) {
+        r = __atomic_load_n(&m->refs, __ATOMIC_ACQUIRE);
+        if (r == 0u) {
+            vibeos_task_stats()->procstate_double_put++;   /* same defect, same counter */
+            return;
+        }
+        if (r == 1u) {
+            vibeos_vma_clear(&m->vmas);
+        }
+        if (__atomic_compare_exchange_n(&m->refs, &r, r - 1u, 0, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_RELAXED)) {
+            return;
+        }
+    }
+}
+
+void hw_mm_share(hw_procstate_t *child, hw_procstate_t *parent) {
+    vibeos_mm_t *own = child->mm;
+
+    __atomic_add_fetch(&parent->mm->refs, 1u, __ATOMIC_ACQ_REL);
+    child->mm = parent->mm;
+    hw_mm_put(own);
+}
+
 /* A fresh process with refs = 1 and nothing in it, or 0 if the pool is full.
  * Dispositions start zeroed; the caller sets them, because spawn, fork and exec
  * each start from something different. */
@@ -798,11 +855,11 @@ hw_procstate_t *hw_procstate_new(void) {
                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             continue;
         }
-        __atomic_store_n(&ps->mm_busy, 0u, __ATOMIC_RELEASE);
-        ps->brk_cur = 0;
-        __atomic_store_n(&ps->mmap_cur, 0ull, __ATOMIC_RELEASE);
-        ps->vmas.head = 0;
-        ps->vmas.count = 0;
+        ps->mm = hw_mm_new();
+        if (!ps->mm) {
+            __atomic_store_n(&ps->refs, 0u, __ATOMIC_RELEASE);
+            return 0;   /* as many address spaces as process states: not reached */
+        }
         for (sg = 0; sg < VIBEOS_HW_NSIG; sg++) {
             ps->sig_handler[sg] = 0;
             ps->sig_restorer[sg] = 0;
@@ -861,7 +918,8 @@ void hw_procstate_put(hw_procstate_t *ps) {
             return;   /* never taken, or already given back */
         }
         if (r == 1u) {
-            vibeos_vma_clear(&ps->vmas);
+            hw_mm_put(ps->mm);
+            ps->mm = 0;
             /* Normally empty already: the last thread to leave the table
              * closed it (linux_files_leave) before switching away. What is
              * left is a process that never ran - a spawn that failed after

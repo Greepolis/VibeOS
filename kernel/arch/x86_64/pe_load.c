@@ -89,7 +89,7 @@ static int hw_pe_map_one(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *
         }
         reloc.len = size;
     }
-    if (hw_map_elf_image(&p->as, &ps->vmas, &pe->layout, buf, id, len, &reloc) != 0) {
+    if (hw_map_elf_image(&p->as, &ps->mm->vmas, &pe->layout, buf, id, len, &reloc) != 0) {
         return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "pe_map");
     }
     return 0;
@@ -104,8 +104,8 @@ int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
 
     /* As the ELF path does, before anything is mapped: the struct arrives
      * holding the previous program's regions. */
-    ps->vmas.head = 0;
-    ps->vmas.count = 0;
+    ps->mm->vmas.head = 0;
+    ps->mm->vmas.count = 0;
     if (hw_pe_map_one(p, ps, hdr, len < staged ? len : staged, len, file_id,
                       VIBEOS_HW_USER_BASE, VIBEOS_HW_PE_EXE_END,
                       VIBEOS_HW_PE_EXE_MOVED, VIBEOS_HW_PE_DLL_BASE, 0, path, exe,
@@ -176,7 +176,7 @@ int hw_pe_start_blocks(hw_proc_t *p, hw_procstate_t *ps, uint64_t exe_base,
     }
     /* One region for the five, as the stack has one: munmap, mprotect and fork
      * decide by regions. */
-    if (vibeos_vma_insert(&ps->vmas, VIBEOS_HW_NT_BLOCK,
+    if (vibeos_vma_insert(&ps->mm->vmas, VIBEOS_HW_NT_BLOCK,
                           (uint64_t)VIBEOS_NT_BLOCK_PAGES * 4096ull,
                           (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
                                           VIBEOS_PROT_USER),
@@ -315,12 +315,12 @@ int hw_map_pe_image(int slot, const vibeos_file_t *f, uint64_t *base, uint64_t *
     span = pe->layout.image_span;
     if (pe->preferred_base >= VIBEOS_HW_PE_DLL_BASE &&
         pe->preferred_base + span <= VIBEOS_HW_NT_BLOCK &&
-        hw_range_free(&ps->vmas, pe->preferred_base, span)) {
+        hw_range_free(&ps->mm->vmas, pe->preferred_base, span)) {
         place = pe->preferred_base;
     }
     for (b = VIBEOS_HW_PE_DLL_BASE; place == 0u && b + span <= VIBEOS_HW_NT_BLOCK;
          b += 0x10000u) {
-        if (hw_range_free(&ps->vmas, b, span)) {
+        if (hw_range_free(&ps->mm->vmas, b, span)) {
             place = b;
         }
     }

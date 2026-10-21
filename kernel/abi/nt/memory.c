@@ -111,7 +111,7 @@ static uint64_t nt_alloc_end(vibeos_procstate_t *ps, uint64_t ab) {
     const vibeos_vma_t *r;
     uint64_t va = ab;
 
-    while ((r = vibeos_vma_find(&ps->vmas, va)) != 0 && r->alloc_base == ab) {
+    while ((r = vibeos_vma_find(&ps->mm->vmas, va)) != 0 && r->alloc_base == ab) {
         va = r->base + r->len;
     }
     return va;
@@ -127,7 +127,7 @@ static int nt_in_alloc(vibeos_procstate_t *ps, uint64_t start, uint64_t end, uin
 
     *reserved = 0;
     while (va < end) {
-        r = vibeos_vma_find(&ps->vmas, va);
+        r = vibeos_vma_find(&ps->mm->vmas, va);
         if (!r || r->alloc_base != ab) {
             return 0;
         }
@@ -201,7 +201,7 @@ static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64
         start = want & ~0xFFFull;
         end = NT_PAGE_ROUND(want + size);
         {
-            const vibeos_vma_t *r = vibeos_vma_find(&ps->vmas, start);
+            const vibeos_vma_t *r = vibeos_vma_find(&ps->mm->vmas, start);
 
             if (!r || !nt_in_alloc(ps, start, end, r->alloc_base, &reserved) || reserved) {
                 st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
@@ -230,7 +230,7 @@ static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64
             st = VIBEOS_STATUS_NO_MEMORY;   /* RLIMIT_AS, the commit limit's stand-in */
         }
         if (st == VIBEOS_STATUS_SUCCESS &&
-            vibeos_vma_insert_alloc(&ps->vmas, start, end - start,
+            vibeos_vma_insert_alloc(&ps->mm->vmas, start, end - start,
                                     commit ? prot : VIBEOS_PROT_NONE,
                                     commit ? (uint32_t)protect : 0u,
                                     commit ? VIBEOS_VMA_DEMAND : VIBEOS_VMA_RESERVED,
@@ -242,13 +242,13 @@ static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64
 
         start = want & ~0xFFFull;
         end = NT_PAGE_ROUND(want + size);
-        r = vibeos_vma_find(&ps->vmas, start);
+        r = vibeos_vma_find(&ps->mm->vmas, start);
         /* Inside one allocation of this personality's: an image's pages, or
          * address space nobody reserved, are not committed by asking. */
         if (!r || r->alloc_base == 0u || r->backing != VIBEOS_BACKING_ANON ||
             !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
             st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
-        } else if (vibeos_vma_change(&ps->vmas, start, end - start,
+        } else if (vibeos_vma_change(&ps->mm->vmas, start, end - start,
                                      VIBEOS_VMA_CHANGE_PROT | VIBEOS_VMA_CHANGE_STATE, prot,
                                      (uint32_t)protect, VIBEOS_VMA_DEMAND) != 0) {
             st = VIBEOS_STATUS_NO_MEMORY;
@@ -295,7 +295,7 @@ static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t s
     start = want & ~0xFFFull;
 
     ks_mm_lock(ps);
-    r = vibeos_vma_find(&ps->vmas, start);
+    r = vibeos_vma_find(&ps->mm->vmas, start);
     if (!r || r->alloc_base == 0u) {
         st = VIBEOS_STATUS_MEMORY_NOT_ALLOCATED;
     } else if (r->backing != VIBEOS_BACKING_ANON) {
@@ -314,7 +314,7 @@ static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t s
             }
         } else if (end > alloc_end || !nt_in_alloc(ps, start, end, ab, &reserved)) {
             st = VIBEOS_STATUS_UNABLE_TO_FREE_VM;
-        } else if (vibeos_vma_change(&ps->vmas, start, end - start,
+        } else if (vibeos_vma_change(&ps->mm->vmas, start, end - start,
                                      VIBEOS_VMA_CHANGE_PROT | VIBEOS_VMA_CHANGE_STATE,
                                      VIBEOS_PROT_NONE, 0u, VIBEOS_VMA_RESERVED) != 0) {
             st = VIBEOS_STATUS_NO_MEMORY;
@@ -371,7 +371,7 @@ static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_
     end = NT_PAGE_ROUND(want + size);
 
     ks_mm_lock(ps);
-    r = vibeos_vma_find(&ps->vmas, start);
+    r = vibeos_vma_find(&ps->mm->vmas, start);
     if (!r || !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
         st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
     } else if (reserved) {
@@ -384,7 +384,7 @@ static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_
         /* What may never be writable - a view of a section opened for reading -
          * is not made so by asking. */
         for (va = start; (prot & VIBEOS_PROT_WRITE) && va < end; va = c->base + c->len) {
-            c = vibeos_vma_find(&ps->vmas, va);
+            c = vibeos_vma_find(&ps->mm->vmas, va);
             /* nt_in_alloc walked this range under the same lock and found a
              * region at every step - a guarantee held by another function,
              * which is asked again here rather than trusted (CodeQL #312). */
@@ -398,7 +398,7 @@ static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_
             }
         }
         if (st == VIBEOS_STATUS_SUCCESS &&
-            vibeos_vma_change(&ps->vmas, start, end - start, VIBEOS_VMA_CHANGE_PROT, prot,
+            vibeos_vma_change(&ps->mm->vmas, start, end - start, VIBEOS_VMA_CHANGE_PROT, prot,
                               (uint32_t)protect, VIBEOS_VMA_DEMAND) != 0) {
             st = VIBEOS_STATUS_NO_MEMORY;
         }
@@ -451,11 +451,11 @@ static long nt_query_virtual_memory(uint64_t process, uint64_t va, uint64_t cls,
     mbi.base_address = page;
 
     ks_mm_lock(ps);
-    r = vibeos_vma_find(&ps->vmas, page);
+    r = vibeos_vma_find(&ps->mm->vmas, page);
     if (!r) {
         uint64_t next = ks_user_top();
 
-        for (n = ps->vmas.head; n; n = n->next) {
+        for (n = ps->mm->vmas.head; n; n = n->next) {
             if (n->base > page && n->base < next) {
                 next = n->base;
             }
@@ -474,7 +474,7 @@ static long nt_query_virtual_memory(uint64_t process, uint64_t va, uint64_t cls,
         mbi.type = r->backing == VIBEOS_BACKING_ANON ? VIBEOS_NT_MEM_PRIVATE : VIBEOS_NT_MEM_MAPPED;
         /* Regions differ in what NtQueryVirtualMemory does not say - a
          * machine protection two spellings share - and run on as one. */
-        while (r->alloc_base != 0u && (n = vibeos_vma_find(&ps->vmas, end)) != 0 &&
+        while (r->alloc_base != 0u && (n = vibeos_vma_find(&ps->mm->vmas, end)) != 0 &&
                n->alloc_base == r->alloc_base && n->state == r->state &&
                (n->state == VIBEOS_VMA_RESERVED || nt_protect_of(n) == protect)) {
             end = n->base + n->len;

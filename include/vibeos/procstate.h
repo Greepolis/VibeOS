@@ -105,8 +105,20 @@ typedef struct vibeos_image {
  * Referenced, never copied: fork and exec create one, a thread takes a
  * reference, and exit gives it back. See g_procstate in the architecture for
  * the five defects that copying produced. */
-typedef struct vibeos_procstate {
-    volatile uint32_t refs;      /* tasks pointing here; 0 means free        */
+/* The bookkeeping of one address space: its regions, the lock that orders
+ * changes to them, the break and the mapping cursor (M-100, docs/abi/
+ * windows.md W3 step 7).
+ *
+ * Its own object, counted, because more than one process can run on one
+ * address space: clone(CLONE_VM) without CLONE_THREAD - vfork, posix_spawn -
+ * gives the child a process state of its own on its parent's page tables.
+ * These fields used to live in the process state, so such a child had a copy
+ * of the region list and a lock of its own: a mapping one made was not in the
+ * other's list, which could then map over it, under a different lock.
+ * Threads share the process state and so this; a CLONE_VM child shares this
+ * alone; fork and exec make a new one. */
+typedef struct vibeos_mm {
+    volatile uint32_t refs;      /* process states pointing here; 0 = free   */
     volatile uint32_t mm_busy;   /* one address-space mutation at a time; the */
                                  /* holder's task slot plus one, 0 when free:  */
                                  /* brk, and fork's walk of this process      */
@@ -116,6 +128,15 @@ typedef struct vibeos_procstate {
      * munmap and mprotect consult this; the page tables are the consequence,
      * not the record. See kernel/mm/vma.c. */
     vibeos_vma_list_t vmas;
+    /* mlockall(MCL_FUTURE) (M-104): every mapping made from now on is locked
+     * as it is made. Not inherited by a child and forgotten by exec, as on
+     * Linux - both make a new address space. Under the mm lock. */
+    uint32_t mlock_future;
+} vibeos_mm_t;
+
+typedef struct vibeos_procstate {
+    volatile uint32_t refs;      /* tasks pointing here; 0 means free        */
+    vibeos_mm_t *mm;             /* the address space's bookkeeping, above   */
     uint64_t sig_handler[VIBEOS_NSIG];
     uint64_t sig_restorer[VIBEOS_NSIG];
     uint64_t sig_flags[VIBEOS_NSIG];
@@ -178,10 +199,6 @@ typedef struct vibeos_procstate {
      * process said it will use, as Linux keeps them with its memory. A child
      * starts with none and an exec forgets them - both start a new state. */
     uint32_t membarrier_reg;
-    /* mlockall(MCL_FUTURE) (M-104): every mapping made from now on is locked
-     * as it is made. Not inherited by a child and forgotten by exec, as on
-     * Linux. Under the mm lock. */
-    uint32_t mlock_future;
 } vibeos_procstate_t;
 
 #endif

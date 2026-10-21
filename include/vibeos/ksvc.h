@@ -190,6 +190,9 @@ uint64_t ks_user_top(void);
  * registers. A thread shares the address space and takes only the last two. */
 vibeos_procstate_t *ks_procstate_new(void);
 void ks_procstate_put(vibeos_procstate_t *ps);
+/* Give `child` the address space `parent` has - its regions, its lock, its
+ * break - in place of its own (M-100): clone(CLONE_VM) without CLONE_THREAD. */
+void ks_mm_share(vibeos_procstate_t *child, vibeos_procstate_t *parent);
 int ks_fork_aspace(int child, int parent);
 /* CLONE_VM without CLONE_THREAD (docs/abi/ L6 step 3): the child runs on the
  * parent's page tables rather than a copy of them, and lets go of them

@@ -121,11 +121,11 @@
 
 ### an unmap takes only the view's first region
 --- old
-        for (end = ab; (r = vibeos_vma_find(&ps->vmas, end)) != 0 && r->alloc_base == ab;) {
+        for (end = ab; (r = vibeos_vma_find(&ps->mm->vmas, end)) != 0 && r->alloc_base == ab;) {
             end = r->base + r->len;
         }
 +++ new
-        r = vibeos_vma_find(&ps->vmas, ab);
+        r = vibeos_vma_find(&ps->mm->vmas, ab);
         end = r->base + r->len;
 
 ### private memory is unmapped as a view

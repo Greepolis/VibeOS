@@ -2233,7 +2233,7 @@ static int hw_demand_may_reach(const hw_task_t *t, uint64_t va, int need_write) 
     if (!t->ps) {
         return 0;
     }
-    r = vibeos_vma_find(&t->ps->vmas, va);
+    r = vibeos_vma_find(&t->ps->mm->vmas, va);
     return r && r->state == VIBEOS_VMA_DEMAND && (r->prot & VIBEOS_PROT_USER) &&
            (!need_write || (r->prot & VIBEOS_PROT_WRITE));
 }
@@ -2605,7 +2605,7 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
      * again under it below, where it decides. */
     stack = hw_stack_may_reach(page_va);
     if (!stack) {
-        const vibeos_vma_t *r = vibeos_vma_find(&ps->vmas, page_va);
+        const vibeos_vma_t *r = vibeos_vma_find(&ps->mm->vmas, page_va);
 
         if (!r || r->state != VIBEOS_VMA_DEMAND) {
             return 0;
@@ -2618,7 +2618,7 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
         VIBEOS_HW_USER_STACK_TOP - page_va > ps->rlim_cur[VIBEOS_RLIM_STACK]) {
         return 0;
     }
-    if (!__atomic_compare_exchange_n(&ps->mm_busy, &zero, (uint32_t)(g_current_task + 1), 0,
+    if (!__atomic_compare_exchange_n(&ps->mm->mm_busy, &zero, (uint32_t)(g_current_task + 1), 0,
                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         /* Held by this task itself (ks_mm_lock records the holder's slot plus
          * one, as this claim does): a handler stored to user memory under
@@ -2636,7 +2636,7 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
         hw_tlb_service_flush();
         return 1;   /* somebody is changing this address space: fault again */
     }
-    region = vibeos_vma_find(&ps->vmas, page_va);
+    region = vibeos_vma_find(&ps->mm->vmas, page_va);
     entry = vibeos_vmspace_entry(&sv, page_va);
     if (entry && *entry != 0ull) {
         done = 1;   /* mapped while this waited for the lock */
@@ -2662,13 +2662,13 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
             /* mlockall(MCL_FUTURE) covers the stack as it grows (M-104). Not
              * against RLIMIT_MEMLOCK: a fault has no caller to refuse, and a
              * page the program needs to keep running is not withheld for it. */
-            if (ps->mlock_future) {
+            if (ps->mm->mlock_future) {
                 (void)vibeos_vmspace_set_locked(&sv, page_va, 1);
             }
         }
         hw_page_put((uint64_t)(uintptr_t)page);   /* the mapping owns it, or nobody does */
     }
-    __atomic_store_n(&ps->mm_busy, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&ps->mm->mm_busy, 0u, __ATOMIC_RELEASE);
     return done;
 }
 

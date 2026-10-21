@@ -130,7 +130,14 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
      * have unlinked descriptors out from under the other. */
     cps = ks_procstate_new();
     ks_set_ps(idx, cps);
-    if (!cps || vibeos_vma_clone(&cps->vmas, &pps->vmas) != 0) {
+    /* CLONE_VM without CLONE_THREAD: the same address space, as one object -
+     * regions, lock and break (M-100). A copy of the list and a lock of its
+     * own let a mapping one made be missing from the other's list, which could
+     * then map over it. */
+    if (cps && share) {
+        ks_mm_share(cps, pps);
+    }
+    if (!cps || (!share && vibeos_vma_clone(&cps->mm->vmas, &pps->mm->vmas) != 0)) {
         ks_mm_unlock(pps);
         ks_procstate_put(cps);
         ks_set_ps(idx, 0);
@@ -145,10 +152,12 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
      * next brk mapped over pages it already had, or gave back ones it never
      * got. The cursor's load was atomic, which made each read safe and the
      * two of them together no more one snapshot than before. */
-    cps->brk_cur = pps->brk_cur;
-    __atomic_store_n(&cps->mmap_cur,
-                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
-                     __ATOMIC_RELEASE);
+    if (!share) {
+        cps->mm->brk_cur = pps->mm->brk_cur;
+        __atomic_store_n(&cps->mm->mmap_cur,
+                         __atomic_load_n(&pps->mm->mmap_cur, __ATOMIC_ACQUIRE),
+                         __ATOMIC_RELEASE);
+    }
     /* The parent's tables and list have both been read; release before the
      * child-only setup below. */
     ks_mm_unlock(pps);
