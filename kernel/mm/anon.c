@@ -108,6 +108,7 @@ uint32_t vibeos_anon_reclaim(uint32_t want) {
             __atomic_fetch_add(&g_stats.refused, 1u, __ATOMIC_RELAXED);
             continue;
         }
+        vibeos_swap_tag(slot, holder.va, holder.root_phys);
         vibeos_rmap_unclaim(holder.root_phys);
         __atomic_fetch_add(&g_stats.evicted, 1u, __ATOMIC_RELAXED);
         done++;

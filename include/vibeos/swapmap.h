@@ -61,6 +61,15 @@ int vibeos_swap_write(uint32_t slot, void *page);
 int vibeos_swap_read(uint32_t slot, void *page);
 
 int vibeos_swap_is_allocated(uint32_t slot);
+
+/* Whose a slot is: the address and the address space (its root) of the page
+ * page-out wrote there, set when the eviction succeeds. A boot that ends with
+ * a slot still allocated can then say what was in it - a count of one alone
+ * says nothing about where to look (W3 step 8's swap_slots_leaked). */
+void vibeos_swap_tag(uint32_t slot, uint64_t va, uint64_t root);
+/* The `n`th slot still allocated, from the start, and its tag; -1 past the
+ * last. For the end-of-boot report. */
+int vibeos_swap_held(uint32_t n, uint32_t *slot, uint64_t *va, uint64_t *root);
 uint32_t vibeos_swap_slots(void);
 
 typedef struct vibeos_swap_stats {

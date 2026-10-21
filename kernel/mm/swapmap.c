@@ -157,6 +157,39 @@ int vibeos_swap_free(uint32_t slot) {
     return rc;
 }
 
+/* Tags for the first slots of the area: enough for the boot's swap file, and
+ * a slot past them is simply untagged. */
+#define SWAP_TAGS 4096u
+static uint64_t g_tag_va[SWAP_TAGS];
+static uint64_t g_tag_root[SWAP_TAGS];
+
+void vibeos_swap_tag(uint32_t slot, uint64_t va, uint64_t root) {
+    if (slot < SWAP_TAGS) {
+        sm_lock();
+        g_tag_va[slot] = va;
+        g_tag_root[slot] = root;
+        sm_unlock();
+    }
+}
+
+int vibeos_swap_held(uint32_t n, uint32_t *slot, uint64_t *va, uint64_t *root) {
+    uint32_t s, seen = 0;
+    int rc = -1;
+
+    sm_lock();
+    for (s = 0; g_ready && s < g_slots; s++) {
+        if (bit_test(s) && seen++ == n) {
+            *slot = s;
+            *va = s < SWAP_TAGS ? g_tag_va[s] : 0u;
+            *root = s < SWAP_TAGS ? g_tag_root[s] : 0u;
+            rc = 0;
+            break;
+        }
+    }
+    sm_unlock();
+    return rc;
+}
+
 int vibeos_swap_is_allocated(uint32_t slot) {
     int set;
 

@@ -828,6 +828,22 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
             vibeos_x86_64_serial_puts(" sectors_read=0x");
             kernel_log_u64_hex(ar->sectors_read);
             vibeos_x86_64_serial_puts("\n");
+            /* What the slots still allocated held - at most four - so a boot
+             * that ends with one says whose page it was. */
+            {
+                uint32_t n, slot;
+                uint64_t va, root;
+
+                for (n = 0; n < 4u && vibeos_swap_held(n, &slot, &va, &root) == 0; n++) {
+                    vibeos_x86_64_serial_puts("[MM] SWAP_HELD slot=0x");
+                    kernel_log_u64_hex((uint64_t)slot);
+                    vibeos_x86_64_serial_puts(" va=0x");
+                    kernel_log_u64_hex(va);
+                    vibeos_x86_64_serial_puts(" root=0x");
+                    kernel_log_u64_hex(root);
+                    vibeos_x86_64_serial_puts("\n");
+                }
+            }
 
             vibeos_x86_64_serial_puts("[MM] RECLAIM scans=0x");
             kernel_log_u64_hex(rc->scans);
