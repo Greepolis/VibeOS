@@ -478,6 +478,12 @@ Order, each a commit with host tests and sabotage cases:
    address space's kernel half, an unmapped page below each stack, and #PF and
    #DF on IST stacks so that an overflow faults on a stack that exists and the
    panic names the task. The canary stays as a second line.
+   *Done:* 16 KiB stacks in windows of a region at 256 GiB, four guard pages
+   below each, the double fault on an IST stack of its own. Not the page
+   fault: its handler can wait and be switched away from, and a second fault
+   on the same core would land on the IST stack the first still uses - the
+   double fault takes the case where the page fault cannot be pushed, as on
+   Linux (M-108, fixed).
 9. **The oracle.** `ntdll:virtual` and `kernel32:virtual` through
    `winetest-run.sh`, against Wine's answers; the work list they leave.
 
