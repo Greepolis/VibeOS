@@ -34,7 +34,7 @@ loader, objects and waits, memory, files, threads and exceptions, processes, the
   still placeholders that export nothing.
 - `scripts/dev/winetest-run.sh`: Wine's tests on VibeOS, against Wine's answers.
 
-## What W3 has added so far (2026-10-20)
+## What W3 added (2026-10-20 to 2026-10-21)
 
 - Regions with a state (`include/vibeos/vma.h`): present, committed and made
   on first touch, or reserved with no access; each carries its allocation's
@@ -60,14 +60,22 @@ loader, objects and waits, memory, files, threads and exceptions, processes, the
   views, or of a file, copied - NtOpenSection, NtQuerySection and
   NtUnmapViewOfSection; kernel32's file-mapping functions over them.
 
+- The reviews' memory findings: an image section read by its description's
+  node (M-106), one address space shared as an object between CLONE_VM
+  processes (`vibeos_mm_t`, M-100), and kernel stacks with guard pages and the
+  double fault on an IST stack (M-108).
+
 ## Where the oracle stands
 
 `ntdll:om`, `ntdll:sync` and `kernel32:sync` run and report their failures,
 and each ends at something W5 provides (threads, timers, keyed events) - see
 [../abi/windows.md](../abi/windows.md), "What the oracle says at the end of
-W2".
+W2". `kernel32:virtual` runs without a failure until CreateProcessA (W6);
+`ntdll:virtual` passes `test_NtAllocateVirtualMemory` and stops at the
+placeholders of NtAllocateVirtualMemoryEx (W3 step 9).
 
 ## Next checkpoint
 
-- W3: memory - the rest of it: the reviews' M-106, M-100 and M-108 - measured by `ntdll:virtual` and `kernel32:virtual`. It also
-  removes the memory pressure under which the winetest boots met M-070.
+- W4: files - NtCreateFile, reading and writing, directories - measured by
+  `ntdll:file`, `ntdll:directory` and `kernel32:file`. Left from W3:
+  NtAllocateVirtualMemoryEx with its placeholders, and ZeroBits.

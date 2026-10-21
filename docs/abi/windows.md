@@ -113,7 +113,7 @@ and VibeOS is compared with the answer, not with a pass:
 | Test | Wine's answer | What it means for the plan |
 |---|---|---|
 | `ntdll:exception` | stops at the 38th case of its fault table, no summary | W5 cannot take this file whole as its measure; its cases before the stop can |
-| `kernel32:virtual` | stops; 679 failures printed, the process that printed them never summarised | W3 measures with `ntdll:virtual`, which Wine finishes, until this one is understood |
+| `kernel32:virtual` | stops; 679 failures printed, the process that printed them never summarised | On VibeOS since W3: no failure, then CreateProcessA (W6) |
 | `kernel32:loader` | 48 failures, all one check of section protections (`got 0x4, expected 0x8`) | W1's loader is compared per check, not per file |
 | `kernel32:process` | 44 failures: console modes, a standard handle of a GUI program, one error code | W6 |
 | `ntdll:wow64` | 4 failures | 32-bit programs: not planned |
@@ -356,7 +356,7 @@ heap that grows are W3's, and W3 is where the pressure goes away. Evidence in
   previous winetest run's executables off, two of them the same file. Fixed in
   the gate, then 6 of 6 with those executables put back on purpose.
 
-## W3 (2026-10-20): planned, in progress
+## W3 (2026-10-20 to 2026-10-21): done
 
 Measured by `ntdll:virtual` (Wine on Linux: 1,779 tests, 205 todo, 0 failures)
 and `kernel32:virtual` (Wine itself does not finish it: 679 failures printed, no
@@ -486,6 +486,31 @@ Order, each a commit with host tests and sabotage cases:
    Linux (M-108, fixed).
 9. **The oracle.** `ntdll:virtual` and `kernel32:virtual` through
    `winetest-run.sh`, against Wine's answers; the work list they leave.
+   *Done.* Its first run found three defects, fixed: ZeroBits refused an
+   address the caller named before looking for the conflict there; a
+   decommit of size zero was taken from anywhere in an allocation, where
+   Windows takes it from the base's page alone and reports a size of zero;
+   and kernel32's Create* read the new handle before the call that wrote it
+   (C leaves the order of arguments to the compiler) - CreateFileMapping
+   returned 0 having made its section. kernel32 gained GetSystemInfo.
+
+   Where the two stand now:
+   - `ntdll:virtual`: `test_NtAllocateVirtualMemory` passes whole; then
+     `test_NtAllocateVirtualMemoryEx` fails seven checks on the placeholders
+     (MEM_RESERVE_PLACEHOLDER, MEM_REPLACE_PLACEHOLDER,
+     MEM_PRESERVE_PLACEHOLDER: Windows 10's way of splitting and refilling a
+     reservation) and the process dies writing to memory a failed call did not
+     give it.
+   - `kernel32:virtual`: no failure, then CreateProcessA, which is W6's.
+
+   The work list it leaves: NtAllocateVirtualMemoryEx and the placeholders;
+   ZeroBits, which needs somewhere below four gigabytes for an NT process to
+   allocate in - the user layout has none; CreateProcess with W6.
 
 Steps 1 to 5 are the NT personality's; 6 to 8 are the reviews' findings that
 need the same memory work, scheduled here on 2026-10-19.
+
+What the step boots found that was not the step's: M-117 (kill(pid, 0) and a
+thread on its way out, fixed in part and reopened when it recurred) and M-070
+again, an end-of-boot swap slot in a swap regime the 16 KiB kernel stacks
+moved the boot into; both in the tracker, the second now instrumented.
