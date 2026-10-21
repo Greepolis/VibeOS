@@ -108,6 +108,34 @@ _Static_assert((PTE_COW & VIBEOS_PTE_OWNED) == 0ull,
  * with per-process tables, so ring 3 cannot reach kernel pages. */
 uint64_t g_pml4[512] __attribute__((aligned(4096)));
 static uint64_t g_pdpt[512] __attribute__((aligned(4096)));
+/* The kernel stacks' region (M-108): its directory and tables, the kernel's
+ * own and shared with every address space as the identity map's are. */
+static uint64_t g_kstack_pd[512] __attribute__((aligned(4096)));
+static uint64_t g_kstack_pt[VIBEOS_HW_KSTACK_PTS][512] __attribute__((aligned(4096)));
+
+uint64_t *hw_kstack_pte(uint64_t va) {
+    uint64_t idx;
+
+    if (va < VIBEOS_HW_KSTACK_REGION) {
+        return 0;
+    }
+    idx = (va - VIBEOS_HW_KSTACK_REGION) >> 12;
+    if (idx >= (uint64_t)VIBEOS_HW_KSTACK_PTS * 512u) {
+        return 0;
+    }
+    return &g_kstack_pt[idx / 512u][idx % 512u];
+}
+
+int hw_kstack_guard_hit(uint64_t va) {
+    uint64_t off;
+
+    if (va < VIBEOS_HW_KSTACK_REGION ||
+        va >= VIBEOS_HW_KSTACK_REGION + (uint64_t)VIBEOS_HW_KSTACK_WINDOWS * VIBEOS_HW_KSTACK_STRIDE) {
+        return 0;
+    }
+    off = (va - VIBEOS_HW_KSTACK_REGION) % VIBEOS_HW_KSTACK_STRIDE;
+    return off < (uint64_t)VIBEOS_HW_KSTACK_GUARD * 4096ull;
+}
 static uint64_t g_pd[VIBEOS_HW_IDENTITY_GIB][512] __attribute__((aligned(4096)));
 
 /* ---- Page pool + per-process address spaces ------------------------------ */
@@ -1126,6 +1154,11 @@ static void hw_vmspace_free_table(uint64_t phys) {
  * identity region - by identity, not by address range, so a future change to
  * where the kernel maps itself cannot quietly make the test wrong. */
 static const uint64_t *hw_vmspace_shared_pd(uint32_t gib) {
+    if (gib == VIBEOS_HW_KSTACK_GIB) {
+        /* Shared too: a private copy of the PDPT points at it, and teardown
+         * frees what it does not recognise as somebody else's (M-108). */
+        return &g_kstack_pd[0];
+    }
     if (gib >= VIBEOS_HW_IDENTITY_GIB) {
         return 0;
     }
@@ -2075,6 +2108,15 @@ void hw_enable_paging(void) {
         }
         g_pdpt[g] = (uint64_t)(uintptr_t)&g_pd[g][0] | PTE_PRESENT | PTE_WRITE;
     }
+    /* The kernel stacks' region (M-108): built now, before any address space
+     * exists, because a process that maps in the low window takes a private
+     * copy of this PDPT, and a copy taken before entry 256 was written would
+     * never see a kernel stack. Its tables are filled and emptied as stacks
+     * come and go, and every copy points at the same ones. */
+    for (e = 0; e < VIBEOS_HW_KSTACK_PTS; e++) {
+        g_kstack_pd[e] = (uint64_t)(uintptr_t)&g_kstack_pt[e][0] | PTE_PRESENT | PTE_WRITE;
+    }
+    g_pdpt[VIBEOS_HW_KSTACK_GIB] = (uint64_t)(uintptr_t)&g_kstack_pd[0] | PTE_PRESENT | PTE_WRITE;
     g_pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE;
 
     hw_write_cr3((uint64_t)(uintptr_t)&g_pml4[0]);

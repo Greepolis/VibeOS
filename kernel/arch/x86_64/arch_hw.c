@@ -124,6 +124,15 @@ uint8_t g_ap_boot_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
  * interrupts, so this stack can never be re-entered on the same core. */
 static uint8_t g_timer_ist_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
 
+/* The double fault's own stack on each CPU, IST slot 2 (M-108). A kernel stack
+ * run into its guard page cannot take the page fault that follows - the CPU has
+ * nowhere to push it - and a double fault on that same stack would be a triple
+ * fault and a reset with nothing said. Here it lands somewhere that exists, and
+ * the panic names the task. The page fault itself is not given an IST stack:
+ * its handler can wait and be switched away from, and a second fault on the
+ * same core would land on the stack the first is still using. */
+static uint8_t g_df_ist_stack[VIBEOS_HW_MAX_CPUS][8192] __attribute__((aligned(16)));
+
 hw_cpu_t *hw_this_cpu(void) {
     hw_cpu_t *p;
     __asm__ __volatile__("movq %%gs:16, %0" : "=r"(p));
@@ -414,6 +423,9 @@ void hw_load_gdt(uint32_t cpu_index) {
     /* IST slot 1: the timer interrupt's own stack on this CPU (see above). */
     cpu->tss.ist[0] =
         (uint64_t)(uintptr_t)&g_timer_ist_stack[cpu_index][sizeof(g_timer_ist_stack[0])];
+    /* IST slot 2: the double fault's (see above). */
+    cpu->tss.ist[1] =
+        (uint64_t)(uintptr_t)&g_df_ist_stack[cpu_index][sizeof(g_df_ist_stack[0])];
     cpu->tss.iomap_base = (uint16_t)sizeof(cpu->tss);
     cpu->syscall_kstack_top = kstack_top;
     cpu->self = cpu;
@@ -559,6 +571,7 @@ static void hw_load_idt(void) {
     /* The timer runs the scheduler, so it takes IST slot 1 - a stack owned by
      * the CPU rather than by whichever task happened to be interrupted. */
     g_idt[VIBEOS_HW_IRQ_TIMER].ist = 1;
+    g_idt[8].ist = 2;   /* the double fault, on a stack that cannot have overflowed */
     idtr.limit = (uint16_t)(sizeof(g_idt) - 1u);
     idtr.base = (uint64_t)(uintptr_t)&g_idt[0];
     __asm__ __volatile__("lidt %0" : : "m"(idtr) : "memory");
@@ -937,6 +950,32 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
      * for such a program this is not a crash. See hw_fault_to_handler. */
     if ((frame->cs & 3u) == 3u && hw_fault_to_handler(frame, fault_address)) {
         return;
+    }
+
+    /* A kernel stack run off its bottom (M-108): a page fault in a guard page,
+     * or the double fault that follows one the CPU could not push. Said by
+     * name, with the task, before anything else is attempted on a machine
+     * whose current stack may be the broken one. */
+    if ((frame->vector == 14u && (frame->cs & 3u) == 0u && hw_kstack_guard_hit(fault_address)) ||
+        (frame->vector == 8u && hw_kstack_guard_hit(frame->rsp))) {
+        int slot = hw_this_cpu()->current_task;
+
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[KSTACK] guard page hit vector=0x");
+        vibeos_x86_64_serial_print_hex(frame->vector);
+        vibeos_x86_64_serial_puts(" slot=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)slot);
+        vibeos_x86_64_serial_puts(" pid=0x");
+        vibeos_x86_64_serial_print_hex(slot >= 0 ? hw_task_pid_of(&g_tasks[slot]) : 0u);
+        vibeos_x86_64_serial_puts(" rip=0x");
+        vibeos_x86_64_serial_print_hex(frame->rip);
+        vibeos_x86_64_serial_puts(" rsp=0x");
+        vibeos_x86_64_serial_print_hex(frame->rsp);
+        vibeos_x86_64_serial_puts(" cr2=0x");
+        vibeos_x86_64_serial_print_hex(frame->vector == 14u ? fault_address : hw_read_cr2());
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+        hw_panic("kernel stack overflow: a task ran into the guard page below its kernel stack");
     }
 
     /* A fault report is many small writes; keep another core from splitting it. */

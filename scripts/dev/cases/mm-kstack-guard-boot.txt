@@ -1,0 +1,39 @@
+# Kernel stacks with a guard page below them (docs/abi/windows.md W3 step 8,
+# M-108), at boot. Nothing in a healthy boot runs off its kernel stack, so the
+# case makes something do it: getppid recurses until the stack is gone. What
+# the boot must then say is that a task ran into the guard - the page fault in
+# the guard, or the double fault on its own IST stack - by name, not a reset or
+# a corruption found a long way off.
+#
+# Its first version was `return frame[0] + recurse(...)`, which gcc turns into
+# a loop with an accumulator: the stack never grew, the core spun, and the boot
+# wedged in silence - read off the wedge report's rsp, which stayed put. A
+# store after the call is what keeps it a recursion.
+#
+#  1. getppid runs off its stack. Expect guest_panicked, "kernel stack
+#     overflow: a task ran into the guard page below its kernel stack", and a
+#     [KSTACK] guard page hit line naming the task.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/mm-kstack-guard-boot.txt
+
+### getppid runs off its kernel stack
+--- old
+static long linux_sys_getppid(void) {
+    return (ks_current() >= 0) ? (long)ks_id(ks_current())->ppid : 0;
+}
++++ new
+static long sabotage_recurse(volatile uint64_t depth) {
+    volatile uint8_t frame[256];
+    long r;
+    frame[0] = (uint8_t)depth;
+    r = sabotage_recurse(depth + 1u);
+    frame[1] = (uint8_t)r;   /* a store after the call: no loop can stand in for it */
+    return frame[0] + frame[1];
+}
+static long linux_sys_getppid(void) {
+    if (ks_current() >= 0) {
+        (void)sabotage_recurse(0);
+    }
+    return (ks_current() >= 0) ? (long)ks_id(ks_current())->ppid : 0;
+}

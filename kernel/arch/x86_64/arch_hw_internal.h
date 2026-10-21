@@ -611,6 +611,26 @@ int hw_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint6
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_MAX_CPUS 8u
+
+/* Kernel stacks (M-108, docs/abi/windows.md W3 step 8): a region of their own
+ * at 256 GiB - PML4 slot 0, PDPT entry 256, above the identity map and below
+ * the high user window - whose page directory and tables are built with the
+ * kernel's and shared by every address space. Each stack is a window: four
+ * pages unmapped, then sixteen kilobytes mapped a page at a time. Running off
+ * the bottom of a stack is a fault on a page nobody maps, not a write into the
+ * frame the allocator put below it. One window per task slot and one per core
+ * for the dead stack each may have parked. */
+#define VIBEOS_HW_KSTACK_REGION  0x0000004000000000ull
+#define VIBEOS_HW_KSTACK_GIB     256u
+#define VIBEOS_HW_KSTACK_PAGES   4u
+#define VIBEOS_HW_KSTACK_GUARD   4u
+#define VIBEOS_HW_KSTACK_STRIDE  ((uint64_t)(VIBEOS_HW_KSTACK_PAGES + VIBEOS_HW_KSTACK_GUARD) * 4096ull)
+#define VIBEOS_HW_KSTACK_WINDOWS (VIBEOS_HW_MAX_TASKS + VIBEOS_HW_MAX_CPUS)
+#define VIBEOS_HW_KSTACK_PTS     ((VIBEOS_HW_KSTACK_WINDOWS * (VIBEOS_HW_KSTACK_PAGES + VIBEOS_HW_KSTACK_GUARD) + 511u) / 512u)
+/* The entry that maps `va` in the region, or null outside it (mm_bridge.c). */
+uint64_t *hw_kstack_pte(uint64_t va);
+/* Is `va` in a guard of the region - below a stack, where nothing is mapped? */
+int hw_kstack_guard_hit(uint64_t va);
 #define VIBEOS_HW_IDENTITY_LIMIT 0x100000000ull
 /* A path's identity, as a number the cache can key on.
  *

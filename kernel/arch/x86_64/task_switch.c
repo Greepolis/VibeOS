@@ -67,38 +67,86 @@
  * interrupted, the syscall one when it issues `syscall`. */
 void hw_set_kernel_stack(uint64_t top) {
     hw_cpu_t *cpu = hw_this_cpu();
+    uint32_t i;
+
     cpu->tss.rsp0 = top;
     cpu->syscall_kstack_top = top;
+    /* A stack's window may have held another stack, whose translation this
+     * core can still have cached if it never reloaded CR3 since - threads of
+     * one process switch without one. Four invalidations per switch are the
+     * price of never running on a page somebody else now owns (M-108). */
+    if (top > VIBEOS_HW_KSTACK_REGION) {
+        for (i = 1; i <= VIBEOS_HW_KSTACK_PAGES; i++) {
+            __asm__ __volatile__("invlpg (%0)" : : "r"(top - (uint64_t)i * 4096ull) : "memory");
+        }
+    }
 }
 
+/* Which windows of the kernel stacks' region are taken. */
+static volatile uint8_t g_kstack_window[VIBEOS_HW_KSTACK_WINDOWS];
 
-/* Two contiguous pages when the PMM can give them, one otherwise. Reports the
- * base and page count so the stack can be reclaimed when the task exits. */
+
+static void hw_kstack_unmap(uint64_t base, uint32_t pages, int free_frames) {
+    uint32_t i;
+
+    for (i = 0; i < pages; i++) {
+        uint64_t va = base + (uint64_t)i * 4096ull;
+        uint64_t *pte = hw_kstack_pte(va);
+        uint64_t phys = pte ? (*pte & 0x000FFFFFFFFFF000ull) : 0u;
+
+        if (pte) {
+            *pte = 0;
+            __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
+        }
+        if (free_frames && phys) {
+            hw_free_page((void *)(uintptr_t)phys);
+        }
+    }
+}
+
+/* A window of the kernel stacks' region with sixteen kilobytes mapped at its
+ * top and its guard pages left empty below (M-108). The frames need not be
+ * contiguous, which the two-frame stacks of the identity map had to be. Reports
+ * the base and page count so the stack can be reclaimed when the task exits. */
 uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
-    uint8_t *p = 0;
-    uint64_t size = 8192ull;
-    uint32_t pages = 2u;
+    uint32_t w, i;
 
-    /* Two contiguous frames from the frame layer, not from the bump allocator
-     * underneath it. The bump allocator is closed once the layer is up, and a
-     * kernel stack taken from it would be a frame the layer believes is free. */
-    p = (uint8_t *)hw_alloc_pages_contig(2u);
-    if (!p) {
-        p = (uint8_t *)hw_alloc_page();
-        size = 4096ull;
-        pages = 1u;
+    for (w = 0; w < VIBEOS_HW_KSTACK_WINDOWS; w++) {
+        uint8_t zero = 0;
+
+        if (!__atomic_compare_exchange_n(&g_kstack_window[w], &zero, 1u, 0, __ATOMIC_ACQ_REL,
+                                         __ATOMIC_RELAXED)) {
+            continue;
+        }
+        {
+            const uint64_t base = VIBEOS_HW_KSTACK_REGION + (uint64_t)w * VIBEOS_HW_KSTACK_STRIDE +
+                                  (uint64_t)VIBEOS_HW_KSTACK_GUARD * 4096ull;
+
+            for (i = 0; i < VIBEOS_HW_KSTACK_PAGES; i++) {
+                /* From the frame layer, not the bump allocator under it, which
+                 * is closed once the layer is up. */
+                void *frame = hw_alloc_page();
+                uint64_t va = base + (uint64_t)i * 4096ull;
+
+                if (!frame) {
+                    hw_kstack_unmap(base, i, 1);
+                    __atomic_store_n(&g_kstack_window[w], 0u, __ATOMIC_RELEASE);
+                    return 0;
+                }
+                *hw_kstack_pte(va) = (uint64_t)(uintptr_t)frame | PTE_PRESENT | PTE_WRITE | PTE_NX;
+                __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
+            }
+            *(volatile uint64_t *)(uintptr_t)base = VIBEOS_HW_KSTACK_CANARY;
+            if (out_base) {
+                *out_base = base;
+            }
+            if (out_pages) {
+                *out_pages = VIBEOS_HW_KSTACK_PAGES;
+            }
+            return base + (uint64_t)VIBEOS_HW_KSTACK_PAGES * 4096ull;
+        }
     }
-    if (!p) {
-        return 0;
-    }
-    *(volatile uint64_t *)(void *)p = VIBEOS_HW_KSTACK_CANARY;
-    if (out_base) {
-        *out_base = (uint64_t)(uintptr_t)p;
-    }
-    if (out_pages) {
-        *out_pages = pages;
-    }
-    return (uint64_t)(uintptr_t)p + size;
+    return 0;   /* every window taken: as many as tasks and parked stacks */
 }
 
 /* Eight kilobytes and no guard page: the exec of a Windows program went past
@@ -133,6 +181,15 @@ void hw_kstack_check(int slot) {
 
 static void hw_free_kstack_pages(uint64_t base, uint32_t pages) {
     uint32_t i;
+
+    if (base >= VIBEOS_HW_KSTACK_REGION) {
+        /* A window of the region: its frames back, its entries empty, and the
+         * window free once nothing in it is mapped. */
+        hw_kstack_unmap(base, pages, 1);
+        __atomic_store_n(&g_kstack_window[(base - VIBEOS_HW_KSTACK_REGION) / VIBEOS_HW_KSTACK_STRIDE],
+                         0u, __ATOMIC_RELEASE);
+        return;
+    }
     for (i = 0; i < pages; i++) {
         hw_free_page((void *)(uintptr_t)(base + (uint64_t)i * 4096ull));
     }
