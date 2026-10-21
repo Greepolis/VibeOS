@@ -1941,12 +1941,22 @@ void hw_task_kill_group(uint32_t sig) {
  * RESERVED is skipped for the second half of the same finding: allocation
  * leaves the previous tenant's pid, tgid, sid and pgid in place until fork or
  * clone rewrites them, so a slot being built answers to a dead process's id. */
+/* Find a process by pid: any live member of the thread group, or its leader
+ * dead and not yet reaped - a zombie answers to its pid, as on Linux. A thread
+ * that is not the leader and has exited is not the process: it has no reaper,
+ * goes through ZOMBIE on its way to FREE, and in that moment kill(pid, 0)
+ * answered 0 for a process its parent had already reaped (THREADS.ELF's
+ * C6_ABORT, once, 2026-10-21). */
 int hw_task_by_pid(uint32_t pid) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].id.is_user && hw_slot_state(i) != HW_TASK_FREE &&
             hw_slot_state(i) != HW_TASK_RESERVED &&
             g_tasks[i].id.tgid == pid) {
+            if (hw_slot_state(i) == HW_TASK_ZOMBIE && g_tasks[i].id.pid != pid) {
+                vibeos_task_stats()->pid_dead_thread_skipped++;
+                continue;
+            }
             return i;
         }
     }

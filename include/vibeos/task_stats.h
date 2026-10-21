@@ -44,6 +44,13 @@ typedef struct vibeos_task_stats {
      * it says whether the window is ever used - twelve boots said no. */
     uint64_t exit_migrated;
 
+    /* A pid looked up while a thread of it - not its leader - had exited and
+     * not yet been released, and that slot passed over: a dead thread is not
+     * the process. kill(pid, 0) used to answer 0 for a process whose leader
+     * had been reaped, found once by THREADS.ELF's C6_ABORT. Reported, not
+     * must-be-zero: it says whether the window is ever reached. */
+    uint64_t pid_dead_thread_skipped;
+
     /* The three that must be zero, and are asserted by the boot gate.
      *
      * Each names a defect this subsystem has actually produced: a slot written
