@@ -185,17 +185,24 @@ static int inherits(const void *sa) {
 }
 
 /* What every Create<object> ends with: the handle, and a last error that says
- * whether the name already existed - zero otherwise, as Windows sets it. */
-static uint64_t created(NTSTATUS_T st, uint64_t h) {
+ * whether the name already existed - zero otherwise, as Windows sets it.
+ *
+ * The handle by its address, read here: these are called as
+ * created(NtCreateX(&h, ...), &h), and C leaves the order its arguments are
+ * evaluated in to the compiler. Passed by value, `h` could be read before the
+ * call that writes it - and was: CreateFileMapping made its section and
+ * returned 0 with no error, found by Wine's kernel32:virtual (W3 step 9),
+ * while the same shape happened to work for the events. */
+static uint64_t created(NTSTATUS_T st, const uint64_t *h) {
     if (failed(st)) {
         return (uint64_t)fail(st);
     }
     set_error(st == VIBEOS_STATUS_OBJECT_NAME_EXISTS ? ERROR_ALREADY_EXISTS : 0u);
-    return h;
+    return *h;
 }
 
-static uint64_t opened(NTSTATUS_T st, uint64_t h) {
-    return failed(st) ? (uint64_t)fail(st) : h;
+static uint64_t opened(NTSTATUS_T st, const uint64_t *h) {
+    return failed(st) ? (uint64_t)fail(st) : *h;
 }
 
 /* ---- mutexes, events, semaphores ------------------------------------------------------- */
@@ -208,7 +215,7 @@ uint64_t CreateMutexW(const void *sa, BOOL32 owner, const uint16_t *name) {
     if (!oa) {
         return 0;
     }
-    return created(NtCreateMutant(&h, VIBEOS_MUTANT_ALL_ACCESS, oa, owner ? 1u : 0u), h);
+    return created(NtCreateMutant(&h, VIBEOS_MUTANT_ALL_ACCESS, oa, owner ? 1u : 0u), &h);
 }
 
 uint64_t CreateMutexA(const void *sa, BOOL32 owner, const char *name) {
@@ -220,7 +227,7 @@ uint64_t CreateMutexA(const void *sa, BOOL32 owner, const char *name) {
     if (!oa) {
         return 0;
     }
-    return created(NtCreateMutant(&h, VIBEOS_MUTANT_ALL_ACCESS, oa, owner ? 1u : 0u), h);
+    return created(NtCreateMutant(&h, VIBEOS_MUTANT_ALL_ACCESS, oa, owner ? 1u : 0u), &h);
 }
 
 uint64_t OpenMutexW(uint32_t access, BOOL32 inherit, const uint16_t *name) {
@@ -233,7 +240,7 @@ uint64_t OpenMutexW(uint32_t access, BOOL32 inherit, const uint16_t *name) {
         return 0;
     }
     oa = attributes_w(&n, name, inherit, 0);
-    return oa ? opened(NtOpenMutant(&h, access, oa), h) : 0;
+    return oa ? opened(NtOpenMutant(&h, access, oa), &h) : 0;
 }
 
 uint64_t OpenMutexA(uint32_t access, BOOL32 inherit, const char *name) {
@@ -266,7 +273,7 @@ uint64_t CreateEventW(const void *sa, BOOL32 manual, BOOL32 initial, const uint1
     return created(NtCreateEvent(&h, VIBEOS_EVENT_ALL_ACCESS, oa,
                                  manual ? VIBEOS_NT_NOTIFICATION_EVENT
                                         : VIBEOS_NT_SYNCHRONIZATION_EVENT,
-                                 initial ? 1u : 0u), h);
+                                 initial ? 1u : 0u), &h);
 }
 
 uint64_t CreateEventA(const void *sa, BOOL32 manual, BOOL32 initial, const char *name) {
@@ -289,7 +296,7 @@ uint64_t OpenEventW(uint32_t access, BOOL32 inherit, const uint16_t *name) {
         return 0;
     }
     oa = attributes_w(&n, name, inherit, 0);
-    return oa ? opened(NtOpenEvent(&h, access, oa), h) : 0;
+    return oa ? opened(NtOpenEvent(&h, access, oa), &h) : 0;
 }
 
 uint64_t OpenEventA(uint32_t access, BOOL32 inherit, const char *name) {
@@ -330,7 +337,7 @@ uint64_t CreateSemaphoreW(const void *sa, int32_t initial, int32_t maximum,
     if (!oa) {
         return 0;
     }
-    return created(NtCreateSemaphore(&h, VIBEOS_SEMAPHORE_ALL_ACCESS, oa, initial, maximum), h);
+    return created(NtCreateSemaphore(&h, VIBEOS_SEMAPHORE_ALL_ACCESS, oa, initial, maximum), &h);
 }
 
 uint64_t CreateSemaphoreA(const void *sa, int32_t initial, int32_t maximum, const char *name) {
@@ -980,7 +987,7 @@ uint64_t CreateFileMappingW(uint64_t file, const void *sa, uint32_t protect, uin
         file = 0;   /* memory alone: the paging file's, on Windows */
     }
     return created(NtCreateSection(&h, mapping_access(page), oa, size ? &size : 0, page,
-                                   sec ? sec : SEC_COMMIT_K32, file), h);
+                                   sec ? sec : SEC_COMMIT_K32, file), &h);
 }
 
 uint64_t CreateFileMappingA(uint64_t file, const void *sa, uint32_t protect, uint32_t size_hi,
@@ -1008,7 +1015,7 @@ uint64_t OpenFileMappingW(uint32_t access, BOOL32 inherit, const uint16_t *name)
         access = (access & ~FILE_MAP_COPY) | FILE_MAP_READ;
     }
     oa = attributes_w(&n, name, inherit, 0);
-    return oa ? opened(NtOpenSection(&h, access, oa), h) : 0;
+    return oa ? opened(NtOpenSection(&h, access, oa), &h) : 0;
 }
 
 uint64_t OpenFileMappingA(uint32_t access, BOOL32 inherit, const char *name) {
@@ -1059,5 +1066,53 @@ BOOL32 UnmapViewOfFile(const void *base) {
     NTSTATUS_T st = NtUnmapViewOfSection(VIBEOS_NT_CURRENT_PROCESS, (uint64_t)(uintptr_t)base);
 
     return failed(st) ? fail(st) : 1;
+}
+
+/* ---- the system (W3 step 9) -------------------------------------------------------------
+ * GetSystemInfo: SYSTEM_INFO from SystemBasicInformation, the first thing
+ * Wine's kernel32:virtual asks. x64's processor architecture and type, as a
+ * 64-bit Windows reports them to a 64-bit program. */
+
+typedef struct {
+    uint16_t processor_architecture;
+    uint16_t reserved;
+    uint32_t page_size;
+    uint64_t minimum_application_address;
+    uint64_t maximum_application_address;
+    uint64_t active_processor_mask;
+    uint32_t number_of_processors;
+    uint32_t processor_type;
+    uint32_t allocation_granularity;
+    uint16_t processor_level;
+    uint16_t processor_revision;
+} k32_system_info_t;
+
+_Static_assert(sizeof(k32_system_info_t) == 48, "SYSTEM_INFO is 48 bytes on x64");
+
+void GetSystemInfo(void *out) {
+    k32_system_info_t *si = (k32_system_info_t *)out;
+    vibeos_nt_system_basic_t sbi;
+    uint32_t got = 0, i;
+
+    for (i = 0; i < sizeof(*si); i++) {
+        ((uint8_t *)si)[i] = 0;
+    }
+    if (failed(NtQuerySystemInformation(VIBEOS_NT_SYSTEM_BASIC_INFORMATION, &sbi, sizeof(sbi),
+                                        &got))) {
+        return;
+    }
+    si->processor_architecture = 9u;   /* PROCESSOR_ARCHITECTURE_AMD64 */
+    si->page_size = sbi.page_size;
+    si->minimum_application_address = sbi.minimum_user_address;
+    si->maximum_application_address = sbi.maximum_user_address;
+    si->active_processor_mask = sbi.active_processors_mask;
+    si->number_of_processors = sbi.processors;
+    si->processor_type = 8664u;        /* PROCESSOR_AMD_X8664 */
+    si->allocation_granularity = sbi.allocation_granularity;
+    si->processor_level = 6u;
+}
+
+void GetNativeSystemInfo(void *out) {
+    GetSystemInfo(out);   /* a 64-bit program is native */
 }
 

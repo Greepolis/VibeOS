@@ -28,9 +28,11 @@ GetErrorMode
 GetLastError
 GetModuleHandleA
 GetModuleHandleW
+GetNativeSystemInfo
 GetProcAddress
 GetProcessHeap
 GetStdHandle
+GetSystemInfo
 GetTickCount
 GetTickCount64
 HeapAlloc
