@@ -324,7 +324,10 @@ def report(monitor_path, kernel):
     for c in cores:
         num, rip, cr3 = c["num"], c["rip"], c["cr3"]
         name, where = names.get(rip, ("?", "?"))
-        lines.append(f"[WEDGE] CPU#{num} rip=0x{(rip or 0):016x} {name} {where}")
+        # rsp too: a core stopped in a recursion, or on a stack it should not
+        # be on, says so here and nowhere else (M-108's first boot did).
+        lines.append(f"[WEDGE] CPU#{num} rip=0x{(rip or 0):016x} rsp=0x{(c['rsp'] or 0):016x} "
+                     f"{name} {where}")
         if cr3 is not None:
             # The kernel lives at 0x4000000, which is PML4 entry 0.
             entry = read_words(monitor_path, cr3 & ~0xFFF, 1)
