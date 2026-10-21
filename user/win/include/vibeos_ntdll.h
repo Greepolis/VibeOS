@@ -74,6 +74,10 @@ NT_IMPORT NTSTATUS_T NtProtectVirtualMemory(uint64_t process, uint64_t *base, ui
                                             uint32_t protect, uint32_t *old);
 NT_IMPORT NTSTATUS_T NtQueryVirtualMemory(uint64_t process, uint64_t address, uint32_t cls,
                                           void *buf, uint64_t len, uint64_t *ret_len);
+NT_IMPORT NTSTATUS_T NtOpenSection(uint64_t *section, uint32_t access, void *attributes);
+NT_IMPORT NTSTATUS_T NtUnmapViewOfSection(uint64_t process, uint64_t base);
+NT_IMPORT NTSTATUS_T NtQuerySection(uint64_t section, uint32_t cls, void *buf, uint64_t len,
+                                    uint64_t *ret_len);
 
 /* What kernel32 is written on (W2): the synchronisation objects, the waits and
  * Sleep. */

@@ -932,3 +932,132 @@ uint64_t VirtualQueryEx(uint64_t process, const void *addr, void *info, uint64_t
 uint64_t VirtualQuery(const void *addr, void *info, uint64_t len) {
     return VirtualQueryEx(VIBEOS_NT_CURRENT_PROCESS, addr, info, len);
 }
+
+/* ---- file mappings (W3 step 5) ---------------------------------------------------------
+ * A file mapping is a section; a view of one is NtMapViewOfSection's. The
+ * protection a mapping is created with carries its SEC_* flags in the high
+ * bits, SEC_COMMIT when it names none; the access a view asks for picks the
+ * view's protection. */
+
+#define SEC_MASK        0xFFFF0000u
+#define SEC_COMMIT_K32  0x08000000u
+#define FILE_MAP_COPY   0x0001u
+#define FILE_MAP_WRITE  0x0002u
+#define FILE_MAP_READ   0x0004u
+#define FILE_MAP_EXECUTE 0x0020u
+#define SECTION_QUERY_K32 0x0001u
+#define SECTION_MAP_WRITE_K32 0x0002u
+#define SECTION_MAP_READ_K32  0x0004u
+#define SECTION_MAP_EXECUTE_K32 0x0008u
+#define STANDARD_RIGHTS_REQUIRED_K32 0x000F0000u
+
+/* The rights a mapping's handle is made with: what its protection allows. */
+static uint32_t mapping_access(uint32_t page) {
+    uint32_t a = STANDARD_RIGHTS_REQUIRED_K32 | SECTION_QUERY_K32 | SECTION_MAP_READ_K32;
+
+    if (page & (VIBEOS_NT_PAGE_READWRITE | VIBEOS_NT_PAGE_EXECUTE_READWRITE)) {
+        a |= SECTION_MAP_WRITE_K32;
+    }
+    if (page & (VIBEOS_NT_PAGE_EXECUTE | VIBEOS_NT_PAGE_EXECUTE_READ |
+                VIBEOS_NT_PAGE_EXECUTE_READWRITE | VIBEOS_NT_PAGE_EXECUTE_WRITECOPY)) {
+        a |= SECTION_MAP_EXECUTE_K32;
+    }
+    return a;
+}
+
+uint64_t CreateFileMappingW(uint64_t file, const void *sa, uint32_t protect, uint32_t size_hi,
+                            uint32_t size_lo, const uint16_t *name) {
+    named_t n;
+    uint64_t h = 0;
+    int64_t size = (int64_t)(((uint64_t)size_hi << 32) | size_lo);
+    uint32_t sec = protect & SEC_MASK, page = protect & ~SEC_MASK;
+    void *oa = attributes_w(&n, name, inherits(sa), 1);
+
+    if (!oa) {
+        return 0;
+    }
+    if (file == INVALID_HANDLE) {
+        file = 0;   /* memory alone: the paging file's, on Windows */
+    }
+    return created(NtCreateSection(&h, mapping_access(page), oa, size ? &size : 0, page,
+                                   sec ? sec : SEC_COMMIT_K32, file), h);
+}
+
+uint64_t CreateFileMappingA(uint64_t file, const void *sa, uint32_t protect, uint32_t size_hi,
+                            uint32_t size_lo, const char *name) {
+    uint16_t w[NAME_CHARS];
+
+    if (name && widen(name, w, NAME_CHARS) < 0) {
+        set_error(ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    return CreateFileMappingW(file, sa, protect, size_hi, size_lo, name ? w : 0);
+}
+
+uint64_t OpenFileMappingW(uint32_t access, BOOL32 inherit, const uint16_t *name) {
+    named_t n;
+    uint64_t h = 0;
+    void *oa;
+
+    if (!name) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    /* FILE_MAP_* are the section's rights by number; FILE_MAP_COPY reads. */
+    if (access & FILE_MAP_COPY) {
+        access = (access & ~FILE_MAP_COPY) | FILE_MAP_READ;
+    }
+    oa = attributes_w(&n, name, inherit, 0);
+    return oa ? opened(NtOpenSection(&h, access, oa), h) : 0;
+}
+
+uint64_t OpenFileMappingA(uint32_t access, BOOL32 inherit, const char *name) {
+    uint16_t w[NAME_CHARS];
+
+    if (!name) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (widen(name, w, NAME_CHARS) < 0) {
+        set_error(ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    return OpenFileMappingW(access, inherit, w);
+}
+
+void *MapViewOfFileEx(uint64_t mapping, uint32_t access, uint32_t off_hi, uint32_t off_lo,
+                      uint64_t bytes, void *at) {
+    uint64_t base = (uint64_t)(uintptr_t)at, size = bytes;
+    int64_t off = (int64_t)(((uint64_t)off_hi << 32) | off_lo);
+    uint32_t page;
+    NTSTATUS_T st;
+
+    if (access & FILE_MAP_COPY) {
+        page = VIBEOS_NT_PAGE_WRITECOPY;
+    } else if (access & FILE_MAP_WRITE) {
+        page = VIBEOS_NT_PAGE_READWRITE;
+    } else {
+        page = VIBEOS_NT_PAGE_READONLY;
+    }
+    if (access & FILE_MAP_EXECUTE) {
+        page <<= 4;   /* READONLY to EXECUTE_READ, and so on: Windows' own encoding */
+    }
+    st = NtMapViewOfSection(mapping, VIBEOS_NT_CURRENT_PROCESS, &base, 0, 0, &off, &size, 1, 0,
+                            page);
+    if (failed(st)) {
+        return (void *)(uintptr_t)fail(st);
+    }
+    return (void *)(uintptr_t)base;
+}
+
+void *MapViewOfFile(uint64_t mapping, uint32_t access, uint32_t off_hi, uint32_t off_lo,
+                    uint64_t bytes) {
+    return MapViewOfFileEx(mapping, access, off_hi, off_lo, bytes, 0);
+}
+
+BOOL32 UnmapViewOfFile(const void *base) {
+    NTSTATUS_T st = NtUnmapViewOfSection(VIBEOS_NT_CURRENT_PROCESS, (uint64_t)(uintptr_t)base);
+
+    return failed(st) ? fail(st) : 1;
+}
+

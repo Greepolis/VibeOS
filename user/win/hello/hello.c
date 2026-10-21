@@ -18,6 +18,8 @@
  *    program's store and for the kernel's into a page nobody touched; a
  *    reservation is committed a page at a time, protected, decommitted and
  *    released, each as NtQueryVirtualMemory reports it (W3).
+ *  - a section of memory alone has two views that are one memory, and both
+ *    unmap (W3 step 5).
  *  - a service no step has written answers STATUS_NOT_IMPLEMENTED, as Linux's
  *    syscall 1999 answers ENOSYS: the count the boot reports is seen moving.
  *  - an absolute address the linker wrote into read-only data points where the
@@ -147,6 +149,45 @@ static const char *vm_check(void) {
     return 0;
 }
 
+/* Sections (W3 step 5): one of memory alone, two views of it, and a store
+ * through one read back through the other - the views are one memory - then
+ * NtQuerySection's size and both views unmapped. Null, or the failure line. */
+static const char *sec_check(void) {
+    vibeos_nt_section_basic_t sb;
+    volatile uint8_t *a, *b;
+    uint64_t sec = 0, ba = 0, sa = 0, bb = 0, sz = 0, got = 0;
+    int64_t size = 0x3000, off = 0;
+
+    if (NtCreateSection(&sec, 0x000F001Fu, 0, &size, VIBEOS_NT_PAGE_READWRITE, 0x08000000u, 0) !=
+        VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL sec_create\n";
+    }
+    if (NtMapViewOfSection(sec, VIBEOS_NT_CURRENT_PROCESS, &ba, 0, 0, &off, &sa, 1, 0,
+                           VIBEOS_NT_PAGE_READWRITE) != VIBEOS_STATUS_SUCCESS ||
+        NtMapViewOfSection(sec, VIBEOS_NT_CURRENT_PROCESS, &bb, 0, 0, 0, &sz, 1, 0,
+                           VIBEOS_NT_PAGE_READWRITE) != VIBEOS_STATUS_SUCCESS ||
+        ba == bb || sa != 0x3000u || sz != 0x3000u) {
+        return "NT_HELLO_FAIL sec_map\n";
+    }
+    a = (volatile uint8_t *)(uintptr_t)ba;
+    b = (volatile uint8_t *)(uintptr_t)bb;
+    a[0x2345] = 0x6Bu;
+    if (b[0x2345] != 0x6Bu || b[0x1000] != 0u) {
+        return "NT_HELLO_FAIL sec_shared\n";
+    }
+    if (NtQuerySection(sec, VIBEOS_NT_SECTION_BASIC_INFORMATION, &sb, sizeof(sb), &got) !=
+            VIBEOS_STATUS_SUCCESS || sb.size != 0x3000u || got != sizeof(sb)) {
+        return "NT_HELLO_FAIL sec_query\n";
+    }
+    if (NtUnmapViewOfSection(VIBEOS_NT_CURRENT_PROCESS, ba) != VIBEOS_STATUS_SUCCESS ||
+        NtUnmapViewOfSection(VIBEOS_NT_CURRENT_PROCESS, bb + 0x1000u) != VIBEOS_STATUS_SUCCESS ||
+        NtUnmapViewOfSection(VIBEOS_NT_CURRENT_PROCESS, ba) != VIBEOS_STATUS_NOT_MAPPED_VIEW ||
+        NtClose(sec) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL sec_unmap\n";
+    }
+    return 0;
+}
+
 int nt_hello_start(void) {
     uint64_t teb = vibeos_nt_teb();
     uint64_t peb;
@@ -195,6 +236,9 @@ int nt_hello_start(void) {
     }
     {
         const char *why = vm_check();
+        if (!why) {
+            why = sec_check();
+        }
         if (why) {
             return fail(why);
         }

@@ -1,0 +1,15 @@
+# Data sections at boot (docs/abi/windows.md W3 step 5): hello.exe maps two
+# views of a section of memory alone and reads back through one what it stored
+# through the other (sec_check).
+#
+#  1. views of memory alone are copies of it, not its pages. Expect
+#     nt_program_did_not_run=sec_shared.
+#
+# Target source: kernel/abi/nt/section.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/section.c scripts/dev/cases/nt-section-boot.txt
+
+### views of memory alone are copies of it
+--- old
+        rc = vibeos_umem_map_file(me, ps, base, len, file, off, shared, &t);
++++ new
+        rc = vibeos_umem_map_file(me, ps, base, len, file, off, 0 && shared, &t);

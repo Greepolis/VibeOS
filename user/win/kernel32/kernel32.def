@@ -7,6 +7,8 @@ CloseHandle
 CreateEventA
 CreateEventW
 CreateFileA
+CreateFileMappingA
+CreateFileMappingW
 CreateFileW
 CreateMutexA
 CreateMutexW
@@ -40,8 +42,12 @@ IsBadStringPtrA
 IsBadStringPtrW
 LoadLibraryA
 LoadLibraryW
+MapViewOfFile
+MapViewOfFileEx
 OpenEventA
 OpenEventW
+OpenFileMappingA
+OpenFileMappingW
 OpenMutexA
 OpenMutexW
 PulseEvent
@@ -58,6 +64,7 @@ TlsAlloc
 TlsFree
 TlsGetValue
 TlsSetValue
+UnmapViewOfFile
 VirtualAlloc
 VirtualAllocEx
 VirtualFree
