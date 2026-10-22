@@ -517,7 +517,9 @@ int vibeos_inet_ping_result(const vibeos_inet_t *net, uint64_t *out_rtt_ms) {
 }
 
 static void icmp_input(vibeos_inet_t *net, uint32_t src, const uint8_t *p, uint32_t len) {
-    if (len < 8u) {
+    /* A message whose checksum is wrong is dropped, as TCP's and UDP's are:
+     * it was answered, and a corrupt reply completed a ping (#62). */
+    if (len < 8u || vibeos_inet_checksum(p, len) != 0u) {
         return;
     }
     if (p[0] == 8u) { /* echo request: answer it */
@@ -535,7 +537,9 @@ static void icmp_input(vibeos_inet_t *net, uint32_t src, const uint8_t *p, uint3
         return;
     }
     if (p[0] == 0u && net->ping_pending) { /* echo reply */
-        if (rd16(p + 4) == net->ping_id && src == net->ping_peer) {
+        /* The reply to the probe last sent, not to an earlier retry: the
+         * time is measured from the last send (#63). */
+        if (rd16(p + 4) == net->ping_id && rd16(p + 6) == net->ping_seq && src == net->ping_peer) {
             net->ping_pending = 0;
             net->ping_replied = 1;
             net->ping_rtt_ms = net->now_ms - net->ping_sent_ms;
@@ -1345,6 +1349,48 @@ static uint32_t dns_question_matches(const vibeos_inet_t *net, const uint8_t *b,
     return o + 4u;
 }
 
+/* Whether the names at offsets `x` and `y` of a message are one name, labels
+ * compared without case, compression followed - a bounded number of times,
+ * since a pointer can point at itself. */
+static int dns_names_equal(const uint8_t *b, uint32_t len, uint32_t x, uint32_t y) {
+    uint32_t hops = 0;
+
+    for (;;) {
+        uint8_t lx, ly, k;
+
+        while (x < len && (b[x] & 0xC0u) == 0xC0u && x + 1u < len && hops < 32u) {
+            x = ((uint32_t)(b[x] & 0x3Fu) << 8) | b[x + 1u];
+            hops++;
+        }
+        while (y < len && (b[y] & 0xC0u) == 0xC0u && y + 1u < len && hops < 32u) {
+            y = ((uint32_t)(b[y] & 0x3Fu) << 8) | b[y + 1u];
+            hops++;
+        }
+        if (x >= len || y >= len || hops >= 32u) {
+            return 0;
+        }
+        lx = b[x];
+        ly = b[y];
+        if (lx != ly || (lx & 0xC0u) != 0u || x + 1u + lx > len || y + 1u + ly > len) {
+            return 0;
+        }
+        if (lx == 0u) {
+            return 1;
+        }
+        for (k = 1; k <= lx; k++) {
+            uint8_t c = b[x + k], d = b[y + k];
+
+            c = (c >= 'A' && c <= 'Z') ? (uint8_t)(c + 32u) : c;
+            d = (d >= 'A' && d <= 'Z') ? (uint8_t)(d + 32u) : d;
+            if (c != d) {
+                return 0;
+            }
+        }
+        x += 1u + lx;
+        y += 1u + ly;
+    }
+}
+
 /* A DNS answer is believed only if it answers the query that was sent (M-007).
  *
  * This accepted any datagram to the fixed local port whose id matched, from any
@@ -1356,7 +1402,7 @@ static uint32_t dns_question_matches(const vibeos_inet_t *net, const uint8_t *b,
  * see dns_new_query_ids - so a blind attacker has both to guess. */
 static void dns_input(vibeos_inet_t *net, uint32_t src, uint16_t sport,
                       const uint8_t *b, uint32_t len) {
-    uint32_t qd, an, o, i;
+    uint32_t qd, an, o, i, wanted;
 
     if (!net->dns_pending || len < 12u || src != net->dns || sport != DNS_PORT ||
         rd16(b) != net->dns_id || (b[2] & 0x80u) == 0u) {
@@ -1371,19 +1417,41 @@ static void dns_input(vibeos_inet_t *net, uint32_t src, uint16_t sport,
     if (o == 0u) {
         return;
     }
+    /* A truncated answer is not the whole answer, and one with an error code
+     * answers nothing, whatever records it carries (#69). Answered, with
+     * nothing usable. */
+    if ((b[2] & 0x02u) != 0u || (b[3] & 0x0Fu) != 0u) {
+        net->dns_pending = 0;
+        net->dns_done = 1;
+        return;
+    }
+    /* A record is the answer only if it is about the name asked, in class IN
+     * - or about the name a CNAME for it named, which is how an alias is
+     * answered (#16). The question's name, at 12, is the first one sought. */
+    wanted = 12u;
     for (i = 0; i < an && o + 10u <= len; i++) {
-        uint16_t rtype, rdlen;
-        uint32_t ttl;
+        uint16_t rtype, rclass, rdlen;
+        uint32_t ttl, owner = o;
         o = dns_skip_name(b, len, o);
         if (o + 10u > len) {
             break;
         }
         rtype = rd16(b + o);
+        rclass = rd16(b + o + 2u);
         ttl = rd32(b + o + 4u);
         rdlen = rd16(b + o + 8u);
         o += 10u;
         if (o + rdlen > len) {
             break;
+        }
+        if (rclass != 1u || !dns_names_equal(b, len, owner, wanted)) {
+            o += rdlen;
+            continue;
+        }
+        if (rtype == 5u) {
+            wanted = o;   /* CNAME: the answer is about its target from here */
+            o += rdlen;
+            continue;
         }
         if (rtype == 1u && rdlen == 4u) {
             net->dns_result = rd32(b + o);
@@ -1953,7 +2021,10 @@ static void tcp_ack_data(vibeos_inet_t *net, vibeos_inet_socket_t *s, uint32_t a
     uint32_t acked = ack - s->snd_una;
     uint32_t i;
 
-    if (acked == 0u || acked > s->tx_len + 2u) {
+    /* Beyond anything sent is snd_nxt, which counts a SYN and a FIN when
+     * they have been sent and not otherwise: "the data plus two" let an ACK
+     * for a SYN or FIN never sent move snd_una past snd_nxt (#14). */
+    if (acked == 0u || acked > s->snd_nxt - s->snd_una) {
         return;   /* nothing new, or beyond anything we sent */
     }
     if (acked > s->tx_len) {
@@ -2247,7 +2318,9 @@ static void ip_input(vibeos_inet_t *net, const uint8_t *ip, uint32_t len, int lo
         net->rx_dropped++;
         return;   /* corrupt header */
     }
-    if ((rd16(ip + 6) & 0x1FFFu) != 0u) {
+    /* The offset and More Fragments both: a first fragment has offset 0 and
+     * MF set, and is not a whole datagram (#15). */
+    if ((rd16(ip + 6) & 0x3FFFu) != 0u) {
         net->rx_dropped++;
         return;   /* fragment: not supported */
     }

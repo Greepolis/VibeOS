@@ -3179,8 +3179,17 @@ static uint16_t inet_l4_checksum(uint32_t src, uint32_t dst, uint8_t proto,
 }
 
 /* Build an Ethernet + IPv4 frame carrying `payload` and hand it to the stack. */
+static void inet_deliver_frag(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t proto,
+                              const uint8_t *payload, uint32_t plen, uint16_t frag);
+
 static void inet_deliver(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t proto,
                          const uint8_t *payload, uint32_t plen) {
+    inet_deliver_frag(net, src, dst, proto, payload, plen, 0);
+}
+
+/* The same, with the IPv4 flags-and-offset word as given. */
+static void inet_deliver_frag(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t proto,
+                              const uint8_t *payload, uint32_t plen, uint16_t frag) {
     uint8_t f[1600];
     uint8_t *ip = f + 14;
     uint32_t i;
@@ -3193,7 +3202,7 @@ static void inet_deliver(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t
     ip[1] = 0;
     inet_wr16(ip + 2, (uint16_t)(20 + plen));
     inet_wr16(ip + 4, 1);
-    inet_wr16(ip + 6, 0);
+    inet_wr16(ip + 6, frag);
     ip[8] = 64;
     ip[9] = proto;
     inet_wr16(ip + 10, 0);
@@ -4559,6 +4568,147 @@ static int inet_dns_query_ids(vibeos_inet_t *net, inet_capture_t *cap, uint64_t 
     }
     *port = inet_rd16(cap->frame[0] + 14 + 20 + 0);
     *id = inet_rd16(cap->frame[0] + 14 + 20 + 8);
+    return 0;
+}
+
+/* An echo request, checksummed unless `bad`, delivered with `frag` as the IPv4
+ * flags-and-offset word; 1 if it was answered. */
+static int inet_echo_answered(vibeos_inet_t *net, inet_capture_t *cap, uint16_t frag, int bad) {
+    uint8_t icmp[16];
+
+    memset(icmp, 0, sizeof(icmp));
+    icmp[0] = 8;
+    inet_wr16(icmp + 4, 0x1234);
+    inet_wr16(icmp + 6, 1);
+    inet_wr16(icmp + 2, (uint16_t)(vibeos_inet_checksum(icmp, sizeof(icmp)) ^ (bad ? 0x0101u : 0u)));
+    cap->count = 0;
+    inet_deliver_frag(net, 0x0A000202u, 0x0A00020Fu, 1, icmp, sizeof(icmp), frag);
+    return cap->count == 1 && cap->frame[0][14 + 9] == 1 && cap->frame[0][14 + 20] == 0;
+}
+
+/* The review's findings on the stack's input (#14, #15, #62, #63). */
+static int test_inet_input_review(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    vibeos_inet_socket_t *s;
+    uint8_t reply[16];
+    uint16_t id, seq;
+    int k;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000202u);
+    inet_seed_arp(&net);
+    if (!inet_echo_answered(&net, &cap, 0x4000u /* DF */, 0)) {
+        return -1;   /* the control: a whole datagram is answered */
+    }
+    if (inet_echo_answered(&net, &cap, 0x2000u /* MF, offset 0 */, 0)) {
+        return -2;   /* #15: a first fragment is not a datagram */
+    }
+    if (inet_echo_answered(&net, &cap, 0, 1)) {
+        return -3;   /* #62: nor is a message with a wrong checksum answered */
+    }
+
+    /* #63: a reply to an earlier probe does not complete the current one. */
+    cap.count = 0;
+    if (vibeos_inet_ping(&net, 0x0A000202u) != 0 || cap.count != 1) {
+        return -4;
+    }
+    id = inet_rd16(cap.frame[0] + 14 + 20 + 4);
+    seq = inet_rd16(cap.frame[0] + 14 + 20 + 6);
+    for (k = 0; k < 2; k++) {
+        memset(reply, 0, sizeof(reply));
+        inet_wr16(reply + 4, id);
+        inet_wr16(reply + 6, (uint16_t)(k == 0 ? seq + 7u : seq));
+        inet_wr16(reply + 2, vibeos_inet_checksum(reply, sizeof(reply)));
+        inet_deliver(&net, 0x0A000202u, 0x0A00020Fu, 1, reply, sizeof(reply));
+        if ((vibeos_inet_ping_result(&net, 0) == 0) != (k == 1)) {
+            return -5 - k;
+        }
+    }
+
+    /* #14: an ACK past snd_nxt is not taken. */
+    k = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (k < 0) {
+        return -7;
+    }
+    s = &net.sockets[k];
+    s->state = VIBEOS_TCP_ESTABLISHED;
+    s->local_port = 7000;
+    s->remote_ip = 0x0A000202u;
+    s->remote_port = 5000;
+    s->snd_una = s->snd_nxt = 1000u;
+    s->rcv_nxt = 50u;
+    s->tx_len = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 5000, 7000, 50u, 1002u, 0x10 /* ACK */, 0, 0);
+    if (s->snd_una != 1000u) {
+        return -8;
+    }
+    return 0;
+}
+
+/* A reply to example.test whose records are the bytes given after the question. */
+static uint32_t inet_dns_records(uint8_t *dns, uint16_t id, uint16_t flags, uint16_t an,
+                                 const uint8_t *rr, uint32_t rrlen) {
+    static const uint8_t q[] = {7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 4, 't', 'e', 's', 't', 0, 0, 1, 0, 1};
+
+    memset(dns, 0, 256);
+    inet_wr16(dns + 0, id);
+    inet_wr16(dns + 2, flags);
+    inet_wr16(dns + 4, 1);
+    inet_wr16(dns + 6, an);
+    memcpy(dns + 12, q, sizeof(q));
+    memcpy(dns + 12 + sizeof(q), rr, rrlen);
+    return 12u + (uint32_t)sizeof(q) + rrlen;
+}
+
+/* The review's findings on DNS answers (#16, #69). */
+static int test_inet_dns_answer_review(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    uint8_t dns[256];
+    uint32_t n, ip = 0;
+    uint16_t id, port;
+    /* An A record for the name asked (a pointer to the question at 12). */
+    static const uint8_t a_rec[] = {0xC0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 1};
+    /* The same, class CH. */
+    static const uint8_t ch_rec[] = {0xC0, 12, 0, 1, 0, 3, 0, 0, 0, 60, 0, 4, 192, 0, 2, 1};
+    /* An A record for another name, "other". */
+    static const uint8_t other[] = {5, 'o', 't', 'h', 'e', 'r', 0, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 1};
+    /* A CNAME from the name asked to "alias.test", then an A record for the alias,
+     * whose owner points at the CNAME's data (at 12 + 18 + 12 = 42). */
+    static const uint8_t chain[] = {0xC0, 12, 0, 5, 0, 1, 0, 0, 0, 60, 0, 8, 5, 'a', 'l', 'i', 'a', 's', 0xC0, 20,
+                                    0xC0, 42, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 9};
+    struct {
+        uint16_t flags, an;
+        const uint8_t *rr;
+        uint32_t rrlen;
+        uint32_t want;
+    } c[] = {
+        { 0x8180u, 1, a_rec, sizeof(a_rec), 0xC0000201u },   /* the control */
+        { 0x8380u, 1, a_rec, sizeof(a_rec), 0 },             /* #69: truncated */
+        { 0x8183u, 1, a_rec, sizeof(a_rec), 0 },             /* #69: NXDOMAIN */
+        { 0x8180u, 1, ch_rec, sizeof(ch_rec), 0 },           /* #16: not class IN */
+        { 0x8180u, 1, other, sizeof(other), 0 },             /* #16: another name */
+        { 0x8180u, 2, chain, sizeof(chain), 0xC0000209u },   /* #16: an alias, followed */
+    };
+    uint32_t i;
+
+    for (i = 0; i < sizeof(c) / sizeof(c[0]); i++) {
+        if (inet_dns_query_ids(&net, &cap, 0x0123456789ABCDEFull + i, 0x1122334455667788ull,
+                               &id, &port) != 0) {
+            return -1;
+        }
+        n = inet_dns_records(dns, id, c[i].flags, c[i].an, c[i].rr, c[i].rrlen);
+        inet_deliver_udp(&net, 0x0A000202u, 53, port, dns, n);
+        ip = 0;
+        if (c[i].want != 0u ? (vibeos_inet_resolve_result(&net, &ip) != 0 || ip != c[i].want)
+                            : vibeos_inet_resolve_result(&net, &ip) != -VIBEOS_INET_ETIMEDOUT) {
+            return -2 - (int)i;
+        }
+    }
     return 0;
 }
 
@@ -10040,6 +10190,8 @@ int main(void) {
     RUN_TEST(test_inet_tcp_rst_needs_sequence);
     RUN_TEST(test_inet_tcp_isn_depends_on_secret);
     RUN_TEST(test_inet_dns_reply_must_match_query);
+    RUN_TEST(test_inet_input_review);
+    RUN_TEST(test_inet_dns_answer_review);
     RUN_TEST(test_inet_dhcp_reply_must_match_transaction);
     RUN_TEST(test_inet_arp_cache_not_overwritten);
     RUN_TEST(test_inet_tcp_close_reclaims_socket);

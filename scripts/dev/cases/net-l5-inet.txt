@@ -62,3 +62,39 @@
             }
 +++ new
             s->close_deadline_ms = net->now_ms + VIBEOS_INET_TIME_WAIT_MS;
+
+### an ACK may run two past the data whether or not a SYN or FIN was sent (#14)
+--- old
+    if (acked == 0u || acked > s->snd_nxt - s->snd_una) {
++++ new
+    if (acked == 0u || acked > s->tx_len + 2u) {
+
+### a first fragment is taken as a whole datagram (#15)
+--- old
+    if ((rd16(ip + 6) & 0x3FFFu) != 0u) {
++++ new
+    if ((rd16(ip + 6) & 0x1FFFu) != 0u) {
+
+### an ICMP message is believed whatever its checksum (#62)
+--- old
+    if (len < 8u || vibeos_inet_checksum(p, len) != 0u) {
++++ new
+    if (len < 8u) {
+
+### any echo reply completes the ping, whatever its sequence (#63)
+--- old
+        if (rd16(p + 4) == net->ping_id && rd16(p + 6) == net->ping_seq && src == net->ping_peer) {
++++ new
+        if (rd16(p + 4) == net->ping_id && src == net->ping_peer) {
+
+### a truncated or failed DNS answer is read for its records (#69)
+--- old
+    if ((b[2] & 0x02u) != 0u || (b[3] & 0x0Fu) != 0u) {
++++ new
+    if (0) {
+
+### any A record answers the name asked (#16)
+--- old
+        if (rclass != 1u || !dns_names_equal(b, len, owner, wanted)) {
++++ new
+        if (0) {
