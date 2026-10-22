@@ -157,30 +157,38 @@ static long linux_rlimit(uint64_t pid, uint64_t resource, uint64_t new_uptr, uin
         }
         ks_unlock(&ps->files_lock);
     } else {
-        /* Another process: found, judged and changed under the scheduler's
-         * lock, which keeps its state from being let go meanwhile. Its
-         * files_lock is not taken under that one - the order here is the other
-         * way round - so the limits are read and written as the aligned words
-         * they are, as kill reads credentials. The superuser, or somebody
-         * whose ids all match the target's (Linux's rule for prlimit). */
+        /* Another process: found under the scheduler's lock and held by a
+         * reference, then judged and changed under its own files_lock, as its
+         * own setrlimit would be. The limits - RLIMIT_NOFILE's above all,
+         * which is the descriptor table's - and the credentials both live
+         * under that lock, and it is not taken under the scheduler's: the
+         * order here is the other way round. Writing them under the
+         * scheduler's lock alone raced the target's own descriptor calls
+         * (#37). The superuser, or somebody whose ids all match the target's
+         * (Linux's rule for prlimit). */
         ks_lock(ks_sched_lock(), __func__);
         target = ks_task_by_pid((uint32_t)pid);
-        ps = target >= 0 ? ks_ps(target) : 0;
+        ps = target >= 0 ? linux_ps_hold(target) : 0;
+        tgid = ps ? ks_id(target)->tgid : 0u;
+        ks_unlock(ks_sched_lock());
         if (!ps) {
             r = -VIBEOS_ESRCH;
-        } else if (c.euid != 0u &&
-                   (ps->cred.uid != c.uid || ps->cred.euid != c.uid || ps->cred.suid != c.uid ||
-                    ps->cred.gid != c.gid || ps->cred.egid != c.gid || ps->cred.sgid != c.gid)) {
-            r = -VIBEOS_EPERM;
         } else {
-            tgid = ks_id(target)->tgid;
-            ol.rlim_cur = ps->rlim_cur[res];
-            ol.rlim_max = ps->rlim_max[res];
-            if (new_uptr != 0u) {
-                r = linux_rlimit_put(ps, tgid, res, &nl, &c);
+            ks_lock(&ps->files_lock, __func__);
+            if (c.euid != 0u &&
+                (ps->cred.uid != c.uid || ps->cred.euid != c.uid || ps->cred.suid != c.uid ||
+                 ps->cred.gid != c.gid || ps->cred.egid != c.gid || ps->cred.sgid != c.gid)) {
+                r = -VIBEOS_EPERM;
+            } else {
+                ol.rlim_cur = ps->rlim_cur[res];
+                ol.rlim_max = ps->rlim_max[res];
+                if (new_uptr != 0u) {
+                    r = linux_rlimit_put(ps, tgid, res, &nl, &c);
+                }
             }
+            ks_unlock(&ps->files_lock);
+            ks_procstate_put(ps);
         }
-        ks_unlock(ks_sched_lock());
     }
     if (r == 0 && old_uptr != 0u &&
         vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &ol, sizeof(ol)) != 0) {
