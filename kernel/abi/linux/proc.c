@@ -53,7 +53,8 @@ static void linux_fork_unwind_aspace(int idx, int shared) {
  * caller's parent; the tid words are written where they ask. `stack` and `tls`
  * are the child's when nonzero (or SETTLS). */
 static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
-                          uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls) {
+                          uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls,
+                          uint64_t pidfd_at) {
     int share = (flags & LINUX_CLONE_VM) != 0u;
     vibeos_task_t *parent, *child;
     vibeos_procstate_t *pps, *cps;
@@ -286,6 +287,23 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
         uint32_t tid = child->pid;
         (void)vibeos_uaccess_copy((void *)(uintptr_t)ptid, &tid, 4u);
     }
+    /* CLONE_PIDFD: the descriptor is made while the child cannot yet run, so
+     * nothing - a sibling thread's wait above all - can have reaped it first
+     * and left the parent a -1 for a child that exists (#45). Installed after
+     * the child's table was copied, so the child does not have it. */
+    if (pidfd_at != 0u) {
+        vibeos_file_t *f = vibeos_open_pidfd(child->pid, ks_seq(idx), 0);
+        long fd = f ? linux_fd_install(f, VIBEOS_FD_CLOEXEC, 0) : -1;
+        int word = fd >= 0 ? (int)fd : -1;
+
+        /* A word that cannot be written after all - a sibling unmapped it since
+         * clone3 judged it - leaves a descriptor whose number nobody has, so
+         * it is closed rather than leaked (#44). The child runs either way,
+         * as it did when the pidfd could not be made. */
+        if (vibeos_uaccess_copy((void *)(uintptr_t)pidfd_at, &word, sizeof(word)) != 0 && fd >= 0) {
+            (void)linux_fd_close((uint64_t)fd);
+        }
+    }
     {
         long pid = (long)child->pid;
         uint32_t seq = ks_seq(idx);
@@ -311,7 +329,7 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
 
 /* What fork, vfork and the plain forms of clone were before L6. */
 static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
-    return linux_fork_ex(frame, exit_sig, 0, 0, 0, 0, 0);
+    return linux_fork_ex(frame, exit_sig, 0, 0, 0, 0, 0, 0);
 }
 
 static long linux_sys_fork(const ks_regs_t *frame) {
@@ -1951,6 +1969,11 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
             return -VIBEOS_EINVAL;
         }
         top = a.stack + a.stack_size;
+        /* A range that wraps is not a stack: Linux's access_ok refuses it,
+         * and the wrapped top would be installed as the child's sp (#43). */
+        if (top < a.stack) {
+            return -VIBEOS_EINVAL;
+        }
     } else if (a.stack_size != 0u) {
         return -VIBEOS_EINVAL;
     }
@@ -1965,28 +1988,8 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
     if ((a.flags & LINUX_CLONE_PIDFD) && !linux_user_ok(a.pidfd, sizeof(int), 1)) {
         return -VIBEOS_EFAULT;
     }
-    r = linux_fork_ex(FRAME, (uint32_t)a.exit_signal, a.flags, top, a.parent_tid, a.child_tid, a.tls);
-    if (r > 0 && (a.flags & LINUX_CLONE_PIDFD)) {
-        /* The child exists and nobody can have reaped it: its parent is here. */
-        vibeos_file_t *f;
-        int slot, fd = -1;
-        uint32_t seq = 0;
-
-        ks_lock(ks_sched_lock(), __func__);
-        slot = ks_task_by_tid((uint32_t)r);
-        if (slot >= 0) {
-            seq = ks_seq(slot);
-        }
-        ks_unlock(ks_sched_lock());
-        f = slot >= 0 ? vibeos_open_pidfd((uint32_t)r, seq, 0) : 0;
-        if (f) {
-            long installed = linux_fd_install(f, VIBEOS_FD_CLOEXEC, 0);
-            fd = installed >= 0 ? (int)installed : -1;
-        }
-        /* The child runs either way, as on Linux; a pidfd that could not be
-         * made or written leaves the parent with -1 where it looks. */
-        (void)vibeos_uaccess_copy((void *)(uintptr_t)a.pidfd, &fd, sizeof(fd));
-    }
+    r = linux_fork_ex(FRAME, (uint32_t)a.exit_signal, a.flags, top, a.parent_tid, a.child_tid, a.tls,
+                      (a.flags & LINUX_CLONE_PIDFD) ? a.pidfd : 0u);
     return r;
 }
 
@@ -2009,7 +2012,7 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     }
     /* x86-64's clone: flags, stack, parent_tid, child_tid, tls. */
     return linux_fork_ex(FRAME, (uint32_t)(flags & LINUX_CSIGNAL), flags, ARG(1), ARG(2), ARG(3),
-                         ARG(4));
+                         ARG(4), 0);
 }
 
 /* ---- the syscalls this file implements ---------------------------------------

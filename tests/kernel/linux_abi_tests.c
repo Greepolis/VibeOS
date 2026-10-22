@@ -5797,6 +5797,9 @@ static void t_processes(void) {
         a->set_tid_size = 0;
         a->stack_size = 4096;
         expect(SYS2(435, args, sizeof(*a)) == -VIBEOS_EINVAL, "a stack size with no stack is refused");
+        a->stack = 0xFFFFFFFFFFFFF000ull;
+        a->stack_size = 0x2000;
+        expect(SYS2(435, args, sizeof(*a)) == -VIBEOS_EINVAL, "a stack whose top wraps is refused (#43)");
     }
 
     /* execveat's flags. */

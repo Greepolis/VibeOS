@@ -100,3 +100,13 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
     if (target >= 0 && !linux_signal_permitted(target, (uint32_t)sig)) {
         r = -VIBEOS_EPERM;
     } else if (target < 0 || ks_id(target)->tgid != (uint32_t)target_tgid) {
+
+### clone3 takes a stack whose top wraps (#43)
+--- old
+        if (top < a.stack) {
+            return -VIBEOS_EINVAL;
+        }
++++ new
+        if (0) {
+            return -VIBEOS_EINVAL;
+        }
