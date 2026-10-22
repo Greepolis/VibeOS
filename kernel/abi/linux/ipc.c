@@ -478,6 +478,10 @@ typedef struct {
 static int msg_pick(const linux_msgq_t *q, int64_t type, uint64_t flg) {
     uint32_t k;
     int best = -1;
+    /* The bound of a negative type, as Linux's convert_mode makes it: the
+     * negation of LONG_MIN does not exist, and Linux reads it as LONG_MAX
+     * (#31). */
+    int64_t below = type == INT64_MIN ? INT64_MAX : -type;
 
     if (flg & LINUX_MSG_COPY) {
         return (type >= 0 && (uint64_t)type < q->qnum) ? (int)type : -1;
@@ -492,7 +496,7 @@ static int msg_pick(const linux_msgq_t *q, int64_t type, uint64_t flg) {
             if ((flg & LINUX_MSG_EXCEPT) ? t != type : t == type) {
                 return (int)k;
             }
-        } else if (t <= -type && (best < 0 || t < q->rec[best].type)) {
+        } else if (t <= below && (best < 0 || t < q->rec[best].type)) {
             best = (int)k;   /* the lowest type, and the first of it */
         }
     }

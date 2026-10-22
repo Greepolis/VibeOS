@@ -3921,6 +3921,9 @@ static void t_ipc_msg(void) {
            memcmp(rtext, "abc", 3) == 0, "a negative type takes the lowest type at or below it");
     expect(SYS5(70, (uint64_t)q, rb, 64, 7, LINUX_MSG_EXCEPT) == 5 && *rtype == 5 &&
            memcmp(rtext, "hello", 5) == 0, "MSG_EXCEPT takes the first of any other type");
+    expect(SYS4(69, (uint64_t)q, msg_of(2, "z"), 1, 0) == 0 &&
+           SYS5(70, (uint64_t)q, rb, 64, 0x8000000000000000ull, LINUX_IPC_NOWAIT) == 1 && *rtype == 2,
+           "LONG_MIN is a bound of LONG_MAX, as Linux reads it (#31)");
     expect(SYS5(70, (uint64_t)q, rb, 0, 0, 0) == -VIBEOS_E2BIG &&
            SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == 0 && st->msg_qnum == 1u,
            "a message longer than the buffer is E2BIG, and it stays");

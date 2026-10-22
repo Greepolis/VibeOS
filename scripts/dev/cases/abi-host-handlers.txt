@@ -123,3 +123,9 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
     last = (uint32_t)last;
 +++ new
     (void)0;
+
+### msgrcv negates LONG_MIN (#31)
+--- old
+    int64_t below = type == INT64_MIN ? INT64_MAX : -type;
++++ new
+    int64_t below = type == INT64_MIN ? 0 : -type;
