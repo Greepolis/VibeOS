@@ -47,3 +47,18 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
     }
 +++ new
     (void)ks_regs_set(frame, &r);
+
+### kill takes all 64 bits of the pid (#36)
+--- old
+    int64_t signed_pid = (int64_t)(int32_t)target_pid;
++++ new
+    int64_t signed_pid = (int64_t)target_pid;
+
+### signal 0 to a group asks about the caller alone (#41)
+--- old
+    if (sig == 0u && signed_pid > 0) {
++++ new
+    if (sig == 0u) {
+        if (signed_pid <= 0) {
+            signed_pid = ks_id(ks_current())->tgid;
+        }

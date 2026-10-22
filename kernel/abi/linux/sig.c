@@ -90,7 +90,9 @@ static int linux_task_by_any_id(uint32_t id) {
 static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
     int delivered = 0;
-    int64_t signed_pid = (int64_t)target_pid;
+    /* pid_t is an int: the argument's low 32 bits, sign and all (#36). Taking
+     * all 64 let INT64_MIN reach a negation below, which overflows. */
+    int64_t signed_pid = (int64_t)(int32_t)target_pid;
     long r;
     vibeos_siginfo_t why;
 
@@ -103,10 +105,16 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
     linux_sender(&why, VIBEOS_SIG_FROM_PROCESS);
     /* Every branch below resolves ids to slots and acts on them, so every one
      * holds g_sched_lock from the lookup to the act. See ks_task_by_pid. */
-    if (sig == 0u) {
-        if (signed_pid <= 0) {
-            signed_pid = ks_id(ks_current())->tgid;
-        }
+    /* -INT_MIN has no int to be: Linux answers ESRCH before negating it. */
+    if (signed_pid == (int64_t)INT32_MIN) {
+        return -VIBEOS_ESRCH;
+    }
+    /* Signal 0 to a pid asks whether it exists and may be signalled. To a
+     * group - 0, or a negative pid - it goes through the group loop below
+     * like any other signal and sends nothing there: it used to ask about the
+     * caller alone, so kill(-group, 0) for a group nobody is in answered 0
+     * where Linux answers ESRCH (#41). */
+    if (sig == 0u && signed_pid > 0) {
         /* Positive by construction after the line above, so the negate-if-
          * negative that used to be here could never run. CodeQL called it what
          * it was - a comparison whose result is always the same - and a dead
@@ -137,7 +145,9 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
                 if (linux_signal_permitted(i, (uint32_t)sig)) {
                     /* One already on its way out takes nothing, and that is
                      * not the sender's error - as for a single pid below. */
-                    (void)ks_signal_send(i, (uint32_t)sig, &why);
+                    if (sig != 0u) {
+                        (void)ks_signal_send(i, (uint32_t)sig, &why);
+                    }
                     delivered++;
                 }
             }

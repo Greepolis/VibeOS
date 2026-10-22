@@ -241,6 +241,14 @@ static void t_kill_permission(void) {
            "the superuser signals a process of another session");
     expect(SYS2(62, 20, 0) == 0, "a process may probe itself");
     expect(SYS2(62, 999, 0) == -VIBEOS_ESRCH, "no such process");
+    /* Signal 0 to a group asks about the group (#41), and the pid is an int
+     * (#36): INT_MIN is ESRCH, and INT64_MIN's low half is 0 - the caller's
+     * group, as Linux reads it. */
+    expect(SYS2(62, 0, 0) == 0 && SYS2(62, (uint64_t)-999, 0) == -VIBEOS_ESRCH &&
+               SYS2(62, 0xFFFFFFFF80000000ull, 0) == -VIBEOS_ESRCH &&
+               SYS2(62, 0x80000000ull, 0) == -VIBEOS_ESRCH &&
+               SYS2(62, 0x8000000000000000ull, 0) == 0,
+           "kill(0, 0), a group nobody is in, INT_MIN, and INT64_MIN read as an int");
     ks_id(b)->sig_pending = 0;
     expect(SYS1(105, 1000) == 0, "the sender gives up root");
     expect(SYS2(62, 30, 15) == -VIBEOS_EPERM && SYS2(62, 30, 18) == -VIBEOS_EPERM &&
