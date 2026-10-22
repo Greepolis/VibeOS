@@ -290,6 +290,29 @@ static void t_kill_threads(void) {
            "tgkill: a thread outside the group named is ESRCH before it is EPERM");
 }
 
+/* A lock range whose start is before the file is EINVAL before its length is
+ * applied: INT64_MIN and a negative length overflowed on the way (#25). */
+static void t_flock_range_overflow(void) {
+    uint64_t fl;
+    linux_flock_t *l;
+    long fd;
+
+    fresh(84);
+    kf_fs_add("/lk", "xxxx", 4, 0);
+    fd = SYS2(2, ustr("lk"), 2);
+    fl = kf_ualloc(sizeof(linux_flock_t));
+    l = (linux_flock_t *)kf_uptr(fl);
+    memset(l, 0, sizeof(*l));
+    l->l_type = 1;   /* F_WRLCK */
+    l->l_start = INT64_MIN;
+    l->l_len = -1;
+    expect(fd >= 0 && SYS3(72, (uint64_t)fd, 6 /* F_SETLK */, fl) == -VIBEOS_EINVAL,
+           "a lock starting at INT64_MIN with a negative length is EINVAL (#25)");
+    l->l_start = 2;
+    l->l_len = -2;
+    expect(SYS3(72, (uint64_t)fd, 6, fl) == 0, "a negative length from a real start locks before it");
+}
+
 static void t_registry_answers(void) {
     uint64_t before;
 
@@ -6673,6 +6696,7 @@ int test_linux_handlers(void) {
     t_sigreturn_forged();
     t_kill_permission();
     t_kill_threads();
+    t_flock_range_overflow();
     t_registry_answers();
     t_uname_and_clock();
     t_exit_and_wait();

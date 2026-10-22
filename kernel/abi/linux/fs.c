@@ -1496,10 +1496,13 @@ static long linux_flock_range(vibeos_file_t *f, const linux_flock_t *fl, uint64_
         return -VIBEOS_EOVERFLOW;
     }
     s = base + fl->l_start;
+    /* A start before the file is refused before the length is applied, as
+     * Linux's flock64_to_posix_lock does: from a start of zero or more, a
+     * negative length cannot overflow, and s - 1 cannot either (#25). */
+    if (s < 0) {
+        return -VIBEOS_EINVAL;
+    }
     if (fl->l_len == 0) {
-        if (s < 0) {
-            return -VIBEOS_EINVAL;
-        }
         *start = (uint64_t)s;
         *end = VIBEOS_FLK_END;
         return 0;

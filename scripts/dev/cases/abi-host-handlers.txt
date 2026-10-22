@@ -151,3 +151,19 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
     }
 +++ new
     (void)0;
+
+### a lock's negative length is applied before its start is judged (#25)
+--- old
+     * negative length cannot overflow, and s - 1 cannot either (#25). */
+    if (s < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if (fl->l_len == 0) {
+        *start = (uint64_t)s;
++++ new
+     * negative length cannot overflow, and s - 1 cannot either (#25). */
+    if (fl->l_len == 0) {
+        if (s < 0) {
+            return -VIBEOS_EINVAL;
+        }
+        *start = (uint64_t)s;
