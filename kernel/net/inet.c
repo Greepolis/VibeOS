@@ -1504,7 +1504,12 @@ static void udp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
 
     for (i = 0; i < VIBEOS_INET_MAX_SOCKETS; i++) {
         vibeos_inet_socket_t *s = &net->sockets[i];
-        if (s->used && s->type == VIBEOS_INET_SOCK_UDP && s->local_port == dport) {
+        /* The port, and the address the socket bound, if it bound one; and a
+         * connected socket hears only its peer (#65). Linux's demultiplexing,
+         * which this used to stop at the port of. */
+        if (s->used && s->type == VIBEOS_INET_SOCK_UDP && s->local_port == dport &&
+            (s->local_ip == 0u || s->local_ip == dst) &&
+            (!s->udp_peer || (s->remote_ip == src && s->remote_port == sport))) {
             uint32_t k;
             /* Queue the datagram behind any already waiting. A full queue drops
              * the newest and is counted: UDP may lose datagrams, but it must
@@ -1886,8 +1891,8 @@ static void tcp_abort_socket(vibeos_inet_t *net, int idx) {
 
 /* Find the socket a segment belongs to: an exact four-tuple match first, then a
  * listening socket on the destination port. */
-static vibeos_inet_socket_t *tcp_lookup(vibeos_inet_t *net, uint32_t src, uint16_t sport,
-                                        uint16_t dport, int *out_index) {
+static vibeos_inet_socket_t *tcp_lookup(vibeos_inet_t *net, uint32_t src, uint32_t dst,
+                                        uint16_t sport, uint16_t dport, int *out_index) {
     uint32_t i;
     for (i = 0; i < VIBEOS_INET_MAX_SOCKETS; i++) {
         vibeos_inet_socket_t *s = &net->sockets[i];
@@ -1903,7 +1908,8 @@ static vibeos_inet_socket_t *tcp_lookup(vibeos_inet_t *net, uint32_t src, uint16
     for (i = 0; i < VIBEOS_INET_MAX_SOCKETS; i++) {
         vibeos_inet_socket_t *s = &net->sockets[i];
         if (s->used && s->type == VIBEOS_INET_SOCK_TCP &&
-            s->state == VIBEOS_TCP_LISTEN && s->local_port == dport) {
+            s->state == VIBEOS_TCP_LISTEN && s->local_port == dport &&
+            (s->local_ip == 0u || s->local_ip == dst)) {   /* the address it bound (#66) */
             if (out_index) {
                 *out_index = (int)i;
             }
@@ -2069,7 +2075,7 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
     data = t + hdr;
     dlen = len - hdr;
 
-    s = tcp_lookup(net, src, sport, dport, &idx);
+    s = tcp_lookup(net, src, dst, sport, dport, &idx);
     if (!s) {
         net->rx_dropped++;
         /* A SYN to a port nobody listens on is answered with a reset, so the

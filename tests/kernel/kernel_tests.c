@@ -4646,6 +4646,51 @@ static int test_inet_input_review(void) {
     if (s->snd_una != 1000u) {
         return -8;
     }
+
+    /* #65: a datagram to this machine's address is not for a socket bound to
+     * 127.0.0.1, and a connected socket hears only its peer. */
+    {
+        uint8_t buf[16];
+        uint32_t from = 0;
+        uint16_t fport = 0;
+        int lo = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_UDP);
+        int cn = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_UDP);
+
+        if (lo < 0 || cn < 0 || vibeos_inet_bind_addr(&net, lo, 0x7F000001u, 6100) != 0 ||
+            vibeos_inet_bind(&net, cn, 6101) != 0 || vibeos_inet_connect(&net, cn, 0x0A000202u, 53) != 0) {
+            return -9;
+        }
+        inet_deliver_udp(&net, 0x0A000202u, 99, 6100, (const uint8_t *)"a", 1);
+        if (vibeos_inet_recvfrom(&net, lo, buf, sizeof(buf), &from, &fport) != -VIBEOS_INET_EAGAIN) {
+            return -10;
+        }
+        inet_deliver_udp(&net, 0x0A000202u, 99, 6101, (const uint8_t *)"b", 1);
+        if (vibeos_inet_recvfrom(&net, cn, buf, sizeof(buf), &from, &fport) != -VIBEOS_INET_EAGAIN) {
+            return -11;
+        }
+        inet_deliver_udp(&net, 0x0A000202u, 53, 6101, (const uint8_t *)"c", 1);
+        if (vibeos_inet_recvfrom(&net, cn, buf, sizeof(buf), &from, &fport) != 1 || buf[0] != 'c') {
+            return -12;
+        }
+    }
+
+    /* #66: nor is a SYN for this machine's address answered by a listener
+     * bound to 127.0.0.1. */
+    {
+        int l = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+        uint32_t i;
+
+        if (l < 0 || vibeos_inet_bind_addr(&net, l, 0x7F000001u, 7100) != 0 || vibeos_inet_listen(&net, l) != 0) {
+            return -13;
+        }
+        cap.count = 0;
+        inet_deliver_tcp(&net, 0x0A000202u, 5100, 7100, 1u, 0u, 0x02 /* SYN */, 0, 0);
+        for (i = 0; i < cap.count; i++) {
+            if (cap.frame[i][14 + 9] == 6u && (cap.frame[i][14 + 20 + 13] & 0x12u) == 0x12u) {
+                return -14;
+            }
+        }
+    }
     return 0;
 }
 

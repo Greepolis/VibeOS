@@ -98,3 +98,16 @@
         if (rclass != 1u || !dns_names_equal(b, len, owner, wanted)) {
 +++ new
         if (0) {
+
+### a datagram goes to the first socket on its port, whatever it bound or is connected to (#65)
+--- old
+            (s->local_ip == 0u || s->local_ip == dst) &&
+            (!s->udp_peer || (s->remote_ip == src && s->remote_port == sport))) {
++++ new
+            1) {
+
+### a listener answers a SYN for an address it did not bind (#66)
+--- old
+            (s->local_ip == 0u || s->local_ip == dst)) {   /* the address it bound (#66) */
++++ new
+            1) {
