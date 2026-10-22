@@ -111,3 +111,9 @@
             (s->local_ip == 0u || s->local_ip == dst)) {   /* the address it bound (#66) */
 +++ new
             1) {
+
+### SO_REUSEPORT is stored and shares nothing (#60)
+--- old
+        if (s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) {
++++ new
+        if (0) {

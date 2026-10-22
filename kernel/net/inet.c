@@ -618,9 +618,12 @@ static int port_taken(const vibeos_inet_t *net, const vibeos_inet_socket_t *s, u
         if (o->local_ip != 0u && ip != 0u && o->local_ip != ip) {
             continue;
         }
-        if (s->reuse && o->reuse &&
+        if ((s->reuse & o->reuse & VIBEOS_INET_REUSE_ADDR) &&
             (s->type == VIBEOS_INET_SOCK_UDP || (o->state != VIBEOS_TCP_LISTEN))) {
             continue;
+        }
+        if (s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) {
+            continue;   /* both asked to share it */
         }
         return 1;
     }
@@ -673,13 +676,13 @@ int vibeos_inet_bind_addr(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t po
     return 0;
 }
 
-int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int on) {
+int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int how) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
 
     if (!s) {
         return -VIBEOS_INET_EINVAL;
     }
-    s->reuse = on ? 1u : 0u;
+    s->reuse = (uint8_t)((uint32_t)how & (VIBEOS_INET_REUSE_ADDR | VIBEOS_INET_REUSE_PORT));
     return 0;
 }
 

@@ -104,7 +104,7 @@ typedef struct vibeos_inet_socket {
                               * be reclaimed once the exchange ends, not before */
     uint8_t shut_rd;         /* shutdown(SHUT_RD): reads end once rx is empty  */
     uint8_t bound;           /* a port is this socket's: bind, listen, connect, a send */
-    uint8_t reuse;           /* SO_REUSEADDR: another may bind the port unless listening */
+    uint8_t reuse;           /* VIBEOS_INET_REUSE_*: who else may bind the port   */
     uint8_t udp_peer;        /* a connected datagram socket: remote_* is its peer */
     uint32_t local_ip;       /* what bind named; 0 is any                    */
 
@@ -310,7 +310,13 @@ long vibeos_inet_recvfrom(vibeos_inet_t *net, int sock, void *buf, uint32_t len,
  * peer for sends without an address. */
 #define VIBEOS_INET_PEEK 0x1u
 int vibeos_inet_bind_addr(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t port);
-int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int on);
+/* SO_REUSEADDR: another may bind the port unless it is listening.
+ * SO_REUSEPORT: another that asked for it too may bind it, listening or not
+ * (#60). Linux also asks that both belong to one user; the stack does not know
+ * users, and that half is not here. */
+#define VIBEOS_INET_REUSE_ADDR 1u
+#define VIBEOS_INET_REUSE_PORT 2u
+int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int how);
 long vibeos_inet_recv_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t len, uint32_t flags);
 long vibeos_inet_recvfrom_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t len, uint32_t flags,
                              uint32_t *out_ip, uint16_t *out_port, uint32_t *full_len);

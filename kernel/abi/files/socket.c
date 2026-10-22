@@ -151,6 +151,14 @@ static int inet_local_ok(uint32_t ip) {
     return ip == 0u || (net && ip == net->ip) || (ip >> 24) == 127u;
 }
 
+/* What the description's options say about sharing its port, for the stack. */
+static int in_reuse(const vibeos_file_t *f) {
+    uint32_t fl = __atomic_load_n(&f->sk_flags, __ATOMIC_ACQUIRE);
+
+    return (int)(((fl & VIBEOS_SKF_REUSEADDR) ? VIBEOS_INET_REUSE_ADDR : 0u) |
+                 ((fl & VIBEOS_SKF_REUSEPORT) ? VIBEOS_INET_REUSE_PORT : 0u));
+}
+
 static long in_bind(vibeos_file_t *f, const vibeos_sockaddr_t *a) {
     int sock;
     long r;
@@ -165,7 +173,7 @@ static long in_bind(vibeos_file_t *f, const vibeos_sockaddr_t *a) {
         return -VIBEOS_EBADF;
     }
     ks_lock(ks_net_lock(), __func__);
-    (void)vibeos_inet_set_reuse(ks_net(), sock, (f->sk_flags & VIBEOS_SKF_REUSEADDR) != 0u);
+    (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f));
     r = vibeos_inet_bind_addr(ks_net(), sock, a->ip, a->port);
     ks_unlock(ks_net_lock());
     return r == 0 ? 0 : inet_errno(r);
@@ -183,7 +191,7 @@ static long in_listen(vibeos_file_t *f, int backlog) {
         return -VIBEOS_EBADF;
     }
     ks_lock(ks_net_lock(), __func__);
-    (void)vibeos_inet_set_reuse(ks_net(), sock, (f->sk_flags & VIBEOS_SKF_REUSEADDR) != 0u);
+    (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f));
     r = vibeos_inet_listen(ks_net(), sock);
     ks_unlock(ks_net_lock());
     return r == 0 ? 0 : inet_errno(r);
@@ -538,9 +546,10 @@ static long in_setopt(vibeos_file_t *f, int opt, const void *val, uint32_t len) 
     long r = vibeos_sockopt_set(f, opt, val, len);
     int sock;
 
-    if (r == 0 && opt == VIBEOS_SO_REUSEADDR && (sock = vibeos_sockfile_stable(f)) >= 0) {
+    if (r == 0 && (opt == VIBEOS_SO_REUSEADDR || opt == VIBEOS_SO_REUSEPORT) &&
+        (sock = vibeos_sockfile_stable(f)) >= 0) {
         ks_lock(ks_net_lock(), __func__);
-        (void)vibeos_inet_set_reuse(ks_net(), sock, (f->sk_flags & VIBEOS_SKF_REUSEADDR) != 0u);
+        (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f));
         ks_unlock(ks_net_lock());
     }
     return r;

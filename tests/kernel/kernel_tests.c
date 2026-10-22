@@ -4691,6 +4691,25 @@ static int test_inet_input_review(void) {
             }
         }
     }
+
+    /* #60: SO_REUSEPORT on both shares a port, listening too; on one only it
+     * does not. */
+    {
+        int a1 = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+        int a2 = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+        int a3 = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+
+        if (a1 < 0 || a2 < 0 || a3 < 0 ||
+            vibeos_inet_set_reuse(&net, a1, (int)VIBEOS_INET_REUSE_PORT) != 0 ||
+            vibeos_inet_set_reuse(&net, a2, (int)VIBEOS_INET_REUSE_PORT) != 0 ||
+            vibeos_inet_bind_addr(&net, a1, 0, 7200) != 0 || vibeos_inet_listen(&net, a1) != 0 ||
+            vibeos_inet_bind_addr(&net, a2, 0, 7200) != 0 || vibeos_inet_listen(&net, a2) != 0) {
+            return -15;
+        }
+        if (vibeos_inet_bind_addr(&net, a3, 0, 7200) == 0) {
+            return -16;
+        }
+    }
     return 0;
 }
 
