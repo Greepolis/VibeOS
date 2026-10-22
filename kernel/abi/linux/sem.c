@@ -243,7 +243,17 @@ static long sem_try(int s, sem_op_t *m, uint32_t *at) {
             /* The adjustment has to stay inside what a value can be too. */
             linux_semundo_t *u = undo_of(m->tgid, g_sem_obj[s].id, op->sem_num, 0);
             int32_t adj = (u ? u->adj : 0) - op->sem_op;
+            uint32_t j;
 
+            /* And with what the earlier operations of this same call will add
+             * to it: they are applied together below, so each is judged
+             * against the sum, not against the adjustment before the call
+             * (#30). */
+            for (j = 0; j < i; j++) {
+                if (m->ops[j].sem_num == op->sem_num && (m->ops[j].sem_flg & LINUX_SEM_UNDO)) {
+                    adj -= m->ops[j].sem_op;
+                }
+            }
             if (adj < -LINUX_SEMAEM - 1 || adj > LINUX_SEMAEM) {
                 return -VIBEOS_ERANGE;
             }

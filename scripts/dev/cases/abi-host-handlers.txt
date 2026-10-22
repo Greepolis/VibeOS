@@ -167,3 +167,9 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
             return -VIBEOS_EINVAL;
         }
         *start = (uint64_t)s;
+
+### one semop's SEM_UNDO adjustments are judged one by one (#30)
+--- old
+                if (m->ops[j].sem_num == op->sem_num && (m->ops[j].sem_flg & LINUX_SEM_UNDO)) {
++++ new
+                if (0) {

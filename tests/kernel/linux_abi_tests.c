@@ -4132,6 +4132,19 @@ static void t_ipc_sem(void) {
         expect(SYS3(65, (uint64_t)s, sops_of(1, zero), 0) == -VIBEOS_EINVAL &&
                SYS3(65, (uint64_t)s, sops_of(1, zero), 501u) == -VIBEOS_E2BIG &&
                SYS3(65, (uint64_t)s, 8, 1) == -VIBEOS_EFAULT, "no operations EINVAL, too many E2BIG, a bad list EFAULT");
+        {
+            /* Two adjustments of 20000 in one call are 40000, past SEMAEM,
+             * though each alone is not (#30). */
+            static const int16_t twice[] = {1, -20000, LINUX_SEM_UNDO | LINUX_IPC_NOWAIT,
+                                            1, 20000, LINUX_IPC_NOWAIT,
+                                            1, -20000, LINUX_SEM_UNDO | LINUX_IPC_NOWAIT};
+
+            expect(SYS4(66, (uint64_t)s, 1, LINUX_SETVAL, 20000) == 0 &&
+                       SYS3(65, (uint64_t)s, sops_of(3, twice), 3) == -VIBEOS_ERANGE &&
+                       SYS4(66, (uint64_t)s, 1, LINUX_GETVAL, 0) == 20000 &&
+                       SYS4(66, (uint64_t)s, 1, LINUX_SETVAL, 0) == 0,
+                   "SEM_UNDO is judged on the sum of one call's adjustments");
+        }
 
         /* SEM_UNDO: what the process changed comes back off when it ends. */
         expect(SYS3(65, (uint64_t)s, sops_of(1, undo), 1) == 0 && SYS4(66, (uint64_t)s, 2, LINUX_GETVAL, 0) == 5,
