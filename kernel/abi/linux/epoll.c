@@ -396,7 +396,11 @@ static long ep_look(void *ctx) {
                     fired = 1;
                 }
             }
-            if (judged && (rep != 0u || (s[i].events & LINUX_EPOLLET))) {
+            /* A readiness counts as seen only once it has been reported: an
+             * event whose copy failed was never delivered, and an
+             * edge-triggered entry marked seen would not report it again
+             * (#27). Nothing to report still records the state, as before. */
+            if (judged && (fired || (rep == 0u && (s[i].events & LINUX_EPOLLET)))) {
                 ks_lock(&g_ep_lock, __func__);
                 if (g_ep[s[i].at].gen == s[i].gen) {
                     if (s[i].events & LINUX_EPOLLET) {
