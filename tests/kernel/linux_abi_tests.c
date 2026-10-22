@@ -762,6 +762,12 @@ static void t_truncate_and_sync(void) {
     pr = ((int *)kf_uptr(fds))[0];
     expect(SYS1(74, (uint64_t)pr) == -VIBEOS_EINVAL, "fsync on a pipe is EINVAL");
     expect(SYS1(74, 99) == -VIBEOS_EBADF, "on nothing, EBADF");
+    /* sync_file_range judges its arguments as Linux does (#26). */
+    expect(SYS4(277, (uint64_t)fd, 0, 0, 2) == 0 && SYS4(277, (uint64_t)fd, 0, 0, 8) == -VIBEOS_EINVAL &&
+               SYS4(277, (uint64_t)fd, (uint64_t)-1, 1, 2) == -VIBEOS_EINVAL &&
+               SYS4(277, (uint64_t)fd, 0x7FFFFFFFFFFFFFFFull, 2, 2) == -VIBEOS_EINVAL &&
+               SYS4(277, (uint64_t)pr, 0, 0, 2) == -VIBEOS_ESPIPE && SYS4(277, 99, 0, 0, 2) == -VIBEOS_EBADF,
+           "sync_file_range: an unknown flag, a negative offset, a wrapping range, a pipe, nothing");
     expect(SYS0(162) == 0 && SYS1(306, (uint64_t)fd) == 0, "sync and syncfs");
     /* fallocate and the advice calls */
     expect(SYS4(285, (uint64_t)fd, 0, 0, 100) == 0 && tmp_size("/tmp/t") == 100u,

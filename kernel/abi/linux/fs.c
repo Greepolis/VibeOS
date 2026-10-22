@@ -1028,6 +1028,32 @@ static long linux_sys_fsync(uint64_t fd) {
     return r;
 }
 
+/* sync_file_range: a range of the file written back - here the whole file,
+ * which is more than asked and never less. What Linux refuses first is refused
+ * here too (#26): a flag it does not know, a negative offset, a range that
+ * wraps; and a descriptor that is not a file in a filesystem is ESPIPE. */
+static long linux_sys_sync_file_range(uint64_t fd, uint64_t offset, uint64_t nbytes, uint64_t flags) {
+    const uint64_t known = LINUX_SYNC_FILE_RANGE_WAIT_BEFORE | LINUX_SYNC_FILE_RANGE_WRITE |
+                           LINUX_SYNC_FILE_RANGE_WAIT_AFTER;
+    uint64_t end = offset + nbytes;
+    vibeos_file_t *f;
+    long r;
+
+    if ((uint32_t)flags & ~known) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((int64_t)offset < 0 || (int64_t)end < 0 || end < offset) {
+        return -VIBEOS_EINVAL;
+    }
+    f = linux_file_get(fd);
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    r = !f->mnt ? -VIBEOS_ESPIPE : f->ops->sync ? f->ops->sync(f) : 0;
+    vibeos_file_put(f);
+    return r;
+}
+
 /* sync(): every mounted filesystem. It reports nothing, as on Linux. */
 static long linux_sys_sync(void) {
     uint32_t i;
@@ -2454,7 +2480,7 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(262, newfstatat,  STAT_AT,     PTRS(OUT(2, sizeof(linux_stat_t))), linux_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(263, unlinkat,    UNLINK_AT,   NOPTR, linux_sys_unlinkat(ARG(0), ARG(1), ARG(2))) \
     X(267, readlinkat,  READLINK_AT, NOPTR, linux_sys_readlinkat(ARG(0), ARG(1), ARG(2), ARG(3))) \
-    X(277, sync_file_range, SYNC_RANGE, NOPTR, linux_sys_fsync(ARG(0))) \
+    X(277, sync_file_range, SYNC_RANGE, NOPTR, linux_sys_sync_file_range(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(285, fallocate,   FALLOCATE,   NOPTR, linux_sys_fallocate(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(292, dup3,        DUP3,        NOPTR, linux_sys_dup3(ARG(0), ARG(1), ARG(2))) \
     X(293, pipe2,       PIPE2,       PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), ARG(1))) \

@@ -1198,6 +1198,11 @@ typedef struct {
 #define LINUX_MQ_PRIO_MAX 32768
 #define LINUX_SI_MESGQ    (-3)
 
+/* sync_file_range's flags (glibc's fcntl.h). */
+#define LINUX_SYNC_FILE_RANGE_WAIT_BEFORE 1
+#define LINUX_SYNC_FILE_RANGE_WRITE       2
+#define LINUX_SYNC_FILE_RANGE_WAIT_AFTER  4
+
 /* splice's flags (glibc's fcntl.h; uapi does not export them). */
 #define LINUX_SPLICE_F_MOVE     1
 #define LINUX_SPLICE_F_NONBLOCK 2
