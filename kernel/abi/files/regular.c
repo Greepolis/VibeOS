@@ -219,6 +219,38 @@ static long regular_pwrite_direct(vibeos_file_t *f, uint64_t buf, uint64_t len, 
     return done > 0u ? (long)done : n;
 }
 
+/* A write takes its file in turn - the file, not the description: two open()s
+ * of one file are two descriptions and two pos locks, and two O_APPEND writes
+ * through them each read the same end and wrote at it, the later over the
+ * earlier (#23). Linux holds the inode's lock across the write. Here a file is
+ * (mount, node), striped over a few words rather than one per file; two files
+ * that share a stripe only take turns. Waited on as pos_take waits, since the
+ * holder does I/O. */
+#define FILE_WRITE_STRIPES 32u
+static volatile uint32_t g_file_write_busy[FILE_WRITE_STRIPES];
+
+static volatile uint32_t *file_write_stripe(const vibeos_file_t *f) {
+    uint64_t h = (uint64_t)(uintptr_t)f->mnt * 0x9E3779B97F4A7C15ull ^ f->node * 0xC2B2AE3D27D4EB4Full;
+    return &g_file_write_busy[(h >> 32) % FILE_WRITE_STRIPES];
+}
+
+static void file_write_take(const vibeos_file_t *f) {
+    volatile uint32_t *w = file_write_stripe(f);
+
+    for (;;) {
+        uint32_t zero = 0;
+
+        if (__atomic_compare_exchange_n(w, &zero, 1u, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return;
+        }
+        ks_wait_tick();
+    }
+}
+
+static void file_write_give(const vibeos_file_t *f) {
+    __atomic_store_n(file_write_stripe(f), 0u, __ATOMIC_RELEASE);
+}
+
 static long regular_pwrite(vibeos_file_t *f, uint64_t buf, uint64_t len, uint64_t off) {
     if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
         return -VIBEOS_EBADF;
@@ -228,10 +260,12 @@ static long regular_pwrite(vibeos_file_t *f, uint64_t buf, uint64_t len, uint64_
      * L1's list never ran (docs/abi/ L4 step 1 found it). */
     long w;
 
+    file_write_take(f);   /* the end read and written at as one (#23) */
     if (f->flags & VIBEOS_O_APPEND) {
         off = regular_size(f);
     }
     w = regular_pwrite_direct(f, buf, len, off);
+    file_write_give(f);
     if (w > 0) {
         file_notify(f, VIBEOS_FSN_MODIFY);
     }
@@ -258,8 +292,10 @@ static long regular_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
      * written since - which is what makes two processes appending to one log
      * interleave lines rather than overwrite each other. */
     pos_take(f);
+    file_write_take(f);
     at = (f->flags & VIBEOS_O_APPEND) ? regular_size(f) : f->pos;
     w = regular_pwrite_direct(f, buf, len, at);
+    file_write_give(f);
     if (w > 0) {
         f->pos = at + (uint64_t)w;
     }
