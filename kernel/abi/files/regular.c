@@ -118,6 +118,16 @@ static void pos_give(vibeos_file_t *f) {
     __atomic_store_n(&f->pos_busy, 0u, __ATOMIC_RELEASE);
 }
 
+/* The same turn for a personality that moves the offset itself: getdents
+ * walks a directory by it (#24). */
+void vibeos_file_pos_take(vibeos_file_t *f) {
+    pos_take(f);
+}
+
+void vibeos_file_pos_give(vibeos_file_t *f) {
+    pos_give(f);
+}
+
 static long regular_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     long n;
 

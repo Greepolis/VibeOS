@@ -1940,6 +1940,10 @@ static long linux_getdents(uint64_t fd, uint64_t buf, uint64_t len, int old) {
         vibeos_file_put(f);
         return -VIBEOS_ENOTDIR;
     }
+    /* The offset is the description's: two threads listing through one
+     * directory each read entries at it and moved it on - the same entry
+     * twice, another never (#24). Taken in turn, as read takes it. */
+    vibeos_file_pos_take(f);
     /* Bounded: a filesystem whose listing never ends must not hold a core. */
     for (steps = 0; steps < 4096u; steps++) {
         /* The record, built here and copied out whole (M-052): filling the
@@ -2003,6 +2007,7 @@ static long linux_getdents(uint64_t fd, uint64_t buf, uint64_t len, int old) {
         used += reclen;
         f->pos++;
     }
+    vibeos_file_pos_give(f);
     vibeos_file_put(f);
     return used > 0u ? (long)used : r;
 }
