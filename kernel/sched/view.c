@@ -127,6 +127,10 @@ void vibeos_task_print_stats(void) {
     view_hex(s->exit_migrated);
     vibeos_x86_64_serial_puts(" pid_dead_thread_skipped=0x");
     view_hex(s->pid_dead_thread_skipped);
+    vibeos_x86_64_serial_puts(" exit_leader_before_threads=0x");
+    view_hex(s->exit_leader_before_threads);
+    vibeos_x86_64_serial_puts(" exit_parent_told_late=0x");
+    view_hex(s->exit_parent_told_late);
     /* What the scheduling policy has been charged: the gate asserts it moved,
      * since a policy never charged picks by slot number (L2 step 4). */
     vibeos_x86_64_serial_puts(" policy_charged=0x");

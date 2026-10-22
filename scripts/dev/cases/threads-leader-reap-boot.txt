@@ -1,0 +1,20 @@
+# A process ends when its last thread does, not its leader (M-117). waitpid
+# used to reap a zombie leader while another thread was still leaving an
+# exit_group, and kill(pid, 0) then answered 0 for a reaped pid - THREADS.ELF's
+# C6_ABORT, hidden for a while by fifty yields of grace the test no longer
+# gives. The window is reached on every boot (exit_leader_before_threads on
+# the [TASKS] line). The host half is abi-processes.txt's seventh case.
+#
+#  1. a zombie leader is reaped while a thread of it is still running. Expect
+#     fatal_signal_left_a_thread.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/threads-leader-reap-boot.txt
+
+### a zombie leader is reaped while a thread of it is still running
+--- old
+            if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
+                linux_group_still_running(t->tgid, i)) {
++++ new
+            if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
+                (0 && linux_group_still_running(t->tgid, i))) {

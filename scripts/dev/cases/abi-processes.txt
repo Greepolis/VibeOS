@@ -10,6 +10,8 @@
 #  5. clone3 takes a structure smaller than its first version. Expect "a
 #     structure too small is EINVAL".
 #  6. execveat takes any flag. Expect "execveat refuses a flag it does not know".
+#  7. a zombie leader is reaped while a thread of it is still running (M-117).
+#     Expect "a zombie leader with a thread still running is not reaped".
 #
 # Target source: kernel/abi/linux/proc.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-processes.txt
@@ -51,3 +53,11 @@
         return -VIBEOS_EINVAL;
     }
 +++ new
+
+### a zombie leader is reaped while a thread of it is still running
+--- old
+            if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
+                linux_group_still_running(t->tgid, i)) {
++++ new
+            if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
+                (0 && linux_group_still_running(t->tgid, i))) {

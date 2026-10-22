@@ -22,9 +22,9 @@
 
 ### SIGCHLD is never raised
 --- old
-                if (g_tasks[dying].id.exit_sig_other != VIBEOS_EXIT_SIG_NONE) {
+            if (g_tasks[leader].id.exit_sig_other != VIBEOS_EXIT_SIG_NONE) {
 +++ new
-                if (0) {
+            if (0) {
 
 ### the null page reads as present to the program
 --- old

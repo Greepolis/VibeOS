@@ -5666,6 +5666,26 @@ static void t_processes(void) {
            "waitpid(0) a child of the caller's group, with its rusage");
     expect(SYS3(61, 0, st, 0) == -VIBEOS_ECHILD, "and then there are none");
 
+    /* A leader is not reported while a thread of its process is still on its
+     * way out (M-117): kill(pid, 0) answered 0 after the reap. */
+    me = fresh(603);
+    c1 = t_fork_child(&pid);
+    kf_set_current(me);
+    c2 = t_fork_child(&pid2);          /* made into a thread of the first */
+    kf_set_current(me);
+    ks_id(c2)->tgid = (uint32_t)pid;
+    ks_id(c2)->is_thread = 1;
+    t_child_ends(c1, 0, 6);
+    expect(SYS3(61, (uint64_t)pid, st, 1u /* WNOHANG */) == 0,
+           "a zombie leader with a thread still running is not reaped");
+    expect(SYS3(61, (uint64_t)-1, st, 1u /* WNOHANG */) == 0,
+           "nor by a wait for any child");
+    (void)vibeos_task_transition((uint32_t)c2, VIBEOS_TASK_ZOMBIE, "test");
+    (void)vibeos_task_transition((uint32_t)c2, VIBEOS_TASK_FREE, "test");
+    expect(SYS3(61, (uint64_t)pid, st, 1u /* WNOHANG */) == pid &&
+           *(int *)kf_uptr(st) == 6,
+           "and is, killed by its signal, once the last thread is gone");
+
     /* waitid. */
     me = fresh(602);
     info = kf_ualloc(128);

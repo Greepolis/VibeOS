@@ -51,6 +51,15 @@ typedef struct vibeos_task_stats {
      * must-be-zero: it says whether the window is ever reached. */
     uint64_t pid_dead_thread_skipped;
 
+    /* A process's leader exited while another of its threads had not, and the
+     * parent was told only when the last of them did. waitpid used to reap the
+     * leader in that window, and kill(pid, 0) answered 0 for a process already
+     * reaped (M-117). Reported, not must-be-zero: the first says whether the
+     * window is reached, the second that the late notice was given - a first
+     * that moves without the second is a parent left waiting. */
+    uint64_t exit_leader_before_threads;
+    uint64_t exit_parent_told_late;
+
     /* The three that must be zero, and are asserted by the boot gate.
      *
      * Each names a defect this subsystem has actually produced: a slot written

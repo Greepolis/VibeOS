@@ -1387,6 +1387,92 @@ int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     return i;
 }
 
+/* 1 if a member of thread group `tgid` other than slot `except` has not
+ * finished exiting. A thread that has is ZOMBIE only inside the critical
+ * section that releases it, so under g_sched_lock "not ZOMBIE" is "alive". */
+static int hw_group_has_live_member(uint32_t tgid, int except) {
+    int i;
+
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        vibeos_task_state_t st = hw_slot_state(i);
+
+        if (i != except && g_tasks[i].id.is_user && g_tasks[i].id.tgid == tgid &&
+            st != HW_TASK_FREE && st != HW_TASK_RESERVED && st != HW_TASK_ZOMBIE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Tell the parent that the process whose zombie leader is `leader` has ended:
+ * wake it out of waitpid and raise SIGCHLD. Under g_sched_lock.
+ *
+ * Called once per process, by whichever finishes last - the leader, or the
+ * last of its other threads (M-117). It used to be the leader's exit alone,
+ * and waitpid reaped a zombie leader while another thread was still on its way
+ * out of an exit_group: THREADS.ELF's C6_ABORT then saw kill(pid, 0) answer 0
+ * for a process its parent had already reaped. Linux does not report a leader
+ * until its group is empty, and neither does linux_wait_child now - so a wake
+ * at the leader's exit would find nothing to reap, and a SIGCHLD handler that
+ * reaps with WNOHANG would find nothing and never be told again. */
+static void hw_notify_parent(int leader) {
+    int i;
+    uint32_t ppid = g_tasks[leader].id.ppid;
+
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        /* Not a stopped parent: a child's end is no SIGCONT. */
+        if (hw_slot_state(i) == HW_TASK_BLOCKED && !g_tasks[i].id.signal_stopped &&
+            g_tasks[i].id.pid == ppid) {
+            (void)hw_task_set_state(i, HW_TASK_READY, __func__);
+            HW_TASK_MARK(i, ready_by, "parent_woken_by_child_exit");
+        }
+    }
+    /* SIGCHLD (docs/abi/ L2). It was never raised: a shell that runs jobs
+     * in the background learns of their end from it, and so does any
+     * program that waits for children with a handler rather than in
+     * waitpid. To the parent's thread-group leader, with how the child
+     * ended; under the scheduler's lock, as kill raises. A parent that
+     * ignores SIGCHLD, or never set a handler, has it discarded - children
+     * of a parent that ignores it are still left for wait() to reap
+     * (SA_NOCLDWAIT is not implemented). */
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        vibeos_task_state_t st = hw_slot_state(i);
+
+        if (i != leader && g_tasks[i].id.is_user && st != HW_TASK_FREE &&
+            st != HW_TASK_RESERVED && st != HW_TASK_ZOMBIE &&
+            g_tasks[i].id.pid == ppid &&
+            g_tasks[i].id.pid == g_tasks[i].id.tgid) {
+            vibeos_siginfo_t why;
+            uint32_t k;
+            const vibeos_task_account_t *acct = vibeos_account_task((uint32_t)leader);
+
+            for (k = 0; k < sizeof(why); k++) {
+                ((unsigned char *)&why)[k] = 0;
+            }
+            why.from = VIBEOS_SIG_FROM_CHILD;
+            why.pid = g_tasks[leader].id.tgid;
+            why.uid = g_tasks[leader].id.exit_uid;
+            if (g_tasks[leader].id.exit_signal != 0u) {
+                why.code = (int32_t)VIBEOS_CHILD_KILLED;
+                why.status = (int32_t)g_tasks[leader].id.exit_signal;
+            } else {
+                why.code = (int32_t)VIBEOS_CHILD_EXITED;
+                why.status = (int32_t)(g_tasks[leader].id.exit_code & 0xFFu);
+            }
+            why.utime = acct && acct->ticks > g_tasks[leader].id.cpu_base
+                        ? acct->ticks - g_tasks[leader].id.cpu_base : 0u;
+            /* SIGCHLD unless clone or clone3 named another, or none
+             * (exit_sig_other; LTP's clone301 found it ignored). */
+            if (g_tasks[leader].id.exit_sig_other != VIBEOS_EXIT_SIG_NONE) {
+                (void)hw_signal_send(i, g_tasks[leader].id.exit_sig_other != 0u
+                                         ? (uint32_t)g_tasks[leader].id.exit_sig_other
+                                         : VIBEOS_SIGCHLD, &why);
+            }
+            break;
+        }
+    }
+}
+
 /* exit(): retire the calling task and switch to another runnable one. Called
  * from the syscall path, so it enters the next task directly and never returns
  * to the caller. */
@@ -1718,63 +1804,32 @@ void hw_task_exit(uint64_t code) {
              * worse leak than the one being fixed, and invisible except for
              * that one line. Reap it immediately afterwards, since this is the
              * reaper nothing else will be. */
+            uint32_t tgid = g_tasks[dying].id.tgid;
+
             (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
             hw_orphans_to_init(dying);   /* if it was the last of its process */
             hw_task_release(dying);
+            /* The last thread out of a process whose leader is already a
+             * zombie is the one that tells the parent (M-117). */
+            for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+                if (hw_slot_state(i) == HW_TASK_ZOMBIE && g_tasks[i].id.is_user &&
+                    !g_tasks[i].id.is_thread && g_tasks[i].id.pid == tgid &&
+                    g_tasks[i].id.tgid == tgid) {
+                    if (!hw_group_has_live_member(tgid, i)) {
+                        vibeos_task_stats()->exit_parent_told_late++;
+                        hw_notify_parent(i);
+                    }
+                    break;
+                }
+            }
         } else {
         (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
         hw_orphans_to_init(dying);
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            /* Not a stopped parent: a child's end is no SIGCONT. */
-            if (hw_slot_state(i) == HW_TASK_BLOCKED && !g_tasks[i].id.signal_stopped &&
-                g_tasks[i].id.pid == g_tasks[dying].id.ppid) {
-                (void)hw_task_set_state(i, HW_TASK_READY, __func__);
-                HW_TASK_MARK(i, ready_by, "parent_woken_by_child_exit");
-            }
-        }
-        /* SIGCHLD (docs/abi/ L2). It was never raised: a shell that runs jobs
-         * in the background learns of their end from it, and so does any
-         * program that waits for children with a handler rather than in
-         * waitpid. To the parent's thread-group leader, with how the child
-         * ended; under the scheduler's lock, as kill raises. A parent that
-         * ignores SIGCHLD, or never set a handler, has it discarded - children
-         * of a parent that ignores it are still left for wait() to reap
-         * (SA_NOCLDWAIT is not implemented). */
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            vibeos_task_state_t st = hw_slot_state(i);
-
-            if (i != dying && g_tasks[i].id.is_user && st != HW_TASK_FREE &&
-                st != HW_TASK_RESERVED && st != HW_TASK_ZOMBIE &&
-                g_tasks[i].id.pid == g_tasks[dying].id.ppid &&
-                g_tasks[i].id.pid == g_tasks[i].id.tgid) {
-                vibeos_siginfo_t why;
-                uint32_t k;
-                const vibeos_task_account_t *acct = vibeos_account_task((uint32_t)dying);
-
-                for (k = 0; k < sizeof(why); k++) {
-                    ((unsigned char *)&why)[k] = 0;
-                }
-                why.from = VIBEOS_SIG_FROM_CHILD;
-                why.pid = g_tasks[dying].id.tgid;
-                why.uid = child_uid;
-                if (g_tasks[dying].id.exit_signal != 0u) {
-                    why.code = (int32_t)VIBEOS_CHILD_KILLED;
-                    why.status = (int32_t)g_tasks[dying].id.exit_signal;
-                } else {
-                    why.code = (int32_t)VIBEOS_CHILD_EXITED;
-                    why.status = (int32_t)(code & 0xFFu);
-                }
-                why.utime = acct && acct->ticks > g_tasks[dying].id.cpu_base
-                            ? acct->ticks - g_tasks[dying].id.cpu_base : 0u;
-                /* SIGCHLD unless clone or clone3 named another, or none
-                 * (exit_sig_other; LTP's clone301 found it ignored). */
-                if (g_tasks[dying].id.exit_sig_other != VIBEOS_EXIT_SIG_NONE) {
-                    (void)hw_signal_send(i, g_tasks[dying].id.exit_sig_other != 0u
-                                             ? (uint32_t)g_tasks[dying].id.exit_sig_other
-                                             : VIBEOS_SIGCHLD, &why);
-                }
-                break;
-            }
+        g_tasks[dying].id.exit_uid = child_uid;
+        if (hw_group_has_live_member(g_tasks[dying].id.tgid, dying)) {
+            vibeos_task_stats()->exit_leader_before_threads++;
+        } else {
+            hw_notify_parent(dying);
         }
         }
         hw_spin_unlock(&g_sched_lock);

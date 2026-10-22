@@ -499,6 +499,28 @@ typedef struct {
     uint64_t cpu;         /* the ticks it ran, for rusage and times()           */
 } linux_waited_t;
 
+/* 1 if a thread of `tgid` other than slot `leader` has not finished exiting.
+ * Under the scheduler's lock.
+ *
+ * A zombie leader is not a process that has ended while one of its threads is
+ * still on its way out of an exit_group: Linux reports it only once the group
+ * is empty. This reaped it at once, and kill(pid, 0) then answered 0 for a pid
+ * its parent had already reaped (M-117, THREADS.ELF's C6_ABORT). Exit tells
+ * the parent again when the last thread is gone. */
+static int linux_group_still_running(uint32_t tgid, int leader) {
+    int i;
+
+    for (i = 0; i < (int)ks_slots(); i++) {
+        vibeos_task_state_t st = vibeos_task_state((uint32_t)i);
+
+        if (i != leader && ks_id(i)->is_user && ks_id(i)->tgid == tgid &&
+            st != VIBEOS_TASK_FREE && st != VIBEOS_TASK_SETUP && st != VIBEOS_TASK_ZOMBIE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* 1 if a child was found and *out filled, 0 if there were children and none
  * had ended (only with WNOHANG), or a negated errno: ECHILD, or EINTR made a
  * restart by the dispatcher. */
@@ -524,7 +546,8 @@ static long linux_wait_child(uint32_t kind, uint32_t id, uint64_t options, int r
                 continue;
             }
             have_children = 1;
-            if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE) {
+            if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
+                linux_group_still_running(t->tgid, i)) {
                 continue;
             }
             {

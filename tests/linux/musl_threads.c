@@ -924,16 +924,19 @@ int main(int argc, char **argv)
             printf("THREADS_C6_ABORT_FAIL: fork\n");
         } else {
             struct timespec t0;
-            int status = 0, n;
+            int status = 0;
             pid_t got = 0;
 
             clock_gettime(CLOCK_MONOTONIC, &t0);
             while (elapsed_ms(&t0) < 10000L && (got = waitpid(pid, &status, WNOHANG)) == 0) {
                 sched_yield();
             }
-            for (n = 0; n < 50 && kill(pid, 0) == 0; n++) {
-                sched_yield();   /* the last thread is on its way out */
-            }
+            /* No grace after the reap. There were fifty yields here for "the
+             * last thread is on its way out", and they hid the defect about
+             * one boot in fifteen (M-117): waitpid reported the leader while
+             * the other thread was still leaving. Linux reports a leader only
+             * once its group is empty, so the pid is gone the moment it is
+             * reaped. */
             if (got != pid) {
                 printf("THREADS_C6_ABORT_FAIL: the aborted process never ended\n");
                 (void)kill(pid, SIGKILL);
