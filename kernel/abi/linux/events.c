@@ -201,8 +201,9 @@ static long sfd_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
         for (sig = 1; sig <= VIBEOS_SIG_MAX && (n + 1u) * sizeof(linux_signalfd_siginfo_t) <= len; sig++) {
             vibeos_siginfo_t why;
             linux_signalfd_siginfo_t rec;
-
-            if (!(f->sig_mask & (1ull << sig)) || !ks_signal_take(me, sig, &why)) {
+            /* Atomic, as signalfd4 stores it: another thread may change the
+             * mask of this description while one reads it (#46). */
+            if (!(__atomic_load_n(&f->sig_mask, __ATOMIC_ACQUIRE) & (1ull << sig)) || !ks_signal_take(me, sig, &why)) {
                 continue;
             }
             linux_ssi_of(&rec, sig, &why);
@@ -230,7 +231,7 @@ static long sfd_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
 static uint32_t sfd_ready(vibeos_file_t *f) {
     int me = ks_current();
 
-    return (me >= 0 && (ks_id(me)->sig_pending & f->sig_mask) != 0u) ? VIBEOS_READY_IN : 0u;
+    return (me >= 0 && (ks_id(me)->sig_pending & __atomic_load_n(&f->sig_mask, __ATOMIC_ACQUIRE)) != 0u) ? VIBEOS_READY_IN : 0u;
 }
 
 static int sfd_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
