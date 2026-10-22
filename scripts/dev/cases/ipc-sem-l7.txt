@@ -53,3 +53,9 @@
             if (v < 0 || v > LINUX_SEMVMX) {
 +++ new
             if (v < 0) {
+
+### one semop's SEM_UNDO adjustments are judged one by one (#30)
+--- old
+                if (m->ops[j].sem_num == op->sem_num && (m->ops[j].sem_flg & LINUX_SEM_UNDO)) {
++++ new
+                if (0) {

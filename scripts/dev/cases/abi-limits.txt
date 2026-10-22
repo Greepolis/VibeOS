@@ -78,11 +78,11 @@
 
 ### prlimit64 lets a user reach another user's process
 --- old
-        } else if (c.euid != 0u &&
-                   (ps->cred.uid != c.uid || ps->cred.euid != c.uid || ps->cred.suid != c.uid ||
-                    ps->cred.gid != c.gid || ps->cred.egid != c.gid || ps->cred.sgid != c.gid)) {
+            if (c.euid != 0u &&
+                (ps->cred.uid != c.uid || ps->cred.euid != c.uid || ps->cred.suid != c.uid ||
+                 ps->cred.gid != c.gid || ps->cred.egid != c.gid || ps->cred.sgid != c.gid)) {
 +++ new
-        } else if (0) {
+            if (0) {
 
 ### getpriority answers nice itself
 --- old

@@ -66,3 +66,30 @@ static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t 
         uint64_t b_end = len > ~0ull - b ? ~0ull : b + len;
 +++ new
         uint64_t b_end = b + len;
+
+### a descriptor is looked up with its upper register bits (#70)
+--- old
+    fd = LINUX_FD(fd);   /* every handler that looks a descriptor up comes here */
++++ new
+    (void)0;
+
+### close_range takes 64-bit bounds (#70)
+--- old
+    first = (uint32_t)first;
+    last = (uint32_t)last;
++++ new
+    (void)0;
+
+### a close takes a queue's notification back only with the description (#35)
+--- old
+    if (f->ops == &linux_fops_mqueue) {
+        linux_mq_on_close(f);
+    }
++++ new
+    (void)0;
+
+### sync_file_range takes any flag (#26)
+--- old
+    if ((uint32_t)flags & ~known) {
++++ new
+    if (0) {

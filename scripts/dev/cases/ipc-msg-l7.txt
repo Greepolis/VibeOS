@@ -25,9 +25,9 @@
 
 ### a negative type takes the first message at or below it, not the lowest
 --- old
-        } else if (t <= -type && (best < 0 || t < q->rec[best].type)) {
+        } else if (t <= below && (best < 0 || t < q->rec[best].type)) {
 +++ new
-        } else if (t <= -type && best < 0) {
+        } else if (t <= below && best < 0) {
 
 ### a message longer than the buffer is cut without MSG_NOERROR
 --- old
@@ -64,3 +64,9 @@
             for (k = 0; k < (uint32_t)sizeof(mi); k++) {
 +++ new
             for (k = 0; k < 0u; k++) {
+
+### msgrcv negates LONG_MIN (#31)
+--- old
+    int64_t below = type == INT64_MIN ? INT64_MAX : -type;
++++ new
+    int64_t below = type == INT64_MIN ? 0 : -type;

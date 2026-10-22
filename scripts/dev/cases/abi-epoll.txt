@@ -38,9 +38,9 @@
 
 ### an edge remembers only what it reported
 --- old
-            if (judged && (rep != 0u || (s[i].events & LINUX_EPOLLET))) {
+            if (judged && (fired || (rep == 0u && (s[i].events & LINUX_EPOLLET)))) {
 +++ new
-            if (judged && rep != 0u) {
+            if (judged && fired) {
 
 ### a one-shot entry stays armed
 --- old

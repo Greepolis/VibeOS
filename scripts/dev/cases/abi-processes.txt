@@ -36,9 +36,10 @@
 
 ### CLONE_PIDFD hands back nothing
 --- old
-        (void)vibeos_uaccess_copy((void *)(uintptr_t)a.pidfd, &fd, sizeof(fd));
+        if (vibeos_uaccess_copy((void *)(uintptr_t)pidfd_at, &word, sizeof(word)) != 0 && fd >= 0) {
 +++ new
-        (void)fd;
+        (void)word;
+        if (0) {
 
 ### clone3 takes a structure smaller than its first version
 --- old
@@ -61,3 +62,27 @@
 +++ new
             if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
                 (0 && linux_group_still_running(t->tgid, i))) {
+
+### clone3 takes a stack whose top wraps (#43)
+--- old
+        if (top < a.stack) {
+            return -VIBEOS_EINVAL;
+        }
++++ new
+        if (0) {
+            return -VIBEOS_EINVAL;
+        }
+
+### setpgid moves any process of the session (#40)
+--- old
+               ks_id(target)->ppid != ks_id(ks_current())->tgid) {
+        r = -VIBEOS_ESRCH;
++++ new
+               0) {
+        r = -VIBEOS_ESRCH;
+
+### setpgid moves a child that has exec'd (#40)
+--- old
+    } else if (ks_id(target)->tgid != ks_id(ks_current())->tgid && ks_id(target)->did_exec) {
++++ new
+    } else if (0) {

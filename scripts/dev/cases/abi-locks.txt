@@ -9,7 +9,7 @@
 
 ### closing a descriptor keeps the process's record locks on the file
 --- old
-    linux_locks_on_close(f);
+    linux_close_rules(f);
     vibeos_file_put(f);
     return 0;
 +++ new
@@ -146,3 +146,19 @@
         __atomic_load_n(&ps->files_users, __ATOMIC_ACQUIRE) > 1u) {
 +++ new
         __atomic_load_n(&ps->files_users, __ATOMIC_ACQUIRE) > 0u) {
+
+### a lock's negative length is applied before its start is judged (#25)
+--- old
+     * negative length cannot overflow, and s - 1 cannot either (#25). */
+    if (s < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if (fl->l_len == 0) {
+        *start = (uint64_t)s;
++++ new
+     * negative length cannot overflow, and s - 1 cannot either (#25). */
+    if (fl->l_len == 0) {
+        if (s < 0) {
+            return -VIBEOS_EINVAL;
+        }
+        *start = (uint64_t)s;

@@ -11,6 +11,6 @@
 
 ### a signalfd is never readable
 --- old
-    return (me >= 0 && (ks_id(me)->sig_pending & f->sig_mask) != 0u) ? VIBEOS_READY_IN : 0u;
+    return (me >= 0 && (ks_id(me)->sig_pending & __atomic_load_n(&f->sig_mask, __ATOMIC_ACQUIRE)) != 0u) ? VIBEOS_READY_IN : 0u;
 +++ new
     return 0u;

@@ -95,9 +95,9 @@
 
 ### SA_RESETHAND clears SA_SIGINFO
 --- old
-        ps->sig_handler[sig] = SIG_DFL_ADDR;
-    }
+            ps->sig_handler[sig] = SIG_DFL_ADDR;
+        }
 +++ new
-        ps->sig_handler[sig] = SIG_DFL_ADDR;
-        ps->sig_flags[sig] &= ~LINUX_SA_SIGINFO;
-    }
+            ps->sig_handler[sig] = SIG_DFL_ADDR;
+            ps->sig_flags[sig] &= ~LINUX_SA_SIGINFO;
+        }
