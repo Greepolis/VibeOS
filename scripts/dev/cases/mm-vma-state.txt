@@ -48,3 +48,24 @@
         if (cur->prot == want && (!set_prot || cur->user_prot == user_prot) &&
 +++ new
         if (cur->prot == want &&
+
+# ---- an allocation split and joined (W3 step 10, placeholders), proved by the
+# "W3 step 10" block of vma_tests.c and by t_placeholders in nt_abi_tests.c.
+
+### a change of the allocation alone is taken as no change
+--- old
+            (!set_alloc || (cur->alloc_base == alloc_base && cur->alloc_prot == alloc_prot))) {
++++ new
+            1) {
+
+### the allocation's base is not changed
+--- old
+            cur->alloc_base = alloc_base;
++++ new
+            (void)alloc_base;
+
+### vibeos_vma_change passes the allocation's flag through
+--- old
+    r = vma_change_locked(list, base, len, what & ~VIBEOS_VMA_CHANGE_ALLOC, prot, user_prot,
++++ new
+    r = vma_change_locked(list, base, len, what, prot, user_prot,
