@@ -1,0 +1,20 @@
+# A disk command that never completes is a timeout, not a silent machine
+# (M-124): ahci_cmd's wait is bounded by timer ticks, and a command that runs
+# out prints the port's registers and is counted, which the gate reads as a
+# block timeout. Before, the bound was twenty million halted turns - two days.
+#
+#  1. a write issued after the first thirty seconds - interrupts on, the wait
+#     halting each turn, swap under way - is never seen to complete. Expect
+#     "[AHCI] command timed out ... ticks=0x1f5", the guest still talking, not
+#     guest_wedged. Seen so on 2026-10-22. Its first version never issued the
+#     write, so CI was never set and the wait ended at once: that one tested
+#     nothing, and a second only the early-boot spin bound (ticks=0).
+#
+# Target source: kernel/arch/x86_64/ahci.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/ahci.c scripts/dev/cases/ahci-timeout-boot.txt
+
+### a late write never completes
+--- old
+        if ((port_read(PxCI) & 1u) == 0u) {
++++ new
+        if ((port_read(PxCI) & 1u) == 0u && !(write && g_timer_ticks > 3000u)) {

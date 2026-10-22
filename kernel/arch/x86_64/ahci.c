@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "arch_hw_internal.h"   /* g_timer_ticks, VIBEOS_HW_TIMER_HZ */
 #include "vibeos/device.h"
 
 /* ---- PCI config space ---------------------------------------------------- */
@@ -464,6 +465,41 @@ static void ahci_dev_irq(void) {
 
 static uint64_t g_timeouts;
 
+/* How long a command may take, in timer ticks: five seconds. The bound used to
+ * be twenty million turns of the wait below, and once the wait halts each turn
+ * lasts until the next interrupt - a tick - so twenty million turns were two
+ * days. A command QEMU never completed (three boots in six under host load,
+ * 2026-10-22, M-124) therefore never timed out: the core sat in this loop
+ * holding the disk, every other core went idle behind it, and the gate saw a
+ * silent machine. Time is the bound now, and a command that runs out says what
+ * the port held when it did. */
+#define AHCI_CMD_TICKS (5u * VIBEOS_HW_TIMER_HZ)
+
+/* The port's registers at a timeout, in one line - one critical section. */
+static void ahci_report_timeout(uint8_t command, uint64_t lba, uint64_t waited) {
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[AHCI] command timed out cmd=0x");
+    vibeos_x86_64_serial_print_hex(command);
+    vibeos_x86_64_serial_puts(" lba=0x");
+    vibeos_x86_64_serial_print_hex(lba);
+    vibeos_x86_64_serial_puts(" ticks=0x");
+    vibeos_x86_64_serial_print_hex(waited);
+    vibeos_x86_64_serial_puts(" ci=0x");
+    vibeos_x86_64_serial_print_hex(port_read(PxCI));
+    vibeos_x86_64_serial_puts(" is=0x");
+    vibeos_x86_64_serial_print_hex(port_read(PxIS));
+    vibeos_x86_64_serial_puts(" tfd=0x");
+    vibeos_x86_64_serial_print_hex(port_read(PxTFD));
+    vibeos_x86_64_serial_puts(" serr=0x");
+    vibeos_x86_64_serial_print_hex(port_read(PxSERR));
+    vibeos_x86_64_serial_puts(" cmd=0x");
+    vibeos_x86_64_serial_print_hex(port_read(PxCMD));
+    vibeos_x86_64_serial_puts(" irqs=0x");
+    vibeos_x86_64_serial_print_hex(g_irq_count);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 
 static uint64_t ahci_dev_timeouts(void) {
     return g_timeouts;
@@ -483,6 +519,7 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
     hba_cmd_table_t *tbl = &g_cmd_table;
     uint8_t *fis = tbl->cfis;
     uint32_t i, spin;
+    uint64_t t0;
 
     for (i = 0; i < sizeof(g_cmd_table); i++) {
         ((uint8_t *)tbl)[i] = 0;
@@ -528,6 +565,7 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
     port_write(PxCI, 1u);   /* slot 0 */
 
     spin = 0;
+    t0 = g_timer_ticks;
     for (;;) {
         if ((port_read(PxCI) & 1u) == 0u) {
             break;
@@ -538,7 +576,8 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
         if ((port_read(PxTFD) & 0x01u) != 0u) {
             return -1;
         }
-        if (++spin > 20000000u) {
+        if (++spin > 20000000u || g_timer_ticks - t0 > AHCI_CMD_TICKS) {
+            ahci_report_timeout(command, lba, g_timer_ticks - t0);
             g_timeouts++;
             return -1;
         }
