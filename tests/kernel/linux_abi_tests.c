@@ -456,6 +456,16 @@ static void t_cloexec(void) {
     expect(SYS3(436, 40, ~0ull, 0) == 0 && SYS1(3, 40) == -VIBEOS_EBADF && SYS1(3, 100) == -VIBEOS_EBADF,
            "and close it");
     expect(SYS2(33, (uint64_t)a, (uint64_t)a) == a, "dup2 onto itself answers the number");
+    /* A descriptor is an int: what is above it in the register is not (#70). */
+    expect(SYS2(33, (uint64_t)a, (uint64_t)a | (1ull << 32)) == a &&
+               SYS3(72, (uint64_t)a | (1ull << 32), 1, 0) == 1 &&
+               SYS3(8, (uint64_t)a | (1ull << 32), 0, 0) == 0,
+           "dup2, fcntl and lseek read only the low 32 bits of a descriptor");
+    expect(SYS3(292, (uint64_t)a, 41, 0) == 41 && SYS3(292, (uint64_t)a, 42, 0) == 42 &&
+               SYS3(436, 41ull | (1ull << 32), 41ull | (1ull << 32), 1ull << 32) == 0 &&
+               SYS1(3, 41) == -VIBEOS_EBADF && SYS1(3, 42ull | (1ull << 32)) == 0 &&
+               SYS1(3, 42) == -VIBEOS_EBADF,
+           "close_range and close do too");
 }
 
 /* A forked child shares its parent's descriptions: one offset between them. */

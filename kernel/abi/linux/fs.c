@@ -50,6 +50,7 @@ vibeos_file_t *linux_file_get(uint64_t fd) {
     if (!ps) {
         return 0;
     }
+    fd = LINUX_FD(fd);   /* every handler that looks a descriptor up comes here */
     ks_lock(&ps->files_lock, __func__);
     f = vibeos_fdtable_get(&ps->files, fd);
     vibeos_file_get(f);
@@ -128,6 +129,7 @@ long linux_fd_close(uint64_t fd) {
     if (!ps) {
         return -VIBEOS_EBADF;
     }
+    fd = LINUX_FD(fd);
     ks_lock(&ps->files_lock, __func__);
     f = vibeos_fdtable_remove(&ps->files, fd);
     ks_unlock(&ps->files_lock);
@@ -1294,6 +1296,10 @@ static long linux_sys_close_range(uint64_t first, uint64_t last, uint64_t flags)
     int hi;
     uint64_t fd;
 
+    /* All three are unsigned int to Linux (#70). */
+    first = (uint32_t)first;
+    last = (uint32_t)last;
+    flags = (uint32_t)flags;
     if (!ps || first > last || (flags & ~(uint64_t)(LINUX_CLOSE_RANGE_UNSHARE | LINUX_CLOSE_RANGE_CLOEXEC))) {
         return -VIBEOS_EINVAL;
     }
@@ -1384,6 +1390,8 @@ static long linux_dup_to(uint64_t oldfd, uint64_t newfd, uint32_t fdflags) {
     if (!ps) {
         return -VIBEOS_EINVAL;
     }
+    oldfd = LINUX_FD(oldfd);
+    newfd = LINUX_FD(newfd);
     /* One critical section: the source read, the target replaced and the new
      * reference taken, so a sibling's close of either descriptor lands wholly
      * before or wholly after. Whatever the target named is released outside
@@ -1409,6 +1417,9 @@ static long linux_dup_to(uint64_t oldfd, uint64_t newfd, uint32_t fdflags) {
 }
 
 static long linux_sys_dup2(uint64_t oldfd, uint64_t newfd) {
+    /* Compared as the ints Linux compares (#70). */
+    oldfd = LINUX_FD(oldfd);
+    newfd = LINUX_FD(newfd);
     if (oldfd == newfd) {
         /* Linux answers newfd if oldfd is open, EBADF if not, and changes
          * nothing - not even the close-on-exec flag. */
@@ -1423,6 +1434,9 @@ static long linux_sys_dup2(uint64_t oldfd, uint64_t newfd) {
 }
 
 static long linux_sys_dup3(uint64_t oldfd, uint64_t newfd, uint64_t flags) {
+    oldfd = LINUX_FD(oldfd);
+    newfd = LINUX_FD(newfd);
+    flags = (uint32_t)flags;
     if (oldfd == newfd || (flags & ~(uint64_t)VIBEOS_O_CLOEXEC)) {
         return -VIBEOS_EINVAL;
     }
@@ -1627,6 +1641,7 @@ static long linux_sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg) {
     vibeos_file_t *f;
     long r;
 
+    fd = LINUX_FD(fd);   /* it reaches the table directly below (#70) */
     switch (VIBEOS_ARG_INT(cmd)) {
         case LINUX_F_DUPFD:
         case LINUX_F_DUPFD_CLOEXEC:
@@ -2045,10 +2060,13 @@ static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
  * block buffered. */
 static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
     vibeos_procstate_t *ps = linux_cur_ps();
-    vibeos_file_t *f = linux_file_get(fd);
+    vibeos_file_t *f;
     uint32_t r32 = (uint32_t)req;
     int32_t v = 0;
     long r;
+
+    fd = LINUX_FD(fd);   /* it reaches the table directly below (#70) */
+    f = linux_file_get(fd);
 
     if (!f) {
         return -VIBEOS_EBADF;

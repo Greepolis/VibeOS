@@ -110,3 +110,16 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
         if (0) {
             return -VIBEOS_EINVAL;
         }
+
+### a descriptor is looked up with its upper register bits (#70)
+--- old
+    fd = LINUX_FD(fd);   /* every handler that looks a descriptor up comes here */
++++ new
+    (void)0;
+
+### close_range takes 64-bit bounds (#70)
+--- old
+    first = (uint32_t)first;
+    last = (uint32_t)last;
++++ new
+    (void)0;

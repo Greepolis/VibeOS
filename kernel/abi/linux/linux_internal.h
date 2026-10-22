@@ -107,6 +107,10 @@ void linux_siginfo_from(linux_siginfo_t *o, uint32_t sig, const vibeos_siginfo_t
 #define LINUX_DEFINE_SYSCALLS(topic, LIST) VIBEOS_DEFINE_SYSCALLS(linux, topic, LIST)
 
 #define VIBEOS_ARG_INT(v)  ((int)(uint32_t)(v))
+/* A descriptor as Linux reads one: an int, sign-extended back to 64 bits so a
+ * negative one is a number no table has (#70). Upper register bits are not
+ * part of it - 0x100000003 is descriptor 3 to Linux. */
+#define LINUX_FD(v)        ((uint64_t)(int64_t)VIBEOS_ARG_INT(v))
 
 /* How many descriptors a process may have: RLIMIT_NOFILE, as prlimit reports it. */
 #define LINUX_MAX_FDS ((int)VIBEOS_FD_MAX)

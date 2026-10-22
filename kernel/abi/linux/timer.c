@@ -247,6 +247,7 @@ static long linux_sys_timer_settime(uint64_t idarg, uint64_t flags, uint64_t new
     uint64_t left = 0, interval = 0;
     int kind;
 
+    flags = (uint32_t)flags;   /* an int to Linux (#70) */
     if (ks_current() < 0 || id < 0 || (flags & ~(uint64_t)LINUX_TIMER_ABSTIME)) {
         return -VIBEOS_EINVAL;
     }

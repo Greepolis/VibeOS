@@ -708,6 +708,7 @@ static long linux_sys_waitid(uint64_t idtype, uint64_t id, uint64_t info_ptr, ui
     uint32_t i;
     long r;
 
+    options = (uint32_t)options;   /* an int to Linux (#70) */
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return -VIBEOS_EINVAL;
     }
