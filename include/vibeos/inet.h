@@ -327,6 +327,9 @@ int vibeos_inet_shutdown(vibeos_inet_t *net, int sock, int how);
 int vibeos_inet_close_owned(vibeos_inet_t *net, int sock, uint32_t owner_pid);
 uint32_t vibeos_inet_release_owner_sockets(vibeos_inet_t *net, uint32_t owner_pid);
 int vibeos_inet_socket_state(const vibeos_inet_t *net, int sock);
+/* Whether `dst` is reached without the gateway: on the interface's network,
+ * the broadcast address, or this machine. What SO_DONTROUTE allows. */
+int vibeos_inet_on_link(const vibeos_inet_t *net, uint32_t dst);
 
 /* What a socket can do now without waiting (docs/abi/ L4), as Linux's tcp_poll
  * and udp_poll say it: VIBEOS_INET_READY_*, 0 for a socket that is not there.

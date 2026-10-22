@@ -20,3 +20,11 @@
             u = u * 2u < floor ? floor : u * 2u;
 +++ new
             u = u * 2u;
+
+### a FORCE size stops at the plain cap (#56)
+--- old
+            if (opt == VIBEOS_SO_RCVBUF || opt == VIBEOS_SO_SNDBUF) {
+                u = u > SK_BUF_MAX ? SK_BUF_MAX : u;
++++ new
+            if (1) {
+                u = u > SK_BUF_MAX ? SK_BUF_MAX : u;

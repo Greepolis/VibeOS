@@ -87,3 +87,15 @@
         if (f->sk_type == VIBEOS_SOCK_DGRAM && alen > 0 && !linux_user_ok(addr, (uint64_t)alen, 1)) {
 +++ new
         if (alen > 0 && !linux_user_ok(addr, (uint64_t)alen, 1)) {
+
+### a long socket timeout wraps (#47)
+--- old
+                } else if ((uint64_t)tv.tv_sec >= most / 1000000u / ks_hz()) {
++++ new
+                } else if (0) {
+
+### anybody turns SO_DEBUG on (#58)
+--- old
+                refused = c.euid != 0u;
++++ new
+                refused = 0;

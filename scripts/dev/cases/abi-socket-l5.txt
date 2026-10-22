@@ -28,3 +28,15 @@
         return -VIBEOS_EAGAIN;
     }
 +++ new
+
+### a datagram socket connects to the broadcast address without SO_BROADCAST (#61)
+--- old
+    if (f->sk_type == VIBEOS_SOCK_DGRAM && a->ip == 0xFFFFFFFFu &&
++++ new
+    if (0 && f->sk_type == VIBEOS_SOCK_DGRAM && a->ip == 0xFFFFFFFFu &&
+
+### SO_DONTROUTE sends through the gateway (#68)
+--- old
+        if (ip != 0u && (__atomic_load_n(&f->sk_flags, __ATOMIC_ACQUIRE) & VIBEOS_SKF_DONTROUTE) &&
++++ new
+        if (0 && ip != 0u && (__atomic_load_n(&f->sk_flags, __ATOMIC_ACQUIRE) & VIBEOS_SKF_DONTROUTE) &&

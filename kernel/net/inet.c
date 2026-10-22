@@ -369,6 +369,11 @@ static int is_loopback(const vibeos_inet_t *net, uint32_t dst) {
     return (dst >> 24) == 127u || (net->ip != 0u && dst == net->ip);
 }
 
+int vibeos_inet_on_link(const vibeos_inet_t *net, uint32_t dst) {
+    return is_loopback(net, dst) || dst == 0xFFFFFFFFu ||
+           (net->netmask != 0u && ((dst ^ net->ip) & net->netmask) == 0u);
+}
+
 /* The address a packet to `dst` leaves from: 127.0.0.1 for the loopback
  * network, as Linux chooses it, and the interface's otherwise. */
 static uint32_t src_for(const vibeos_inet_t *net, uint32_t dst) {

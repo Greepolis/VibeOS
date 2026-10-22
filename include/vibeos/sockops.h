@@ -92,6 +92,10 @@ typedef struct {
 #define VIBEOS_SO_NREAD      18   /* bytes a read would return now, read only       */
 #define VIBEOS_SO_REUSEPORT  19
 #define VIBEOS_SO_DEBUG      20
+/* The buffer sizes past the system's cap: who may ask is the personality's
+ * question, answered before these are passed. */
+#define VIBEOS_SO_RCVBUFFORCE 21
+#define VIBEOS_SO_SNDBUFFORCE 22
 
 #define VIBEOS_SOCK_STREAM 1
 #define VIBEOS_SOCK_DGRAM  2

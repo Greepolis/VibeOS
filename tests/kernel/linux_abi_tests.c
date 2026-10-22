@@ -3260,6 +3260,56 @@ static void t_sock_bsd(void) {
     expect(kf_lock_imbalance() == 0, "the BSD calls released every lock they took");
 }
 
+/* Socket options the review found answering otherwise than Linux 5.15, each
+ * measured there first (#47, #56, #58, #61, #68). */
+static void t_sockopt_linux(void) {
+    uint64_t sa = 0, val = 0, lenp = 0;
+    int32_t *v, *len;
+    int64_t *tv;
+    long u, d;
+
+    (void)fresh(91);
+    sa = kf_ualloc(16);
+    val = kf_ualloc(16);
+    lenp = kf_ualloc(4);
+    v = (int32_t *)kf_uptr(val);
+    tv = (int64_t *)kf_uptr(val);
+    len = (int32_t *)kf_uptr(lenp);
+    kf_net_up(0x0A00020Fu, 0x0A000202u);
+    u = SYS3(41, 2, 2, 0);
+    put_sin(sa, 0xFFFFFFFFu, 9);
+    *v = 1;
+    expect(SYS3(42, (uint64_t)u, sa, 16) == -VIBEOS_EACCES &&
+               SYS5(54, (uint64_t)u, 1, 6 /* SO_BROADCAST */, val, 4) == 0 && SYS3(42, (uint64_t)u, sa, 16) == 0,
+           "connect to the broadcast address asks for SO_BROADCAST (#61)");
+    d = SYS3(41, 2, 2, 0);
+    *v = 1;
+    put_sin(sa, 0x08080808u, 9);
+    expect(SYS5(54, (uint64_t)d, 1, 5 /* SO_DONTROUTE */, val, 4) == 0 &&
+               SYS6(44, (uint64_t)d, ustr("x"), 1, 0, sa, 16) == -VIBEOS_ENETUNREACH &&
+               SYS3(42, (uint64_t)d, sa, 16) == -VIBEOS_ENETUNREACH,
+           "SO_DONTROUTE: a peer past the gateway is unreachable (#68)");
+    put_sin(sa, 0x0A000202u, 9);
+    expect(SYS6(44, (uint64_t)d, ustr("x"), 1, 0, sa, 16) == 1, "and one on the network is not");
+    *v = 1 << 30;
+    *len = 4;
+    expect(SYS5(54, (uint64_t)d, 1, 33 /* SO_RCVBUFFORCE */, val, 4) == 0 &&
+               SYS5(55, (uint64_t)d, 1, 8 /* SO_RCVBUF */, val, lenp) == 0 && *v == 2147483646,
+           "SO_RCVBUFFORCE goes past the cap, doubled to INT_MAX - 1 as on Linux (#56)");
+    tv[0] = 184467440738ll;   /* times a million times 100 Hz, just past 2^64 */
+    tv[1] = 0;
+    *len = 16;
+    expect(SYS5(54, (uint64_t)d, 1, 20 /* SO_RCVTIMEO */, val, 16) == 0 &&
+               SYS5(55, (uint64_t)d, 1, 20, val, lenp) == 0 && tv[0] > 1000000000ll,
+           "a timeout too long to count in ticks stays long, not whatever it wrapped to (#47)");
+    *v = 1;
+    expect(SYS1(105, 1000) == 0 && SYS5(54, (uint64_t)d, 1, 1 /* SO_DEBUG */, val, 4) == -VIBEOS_EACCES,
+           "SO_DEBUG on is the superuser's (#58)");
+    *v = 0;
+    expect(SYS5(54, (uint64_t)d, 1, 1, val, 4) == 0, "and off is anybody's");
+    expect(kf_lock_imbalance() == 0, "the option calls released every lock they took");
+}
+
 /* ---- L5: loopback -------------------------------------------------------------------- */
 
 /* A process talking to itself over TCP and UDP through 127.0.0.1, as every
@@ -6767,6 +6817,7 @@ int test_linux_handlers(void) {
     t_inotify();
     t_sock_halfclose();
     t_sock_bsd();
+    t_sockopt_linux();
     t_loopback();
     t_unix();
     t_inotify_ltp();

@@ -1069,8 +1069,8 @@ static long linux_sys_setsockopt(uint64_t fd, uint64_t level, uint64_t name, uin
         return r;
     }
     /* The FORCE sizes are the privileged way past the system maximum (LTP's
-     * setsockopt04); this kernel's buffers have no maximum to be past, so for
-     * the superuser they are the plain ones, and nobody else may set them. */
+     * setsockopt04): the superuser's, and past the cap the plain ones stop at
+     * (#56); nobody else may set them. */
     if (VIBEOS_ARG_INT(level) == (int)LINUX_SOL_SOCKET &&
         (VIBEOS_ARG_INT(name) == LINUX_SO_SNDBUFFORCE || VIBEOS_ARG_INT(name) == LINUX_SO_RCVBUFFORCE)) {
         vibeos_cred_t c;
@@ -1080,9 +1080,15 @@ static long linux_sys_setsockopt(uint64_t fd, uint64_t level, uint64_t name, uin
             vibeos_file_put(f);
             return -VIBEOS_EPERM;
         }
-        name = VIBEOS_ARG_INT(name) == LINUX_SO_SNDBUFFORCE ? LINUX_SO_SNDBUF : LINUX_SO_RCVBUF;
     }
     opt = linux_opt_of(VIBEOS_ARG_INT(level), VIBEOS_ARG_INT(name), &shape);
+    if (VIBEOS_ARG_INT(level) == (int)LINUX_SOL_SOCKET && VIBEOS_ARG_INT(name) == LINUX_SO_SNDBUFFORCE) {
+        opt = VIBEOS_SO_SNDBUFFORCE;
+        shape = 0;
+    } else if (VIBEOS_ARG_INT(level) == (int)LINUX_SOL_SOCKET && VIBEOS_ARG_INT(name) == LINUX_SO_RCVBUFFORCE) {
+        opt = VIBEOS_SO_RCVBUFFORCE;
+        shape = 0;
+    }
     if (len < 0) {
         r = -VIBEOS_EINVAL;
     } else if (opt < 0 || (opt == VIBEOS_TCP_NODELAY && !(f->sk_family == VIBEOS_SA_INET &&
@@ -1098,9 +1104,21 @@ static long linux_sys_setsockopt(uint64_t fd, uint64_t level, uint64_t name, uin
             if (tv.tv_usec < 0 || tv.tv_usec >= 1000000) {
                 r = -VIBEOS_EDOM;
             } else {
-                /* 0 is for ever; a time that has passed waits not at all. */
-                ticks = tv.tv_sec < 0 ? 1u
-                        : (((uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec) * ks_hz() + 999999u) / 1000000u;
+                /* 0 is for ever; a time that has passed waits not at all.
+                 * A time too long to count in ticks is as long as there is -
+                 * Linux's MAX_SCHEDULE_TIMEOUT - not whatever the product
+                 * wrapped to, which could be short or 0, for ever (#47). The
+                 * cap leaves room for a deadline to be added to the clock. */
+                const uint64_t most = 1ull << 62;
+
+                if (tv.tv_sec < 0) {
+                    ticks = 1u;
+                } else if ((uint64_t)tv.tv_sec >= most / 1000000u / ks_hz()) {
+                    ticks = most;
+                } else {
+                    ticks = (((uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec) * ks_hz() + 999999u) /
+                            1000000u;
+                }
                 r = f->ops->sockops->setopt(f, opt, &ticks, sizeof(ticks));
             }
         }
@@ -1118,7 +1136,16 @@ static long linux_sys_setsockopt(uint64_t fd, uint64_t level, uint64_t name, uin
         if ((uint32_t)len < sizeof(v)) {
             r = -VIBEOS_EINVAL;
         } else if ((r = linux_net_in(&v, val_uptr, sizeof(v))) == 0) {
-            r = f->ops->sockops->setopt(f, opt, &v, sizeof(v));
+            vibeos_cred_t c;
+            int refused = 0;
+
+            /* Turning SO_DEBUG on is CAP_NET_ADMIN's, the superuser's here;
+             * turning it off anybody's (#58). */
+            if (opt == VIBEOS_SO_DEBUG && v != 0) {
+                linux_cred(&c);
+                refused = c.euid != 0u;
+            }
+            r = refused ? -VIBEOS_EACCES : f->ops->sockops->setopt(f, opt, &v, sizeof(v));
         }
     }
     vibeos_file_put(f);

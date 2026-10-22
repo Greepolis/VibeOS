@@ -70,7 +70,11 @@ long vibeos_sockopt_set(vibeos_file_t *f, int opt, const void *val, uint32_t len
         if (len < 2u * sizeof(int32_t)) {
             return -VIBEOS_EINVAL;
         }
-        f->sk_flags = l[0] ? (f->sk_flags | VIBEOS_SKF_LINGER) : (f->sk_flags & ~VIBEOS_SKF_LINGER);
+        if (l[0]) {
+            (void)__atomic_or_fetch(&f->sk_flags, VIBEOS_SKF_LINGER, __ATOMIC_ACQ_REL);
+        } else {
+            (void)__atomic_and_fetch(&f->sk_flags, ~VIBEOS_SKF_LINGER, __ATOMIC_ACQ_REL);
+        }
         f->sk_linger = l[1];
         return 0;
     }
@@ -78,19 +82,36 @@ long vibeos_sockopt_set(vibeos_file_t *f, int opt, const void *val, uint32_t len
         return -VIBEOS_EINVAL;
     }
     v = *(const int32_t *)val;
+    /* One bit of a word every option shares, and two threads may set two
+     * options of one socket at once: an atomic or/and, not a read and a
+     * write that can lose the other's bit (#50). */
     if (bit != 0u) {
-        f->sk_flags = v ? (f->sk_flags | bit) : (f->sk_flags & ~bit);
+        if (v) {
+            (void)__atomic_or_fetch(&f->sk_flags, bit, __ATOMIC_ACQ_REL);
+        } else {
+            (void)__atomic_and_fetch(&f->sk_flags, ~bit, __ATOMIC_ACQ_REL);
+        }
         return 0;
     }
     switch (opt) {
         case VIBEOS_SO_RCVBUF:
-        case VIBEOS_SO_SNDBUF: {
+        case VIBEOS_SO_SNDBUF:
+        case VIBEOS_SO_RCVBUFFORCE:
+        case VIBEOS_SO_SNDBUFFORCE: {
+            int rcv = opt == VIBEOS_SO_RCVBUF || opt == VIBEOS_SO_RCVBUFFORCE;
             uint32_t u = v < 0 ? 0u : (uint32_t)v;
-            uint32_t floor = opt == VIBEOS_SO_RCVBUF ? SK_MIN_RCVBUF : SK_MIN_SNDBUF;
+            uint32_t floor = rcv ? SK_MIN_RCVBUF : SK_MIN_SNDBUF;
 
-            u = u > SK_BUF_MAX ? SK_BUF_MAX : u;
+            /* The cap is what FORCE is past (#56): Linux doubles what it is
+             * given up to INT_MAX / 2, so a FORCE of a gigabyte reads back as
+             * two less than two gigabytes. */
+            if (opt == VIBEOS_SO_RCVBUF || opt == VIBEOS_SO_SNDBUF) {
+                u = u > SK_BUF_MAX ? SK_BUF_MAX : u;
+            } else {
+                u = u > 0x7FFFFFFFu / 2u ? 0x7FFFFFFFu / 2u : u;
+            }
             u = u * 2u < floor ? floor : u * 2u;
-            if (opt == VIBEOS_SO_RCVBUF) {
+            if (rcv) {
                 f->sk_rcvbuf = u;
             } else {
                 f->sk_sndbuf = u;

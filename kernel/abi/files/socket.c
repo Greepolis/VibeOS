@@ -207,7 +207,21 @@ static long in_connect(vibeos_file_t *f, const vibeos_sockaddr_t *a) {
     if (a->family != VIBEOS_SA_INET) {
         return -VIBEOS_EAFNOSUPPORT;
     }
+    /* A datagram socket connected to the broadcast address sends there from
+     * then on with no address to check: Linux asks for SO_BROADCAST here, at
+     * connect, and not again (#61). */
+    if (f->sk_type == VIBEOS_SOCK_DGRAM && a->ip == 0xFFFFFFFFu &&
+        !(__atomic_load_n(&f->sk_flags, __ATOMIC_ACQUIRE) & VIBEOS_SKF_BROADCAST)) {
+        return -VIBEOS_EACCES;
+    }
     ks_lock(ks_net_lock(), __func__);
+    /* SO_DONTROUTE: no gateway, so a peer off the network is unreachable
+     * (#68). */
+    if ((__atomic_load_n(&f->sk_flags, __ATOMIC_ACQUIRE) & VIBEOS_SKF_DONTROUTE) &&
+        !vibeos_inet_on_link(ks_net(), a->ip)) {
+        ks_unlock(ks_net_lock());
+        return -VIBEOS_ENETUNREACH;
+    }
     st = vibeos_inet_socket_state(ks_net(), sock);
     r = (f->sk_type == VIBEOS_SOCK_STREAM && st == VIBEOS_TCP_SYN_SENT)
             ? -VIBEOS_INET_EAGAIN   /* one under way already */
@@ -335,6 +349,11 @@ static long in_sendmsg(vibeos_file_t *f, vibeos_msg_t *m) {
         if ((ip == 0u && port == 0u) && !ks_net()->sockets[sock].udp_peer) {
             ks_unlock(ks_net_lock());
             return -VIBEOS_EDESTADDRREQ;
+        }
+        if (ip != 0u && (__atomic_load_n(&f->sk_flags, __ATOMIC_ACQUIRE) & VIBEOS_SKF_DONTROUTE) &&
+            !vibeos_inet_on_link(ks_net(), ip)) {
+            ks_unlock(ks_net_lock());
+            return -VIBEOS_ENETUNREACH;   /* SO_DONTROUTE, as at connect (#68) */
         }
         if (iov_copy(m, 0, g_bounce, total, 0) != 0) {
             ks_unlock(ks_net_lock());
