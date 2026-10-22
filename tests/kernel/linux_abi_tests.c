@@ -3941,15 +3941,15 @@ static void t_ipc_msg(void) {
     {
         /* The two bytes after msgseg are padding, and they are the kernel's
          * to fill with zeros, not with what its stack held (M-109). */
-        const uint8_t *b = (const uint8_t *)info;
+        const uint8_t *raw = (const uint8_t *)info;
 
         memset((void *)info, 0xA5, sizeof(*info));
         /* The host's stack is often zero where the handler's struct lands,
          * which forgives a missing memset: fill it first. */
         dirty_stack();
         expect(SYS3(71, 0, LINUX_IPC_INFO, mi) >= 0 &&
-                   b[offsetof(linux_msginfo_t, msgseg) + 2u] == 0u &&
-                   b[offsetof(linux_msginfo_t, msgseg) + 3u] == 0u,
+                   raw[offsetof(linux_msginfo_t, msgseg) + 2u] == 0u &&
+                   raw[offsetof(linux_msginfo_t, msgseg) + 3u] == 0u,
                "IPC_INFO writes its padding as zeros");
     }
     expect(SYS3(71, (uint64_t)q, 42, ds) == -VIBEOS_EINVAL &&

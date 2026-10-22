@@ -485,6 +485,9 @@ static long nt_unmap_view_of_section(uint64_t process, uint64_t base) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
     }
     ps = ks_ps(me);
+    if (!ps) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);   /* a user task has one (code scanning #316) */
+    }
     ks_mm_lock(ps);
     r = vibeos_vma_find(&ps->mm->vmas, base);
     if (!r || r->alloc_base == 0u || r->backing == VIBEOS_BACKING_ANON) {

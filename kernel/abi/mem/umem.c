@@ -199,7 +199,9 @@ int vibeos_umem_untouched(int me, vibeos_procstate_t *ps, uint64_t va) {
 int vibeos_umem_make(int me, vibeos_procstate_t *ps, uint64_t va) {
     const vibeos_vma_t *r = vibeos_vma_find(&ps->mm->vmas, va);
 
-    if (!vibeos_umem_untouched(me, ps, va)) {
+    /* untouched() found a region, but asks for it again: say so here too
+     * (code scanning #315). */
+    if (!r || !vibeos_umem_untouched(me, ps, va)) {
         return 0;
     }
     return ks_map_anon(me, va & ~0xFFFull, r->prot) == 0 ? 0 : -1;
