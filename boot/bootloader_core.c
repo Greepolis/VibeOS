@@ -678,6 +678,14 @@ int vibeos_bootloader_plan_pe_image(const uint8_t *image, uint64_t image_size, v
         if (out_plan->segment_count >= VIBEOS_BOOT_IMAGE_MAX_SEGMENTS) {
             return -1;
         }
+        /* ImageBase is the file's to choose, and a section whose end wraps
+         * past 2^64 was laid out at a low address the later checks accepted -
+         * with the entry, wrapped the same way, inside it (#20). An entry
+         * that wraps while no section does lies outside every section, which
+         * the containment check below refuses. */
+        if (image_base > UINT64_MAX - (uint64_t)virtual_address - mem_size) {
+            return -1;
+        }
         seg = &out_plan->segments[out_plan->segment_count++];
         seg->file_offset = (uint64_t)raw_offset;
         seg->image_address = image_base + (uint64_t)virtual_address;

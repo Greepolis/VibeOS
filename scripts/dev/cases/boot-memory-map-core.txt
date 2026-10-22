@@ -22,3 +22,9 @@
 +++ new
                                                     input_count,
                                                     &sanitized_count) != 0) {
+
+### a PE section's end wraps past 2^64 (#20)
+--- old
+        if (image_base > UINT64_MAX - (uint64_t)virtual_address - mem_size) {
++++ new
+        if (0) {

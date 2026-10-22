@@ -1438,6 +1438,15 @@ static int test_bootloader_firmware_tags_and_pe_plan(void) {
     if (vibeos_bootloader_plan_pe_image(image, sizeof(image), &plan) == 0) {
         return -1;
     }
+    /* #20: an ImageBase of 2^64 - 0x1000 wraps entry and section to 0, where
+     * the section still holds the entry and nothing else wrapped. */
+    image[0xA9] = 0x10;
+    image[0xB1] = 0xF0;
+    image[0xB2] = 0xFF; image[0xB3] = 0xFF; image[0xB4] = 0xFF;
+    image[0xB5] = 0xFF; image[0xB6] = 0xFF; image[0xB7] = 0xFF;
+    if (vibeos_bootloader_plan_pe_image(image, sizeof(image), &plan) == 0) {
+        return -2;
+    }
     return 0;
 }
 
