@@ -62,3 +62,41 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
         if (signed_pid <= 0) {
             signed_pid = ks_id(ks_current())->tgid;
         }
+
+### a group's signal goes to every thread (#52)
+--- old
+                linux_first_of_process(i, group)) {
++++ new
+                1) {
+
+### kill(pid) raises on the thread aimed at, blocked or not (#53)
+--- old
+    if ((ks_id(aimed)->sig_blocked & (1ull << sig)) == 0u) {
+        return aimed;
+    }
++++ new
+    return aimed;
+
+### kill(tid, 0) looks only for a process id (#54)
+--- old
+        target = linux_task_by_any_id((uint32_t)signed_pid);
+        if (target < 0) {
+            r = -VIBEOS_ESRCH;
+        } else {
+            r = linux_signal_permitted
++++ new
+        target = ks_task_by_pid((uint32_t)signed_pid);
+        if (target < 0) {
+            r = -VIBEOS_ESRCH;
+        } else {
+            r = linux_signal_permitted
+
+### tgkill asks the permission before the pair (#55)
+--- old
+    if (target < 0 || ks_id(target)->tgid != (uint32_t)target_tgid) {
+        r = -VIBEOS_ESRCH;
+    } else if (!linux_signal_permitted(target, (uint32_t)sig)) {
++++ new
+    if (target >= 0 && !linux_signal_permitted(target, (uint32_t)sig)) {
+        r = -VIBEOS_EPERM;
+    } else if (target < 0 || ks_id(target)->tgid != (uint32_t)target_tgid) {

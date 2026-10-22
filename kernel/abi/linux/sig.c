@@ -87,6 +87,47 @@ static int linux_task_by_any_id(uint32_t id) {
     return t >= 0 ? t : ks_task_by_tid(id);
 }
 
+static int linux_live_user(int i) {
+    return ks_id(i)->is_user && vibeos_task_state((uint32_t)i) != VIBEOS_TASK_FREE &&
+           vibeos_task_state((uint32_t)i) != VIBEOS_TASK_SETUP;
+}
+
+/* The thread a process-directed signal is raised on. Pending signals are kept
+ * per thread here, with no set shared by the process, so kill picks the one
+ * Linux would most likely deliver to: the thread it was aimed at if that one
+ * does not block it, else any thread of the process that does not, else the
+ * one it was aimed at - where it waits as it would in Linux's shared set,
+ * except that only that thread unblocking it takes it (#53). Under the
+ * scheduler's lock. */
+static int linux_process_thread(int aimed, uint32_t sig) {
+    uint32_t tgid = ks_id(aimed)->tgid;
+    int i;
+
+    if ((ks_id(aimed)->sig_blocked & (1ull << sig)) == 0u) {
+        return aimed;
+    }
+    for (i = 0; i < (int)ks_slots(); i++) {
+        if (linux_live_user(i) && ks_id(i)->tgid == tgid &&
+            (ks_id(i)->sig_blocked & (1ull << sig)) == 0u) {
+            return i;
+        }
+    }
+    return aimed;
+}
+
+/* Whether slot i is the first member of its process in group `group`: a
+ * group's signal goes to each process once, not to each thread (#52). */
+static int linux_first_of_process(int i, uint32_t group) {
+    int j;
+
+    for (j = 0; j < i; j++) {
+        if (linux_live_user(j) && ks_id(j)->pgid == group && ks_id(j)->tgid == ks_id(i)->tgid) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
     int delivered = 0;
@@ -120,7 +161,8 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
          * it was - a comparison whose result is always the same - and a dead
          * branch in a signal path is worth removing rather than explaining. */
         ks_lock(ks_sched_lock(), __func__);
-        target = ks_task_by_pid((uint32_t)signed_pid);
+        /* Any thread's id, as for a real signal below (#54). */
+        target = linux_task_by_any_id((uint32_t)signed_pid);
         if (target < 0) {
             r = -VIBEOS_ESRCH;
         } else {
@@ -138,15 +180,15 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
          * was this kernel's rule and not Linux's. A group with members none of
          * whom may be signalled is EPERM, as Linux answers; none at all ESRCH. */
         for (i = 0; i < (int)ks_slots(); i++) {
-            if (ks_id(i)->is_user && vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_FREE &&
-                vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_SETUP &&
-                ks_id(i)->pgid == group) {
+            if (linux_live_user(i) && ks_id(i)->pgid == group &&
+                linux_first_of_process(i, group)) {
                 members++;
                 if (linux_signal_permitted(i, (uint32_t)sig)) {
                     /* One already on its way out takes nothing, and that is
                      * not the sender's error - as for a single pid below. */
                     if (sig != 0u) {
-                        (void)ks_signal_send(i, (uint32_t)sig, &why);
+                        (void)ks_signal_send(linux_process_thread(i, (uint32_t)sig),
+                                             (uint32_t)sig, &why);
                     }
                     delivered++;
                 }
@@ -169,7 +211,7 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
          * is not the sender's error: Linux answers 0 for a signal to a process
          * that has exited and not been reaped (LTP's sigwait helpers kill
          * their child after it ended, and got EINVAL here). */
-        (void)ks_signal_send(target, (uint32_t)sig, &why);
+        (void)ks_signal_send(linux_process_thread(target, (uint32_t)sig), (uint32_t)sig, &why);
         r = 0;
     }
     ks_unlock(ks_sched_lock());
@@ -234,10 +276,12 @@ static long linux_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
      * tgid comparison protects nothing if the slot can change after it. */
     ks_lock(ks_sched_lock(), __func__);
     target = ks_task_by_tid((uint32_t)target_tid);
-    if (target >= 0 && !linux_signal_permitted(target, (uint32_t)sig)) {
-        r = -VIBEOS_EPERM;   /* same rule as kill; see linux_signal_permitted */
-    } else if (target < 0 || ks_id(target)->tgid != (uint32_t)target_tgid) {
+    /* The pair first: a thread that is not in the group named is not there,
+     * whoever may signal it (#55). */
+    if (target < 0 || ks_id(target)->tgid != (uint32_t)target_tgid) {
         r = -VIBEOS_ESRCH;
+    } else if (!linux_signal_permitted(target, (uint32_t)sig)) {
+        r = -VIBEOS_EPERM;   /* same rule as kill; see linux_signal_permitted */
     } else if (sig == 0u) {
         r = 0;
     } else {

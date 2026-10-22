@@ -261,6 +261,35 @@ static void t_kill_permission(void) {
            "except for SIGCONT, which a session allows");
 }
 
+/* A process-directed signal reaches a process once, on a thread that takes it
+ * (#52, #53); a thread's id names its process to kill(tid, 0) (#54); tgkill
+ * judges the pair before the permission (#55). */
+static void t_kill_threads(void) {
+    int a, lead, th;
+
+    kf_reset();
+    vibeos_linux_abi_init();
+    a = kf_spawn(20, 20);
+    lead = kf_spawn(40, 40);
+    th = kf_spawn(41, 40);
+    ks_id(th)->tgid = 40;
+    ks_id(th)->pgid = 40;
+    kf_set_current(a);
+    expect(SYS2(62, 41, 0) == 0, "kill(tid, 0) finds a non-leader thread");
+    expect(SYS2(62, -40, 10) == 0 && (ks_id(lead)->sig_pending & (1ull << 10)) != 0 &&
+               (ks_id(th)->sig_pending & (1ull << 10)) == 0,
+           "a group's signal reaches a process once, not once per thread");
+    ks_id(lead)->sig_pending = 0;
+    ks_id(lead)->sig_blocked = 1ull << 12;
+    expect(SYS2(62, 40, 12) == 0 && (ks_id(lead)->sig_pending & (1ull << 12)) == 0 &&
+               (ks_id(th)->sig_pending & (1ull << 12)) != 0,
+           "kill(pid) goes to a thread that does not block the signal");
+    ks_id(th)->sig_pending = 0;
+    expect(SYS1(105, 1000) == 0, "the sender gives up root");
+    expect(SYS3(234, 20, 41, 0) == -VIBEOS_ESRCH && SYS3(234, 40, 41, 0) == -VIBEOS_EPERM,
+           "tgkill: a thread outside the group named is ESRCH before it is EPERM");
+}
+
 static void t_registry_answers(void) {
     uint64_t before;
 
@@ -6604,6 +6633,7 @@ int test_linux_handlers(void) {
     t_sigaction_round_trip();
     t_sigreturn_forged();
     t_kill_permission();
+    t_kill_threads();
     t_registry_answers();
     t_uname_and_clock();
     t_exit_and_wait();

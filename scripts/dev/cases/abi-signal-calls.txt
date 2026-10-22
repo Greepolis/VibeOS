@@ -86,7 +86,7 @@
 
 ### a signal to a process on its way out is the sender's error
 --- old
-        (void)ks_signal_send(target, (uint32_t)sig, &why);
+        (void)ks_signal_send(linux_process_thread(target, (uint32_t)sig), (uint32_t)sig, &why);
         r = 0;
     }
     ks_unlock(ks_sched_lock());
@@ -95,7 +95,7 @@
 
 static long linux_sys_tkill(
 +++ new
-        r = ks_signal_send(target, (uint32_t)sig, &why) == 0 ? 0 : -VIBEOS_EINVAL;
+        r = ks_signal_send(linux_process_thread(target, (uint32_t)sig), (uint32_t)sig, &why) == 0 ? 0 : -VIBEOS_EINVAL;
     }
     ks_unlock(ks_sched_lock());
     return r;
