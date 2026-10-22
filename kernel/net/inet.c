@@ -891,7 +891,7 @@ long vibeos_inet_recvfrom_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t l
 /* ---- DHCP client --------------------------------------------------------- */
 
 static uint32_t dhcp_build(vibeos_inet_t *net, uint8_t *b, uint8_t msg_type,
-                           uint32_t requested_ip, uint32_t server_ip) {
+                           uint32_t requested_ip, uint32_t server_ip, uint32_t ciaddr) {
     uint32_t o;
     bzero_n(b, 300u);
     b[0] = 1;                       /* BOOTREQUEST                     */
@@ -900,7 +900,10 @@ static uint32_t dhcp_build(vibeos_inet_t *net, uint8_t *b, uint8_t msg_type,
     b[3] = 0;
     wr32(b + 4, net->dhcp_xid);
     wr16(b + 8, 0);
-    wr16(b + 10, 0x8000u);          /* broadcast reply                 */
+    /* A client with a lease has an address a reply can be sent to: it says
+     * so in ciaddr and asks for no broadcast (RFC 2131 4.3.2, 4.4.5). */
+    wr16(b + 10, ciaddr != 0u ? 0u : 0x8000u);
+    wr32(b + 12, ciaddr);
     bcopy_n(b + 28, net->mac, 6);
     wr32(b + 236, 0x63825363u);     /* magic cookie                    */
 
@@ -922,11 +925,24 @@ static uint32_t dhcp_build(vibeos_inet_t *net, uint8_t *b, uint8_t msg_type,
 
 static void dhcp_send(vibeos_inet_t *net, uint8_t msg_type, uint32_t req, uint32_t srv) {
     uint8_t body[300];
-    uint32_t n = dhcp_build(net, body, msg_type, req, srv);
+    uint32_t n = dhcp_build(net, body, msg_type, req, srv, 0u);
     /* A client without a lease sources from 0.0.0.0. Passing that explicitly
      * leaves net->ip untouched, so a lease assigned while this send is in
      * flight cannot be undone by a restore. */
     (void)udp_send_from(net, 0u, 0xFFFFFFFFu, DHCP_LOCAL_PORT, DHCP_SERVER_PORT, body, n);
+    net->dhcp_retry_ms = net->now_ms + 1000ull;
+}
+
+/* Renewing (`to` the server that granted the lease) or rebinding (`to`
+ * 255.255.255.255): a REQUEST from the leased address with it in ciaddr and
+ * neither a requested address nor a server identifier, which RFC 2131 4.3.2
+ * forbids in these states. They used to go out as a client without a lease's
+ * would, from 0.0.0.0 and broadcast (#64). */
+static void dhcp_send_lease(vibeos_inet_t *net, uint32_t to) {
+    uint8_t body[300];
+    uint32_t n = dhcp_build(net, body, 3 /* REQUEST */, 0u, 0u, net->ip);
+
+    (void)udp_send_from(net, net->ip, to, DHCP_LOCAL_PORT, DHCP_SERVER_PORT, body, n);
     net->dhcp_retry_ms = net->now_ms + 1000ull;
 }
 
@@ -2457,14 +2473,13 @@ void vibeos_inet_poll(vibeos_inet_t *net, uint64_t now_ms) {
             dhcp_send(net, 1 /* DISCOVER */, 0, 0);
         } else if (now_ms >= net->dhcp_t2_ms && net->dhcp_state != 5u) {
             net->dhcp_state = 5;              /* rebind: broadcast to anyone  */
-            dhcp_send(net, 3, net->ip, 0);
+            dhcp_send_lease(net, 0xFFFFFFFFu);
         } else if (now_ms >= net->dhcp_t1_ms && net->dhcp_state == 3u) {
             net->dhcp_state = 4;              /* renew with our own server    */
-            dhcp_send(net, 3, net->ip, net->dhcp_server);
+            dhcp_send_lease(net, net->dhcp_server);
         } else if ((net->dhcp_state == 4u || net->dhcp_state == 5u) &&
                    now_ms >= net->dhcp_retry_ms) {
-            dhcp_send(net, 3, net->ip,
-                      (net->dhcp_state == 4u) ? net->dhcp_server : 0u);
+            dhcp_send_lease(net, (net->dhcp_state == 4u) ? net->dhcp_server : 0xFFFFFFFFu);
         }
     }
 

@@ -117,3 +117,9 @@
         if (s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) {
 +++ new
         if (0) {
+
+### a renewal goes out as a client without a lease's would (#64)
+--- old
+            dhcp_send_lease(net, net->dhcp_server);
++++ new
+            dhcp_send(net, 3, net->ip, net->dhcp_server);

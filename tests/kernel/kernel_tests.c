@@ -5095,10 +5095,23 @@ static int test_inet_dhcp_lease_lifecycle(void) {
         return -1;
     }
 
-    /* At T1 (half the lease) the client renews, and the ACK extends it. */
+    /* At T1 (half the lease) the client renews, and the ACK extends it. The
+     * renewal is from the leased address, to the server, with the address in
+     * ciaddr and no requested-address option after the message type (#64). */
+    inet_seed_arp(&net);   /* the server's address: a unicast asks ARP first */
     vibeos_inet_poll(&net, 51000);
     if (cap.count == 0) {
         return -1;
+    }
+    {
+        const uint8_t *f = cap.frame[cap.count - 1u];
+        const uint8_t *d = f + 14 + 20 + 8;
+
+        if (inet_rd16(f + 12) != 0x0800u || f[14 + 9] != 17u ||
+            inet_rd32(f + 14 + 12) != 0x0A00020Fu || inet_rd32(f + 14 + 16) == 0xFFFFFFFFu ||
+            inet_rd32(d + 12) != 0x0A00020Fu || d[243] == 50u) {
+            return -2;
+        }
     }
     inet_deliver_dhcp(&net, 5, 0x0A00020Fu, 100u);
     if (net.dhcp_renewals != 1u || !vibeos_inet_dhcp_bound(&net)) {
