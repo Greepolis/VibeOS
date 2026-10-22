@@ -95,7 +95,7 @@ static void hw_kstack_unmap(uint64_t base, uint32_t pages, int free_frames) {
         uint64_t phys = pte ? (*pte & 0x000FFFFFFFFFF000ull) : 0u;
 
         if (pte) {
-            *pte = 0;
+            (void)hw_kstack_set(va, 0u);
             __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
         }
         if (free_frames && phys) {
@@ -133,7 +133,7 @@ uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
                     __atomic_store_n(&g_kstack_window[w], 0u, __ATOMIC_RELEASE);
                     return 0;
                 }
-                *hw_kstack_pte(va) = (uint64_t)(uintptr_t)frame | PTE_PRESENT | PTE_WRITE | PTE_NX;
+                (void)hw_kstack_set(va, (uint64_t)(uintptr_t)frame | PTE_PRESENT | PTE_WRITE | PTE_NX);
                 __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
             }
             *(volatile uint64_t *)(uintptr_t)base = VIBEOS_HW_KSTACK_CANARY;

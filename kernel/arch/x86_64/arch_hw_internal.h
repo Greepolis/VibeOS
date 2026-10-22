@@ -627,8 +627,12 @@ int hw_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint6
 #define VIBEOS_HW_KSTACK_STRIDE  ((uint64_t)(VIBEOS_HW_KSTACK_PAGES + VIBEOS_HW_KSTACK_GUARD) * 4096ull)
 #define VIBEOS_HW_KSTACK_WINDOWS (VIBEOS_HW_MAX_TASKS + VIBEOS_HW_MAX_CPUS)
 #define VIBEOS_HW_KSTACK_PTS     ((VIBEOS_HW_KSTACK_WINDOWS * (VIBEOS_HW_KSTACK_PAGES + VIBEOS_HW_KSTACK_GUARD) + 511u) / 512u)
-/* The entry that maps `va` in the region, or null outside it (mm_bridge.c). */
+/* The entry that maps `va` in the region, or null outside it, and the one
+ * place that writes it (mm_bridge.c): the kernel's own tables, written beside
+ * the identity map's - check-mm-layering.sh says why that is not a process's
+ * page table being written outside kernel/mm/. 0 if `va` is in the region. */
 uint64_t *hw_kstack_pte(uint64_t va);
+int hw_kstack_set(uint64_t va, uint64_t entry);
 /* Is `va` in a guard of the region - below a stack, where nothing is mapped? */
 int hw_kstack_guard_hit(uint64_t va);
 #define VIBEOS_HW_IDENTITY_LIMIT 0x100000000ull

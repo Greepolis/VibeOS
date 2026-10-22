@@ -126,6 +126,17 @@ uint64_t *hw_kstack_pte(uint64_t va) {
     return &g_kstack_pt[idx / 512u][idx % 512u];
 }
 
+int hw_kstack_set(uint64_t va, uint64_t entry) {
+    uint64_t idx;
+
+    if (!hw_kstack_pte(va)) {
+        return -1;
+    }
+    idx = (va - VIBEOS_HW_KSTACK_REGION) >> 12;
+    g_kstack_pt[idx / 512u][idx % 512u] = entry;
+    return 0;
+}
+
 int hw_kstack_guard_hit(uint64_t va) {
     uint64_t off;
 

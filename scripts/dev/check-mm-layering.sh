@@ -25,7 +25,12 @@ fail=0
 #
 # The static bring-up that builds the kernel's own identity map before any
 # address space exists writes g_pml4/g_pdpt/g_pd, which are the kernel's tables
-# and not a process's; those names are not matched here.
+# and not a process's; those names are not matched here. So are the kernel
+# stacks' (M-108, docs/abi/windows.md W3 step 8): g_kstack_pt, written only by
+# hw_kstack_set in mm_bridge.c, maps the kernel's own stacks in a region every
+# address space shares and no process owns - no frame of a process is decided
+# there. Its first version wrote `*pte = 0` in task_switch.c, which this check
+# caught and the step did not read.
 bad="$(grep -rnE '^[[:space:]]*(\*pte|pt\[[a-z]+\]|spt\[[a-z]+\])[[:space:]]*(\||&)?=[^=]' \
         --include=*.c kernel/ user/ 2>/dev/null | grep -v '^kernel/mm/' || true)"
 if [ -n "$bad" ]; then
