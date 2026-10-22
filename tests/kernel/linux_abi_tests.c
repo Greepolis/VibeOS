@@ -3302,6 +3302,8 @@ static void t_sockopt_linux(void) {
     expect(SYS5(54, (uint64_t)d, 1, 20 /* SO_RCVTIMEO */, val, 16) == 0 &&
                SYS5(55, (uint64_t)d, 1, 20, val, lenp) == 0 && tv[0] > 1000000000ll,
            "a timeout too long to count in ticks stays long, not whatever it wrapped to (#47)");
+    expect(SYS2(1000, 1, 0) == -VIBEOS_EINVAL,
+           "netctl: a ping that cannot start says so, not the last one's answer (#51)");
     *v = 1;
     expect(SYS1(105, 1000) == 0 && SYS5(54, (uint64_t)d, 1, 1 /* SO_DEBUG */, val, 4) == -VIBEOS_EACCES,
            "SO_DEBUG on is the superuser's (#58)");

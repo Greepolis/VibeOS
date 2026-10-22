@@ -1250,8 +1250,36 @@ long linux_socket_vec(vibeos_file_t *f, const vibeos_uiov_t *iov, uint32_t n, in
  *   op 2  resolve the name at `arg`, returns the address
  *   op 3  write {tx_frames, rx_frames, rx_dropped, tcp_retransmits} as four u64
  */
+/* The stack keeps one ping and one name lookup at a time, and netctl started
+ * one and then waited on "the" result: a second caller replaced the first's
+ * request, and each could be handed the other's answer (#48, #49). So a ping
+ * or a lookup is one caller's from start to answer; the next waits its turn,
+ * as a regular file's offset is waited for. */
+static volatile uint32_t g_netctl_busy;
+
+static int netctl_take(void) {
+    for (;;) {
+        uint32_t zero = 0;
+
+        if (__atomic_compare_exchange_n(&g_netctl_busy, &zero, 1u, 0, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_RELAXED)) {
+            return 0;
+        }
+        /* A wait that hears no signal is a process nobody can stop. */
+        if (ks_signal_interrupts(ks_current())) {
+            return -VIBEOS_EINTR;
+        }
+        ks_wait_tick();
+    }
+}
+
+static void netctl_give(void) {
+    __atomic_store_n(&g_netctl_busy, 0u, __ATOMIC_RELEASE);
+}
+
 static long linux_sys_netctl(uint64_t op, uint64_t arg) {
     uint64_t deadline;
+    long r;
 
     if (!ks_net()) {
         return -VIBEOS_EIO;
@@ -1274,20 +1302,31 @@ static long linux_sys_netctl(uint64_t op, uint64_t arg) {
                        ? 0 : -VIBEOS_EFAULT;
         }
         case 1: {
+            if ((r = netctl_take()) != 0) {
+                return r;
+            }
             ks_lock(ks_net_lock(), __func__);
-            (void)vibeos_inet_ping(ks_net(), (uint32_t)arg);
+            r = vibeos_inet_ping(ks_net(), (uint32_t)arg);
             ks_unlock(ks_net_lock());
+            /* A ping that did not start has no answer to wait for: the last
+             * one's was what this used to return (#51). */
+            if (r < 0) {
+                netctl_give();
+                return -VIBEOS_EINVAL;
+            }
             deadline = ks_ticks() + (ks_hz() * 4u);
             for (;;) {
                 uint64_t rtt = 0;
-                int r;
+                int got;
                 ks_lock(ks_net_lock(), __func__);
-                r = vibeos_inet_ping_result(ks_net(), &rtt);
+                got = vibeos_inet_ping_result(ks_net(), &rtt);
                 ks_unlock(ks_net_lock());
-                if (r == 0) {
+                if (got == 0) {
+                    netctl_give();
                     return (long)rtt;
                 }
                 if (ks_ticks() > deadline) {
+                    netctl_give();
                     return -VIBEOS_EIO;
                 }
                 ks_idle();
@@ -1298,20 +1337,29 @@ static long linux_sys_netctl(uint64_t op, uint64_t arg) {
             if (ks_copy_user_string(arg, name, sizeof(name)) != 0) {
                 return -VIBEOS_EFAULT;
             }
+            if ((r = netctl_take()) != 0) {
+                return r;
+            }
             ks_lock(ks_net_lock(), __func__);
-            (void)vibeos_inet_resolve(ks_net(), name);
+            r = vibeos_inet_resolve(ks_net(), name);
             ks_unlock(ks_net_lock());
+            if (r < 0) {
+                netctl_give();
+                return -VIBEOS_EINVAL;   /* no server to ask, or no name: as for ping (#51) */
+            }
             deadline = ks_ticks() + (ks_hz() * 5u);
             for (;;) {
                 uint32_t ip = 0;
-                int r;
+                int got;
                 ks_lock(ks_net_lock(), __func__);
-                r = vibeos_inet_resolve_result(ks_net(), &ip);
+                got = vibeos_inet_resolve_result(ks_net(), &ip);
                 ks_unlock(ks_net_lock());
-                if (r == 0) {
+                if (got == 0) {
+                    netctl_give();
                     return (long)ip;
                 }
-                if (r != -VIBEOS_INET_EAGAIN || ks_ticks() > deadline) {
+                if (got != -VIBEOS_INET_EAGAIN || ks_ticks() > deadline) {
+                    netctl_give();
                     return -VIBEOS_ENOENT;
                 }
                 ks_idle();

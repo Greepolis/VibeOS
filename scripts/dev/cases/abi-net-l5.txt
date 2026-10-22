@@ -99,3 +99,13 @@
                 refused = c.euid != 0u;
 +++ new
                 refused = 0;
+
+### netctl waits for a ping that never started (#51)
+--- old
+            if (r < 0) {
+                netctl_give();
+                return -VIBEOS_EINVAL;
+            }
+            deadline = ks_ticks() + (ks_hz() * 4u);
++++ new
+            deadline = ks_ticks() + (ks_hz() * 4u);
