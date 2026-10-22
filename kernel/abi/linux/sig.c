@@ -310,6 +310,7 @@ static long linux_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
 static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_uptr,
                                    uint64_t setsize) {
     vibeos_procstate_t *ps;
+    linux_sigaction_t act, old;
 
     /* A mask is eight bytes; any other size is a program built for another
      * kernel's sigset_t, refused before anything is read (LTP's rt_sigaction03). */
@@ -324,20 +325,7 @@ static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old
         return -VIBEOS_EINVAL;
     }
 
-    if (old_uptr != 0u) {
-        linux_sigaction_t old;
-        old.sa_handler = ps->sig_handler[sig];
-        old.sa_flags = ps->sig_flags[sig];
-        old.sa_restorer = ps->sig_restorer[sig];
-        old.sa_mask = ps->sig_mask[sig] >> 1;
-        /* Written through the fault-safe copy: a sibling munmap between the
-         * range check and here would fault in ring 0 otherwise (H-016). */
-        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &old, sizeof(old)) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-    }
     if (act_uptr != 0u) {
-        linux_sigaction_t act;
         if (vibeos_uaccess_copy(&act, (const void *)(uintptr_t)act_uptr,
                                 sizeof(act)) != 0) {
             return -VIBEOS_EFAULT;   /* H-016 */
@@ -352,10 +340,27 @@ static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old
             !ks_user_addr_ok(act.sa_handler)) {
             return -VIBEOS_EINVAL;
         }
+    }
+    /* The disposition is the process's and four words long: the old one read
+     * and the new one written as one, under the lock delivery reads it under,
+     * so that no thread takes a handler with another's flags or mask (#42). */
+    ks_lock(&ps->files_lock, __func__);
+    old.sa_handler = ps->sig_handler[sig];
+    old.sa_flags = ps->sig_flags[sig];
+    old.sa_restorer = ps->sig_restorer[sig];
+    old.sa_mask = ps->sig_mask[sig] >> 1;
+    if (act_uptr != 0u) {
         ps->sig_handler[sig] = act.sa_handler;
         ps->sig_flags[sig] = act.sa_flags;
         ps->sig_restorer[sig] = act.sa_restorer;
         ps->sig_mask[sig] = act.sa_mask << 1;
+    }
+    ks_unlock(&ps->files_lock);
+    /* Written through the fault-safe copy: a sibling munmap between the
+     * range check and here would fault in ring 0 otherwise (H-016). */
+    if (old_uptr != 0u &&
+        vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &old, sizeof(old)) != 0) {
+        return -VIBEOS_EFAULT;
     }
     return 0;
 }

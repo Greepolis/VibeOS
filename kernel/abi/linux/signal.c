@@ -179,7 +179,7 @@ int linux_signal_deliver(ks_regs_t *frame) {
     vibeos_procstate_t *ps;
     int me;
     uint32_t sig;
-    uint64_t handler, flags, restart, saved, sp, fp, base;
+    uint64_t handler, flags = 0, restorer = 0, mask = 0, restart, saved, sp, fp, base;
     vibeos_siginfo_t why;
     vibeos_uregs_t regs;
     linux_ucontext_t uc;
@@ -207,8 +207,19 @@ int linux_signal_deliver(ks_regs_t *frame) {
         }
 
         /* A user task whose process reference is already gone is exiting;
-         * the default is the only disposition it has left. */
-        handler = ps ? ps->sig_handler[sig] : SIG_DFL_ADDR;
+         * the default is the only disposition it has left. Otherwise the four
+         * words of it are read as one, under the lock rt_sigaction writes them
+         * under: a sibling's sigaction cannot hand this delivery its handler
+         * with the previous one's flags (#42). */
+        handler = SIG_DFL_ADDR;
+        if (ps) {
+            ks_lock(&ps->files_lock, __func__);
+            handler = ps->sig_handler[sig];
+            flags = ps->sig_flags[sig];
+            restorer = ps->sig_restorer[sig];
+            mask = ps->sig_mask[sig];
+            ks_unlock(&ps->files_lock);
+        }
         if (sig == VIBEOS_SIGKILL || sig == VIBEOS_SIGSTOP) {
             handler = SIG_DFL_ADDR;   /* uncatchable */
         }
@@ -253,7 +264,6 @@ int linux_signal_deliver(ks_regs_t *frame) {
         }
         break;
     }
-    flags = ps->sig_flags[sig];
 
     /* Bracketed, like every other multi-part message: puts and print_hex take
      * the lock individually, so without this the line is four critical
@@ -276,7 +286,7 @@ int linux_signal_deliver(ks_regs_t *frame) {
      * rt_sigreturn. Without SA_RESTORER there is nothing to return to, and a
      * handler that returns would jump to whatever was on the stack. Checked
      * first, before the stack is touched. */
-    if ((flags & VIBEOS_SA_RESTORER) == 0u || ps->sig_restorer[sig] == 0u) {
+    if ((flags & VIBEOS_SA_RESTORER) == 0u || restorer == 0u) {
         ks_task_kill_group(sig);   /* the process, as every fatal end (L6) */
         return 0;
     }
@@ -349,7 +359,7 @@ int linux_signal_deliver(ks_regs_t *frame) {
      * building the frame in place would fault in ring 0 (H-023). On a fault the
      * task takes SIGSEGV rather than the kernel taking the fault. */
     {
-        uint64_t ret = ps->sig_restorer[sig];
+        uint64_t ret = restorer;
 
         if (ks_fpu_save(fp) != 0 ||
             vibeos_uaccess_copy((void *)(uintptr_t)base, &ret, sizeof(ret)) != 0 ||
@@ -372,13 +382,19 @@ int linux_signal_deliver(ks_regs_t *frame) {
      * re-enters the handler until the stack is gone. SA_NODEFER asks for the
      * re-entry; SA_RESETHAND for one delivery only. */
     t->sig_saved_valid = 0;
-    t->sig_blocked = saved | ps->sig_mask[sig] |
+    t->sig_blocked = saved | mask |
                      ((flags & LINUX_SA_NODEFER) ? 0u : (1ull << sig));
     t->sig_blocked &= ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
     /* The handler, and nothing else: an earlier Linux cleared SA_SIGINFO too,
      * and LTP's sigaction01 checks that this one does not. */
     if (flags & LINUX_SA_RESETHAND) {
-        ps->sig_handler[sig] = SIG_DFL_ADDR;
+        /* Only the disposition this delivery used: one a sibling installed
+         * since is not this delivery's to reset. */
+        ks_lock(&ps->files_lock, __func__);
+        if (ps->sig_handler[sig] == handler) {
+            ps->sig_handler[sig] = SIG_DFL_ADDR;
+        }
+        ks_unlock(&ps->files_lock);
     }
 
     ks_regs_enter_handler(frame, handler, base, sig,
