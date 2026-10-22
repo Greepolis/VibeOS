@@ -327,6 +327,50 @@ int test_vma(void) {
         vibeos_vma_clear(&w);
     }
 
+    /* ---- W3 step 10: an allocation split and joined (placeholders) ------ */
+    {
+        vibeos_vma_list_t w;
+
+        memset(&w, 0, sizeof(w));
+        if (vibeos_vma_insert_alloc(&w, 0x200000ull, 4ull * PAGE, 0u, 0u, VIBEOS_VMA_RESERVED,
+                                    0x200000ull, 0x01u) != 0 ||
+            vibeos_vma_change_alloc(&w, 0x202000ull, PAGE, VIBEOS_VMA_CHANGE_ALLOC, 0u, 0u,
+                                    VIBEOS_VMA_RESERVED, 0x202000ull, 0x01u) != 0) {
+            printf("FAIL:vma an allocation's middle page given a base of its own\n");
+            goto fail;
+        }
+        if (walk_count(&w) != 3u || vibeos_vma_find(&w, 0x201000ull)->alloc_base != 0x200000ull ||
+            vibeos_vma_find(&w, 0x202000ull)->alloc_base != 0x202000ull ||
+            vibeos_vma_find(&w, 0x203000ull)->alloc_base != 0x200000ull ||
+            vibeos_vma_find(&w, 0x202000ull)->state != VIBEOS_VMA_RESERVED) {
+            printf("FAIL:vma a base changed on one page only, its state untouched\n");
+            goto fail;
+        }
+        /* The state and the allocation in one change, and back to one. */
+        if (vibeos_vma_change_alloc(&w, 0x203000ull, PAGE,
+                                    VIBEOS_VMA_CHANGE_ALLOC | VIBEOS_VMA_CHANGE_STATE |
+                                        VIBEOS_VMA_CHANGE_PROT, RW, 0x04u, VIBEOS_VMA_DEMAND,
+                                    0x203000ull, 0x04u) != 0 ||
+            vibeos_vma_find(&w, 0x203000ull)->state != VIBEOS_VMA_DEMAND ||
+            vibeos_vma_find(&w, 0x203000ull)->alloc_prot != 0x04u ||
+            vibeos_vma_change_alloc(&w, 0x200000ull, 4ull * PAGE,
+                                    VIBEOS_VMA_CHANGE_ALLOC | VIBEOS_VMA_CHANGE_STATE |
+                                        VIBEOS_VMA_CHANGE_PROT, 0u, 0u, VIBEOS_VMA_RESERVED,
+                                    0x200000ull, 0x01u) != 0 ||
+            walk_count(&w) != 1u) {
+            printf("FAIL:vma split allocations joined back into one region\n");
+            goto fail;
+        }
+        /* vibeos_vma_change does not take the allocation's flag. */
+        if (vibeos_vma_change(&w, 0x200000ull, PAGE, VIBEOS_VMA_CHANGE_ALLOC, 0u, 0u,
+                              VIBEOS_VMA_RESERVED) != 0 ||
+            vibeos_vma_find(&w, 0x200000ull)->alloc_base != 0x200000ull || walk_count(&w) != 1u) {
+            printf("FAIL:vma vibeos_vma_change leaves the allocation alone\n");
+            goto fail;
+        }
+        vibeos_vma_clear(&w);
+    }
+
     return 0;
 
 fail:

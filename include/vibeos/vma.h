@@ -47,7 +47,9 @@ typedef struct vibeos_vma {
      * and which keeps two allocations from merging into one. 0 for a region no
      * personality allocated that way. `user_prot` is the protection as the
      * personality spelled it - PAGE_EXECUTE, PAGE_GUARD, which `prot` cannot
-     * say - reported back as it was given; 0 when nobody spelled one. */
+     * say - reported back as it was given; 0 when nobody spelled one.
+     * `alloc_prot` is the personality's word about the allocation and opaque
+     * here: NT keeps its placeholder marks in bits no PAGE_* value uses. */
     uint32_t state;
     uint32_t user_prot;
     uint32_t alloc_prot;
@@ -123,8 +125,18 @@ int vibeos_vma_insert_like(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
  * or nothing changes and the answer is negative. */
 #define VIBEOS_VMA_CHANGE_PROT  1u
 #define VIBEOS_VMA_CHANGE_STATE 2u
+#define VIBEOS_VMA_CHANGE_ALLOC 4u   /* vibeos_vma_change_alloc's alone */
 int vibeos_vma_change(vibeos_vma_list_t *list, uint64_t base, uint64_t len, uint32_t what,
                       vibeos_prot_t prot, uint32_t user_prot, vibeos_vma_state_t state);
+
+/* As vibeos_vma_change, and with VIBEOS_VMA_CHANGE_ALLOC the allocation the
+ * range belongs to as well: its base and protection. Windows 10 splits one
+ * reservation into several and joins them again (placeholders, docs/abi/
+ * windows.md W3 step 10), and an allocation is only the regions that name one
+ * base - so splitting one is giving part of it a base of its own. */
+int vibeos_vma_change_alloc(vibeos_vma_list_t *list, uint64_t base, uint64_t len, uint32_t what,
+                            vibeos_prot_t prot, uint32_t user_prot, vibeos_vma_state_t state,
+                            uint64_t alloc_base, uint32_t alloc_prot);
 
 /* The region containing `va`, or null. */
 vibeos_vma_t *vibeos_vma_find(vibeos_vma_list_t *list, uint64_t va);

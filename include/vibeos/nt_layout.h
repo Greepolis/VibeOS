@@ -280,6 +280,42 @@ typedef struct {
 #define VIBEOS_NT_MEM_RESET_UNDO  0x01000000u   /* AllocationType's, not Type's */
 #define VIBEOS_NT_MEM_LARGE_PAGES 0x20000000u
 
+/* Windows 10's placeholders (NtAllocateVirtualMemoryEx's AllocationType, and
+ * NtFreeVirtualMemory's FreeType for the last two): reserved address space
+ * that can be split, joined and replaced by an allocation in place. */
+#define VIBEOS_NT_MEM_REPLACE_PLACEHOLDER   0x00004000u
+#define VIBEOS_NT_MEM_RESERVE_PLACEHOLDER   0x00040000u
+#define VIBEOS_NT_MEM_COALESCE_PLACEHOLDERS 0x00000001u
+#define VIBEOS_NT_MEM_PRESERVE_PLACEHOLDER  0x00000002u
+
+/* MEM_EXTENDED_PARAMETER: 16 bytes, the type in the low eight bits of the
+ * first quadword and a value or a pointer in the second. */
+typedef struct {
+    uint64_t type;
+    uint64_t value;
+} vibeos_nt_mem_ext_param_t;
+
+#define VIBEOS_NT_MEM_EXT_TYPE_MASK            0xFFull
+#define VIBEOS_NT_MEM_EXT_ADDRESS_REQUIREMENTS 1u
+#define VIBEOS_NT_MEM_EXT_NUMA_NODE            2u
+#define VIBEOS_NT_MEM_EXT_PARTITION_HANDLE     3u
+#define VIBEOS_NT_MEM_EXT_USER_PHYSICAL_HANDLE 4u
+#define VIBEOS_NT_MEM_EXT_ATTRIBUTE_FLAGS      5u
+#define VIBEOS_NT_MEM_EXT_IMAGE_MACHINE        6u
+#define VIBEOS_NT_MEM_EXT_MAX                  7u
+#define VIBEOS_NT_MEM_EXT_EC_CODE              0x40u   /* an attribute flag: ARM64EC */
+
+/* MEM_ADDRESS_REQUIREMENTS: 24 bytes. */
+typedef struct {
+    uint64_t lowest_starting_address;
+    uint64_t highest_ending_address;
+    uint64_t alignment;
+} vibeos_nt_mem_address_requirements_t;
+
+/* The highest address SystemBasicInformation reports a program may use - and
+ * what an allocation's highest ending address is measured against. */
+#define VIBEOS_NT_MAX_USER_ADDRESS 0x00007FFFFFFEFFFFull
+
 /* Page protections: one of the first eight, with modifiers. */
 #define VIBEOS_NT_PAGE_NOACCESS          0x001u
 #define VIBEOS_NT_PAGE_READONLY          0x002u

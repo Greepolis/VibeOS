@@ -31,3 +31,24 @@
         base = (base + mask) & ~mask;
 +++ new
         (void)mask;
+
+# ---- placing inside bounds (W3 step 10), proved by t_placeholders in
+# nt_abi_tests.c: NtAllocateVirtualMemoryEx's address requirements.
+
+### a floor is not honoured
+--- old
+    uint64_t base = lo > cur ? lo : cur;
++++ new
+    uint64_t base = cur;
+
+### a ceiling is not honoured
+--- old
+        if (base + bytes < base || base + bytes - 1u > hi || !ks_user_fixed_ok(base, bytes)) {
++++ new
+        if (base + bytes < base || !ks_user_fixed_ok(base, bytes)) {
+
+### a floor above the cursor moves the cursor past everything below it
+--- old
+    if (lo <= cur) {
++++ new
+    if (1) {

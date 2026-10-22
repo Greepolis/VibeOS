@@ -71,11 +71,15 @@ loader, objects and waits, memory, files, threads and exceptions, processes, the
 and each ends at something W5 provides (threads, timers, keyed events) - see
 [../abi/windows.md](../abi/windows.md), "What the oracle says at the end of
 W2". `kernel32:virtual` runs without a failure until CreateProcessA (W6);
-`ntdll:virtual` passes `test_NtAllocateVirtualMemory` and stops at the
-placeholders of NtAllocateVirtualMemoryEx (W3 step 9).
+`ntdll:virtual` passes `test_NtAllocateVirtualMemory`; since W3 step 10
+(NtAllocateVirtualMemoryEx and placeholders, 2026-10-22) its Ex test fails one
+check (write watches) and the address-requirements test ten (allocations
+below 0x30000000, where the arena has nothing), and it stops in
+`test_NtMapViewOfSection` at kernel32's SetFilePointer (W4).
 
 ## Next checkpoint
 
 - W4: files - NtCreateFile, reading and writing, directories - measured by
-  `ntdll:file`, `ntdll:directory` and `kernel32:file`. Left from W3:
-  NtAllocateVirtualMemoryEx with its placeholders, and ZeroBits.
+  `ntdll:file`, `ntdll:directory` and `kernel32:file`. Left from W3: a low
+  arena below four gigabytes for ZeroBits and address requirements, write
+  watches, RtlCreateUserStack.

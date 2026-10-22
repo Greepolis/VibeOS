@@ -506,6 +506,41 @@ Order, each a commit with host tests and sabotage cases:
    The work list it leaves: NtAllocateVirtualMemoryEx and the placeholders;
    ZeroBits, which needs somewhere below four gigabytes for an NT process to
    allocate in - the user layout has none; CreateProcess with W6.
+10. **NtAllocateVirtualMemoryEx and placeholders** (2026-10-22), the first
+    item of that list, held to Wine's own implementation where its test reads
+    the answer.
+    *Done:* `nt_allocate` is the body both allocation services share.
+    MEM_RESERVE_PLACEHOLDER reserves a placeholder - no access, reserved, filled
+    only by MEM_REPLACE_PLACEHOLDER, in place and whole; NtFreeVirtualMemory's
+    MEM_PRESERVE_PLACEHOLDER turns all or part of a placeholder's allocation
+    back into one, and MEM_COALESCE_PLACEHOLDERS joins two or more side by
+    side. A region keeps the marks in its allocation's protection, above every
+    PAGE_* bit (`NT_ALLOC_PLACEHOLDER`, `NT_ALLOC_FREE_PLACEHOLDER`), and an
+    allocation split in two is regions given a base of their own
+    (`vibeos_vma_change_alloc`). MEM_RELEASE now takes any range of pages inside
+    an allocation, as Windows 10 and Wine do - `test_NtFreeVirtualMemory` and
+    the placeholder test both ask it: the part above is an allocation based at
+    itself, the part below keeps its base. kernel32's VirtualFree still refuses
+    a release with a size, as Windows' does. The extended parameters are read
+    as Wine reads them: at most one of each type, MEM_ADDRESS_REQUIREMENTS
+    honoured by placing between the floor and the ceiling
+    (`vibeos_umem_place_in`), at the alignment asked.
+    Not done: a requirement the arena cannot meet - anything ending below its
+    start, above four gigabytes - is STATUS_NO_MEMORY, the ZeroBits gap again;
+    MEM_WRITE_WATCH is STATUS_NOT_SUPPORTED (NtGetWriteWatch is missing);
+    ARM64EC code is refused, as on an x86-64 Windows. VirtualAlloc2 is not
+    added: Windows exports it from kernelbase through an API set, which our DLLs
+    do not have.
+
+    Where `ntdll:virtual` stands now: `test_NtAllocateVirtualMemory` passes
+    whole; `test_NtAllocateVirtualMemoryEx` fails one check, the write watch
+    (line 412); `test_NtAllocateVirtualMemoryEx_address_requirements` fails
+    ten, every one an allocation asked to end below 0x30000000 (and the
+    frees of what that did not allocate); `test_RtlCreateUserStack` is skipped
+    (missing); `test_NtMapViewOfSection` cannot create its test file and the
+    process stops at kernel32's SetFilePointer, which is W4's. The list left:
+    a low arena for ZeroBits and address requirements, write watches,
+    RtlCreateUserStack, and files.
 
 Steps 1 to 5 are the NT personality's; 6 to 8 are the reviews' findings that
 need the same memory work, scheduled here on 2026-10-19.
