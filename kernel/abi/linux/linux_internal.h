@@ -285,6 +285,7 @@ void linux_mq_reset(void);
 /* POSIX message queues (mqueue.c): a queue's description, and the tunables
  * under /proc/sys/fs/mqueue. */
 extern const vibeos_file_ops_t linux_fops_mqueue;
+void linux_mq_on_close(const vibeos_file_t *f);
 #define LINUX_MQ_TUNABLE_DECL(name) \
     void linux_mq_##name##_text(linux_ipc_put_t put, void *o); \
     int linux_mq_##name##_write(const char *buf, uint32_t len);

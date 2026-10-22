@@ -4293,6 +4293,12 @@ static void t_mqueue(void) {
         e->sigev_signo = 10;
         expect(SYS2(244, (uint64_t)q, ev) == 0 && SYS2(244, (uint64_t)q, ev) == -VIBEOS_EBUSY,
                "mq_notify registers once; a second is EBUSY");
+        {
+            long d = SYS1(32, (uint64_t)q);   /* dup */
+
+            expect(d >= 0 && SYS1(3, (uint64_t)d) == 0 && SYS2(244, (uint64_t)q, ev) == 0,
+                   "closing a dup takes the notification back, as Linux's flush does (#35)");
+        }
         e->sigev_notify = LINUX_SIGEV_THREAD;
         expect(SYS2(244, (uint64_t)q, 0) == 0 && SYS2(244, (uint64_t)q, ev) == -VIBEOS_EINVAL,
                "taken back with null; SIGEV_THREAD needs netlink, which is not here");

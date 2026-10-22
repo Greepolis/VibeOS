@@ -143,3 +143,11 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
     } else if (ks_id(target)->tgid != ks_id(ks_current())->tgid && ks_id(target)->did_exec) {
 +++ new
     } else if (0) {
+
+### a close takes a queue's notification back only with the description (#35)
+--- old
+    if (f->ops == &linux_fops_mqueue) {
+        linux_mq_on_close(f);
+    }
++++ new
+    (void)0;

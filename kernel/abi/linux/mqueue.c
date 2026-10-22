@@ -142,7 +142,7 @@ static void mq_drop_ref(int q) {
 
 /* ---- the description ------------------------------------------------------- */
 
-static int mq_of(vibeos_file_t *f) {
+static int mq_of(const vibeos_file_t *f) {
     return f->ev_index;
 }
 
@@ -227,9 +227,8 @@ static void mq_release(vibeos_file_t *f) {
     if (q < 0) {
         return;
     }
-    /* A process's notification goes when it closes a descriptor of the
-     * queue - the last, on Linux; here any, which a program that registers
-     * once and closes once cannot tell apart. */
+    /* The last reference: a process that ends without closing. A close
+     * takes the notification before this (linux_mq_on_close). */
     linux_ipc_lock();
     if (g_mq[q].notify_tgid == me) {
         g_mq[q].notify_tgid = 0;
@@ -237,6 +236,25 @@ static void mq_release(vibeos_file_t *f) {
     linux_ipc_unlock();
     mq_drop_ref(q);
     f->ev_index = -1;
+}
+
+/* A close of any descriptor of the queue by the process that registered takes
+ * its notification back - another description's, or a dup's, as much as the
+ * one it registered through: Linux does it in the queue's flush, which runs on
+ * every close (#35, measured on Linux 5.15). Releasing the description alone
+ * missed a dup's close, whose description lives on. */
+void linux_mq_on_close(const vibeos_file_t *f) {
+    int q = mq_of(f);
+    uint32_t me = ks_current() >= 0 ? ks_id(ks_current())->tgid : 0u;
+
+    if (q < 0 || me == 0u) {
+        return;
+    }
+    linux_ipc_lock();
+    if (g_mq[q].notify_tgid == me) {
+        g_mq[q].notify_tgid = 0;
+    }
+    linux_ipc_unlock();
 }
 
 const vibeos_file_ops_t linux_fops_mqueue = {

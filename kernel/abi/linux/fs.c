@@ -112,6 +112,15 @@ static void linux_locks_on_close(const vibeos_file_t *f) {
     vibeos_flk_drop_file(owner, fs, node);
 }
 
+/* What any close does, whether or not the description lives on: POSIX's
+ * record locks and a message queue's notification both go (#35). */
+static void linux_close_rules(const vibeos_file_t *f) {
+    linux_locks_on_close(f);
+    if (f->ops == &linux_fops_mqueue) {
+        linux_mq_on_close(f);
+    }
+}
+
 /* A process has ended: its record locks end with it. Not called for an exec,
  * which keeps them. */
 void linux_locks_exit(uint32_t tgid) {
@@ -136,7 +145,7 @@ long linux_fd_close(uint64_t fd) {
     if (!f) {
         return -VIBEOS_EBADF;
     }
-    linux_locks_on_close(f);
+    linux_close_rules(f);
     vibeos_file_put(f);
     return 0;
 }
@@ -162,7 +171,7 @@ long linux_fd_withdraw(uint64_t fd, const vibeos_file_t *f, uint32_t gen) {
     if (!got) {
         return -VIBEOS_EBADF;
     }
-    linux_locks_on_close(got);
+    linux_close_rules(got);
     vibeos_file_put(got);
     return 0;
 }
@@ -1410,7 +1419,7 @@ static long linux_dup_to(uint64_t oldfd, uint64_t newfd, uint32_t fdflags) {
         return r == VIBEOS_FDT_NOMEM ? -VIBEOS_ENOMEM : -VIBEOS_EBADF;
     }
     if (old) {
-        linux_locks_on_close(old);
+        linux_close_rules(old);
         vibeos_file_put(old);
     }
     return (long)newfd;
