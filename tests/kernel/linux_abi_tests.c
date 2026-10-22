@@ -5905,6 +5905,9 @@ static void t_fork_snapshot_and_groups(void) {
     kf_set_current(parent);
     expect(gpid > 0 && grand >= 0 && ks_id(child)->pgid == 151u && ks_id(grand)->pgid == 151u,
            "children start in their parent's group");
+    /* setpgid moves only the caller or its child (#40): the grandchild is
+     * adopted for what follows, as the parent's own child. */
+    ks_id(grand)->ppid = ks_id(parent)->tgid;
     expect(SYS2(109, (uint64_t)gpid, (uint64_t)pid) == -VIBEOS_EPERM && ks_id(grand)->pgid == 151u,
            "setpgid into a group nobody leads is EPERM");
     expect(SYS2(109, (uint64_t)pid, (uint64_t)pid) == 0 && ks_id(child)->pgid == (uint32_t)pid,
@@ -5936,6 +5939,20 @@ static void t_fork_snapshot_and_groups(void) {
                "a group everybody has left is gone, though the process it was named after lives");
         expect(SYS2(109, (uint64_t)pid, (uint64_t)-1) == -VIBEOS_EINVAL, "a negative group is EINVAL");
     }
+
+    /* #40: whom setpgid may move, and in Linux's order. */
+    ks_id(grand)->ppid = (uint32_t)pid;
+    expect(SYS2(109, (uint64_t)gpid, 151) == -VIBEOS_ESRCH && ks_id(grand)->pgid == 151u,
+           "a process that is not the caller's child is ESRCH, a session in common or not");
+    ks_id(grand)->ppid = ks_id(parent)->tgid;
+    ks_id(grand)->did_exec = 1;
+    expect(SYS2(109, (uint64_t)gpid, (uint64_t)gpid) == -VIBEOS_EACCES && ks_id(grand)->pgid == 151u,
+           "a child that has exec'd is EACCES");
+    ks_id(grand)->did_exec = 0;
+    ks_id(grand)->sid = (uint32_t)gpid;
+    expect(SYS2(109, (uint64_t)gpid, (uint64_t)gpid) == -VIBEOS_EPERM,
+           "a child in another session is EPERM, and so is a session leader");
+    expect(SYS2(109, 0, 0) == -VIBEOS_EPERM, "a session leader may not move itself either");
 }
 
 /* ---- L3 step 2: shared mappings ------------------------------------------------------- */

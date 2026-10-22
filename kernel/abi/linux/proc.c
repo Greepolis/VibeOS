@@ -214,6 +214,7 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
     child->clear_child_tid = (flags & LINUX_CLONE_CHILD_CLEARTID) ? ctid : 0;
     child->robust_head = 0;   /* the child's C library registers its own */
     child->in_vfork = (flags & LINUX_CLONE_VFORK) ? 1u : 0u;
+    child->did_exec = 0;   /* a new tenancy is cleared already; said here for the reader */
     /* Open descriptors are inherited. This is not a refinement: a shell builds
      * a pipeline by creating the pipe, forking, and having the child move an
      * inherited end onto its standard output. Without inheritance the child has
@@ -1420,6 +1421,7 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
          * again at startup if it wants it. */
         t->clear_child_tid = 0;
         t->in_vfork = 0;   /* a vfork parent waiting on this exec goes on */
+        t->did_exec = 1;   /* setpgid from the parent is EACCES from now on */
         /* The robust list too, and for the same reason: it is in the old
          * image's memory. Linux walks it before it lets go of that memory;
          * here it is forgotten, which leaves a lock the thread held across
@@ -1554,9 +1556,20 @@ static long linux_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     pid = requested_pid == 0 ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
     ks_lock(ks_sched_lock(), __func__);
     target = ks_task_by_pid(pid);
+    /* Linux's rules, in its order (#40): the caller itself or one of its
+     * children and nobody else - a session in common is not enough - a child
+     * only while it is in the caller's session and has not exec'd, and never a
+     * session leader. */
     if (target < 0) {
         r = -VIBEOS_ESRCH;
+    } else if (ks_id(target)->tgid != ks_id(ks_current())->tgid &&
+               ks_id(target)->ppid != ks_id(ks_current())->tgid) {
+        r = -VIBEOS_ESRCH;
     } else if (ks_id(target)->sid != ks_id(ks_current())->sid) {
+        r = -VIBEOS_EPERM;
+    } else if (ks_id(target)->tgid != ks_id(ks_current())->tgid && ks_id(target)->did_exec) {
+        r = -VIBEOS_EACCES;
+    } else if (ks_id(target)->sid == ks_id(target)->tgid) {
         r = -VIBEOS_EPERM;
     } else {
         tgid = ks_id(target)->tgid;

@@ -50,6 +50,10 @@ typedef struct vibeos_task {
      * this is set (docs/abi/ L6 step 3). Cleared by exec; an exit ends the
      * wait by itself. */
     uint8_t in_vfork;
+    /* This process has exec'd since it was forked: its parent may no longer
+     * move it to another group (setpgid's EACCES, #40). Cleared by fork, set
+     * by exec; a new tenancy clears it with the rest. */
+    uint8_t did_exec;
     /* Killed by a sibling's exec (docs/abi/ L6 step 4): its SIGKILL ends this
      * thread alone. Any other fatal signal ends the whole process, and the
      * exec'ing thread is part of it. */

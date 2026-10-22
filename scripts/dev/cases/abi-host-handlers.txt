@@ -129,3 +129,17 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
     int64_t below = type == INT64_MIN ? INT64_MAX : -type;
 +++ new
     int64_t below = type == INT64_MIN ? 0 : -type;
+
+### setpgid moves any process of the session (#40)
+--- old
+               ks_id(target)->ppid != ks_id(ks_current())->tgid) {
+        r = -VIBEOS_ESRCH;
++++ new
+               0) {
+        r = -VIBEOS_ESRCH;
+
+### setpgid moves a child that has exec'd (#40)
+--- old
+    } else if (ks_id(target)->tgid != ks_id(ks_current())->tgid && ks_id(target)->did_exec) {
++++ new
+    } else if (0) {
