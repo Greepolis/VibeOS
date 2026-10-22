@@ -1044,10 +1044,11 @@ static void t_virtual_memory(void) {
     xs = 0;
     expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_FREE_VM_NOT_AT_BASE),
            "a release not at the allocation's base");
-    x = b;
-    xs = 0x1000u;
-    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_UNABLE_TO_FREE_VM),
-           "a release of part of an allocation");
+    x = b + 0xF000u;
+    xs = 0x2000u;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_UNABLE_TO_FREE_VM) &&
+               x == b + 0xF000u && xs == 0x2000u,
+           "a release running past the allocation, and nothing written back");
     x = b;
     xs = 0;
     expect(vfree(&x, &xs, 0u) == ST(VIBEOS_STATUS_INVALID_PARAMETER_4) &&
@@ -1071,6 +1072,368 @@ static void t_virtual_memory(void) {
                vquery(a, 0, sizeof(m) - 1u, &m) == ST(VIBEOS_STATUS_INFO_LENGTH_MISMATCH) &&
                vquery(ks_user_top(), 0, sizeof(m), &m) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
            "a class not written, a short buffer, an address past user memory");
+    expect(kf_uaccess_under_mm() == 0u,
+           "no store into the program's memory under its own mm lock");
+}
+
+/* ---- NtAllocateVirtualMemoryEx and placeholders (W3 step 10) ------------------- */
+
+/* The upper halves of the ULONGs on the stack are garbage, as a caller may
+ * leave them: the service reads 32 bits of each. */
+static long valloc_ex(uint64_t *base, uint64_t *size, uint32_t type, uint32_t prot,
+                      uint64_t params, uint32_t count) {
+    uint64_t b = kf_ualloc(8), s = kf_ualloc(8);
+    uint64_t rest[3] = { 0xDEAD000000000000ull | prot, params,
+                         0xBEEF000000000000ull | count };
+    long r;
+
+    *(uint64_t *)kf_uptr(b) = *base;
+    *(uint64_t *)kf_uptr(s) = *size;
+    kf_next_sp(stack_args(rest, 3));
+    r = nt(VIBEOS_NT_NR_NtAllocateVirtualMemoryEx, VIBEOS_NT_CURRENT_PROCESS, b, s,
+           0xFEED000000000000ull | type, 0);
+    *base = *(uint64_t *)kf_uptr(b);
+    *size = *(uint64_t *)kf_uptr(s);
+    return r;
+}
+
+/* The size of the run NtQueryVirtualMemory reports from `va`, or 0. */
+static uint64_t region_of(uint64_t va) {
+    vibeos_nt_memory_basic_t m;
+
+    return vquery(va, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) ? m.region_size : 0u;
+}
+
+/* One extended parameter of address requirements, in the program's memory. */
+static uint64_t requirements(uint64_t lo, uint64_t hi, uint64_t align) {
+    uint64_t p = kf_ualloc(sizeof(vibeos_nt_mem_ext_param_t));
+    uint64_t a = kf_ualloc(sizeof(vibeos_nt_mem_address_requirements_t));
+    vibeos_nt_mem_address_requirements_t *ar = kf_uptr(a);
+    vibeos_nt_mem_ext_param_t *ep = kf_uptr(p);
+
+    ar->lowest_starting_address = lo;
+    ar->highest_ending_address = hi;
+    ar->alignment = align;
+    ep->type = VIBEOS_NT_MEM_EXT_ADDRESS_REQUIREMENTS | 0xAB00ull;   /* reserved bits ignored */
+    ep->value = a;
+    return p;
+}
+
+/* Wine 9.0's test_NtAllocateVirtualMemoryEx, the placeholder half, in its
+ * order: what Windows 10 answers is what the test reads. */
+static void t_placeholders(void) {
+    const uint32_t rsv_ph = VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_RESERVE_PLACEHOLDER;
+    const uint32_t replace = VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_REPLACE_PLACEHOLDER;
+    const uint32_t preserve = VIBEOS_NT_MEM_RELEASE | VIBEOS_NT_MEM_PRESERVE_PLACEHOLDER;
+    const uint32_t coalesce = VIBEOS_NT_MEM_RELEASE | VIBEOS_NT_MEM_COALESCE_PLACEHOLDERS;
+    vibeos_nt_memory_basic_t m;
+    uint64_t a, as, p1, p2, p3, s, x, xs, ep;
+    uint8_t byte = 0xCC, y = 0;
+
+    fresh(44);
+    a = 0;
+    as = 0x1000u;
+    expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                     VIBEOS_NT_PAGE_EXECUTE_READWRITE, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               a != 0u && as == 0x1000u,
+           "Ex with no parameters is NtAllocateVirtualMemory");
+    xs = 0;
+    expect(vfree(&a, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS),
+           "and gives back what that gives back");
+    expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                     VIBEOS_NT_PAGE_READWRITE, 0, 1) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "a count with no parameters");
+    {
+        uint64_t bb = kf_ualloc(8), ss = kf_ualloc(8);
+        uint64_t rest[3] = { VIBEOS_NT_PAGE_READWRITE, 0, 0 };
+
+        *(uint64_t *)kf_uptr(ss) = 0x1000u;
+        kf_next_sp(stack_args(rest, 3));
+        expect(nt(VIBEOS_NT_NR_NtAllocateVirtualMemoryEx, 0, bb, ss,
+                  VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT, 0) ==
+                   ST(VIBEOS_STATUS_INVALID_HANDLE),
+               "a null process handle");
+    }
+
+    /* A placeholder: only from Ex, only with no access. */
+    a = 0;
+    as = 0x10000u;
+    expect(valloc(&a, &as, 0, rsv_ph, VIBEOS_NT_PAGE_NOACCESS) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "NtAllocateVirtualMemory knows no placeholders");
+    expect(valloc_ex(&a, &as, rsv_ph, VIBEOS_NT_PAGE_READWRITE, 0, 0) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "a placeholder anybody may touch");
+    expect(valloc_ex(&a, &as, rsv_ph, VIBEOS_NT_PAGE_NOACCESS, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) && a != 0u && (a & 0xFFFFu) == 0u && as == 0x10000u,
+           "a placeholder reserved");
+    expect(vquery(a, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.allocation_base == a && m.allocation_protect == VIBEOS_NT_PAGE_NOACCESS &&
+               m.state == VIBEOS_NT_MEM_RESERVE && m.type == VIBEOS_NT_MEM_PRIVATE &&
+               m.region_size == 0x10000u,
+           "a placeholder is reserved private memory with no access, marks unreported");
+    x = a;
+    xs = 0x1000u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a placeholder is not committed by asking");
+
+    /* Replaced, written, preserved, replaced again: zeros. */
+    s = 0x10000u;
+    expect(valloc_ex(&a, &s, replace | VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) && s == 0x10000u &&
+               kf_poke(a + 0x5000u, &byte, 1) == 0,
+           "a placeholder replaced by committed memory");
+    expect(vfree(&a, &s, preserve) == ST(VIBEOS_STATUS_SUCCESS) && s == 0x10000u &&
+               kf_peek(a + 0x5000u, &y, 1) != 0,
+           "released into a placeholder: no access");
+    s = 0x10000u;
+    expect(valloc_ex(&a, &s, replace | VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READONLY, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) && kf_peek(a + 0x5000u, &y, 1) == 0 && y == 0,
+           "replaced again, the pages are fresh zeros");
+    expect(vquery(a, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.allocation_protect == VIBEOS_NT_PAGE_READONLY &&
+               m.state == VIBEOS_NT_MEM_COMMIT && m.type == VIBEOS_NT_MEM_PRIVATE &&
+               m.region_size == 0x10000u,
+           "a replaced placeholder is the allocation it was replaced by");
+    expect(vfree(&a, &s, preserve) == ST(VIBEOS_STATUS_SUCCESS) &&
+               vquery(a, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.allocation_protect == VIBEOS_NT_PAGE_NOACCESS &&
+               m.state == VIBEOS_NT_MEM_RESERVE && m.region_size == 0x10000u,
+           "and a placeholder again");
+    expect(valloc_ex(&a, &s, rsv_ph, VIBEOS_NT_PAGE_NOACCESS, 0, 0) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES) &&
+               valloc_ex(&a, &s, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_NOACCESS, 0, 0) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a reservation over a placeholder");
+    xs = 0x1000u;
+    expect(valloc_ex(&a, &xs, replace, VIBEOS_NT_PAGE_NOACCESS, 0, 0) ==
+               ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a placeholder is replaced whole or not at all");
+    xs = 0x10000u;
+    expect(valloc_ex(&a, &xs, VIBEOS_NT_MEM_REPLACE_PLACEHOLDER, VIBEOS_NT_PAGE_READWRITE, 0, 0) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+               valloc_ex(&a, &xs, VIBEOS_NT_MEM_COMMIT | VIBEOS_NT_MEM_REPLACE_PLACEHOLDER,
+                         VIBEOS_NT_PAGE_READWRITE, 0, 0) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "a replacement that does not reserve");
+    x = 0;
+    xs = 0x10000u;
+    expect(valloc_ex(&x, &xs, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_NOACCESS, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) &&
+               valloc_ex(&x, &xs, replace, VIBEOS_NT_PAGE_NOACCESS, 0, 0) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "a reservation is not a placeholder to replace");
+    p1 = x;
+    expect(vfree(&p1, &xs, preserve) == ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES) &&
+               xs == 0x10000u && vfree(&p1, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS),
+           "nor released into one");
+
+    /* Split in three, from the middle. */
+    xs = 0x10000u;
+    expect(vfree(&a, &xs, preserve) == ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a placeholder whole is not preserved into itself");
+    p1 = a + 0x8000u;
+    p2 = a + 0xC000u;
+    s = 0x4000u;
+    expect(vfree(&p1, &s, preserve) == ST(VIBEOS_STATUS_SUCCESS) && p1 == a + 0x8000u &&
+               s == 0x4000u,
+           "a placeholder split from the middle");
+    expect(region_of(a) == 0x8000u && region_of(p1) == 0x4000u && region_of(p2) == 0x4000u &&
+               vquery(p2, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.allocation_base == p2,
+           "three placeholders, the one above based at itself");
+    x = a;
+    expect(vfree(&x, &s, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS) && x == a &&
+               s == 0x4000u && vquery(a + 0x4000u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.allocation_base == a + 0x4000u && m.state == VIBEOS_NT_MEM_RESERVE,
+           "a release of the front of an allocation: the rest is based where it starts");
+    expect(vfree(&p1, &s, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS) &&
+               vfree(&p2, &s, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS) &&
+               vquery(p2, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.state == VIBEOS_NT_MEM_FREE,
+           "each released by its own base");
+    x = a + 0x4000u;
+    s = 0;
+    expect(vfree(&x, &s, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS), "tidied");
+
+    /* Split from the bottom, joined again. */
+    a = 0;
+    as = 0x10000u;
+    expect(valloc_ex(&a, &as, rsv_ph, VIBEOS_NT_PAGE_NOACCESS, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a second placeholder");
+    s = 0;
+    expect(vfree(&a, &s, preserve) == ST(VIBEOS_STATUS_INVALID_PARAMETER_3) && s == 0u,
+           "preserved with no size");
+    p1 = a;
+    p2 = a + 0x4000u;
+    p3 = a + 0x8000u;
+    s = 0x4000u;
+    expect(vfree(&p1, &s, preserve) == ST(VIBEOS_STATUS_SUCCESS) && p1 == a && s == 0x4000u &&
+               vfree(&p2, &s, preserve) == ST(VIBEOS_STATUS_SUCCESS) &&
+               region_of(p1) == 0x4000u && region_of(p2) == 0x4000u && region_of(p3) == 0x8000u,
+           "split from the bottom, twice");
+    expect(vfree(&p1, &s, coalesce) == ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "one placeholder is not joined");
+    xs = 0x10000u;
+    expect(vfree(&p1, &xs, VIBEOS_NT_MEM_COALESCE_PLACEHOLDERS) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER_4),
+           "joining without releasing");
+    xs = 0x11000u;
+    expect(vfree(&p1, &xs, coalesce) == ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES), "joined past them");
+    xs = 0xF000u;
+    expect(vfree(&p1, &xs, coalesce) == ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES), "joined short");
+    x = a + 0x1000u;
+    expect(vfree(&x, &xs, coalesce) == ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "joined from inside one");
+    xs = 0;
+    expect(vfree(&p1, &xs, coalesce) == ST(VIBEOS_STATUS_INVALID_PARAMETER_3), "joined with no size");
+    xs = 0x10000u;
+    expect(vfree(&p1, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_UNABLE_TO_FREE_VM),
+           "a release does not run on into the next placeholder");
+    expect(vfree(&p1, &xs, coalesce) == ST(VIBEOS_STATUS_SUCCESS) && p1 == a && xs == 0x10000u &&
+               region_of(a) == 0x10000u && vquery(p3, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.allocation_base == a,
+           "three placeholders joined into one");
+    s = 0x4000u;
+    xs = 0xC000u;
+    expect(vfree(&p1, &s, preserve) == ST(VIBEOS_STATUS_SUCCESS) &&
+               valloc_ex(&p2, &xs, replace, VIBEOS_NT_PAGE_READWRITE, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS),
+           "split, and the upper part replaced by a reservation");
+    xs = 0x10000u;
+    expect(vfree(&p1, &xs, coalesce) == ST(VIBEOS_STATUS_CONFLICTING_ADDRESSES),
+           "a placeholder is not joined to an allocation");
+    x = p2 + 0x1000u;
+    xs = 0x2000u;
+    expect(valloc(&x, &xs, 0, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE) ==
+               ST(VIBEOS_STATUS_SUCCESS) && kf_poke(p2 + 0x2000u, &byte, 1) == 0,
+           "the replacement commits as any reservation does");
+    xs = 0xC000u;
+    expect(vfree(&p2, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS) && xs == 0xC000u &&
+               vfree(&p1, &s, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS),
+           "released, each");
+    s = 0;
+    expect(vfree(&p3, &s, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_MEMORY_NOT_ALLOCATED),
+           "and nothing left");
+
+    /* A release from the middle of an ordinary allocation, as Wine's
+     * test_NtFreeVirtualMemory asks: the part above is an allocation of its
+     * own, the part below keeps its base, both keep their pages. */
+    a = 0;
+    as = 0x10000u;
+    expect(valloc(&a, &as, 0, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                  VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_SUCCESS) &&
+               kf_poke(a + 0x2000u, &byte, 1) == 0,
+           "an allocation to release a piece of");
+    x = a + 0x1001u;
+    xs = 0xFFFu;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS) &&
+               x == a + 0x1000u && xs == 0x1000u && kf_peek(a + 0x1000u, &y, 1) != 0 &&
+               kf_poke(a, &byte, 1) == 0 && kf_peek(a + 0x2000u, &y, 1) == 0 && y == byte,
+           "a page released from the middle; the pages beside it stay");
+    expect(vquery(a + 0x2000u, 0, sizeof(m), &m) == ST(VIBEOS_STATUS_SUCCESS) &&
+               m.allocation_base == a + 0x2000u && m.region_size == 0xE000u &&
+               region_of(a) == 0x1000u,
+           "the part above is based at itself");
+    x = a;
+    xs = 0x10000u;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_UNABLE_TO_FREE_VM),
+           "the part below ends where it does");
+    x = a + 0x2000u;
+    xs = 0;
+    s = 0;
+    expect(vfree(&x, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS) && xs == 0xE000u &&
+               vfree(&a, &s, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS) && s == 0x1000u,
+           "each released whole by its base");
+
+    /* Extended parameters. */
+    ep = requirements(0, 0, 0);
+    a = 0;
+    as = 0x1000u;
+    expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                     VIBEOS_NT_PAGE_READWRITE, ep, 1) == ST(VIBEOS_STATUS_SUCCESS),
+           "address requirements of nothing");
+    xs = 0;
+    expect(vfree(&a, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS), "released");
+    {
+        uint64_t two = kf_ualloc(2u * sizeof(vibeos_nt_mem_ext_param_t));
+        vibeos_nt_mem_ext_param_t *e = kf_uptr(two);
+
+        memcpy(&e[0], kf_uptr(ep), sizeof(e[0]));
+        memcpy(&e[1], kf_uptr(ep), sizeof(e[1]));
+        a = 0;
+        expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE, two, 2) ==
+                   ST(VIBEOS_STATUS_INVALID_PARAMETER),
+               "a parameter given twice");
+        e[0].type = 0;
+        expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE, two, 1) ==
+                   ST(VIBEOS_STATUS_INVALID_PARAMETER),
+               "a parameter of no type");
+        e[0].type = VIBEOS_NT_MEM_EXT_MAX;
+        expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE, two, 1) ==
+                   ST(VIBEOS_STATUS_INVALID_PARAMETER),
+               "a parameter past the last type");
+        e[0].type = VIBEOS_NT_MEM_EXT_ATTRIBUTE_FLAGS;
+        e[0].value = 0;
+        expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE, two, 1) ==
+                   ST(VIBEOS_STATUS_SUCCESS),
+               "attribute flags of nothing");
+        xs = 0;
+        expect(vfree(&a, &xs, VIBEOS_NT_MEM_RELEASE) == ST(VIBEOS_STATUS_SUCCESS), "released");
+        e[0].value = VIBEOS_NT_MEM_EXT_EC_CODE;
+        a = 0;
+        expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE, two, 1) ==
+                   ST(VIBEOS_STATUS_INVALID_PARAMETER),
+               "ARM64EC code on a machine that is not ARM64");
+    }
+    a = 0;
+    as = 0x10000u;
+    expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                     requirements(0, 0x20001000u + 1u, 0), 1) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+               valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                         requirements(0, 0x20000800u - 1u, 0), 1) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+               valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                         requirements(0, VIBEOS_NT_MAX_USER_ADDRESS + 0x1000u, 0), 1) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "a ceiling not a page's end, or past the top");
+    expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                     requirements(0, 0, 0x8000u), 1) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+               valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                         requirements(0, 0, 0x30000u), 1) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+               valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                         requirements(0x20001000u, 0, 0), 1) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+               valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                         requirements(0x30000000u, 0x20000000u - 1u, 0), 1) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "an alignment under 64 KiB or not a power of two, a floor not at 64 KiB, "
+           "a ceiling under the floor");
+    expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                     requirements(0, VIBEOS_NT_MAX_USER_ADDRESS, 0x40000u), 1) ==
+               ST(VIBEOS_STATUS_SUCCESS) && (a & 0x3FFFFu) == 0u,
+           "placed at the alignment asked for, the top of user memory a valid ceiling");
+    expect(valloc_ex(&a, &as, VIBEOS_NT_MEM_COMMIT, VIBEOS_NT_PAGE_READWRITE,
+                     requirements(0, 0, 0x40000u), 1) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "requirements with an address the caller names");
+    x = a + 0x400000u;
+    xs = 0x1000u;
+    expect(valloc_ex(&x, &xs, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS),
+           "something further up");
+    p1 = 0;
+    s = 0x10000u;
+    expect(valloc_ex(&p1, &s, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                     requirements(x, 0, 0), 1) == ST(VIBEOS_STATUS_SUCCESS) && p1 >= x + 0x10000u,
+           "a floor: placed above it, past what is there");
+    p2 = 0;
+    expect(valloc_ex(&p2, &s, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) && p2 < x,
+           "and the arena below it still placed from");
+    p3 = 0;
+    expect(valloc_ex(&p3, &s, VIBEOS_NT_MEM_RESERVE, VIBEOS_NT_PAGE_READWRITE,
+                     requirements(0, 0x20001000u - 1u, 0), 1) == ST(VIBEOS_STATUS_NO_MEMORY),
+           "a ceiling below the arena cannot be met (the ZeroBits gap)");
     expect(kf_uaccess_under_mm() == 0u,
            "no store into the program's memory under its own mm lock");
 }
@@ -1309,6 +1672,7 @@ int test_nt_abi(void) {
     t_open_file_permissions();
     t_object_share();
     t_virtual_memory();
+    t_placeholders();
     t_data_sections();
     return g_fail ? -1 : 0;
 }

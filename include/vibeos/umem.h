@@ -29,6 +29,11 @@ int vibeos_umem_as_room(const vibeos_procstate_t *ps, uint64_t more);
  * power of two, at least a page), or 0. */
 uint64_t vibeos_umem_place(vibeos_procstate_t *ps, uint64_t bytes, uint64_t align);
 
+/* The same, inside [lo, hi]: no byte below `lo` or above `hi` - Windows'
+ * MEM_ADDRESS_REQUIREMENTS. vibeos_umem_place is this with the whole window. */
+uint64_t vibeos_umem_place_in(vibeos_procstate_t *ps, uint64_t bytes, uint64_t align,
+                              uint64_t lo, uint64_t hi);
+
 /* Take [addr, end) out of task `me`'s address space: the regions, then the
  * pages. 0, or a negative errno (-ENOMEM when a region could not be split). */
 long vibeos_umem_unmap(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end);

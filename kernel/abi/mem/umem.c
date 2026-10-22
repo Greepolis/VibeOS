@@ -67,8 +67,17 @@ int vibeos_umem_as_room(const vibeos_procstate_t *ps, uint64_t more) {
  * cursor steps over whatever is already there rather than assuming nothing is.
  * A range whose mapping later fails stays a hole: address space, not memory. */
 uint64_t vibeos_umem_place(vibeos_procstate_t *ps, uint64_t bytes, uint64_t align) {
+    return vibeos_umem_place_in(ps, bytes, align, 0u, ~0ull);
+}
+
+/* A floor above the cursor is searched from without moving the cursor: one
+ * request for space far up would otherwise leave everything below it to
+ * nobody. Under the mm lock. */
+uint64_t vibeos_umem_place_in(vibeos_procstate_t *ps, uint64_t bytes, uint64_t align,
+                              uint64_t lo, uint64_t hi) {
     const uint64_t mask = align - 1u;
-    uint64_t base = __atomic_load_n(&ps->mm->mmap_cur, __ATOMIC_ACQUIRE);
+    const uint64_t cur = __atomic_load_n(&ps->mm->mmap_cur, __ATOMIC_ACQUIRE);
+    uint64_t base = lo > cur ? lo : cur;
     vibeos_vma_t *v;
 
     for (;;) {
@@ -77,7 +86,7 @@ uint64_t vibeos_umem_place(vibeos_procstate_t *ps, uint64_t bytes, uint64_t alig
             return 0u;
         }
         base = (base + mask) & ~mask;
-        if (base + bytes < base || !ks_user_fixed_ok(base, bytes)) {
+        if (base + bytes < base || base + bytes - 1u > hi || !ks_user_fixed_ok(base, bytes)) {
             return 0u;
         }
         v = vibeos_umem_region_in(ps, base, bytes);
@@ -86,7 +95,9 @@ uint64_t vibeos_umem_place(vibeos_procstate_t *ps, uint64_t bytes, uint64_t alig
         }
         base = v->base + v->len;
     }
-    __atomic_store_n(&ps->mm->mmap_cur, base + bytes, __ATOMIC_RELEASE);
+    if (lo <= cur) {
+        __atomic_store_n(&ps->mm->mmap_cur, base + bytes, __ATOMIC_RELEASE);
+    }
     return base;
 }
 

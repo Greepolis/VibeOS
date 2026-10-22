@@ -74,7 +74,7 @@ static long nt_query_system_information(uint64_t cls, uint64_t buf, uint64_t len
     sbi.highest_physical_page = (uint32_t)st->frames_total;
     sbi.allocation_granularity = 0x10000u;
     sbi.minimum_user_address = 0x10000u;
-    sbi.maximum_user_address = 0x00007FFFFFFEFFFFull;
+    sbi.maximum_user_address = VIBEOS_NT_MAX_USER_ADDRESS;
     sbi.active_processors_mask = mask;
     sbi.processors = (uint8_t)n;
     if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &sbi, sizeof(sbi)) != 0) {

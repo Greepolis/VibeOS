@@ -10,9 +10,9 @@
 
 ### a reservation is placed at the page, not at 64 KiB
 --- old
-            start = vibeos_umem_place(ps, end, VIBEOS_NT_ALLOCATION_GRANULARITY);
+                                         at->align ? at->align : VIBEOS_NT_ALLOCATION_GRANULARITY,
 +++ new
-            start = vibeos_umem_place(ps, end, 4096u);
+                                         at->align ? at->align : 4096u,
 
 ### a reservation at an address is not rounded down to 64 KiB
 --- old
@@ -29,12 +29,15 @@
 ### a reservation is committed
 --- old
                                     commit ? VIBEOS_VMA_DEMAND : VIBEOS_VMA_RESERVED,
+                                    start, protect | marks) != 0) {
 +++ new
                                     VIBEOS_VMA_DEMAND,
+                                    start, protect | marks) != 0) {
 
 ### a commit outside every reservation is taken
 --- old
         if (!r || r->alloc_base == 0u || r->backing != VIBEOS_BACKING_ANON ||
+            (r->alloc_prot & NT_ALLOC_FREE_PLACEHOLDER) ||
             !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
             st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
         } else if (vibeos_vma_change(&ps->mm->vmas, start, end - start,
@@ -70,22 +73,20 @@
 +++ new
     if (0) {
 
-### a release anywhere in the allocation releases it
+### a release running past its allocation is taken (W3 step 10)
 --- old
-            if (start != ab) {
+        } else if (end > alloc_end) {
+            st = VIBEOS_STATUS_UNABLE_TO_FREE_VM;
 +++ new
-            if (0) {
-
-### a release of part of an allocation is taken
---- old
-            } else if (end != alloc_end) {
-+++ new
-            } else if (0) {
+        } else if (0) {
+            st = VIBEOS_STATUS_UNABLE_TO_FREE_VM;
 
 ### a decommit leaves the pages mapped
 --- old
+            for (va = start; va < end; va += 4096ull) {
                 (void)vibeos_vmspace_unmap(&v, va);
 +++ new
+            for (va = start; va < end; va += 4096ull) {
                 (void)v;
 
 ### a decommit leaves the range committed
@@ -153,9 +154,9 @@
 +++ new
     if (zero_bits != 0u) {
 
-### a decommit of size zero is taken from inside the allocation (W3 step 9)
+### a size of zero is taken from inside the allocation, to decommit or release (W3 step 9)
 --- old
-        if (type == VIBEOS_NT_MEM_DECOMMIT && size == 0u && start != ab) {
+        if (size == 0u && start != ab) {
 +++ new
         if (0) {
 
@@ -164,3 +165,151 @@
         nt_put64(size_u, type == VIBEOS_NT_MEM_DECOMMIT && size == 0u ? 0u : end - start) != 0) {
 +++ new
         nt_put64(size_u, end - start) != 0) {
+
+# ---- NtAllocateVirtualMemoryEx and placeholders (W3 step 10), proved by
+# t_placeholders, which follows Wine 9.0's test_NtAllocateVirtualMemoryEx.
+
+### a placeholder anybody may touch is reserved
+--- old
+          !(type & VIBEOS_NT_MEM_RESERVE) || protect != VIBEOS_NT_PAGE_NOACCESS))) {
++++ new
+          !(type & VIBEOS_NT_MEM_RESERVE)))) {
+
+### a placeholder is reserved as an ordinary reservation
+--- old
+            (type & VIBEOS_NT_MEM_RESERVE_PLACEHOLDER) ? NT_ALLOC_MARKS : 0u;
++++ new
+            0u;
+
+### a placeholder is committed by asking
+--- old
+            (r->alloc_prot & NT_ALLOC_FREE_PLACEHOLDER) ||
+            !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
++++ new
+            !nt_in_alloc(ps, start, end, r->alloc_base, &reserved)) {
+
+### a placeholder is replaced in part
+--- old
+        } else if (r->alloc_base != start || nt_alloc_end(ps, start) != end) {
++++ new
+        } else if (0) {
+
+### a reservation is replaced as if it were a placeholder
+--- old
+        } else if (!(r->alloc_prot & NT_ALLOC_FREE_PLACEHOLDER)) {
+            st = VIBEOS_STATUS_INVALID_PARAMETER;
++++ new
+        } else if (0) {
+            st = VIBEOS_STATUS_INVALID_PARAMETER;
+
+### a replaced placeholder forgets it was one
+--- old
+                                           start, protect | NT_ALLOC_PLACEHOLDER) != 0) {
++++ new
+                                           start, protect) != 0) {
+
+### an allocation that was never a placeholder is released into one
+--- old
+            } else if (!(ap & NT_ALLOC_PLACEHOLDER) ||
+                       ((ap & NT_ALLOC_FREE_PLACEHOLDER) && start == ab && end == alloc_end)) {
++++ new
+            } else if (((ap & NT_ALLOC_FREE_PLACEHOLDER) && start == ab && end == alloc_end)) {
+
+### a whole placeholder is preserved into itself
+--- old
+            } else if (!(ap & NT_ALLOC_PLACEHOLDER) ||
+                       ((ap & NT_ALLOC_FREE_PLACEHOLDER) && start == ab && end == alloc_end)) {
++++ new
+            } else if (!(ap & NT_ALLOC_PLACEHOLDER)) {
+
+### a preserved range keeps its pages
+--- old
+    for (va = start; va < end; va += 4096ull) {
+        (void)vibeos_vmspace_unmap(&v, va);
++++ new
+    for (va = start; va < end; va += 4096ull) {
+        (void)v;
+
+### the part of a placeholder above a split keeps the old base
+--- old
+        (end < alloc_end &&
+         vibeos_vma_change_alloc(&ps->mm->vmas, end, alloc_end - end, VIBEOS_VMA_CHANGE_ALLOC,
++++ new
+        (0 &&
+         vibeos_vma_change_alloc(&ps->mm->vmas, end, alloc_end - end, VIBEOS_VMA_CHANGE_ALLOC,
+
+### the part of an allocation above a release keeps the old base
+--- old
+    if (end < alloc_end &&
+        vibeos_vma_change_alloc(&ps->mm->vmas, end, alloc_end - end, VIBEOS_VMA_CHANGE_ALLOC,
++++ new
+    if (0 &&
+        vibeos_vma_change_alloc(&ps->mm->vmas, end, alloc_end - end, VIBEOS_VMA_CHANGE_ALLOC,
+
+### one placeholder is joined with nothing
+--- old
+    if (n < 2u || va != end) {
++++ new
+    if (va != end) {
+
+### placeholders are joined short of the size asked for
+--- old
+    if (n < 2u || va != end) {
++++ new
+    if (n < 2u) {
+
+### a placeholder is joined to an allocation
+--- old
+           q->backing == VIBEOS_BACKING_ANON && (q->alloc_prot & NT_ALLOC_FREE_PLACEHOLDER)) {
++++ new
+           q->backing == VIBEOS_BACKING_ANON) {
+
+### a join of size zero is taken
+--- old
+            st = size == 0u ? VIBEOS_STATUS_INVALID_PARAMETER_3 : nt_coalesce(ps, start, end);
++++ new
+            st = nt_coalesce(ps, start, end);
+
+### an extended parameter given twice is taken
+--- old
+        if (t == 0u || t >= VIBEOS_NT_MEM_EXT_MAX || (present & (1u << t))) {
++++ new
+        if (t == 0u || t >= VIBEOS_NT_MEM_EXT_MAX) {
+
+### an alignment is not checked
+--- old
+        if (a.alignment != 0u && ((a.alignment & (a.alignment - 1u)) != 0u ||
++++ new
+        if (0 && ((a.alignment & (a.alignment - 1u)) != 0u ||
+
+### a ceiling need not end a page
+--- old
+             ((a.highest_ending_address + 1u) & 0xFFFu) != 0u)) {
++++ new
+             0)) {
+
+### the address requirements are read and not used
+--- old
+        at->lo = a.lowest_starting_address;
+        at->hi = a.highest_ending_address;
+        at->align = a.alignment;
++++ new
+        (void)at;
+
+### address requirements are taken with an address the caller names
+--- old
+    if ((want != 0u && (at.lo != 0u || at.hi != 0u || at.align != 0u)) || size == 0u ||
++++ new
+    if (size == 0u ||
+
+### ARM64EC code is allocated on x86-64
+--- old
+        (attributes & VIBEOS_NT_MEM_EXT_EC_CODE)) {
++++ new
+        0) {
+
+### the parameter count is read as 64 bits
+--- old
+                                    NT_ARG32(6))) \
++++ new
+                                    ARG(6))) \
