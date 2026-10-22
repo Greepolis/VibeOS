@@ -377,11 +377,19 @@ static long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
         len = (uint32_t)(size - offset);
     }
     while (done < len) {
-        uint32_t bi = (uint32_t)((offset + done) / fs->block_size);
+        uint64_t bi64 = (offset + done) / fs->block_size;
+        uint32_t bi = (uint32_t)bi64;
         uint32_t within = (uint32_t)((offset + done) % fs->block_size);
         uint32_t chunk = fs->block_size - within;
         uint32_t phys = 0;
         uint32_t i;
+
+        /* A size from the volume can reach past the 2^32 blocks a block
+         * number names: the narrowing would wrap to an earlier block of the
+         * same file and read it as this one (#19). */
+        if (bi64 > 0xFFFFFFFFull) {
+            return (done > 0u) ? (long)done : -1;
+        }
 
         if (chunk > len - done) {
             chunk = len - done;

@@ -248,10 +248,18 @@ static long iso_op_read_at(void *fsv, const vibeos_fs_node_t *node,
         len = (uint32_t)(node->size - offset);
     }
     while (done < len) {
-        uint32_t lb = (uint32_t)(node->id + (offset + done) / VIBEOS_ISO_SECTOR);
+        uint64_t lb64 = node->id + (offset + done) / VIBEOS_ISO_SECTOR;
+        uint32_t lb = (uint32_t)lb64;
         uint32_t within = (uint32_t)((offset + done) % VIBEOS_ISO_SECTOR);
         uint32_t chunk = VIBEOS_ISO_SECTOR - within;
         uint32_t i;
+
+        /* An extent near 2^32 plus an offset is past any sector a 32-bit
+         * number names; narrowed, it wrapped to the start of the partition,
+         * which the bounds check below then passed (#21). */
+        if (lb64 > 0xFFFFFFFFull) {
+            return (done > 0u) ? (long)done : -1;
+        }
 
         if (chunk > len - done) {
             chunk = len - done;
