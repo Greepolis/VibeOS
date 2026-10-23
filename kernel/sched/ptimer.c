@@ -24,6 +24,9 @@ static pt_t g_pt[VIBEOS_PTIMER_MAX];
  * to skip the table when there are none - which is nearly always - and only
  * written under it. A stale read costs one tick of charge, never a wrong one. */
 static volatile uint32_t g_charged_armed;
+/* Real-time timers armed: the tick's question is asked of nothing when there
+ * are none, as the charge's is of g_charged_armed (#98). */
+static volatile uint32_t g_real_armed;
 static uint64_t g_fired, g_overruns;
 static void (*g_lock)(void);
 static void (*g_unlock)(void);
@@ -57,20 +60,26 @@ void vibeos_ptimer_reset(void) {
         g_pt[i].used = 0;
     }
     g_charged_armed = 0;
+    g_real_armed = 0;
     g_fired = 0;
     g_overruns = 0;
 }
 
 /* Under the lock, after anything that arms or disarms. */
 static void recount(void) {
-    uint32_t i, n = 0;
+    uint32_t i, n = 0, real = 0;
 
     for (i = 0; i < VIBEOS_PTIMER_MAX; i++) {
-        if (g_pt[i].used && g_pt[i].clock != VIBEOS_PCLOCK_REAL && g_pt[i].expires != 0u) {
-            n++;
+        if (g_pt[i].used && g_pt[i].expires != 0u) {
+            if (g_pt[i].clock != VIBEOS_PCLOCK_REAL) {
+                n++;
+            } else {
+                real++;
+            }
         }
     }
     g_charged_armed = n;
+    g_real_armed = real;
 }
 
 static pt_t *find(uint32_t tgid, int32_t id) {
@@ -331,7 +340,11 @@ static void deliver(vibeos_ptimer_fire_t *f, uint32_t n, vibeos_ptimer_fire_fn f
 void vibeos_ptimer_tick(uint64_t now, vibeos_ptimer_fire_fn fire) {
     vibeos_ptimer_fire_t f[PT_BATCH];
     uint32_t i, n = 0;
+    int disarmed = 0;
 
+    if (g_real_armed == 0u) {
+        return;
+    }
     lock();
     for (i = 0; i < VIBEOS_PTIMER_MAX && n < PT_BATCH; i++) {
         pt_t *e = &g_pt[i];
@@ -341,6 +354,7 @@ void vibeos_ptimer_tick(uint64_t now, vibeos_ptimer_fire_fn fire) {
         }
         if (e->interval == 0u) {
             e->expires = 0;
+            disarmed = 1;
         } else {
             /* Every period that went by without a tick to fire it - a machine
              * too busy, or a timer shorter than a tick - is an overrun, and is
@@ -355,6 +369,9 @@ void vibeos_ptimer_tick(uint64_t now, vibeos_ptimer_fire_fn fire) {
         if (e->notify != VIBEOS_PTIMER_NONE) {
             describe(e, &f[n++]);
         }
+    }
+    if (disarmed) {
+        recount();   /* a one-shot that fired is no longer armed */
     }
     unlock();
     deliver(f, n, fire);

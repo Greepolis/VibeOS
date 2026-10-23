@@ -34,6 +34,7 @@
 --- old
         if (e->interval == 0u) {
             e->expires = 0;
+            disarmed = 1;
         } else {
 +++ new
         if (e->interval == 0u) {
@@ -108,3 +109,9 @@ int vibeos_ptimer_get(
             }
             continue;
         }
+
+### the tick skips the table with a real timer armed (#98)
+--- old
+    g_real_armed = real;
++++ new
+    g_real_armed = 0;
