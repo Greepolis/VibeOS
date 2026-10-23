@@ -254,6 +254,11 @@ Filed as GitHub issues; #14-#18 are M-119..M-123 above. Every claim about what L
 | #74 | MADV_DONTNEED leaves a private file page as the program wrote it | **known gap, open**: a private file region keeps no file or offset - its pages are copied at mmap - so there is nothing to read back. Needs a file reference in the region, through fork, split and teardown |
 | #75 | MLOCK_ONFAULT / MCL_ONFAULT lock eagerly | **approximation, documented**: Linux mappings are populated at mmap here, so every page exists to lock; eager is more than ONFAULT asks, visible only to mincore over swapped pages |
 | #78 | failed mremap growth under MCL_FUTURE keeps its region | **not a defect**: vibeos_umem_unmap removes the region; `t_mremap_lock_rollback` shows it, and a sabotage doing what the issue describes goes red |
+| #79-#121 (performance) | scans on hot paths, busy waits, missing indexes | filed 2026-10-22/23; taken a few at a time, the rest open on GitHub |
+| #92, #93, #120 | TLB quarantine scanned whole after placing and on empty ticks; full swap map scanned | **fixed** 101d554 |
+| #98 | real-timer table walked every tick with none armed | **fixed** 293890d - sabotage in `sched-ptimer.txt` |
+| #102 | quarantine drain stopped at 32 frames | **fixed** ffb06d9 |
+| #109, #116 | boot DHCP and keyboard waits counted in pauses | **fixed** d5c2316 - bounded by ticks, the count kept as a backstop |
 
 ## Found internally while verifying the above
 
