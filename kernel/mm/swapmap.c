@@ -105,8 +105,11 @@ int vibeos_swap_alloc(uint32_t *out_slot) {
      * A cursor rather than always from zero: with a full-from-the-front area
      * the scan would be O(allocated) on every allocation, and page-out is on
      * the path that runs when memory is short. Once round and no further, so
-     * "full" is answered rather than spun on. */
-    for (i = 0; i < g_slots; i++) {
+     * "full" is answered rather than spun on - and with every slot counted
+     * taken, answered without the round: page-out asks exactly when memory
+     * is short, and a full map asked again and again was a full scan each
+     * time (#120). */
+    for (i = 0; g_stats.allocated < g_slots && i < g_slots; i++) {
         uint32_t s = g_cursor;
 
         g_cursor = (g_cursor + 1u) % g_slots;

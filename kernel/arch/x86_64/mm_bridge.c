@@ -457,6 +457,12 @@ void hw_tlbq_drain(void) {
     uint64_t ready[32];
     uint32_t n = 0;
 
+    /* Every tick on the clock's core asks, and nearly every tick there is
+     * nothing parked: the lock and 512 slots for nothing (#93). A frame
+     * parked after this read is drained by the next tick. */
+    if (__atomic_load_n(&g_tlbq_live, __ATOMIC_ACQUIRE) == 0u) {
+        return;
+    }
     hw_spin_lock(&g_tlbq_lock);
     for (i = 0; i < HW_TLBQ_SLOTS && n < 32u; i++) {
         if (g_tlbq[i].used && hw_tlbq_quiescent(&g_tlbq[i])) {
@@ -538,12 +544,11 @@ static int hw_tlbq_place(uint64_t root, uint64_t phys) {
     }
 
     hw_spin_lock(&g_tlbq_lock);
+    /* The first free slot, and no further: the rest of the table was walked
+     * only to count it for the peak, under the lock every unmap takes, and
+     * g_tlbq_live already is that count (#92). */
     for (i = 0; i < HW_TLBQ_SLOTS; i++) {
         if (g_tlbq[i].used) {
-            live++;
-            continue;
-        }
-        if (placed) {
             continue;
         }
         for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
@@ -553,10 +558,10 @@ static int hw_tlbq_place(uint64_t root, uint64_t phys) {
         g_tlbq[i].owner = vibeos_x86_64_cpu_id();
         g_tlbq[i].used = 1;
         placed = 1;
-        live++;
+        break;
     }
     if (placed) {
-        __atomic_add_fetch(&g_tlbq_live, 1ull, __ATOMIC_RELEASE);
+        live = (uint32_t)__atomic_add_fetch(&g_tlbq_live, 1ull, __ATOMIC_ACQ_REL);
     }
     if ((uint64_t)live > g_tlbq_live_peak) {
         g_tlbq_live_peak = (uint64_t)live;
