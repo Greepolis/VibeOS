@@ -453,9 +453,9 @@ static int hw_tlbq_quiescent(const hw_tlbq_entry_t *e) {
 /* Release everything that has become safe. Called from the unmap path and from
  * the timer, so a quiet machine still drains. */
 void hw_tlbq_drain(void) {
-    uint32_t i;
+    uint32_t i, start = 0;
     uint64_t ready[32];
-    uint32_t n = 0;
+    uint32_t n;
 
     /* Every tick on the clock's core asks, and nearly every tick there is
      * nothing parked: the lock and 512 slots for nothing (#93). A frame
@@ -463,25 +463,34 @@ void hw_tlbq_drain(void) {
     if (__atomic_load_n(&g_tlbq_live, __ATOMIC_ACQUIRE) == 0u) {
         return;
     }
-    hw_spin_lock(&g_tlbq_lock);
-    for (i = 0; i < HW_TLBQ_SLOTS && n < 32u; i++) {
-        if (g_tlbq[i].used && hw_tlbq_quiescent(&g_tlbq[i])) {
-            ready[n++] = g_tlbq[i].phys;
-            g_tlbq[i].used = 0;
+    /* Thirty-two at a time, as many times as a batch comes back full: what
+     * is quiescent now is memory reclaim could use now, and a big unmap used
+     * to wait a tick for each further thirty-two (#102). Each pass goes on
+     * from where the last stopped, so the whole table is walked once. */
+    do {
+        n = 0;
+        hw_spin_lock(&g_tlbq_lock);
+        for (i = start; i < HW_TLBQ_SLOTS && n < 32u; i++) {
+            if (g_tlbq[i].used && hw_tlbq_quiescent(&g_tlbq[i])) {
+                ready[n++] = g_tlbq[i].phys;
+                g_tlbq[i].used = 0;
+            }
         }
-    }
-    g_tlbq_released += n;
-    hw_spin_unlock(&g_tlbq_lock);
-    if (n) {
-        __atomic_sub_fetch(&g_tlbq_live, (uint64_t)n, __ATOMIC_RELEASE);
-    }
+        start = i;
+        g_tlbq_released += n;
+        hw_spin_unlock(&g_tlbq_lock);
+        if (n) {
+            __atomic_sub_fetch(&g_tlbq_live, (uint64_t)n, __ATOMIC_RELEASE);
+        }
 
-    /* Outside the lock. vibeos_frame_put takes the frame layer's lock, and a
-     * diagnostic that called a public accessor from inside its own lock is how
-     * a previous investigation deadlocked the machine it was explaining. */
-    for (i = 0; i < n; i++) {
-        (void)vibeos_frame_put(ready[i]);
-    }
+        /* Outside the lock. vibeos_frame_put takes the frame layer's lock, and
+         * a diagnostic that called a public accessor from inside its own lock
+         * is how a previous investigation deadlocked the machine it was
+         * explaining. */
+        for (i = 0; i < n; i++) {
+            (void)vibeos_frame_put(ready[i]);
+        }
+    } while (n == 32u && start < HW_TLBQ_SLOTS);
 }
 
 /* How many references to `phys` the quarantine holds - the vmspace audit's
