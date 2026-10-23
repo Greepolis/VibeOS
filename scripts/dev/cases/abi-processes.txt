@@ -86,3 +86,17 @@
     } else if (ks_id(target)->tgid != ks_id(ks_current())->tgid && ks_id(target)->did_exec) {
 +++ new
     } else if (0) {
+
+### wait4 drops a rusage it cannot write (#72)
+--- old
+    if (rusage_ptr != 0 && linux_rusage_of(w.cpu, rusage_ptr) != 0) {
++++ new
+    if (rusage_ptr != 0 && linux_rusage_of(w.cpu, rusage_ptr) != 0 && 0) {
+
+### getsid reads all 64 bits of its pid for zero (#73)
+--- old
+    pid = (uint32_t)requested_pid == 0u ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
+    /* The sid is read
++++ new
+    pid = requested_pid == 0 ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
+    /* The sid is read

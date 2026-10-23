@@ -181,3 +181,9 @@
     }
 +++ new
     }
+
+### mprotect takes a protection bit Linux does not know (#76)
+--- old
+    if (prot & ~(uint64_t)(LINUX_PROT_READ | LINUX_PROT_WRITE | LINUX_PROT_EXEC | LINUX_PROT_SEM |
++++ new
+    if (0 && prot & ~(uint64_t)(LINUX_PROT_READ | LINUX_PROT_WRITE | LINUX_PROT_EXEC | LINUX_PROT_SEM |

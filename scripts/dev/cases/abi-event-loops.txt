@@ -98,3 +98,19 @@
         got |= events & (LINUX_POLLIN | LINUX_POLLRDNORM);
 +++ new
         got |= LINUX_POLLIN;
+
+### poll's nfds is bounded by the compile-time maximum only (#77)
+--- old
+static long linux_sys_poll(uint64_t fds_uptr, uint64_t nfds, uint64_t timeout) {
+    linux_pollset_t ps = {fds_uptr, nfds};
+    int ms = VIBEOS_ARG_INT(timeout);
+    int64_t ticks = ms < 0 ? -1 : (int64_t)vibeos_ceil_div_u64((uint64_t)ms * ks_hz(), 1000ull);
+
+    if (nfds > (uint64_t)LINUX_MAX_FDS || nfds > linux_poll_nofile()) {
++++ new
+static long linux_sys_poll(uint64_t fds_uptr, uint64_t nfds, uint64_t timeout) {
+    linux_pollset_t ps = {fds_uptr, nfds};
+    int ms = VIBEOS_ARG_INT(timeout);
+    int64_t ticks = ms < 0 ? -1 : (int64_t)vibeos_ceil_div_u64((uint64_t)ms * ks_hz(), 1000ull);
+
+    if (nfds > (uint64_t)LINUX_MAX_FDS) {

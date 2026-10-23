@@ -5815,6 +5815,28 @@ static void t_processes(void) {
     expect(sys(61, 0, st, 0, ru, 0, 0, 0) == pid && *(int *)kf_uptr(st) == (3 << 8),
            "waitpid(0) a child of the caller's group, with its rusage");
     expect(SYS3(61, 0, st, 0) == -VIBEOS_ECHILD, "and then there are none");
+    /* Each probed on Linux 5.15 first (#72, #73, #76, #77). */
+    c1 = t_fork_child(&pid);
+    kf_set_current(me);
+    t_child_ends(c1, 5, 0);
+    expect(sys(61, (uint64_t)-1, st, 0, 0x20000000ull, 0, 0, 0) == -VIBEOS_EFAULT &&
+               SYS3(61, (uint64_t)-1, st, 0) == -VIBEOS_ECHILD,
+           "wait4 with a rusage it cannot write is EFAULT, the child reaped all the same (#72)");
+    expect(SYS1(124, 1ull << 32) == (long)ks_id(me)->sid, "getsid reads its pid as 32 bits: 0 (#73)");
+    {
+        long m = SYS6(9, 0, 4096, 3, 0x22, (uint64_t)-1, 0);
+        uint64_t rl = kf_ualloc(16), pf = kf_ualloc(32u * 8u);
+
+        expect(m > 0 && SYS3(10, (uint64_t)m, 4096, 0x11) == -VIBEOS_EINVAL &&
+                   SYS3(10, (uint64_t)m, 4096, 0x9 /* PROT_SEM */) == 0,
+               "mprotect refuses a protection bit Linux does not know (#76)");
+        ((uint64_t *)kf_uptr(rl))[0] = 16;
+        ((uint64_t *)kf_uptr(rl))[1] = 16;
+        memset(kf_uptr(pf), 0xFF, 32u * 8u);
+        expect(SYS2(160, 7 /* RLIMIT_NOFILE */, rl) == 0 && SYS3(7, pf, 32, 0) == -VIBEOS_EINVAL &&
+                   SYS3(7, pf, 16, 0) == 0,
+               "poll's nfds is bounded by RLIMIT_NOFILE (#77)");
+    }
 
     /* A leader is not reported while a thread of its process is still on its
      * way out (M-117): kill(pid, 0) answered 0 after the reap. */

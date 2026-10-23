@@ -164,12 +164,27 @@ static long linux_poll_look(void *ctx) {
  * now, waiting up to `timeout` milliseconds for one that can - for ever when it
  * is negative, not at all when it is 0. More descriptors than the process may
  * have open is EINVAL, as Linux's RLIMIT_NOFILE check. */
+/* The caller's RLIMIT_NOFILE, which bounds poll's nfds: LINUX_MAX_FDS is only
+ * the most it can be set to, and a lowered limit was not asked (#77). select
+ * clamps instead, as Linux's does. */
+static uint64_t linux_poll_nofile(void) {
+    vibeos_procstate_t *ps = ks_current() >= 0 ? ks_ps(ks_current()) : 0;
+    uint64_t n = (uint64_t)LINUX_MAX_FDS;
+
+    if (ps) {
+        ks_lock(&ps->files_lock, __func__);
+        n = ps->rlim_cur[LINUX_RLIMIT_NOFILE];
+        ks_unlock(&ps->files_lock);
+    }
+    return n;
+}
+
 static long linux_sys_poll(uint64_t fds_uptr, uint64_t nfds, uint64_t timeout) {
     linux_pollset_t ps = {fds_uptr, nfds};
     int ms = VIBEOS_ARG_INT(timeout);
     int64_t ticks = ms < 0 ? -1 : (int64_t)vibeos_ceil_div_u64((uint64_t)ms * ks_hz(), 1000ull);
 
-    if (nfds > (uint64_t)LINUX_MAX_FDS) {
+    if (nfds > (uint64_t)LINUX_MAX_FDS || nfds > linux_poll_nofile()) {
         return -VIBEOS_EINVAL;
     }
     return linux_wait_ready(linux_poll_look, &ps, ticks, 0);
@@ -189,7 +204,7 @@ static long linux_sys_ppoll(uint64_t fds_uptr, uint64_t nfds, uint64_t ts_uptr,
     if (ks_current() < 0) {
         return -VIBEOS_EINVAL;
     }
-    if (nfds > (uint64_t)LINUX_MAX_FDS) {
+    if (nfds > (uint64_t)LINUX_MAX_FDS || nfds > linux_poll_nofile()) {
         return -VIBEOS_EINVAL;
     }
     if (ts_uptr != 0u) {

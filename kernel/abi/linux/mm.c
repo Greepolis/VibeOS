@@ -984,6 +984,12 @@ static long linux_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     if ((addr & 0xFFFull) != 0u || len == 0u || len > ~0ull - 0xFFFull - addr) {
         return -VIBEOS_EINVAL;
     }
+    /* A bit Linux does not know is EINVAL here, though mmap ignores the same
+     * bits - Linux's own asymmetry, measured on 5.15 (#76). */
+    if (prot & ~(uint64_t)(LINUX_PROT_READ | LINUX_PROT_WRITE | LINUX_PROT_EXEC | LINUX_PROT_SEM |
+                           LINUX_PROT_GROWSDOWN | LINUX_PROT_GROWSUP)) {
+        return -VIBEOS_EINVAL;
+    }
     end = (addr + len + 0xFFFull) & ~0xFFFull;
 
     /* The whole call runs under the address-space lock: the region list and

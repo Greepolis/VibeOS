@@ -630,7 +630,9 @@ static long linux_wait_child(uint32_t kind, uint32_t id, uint64_t options, int r
     }
 }
 
-static void linux_rusage_of(uint64_t ticks, uint64_t uptr) {
+/* 0, or -EFAULT: Linux answers a rusage it could not write with EFAULT, the
+ * child reaped all the same (#72). */
+static long linux_rusage_of(uint64_t ticks, uint64_t uptr) {
     linux_rusage_t ru;
     uint32_t i;
 
@@ -639,7 +641,11 @@ static void linux_rusage_of(uint64_t ticks, uint64_t uptr) {
     }
     ru.ru_utime.tv_sec = (int64_t)(ticks / ks_hz());
     ru.ru_utime.tv_usec = (int64_t)((ticks % ks_hz()) * (1000000ull / ks_hz()));
-    (void)vibeos_uaccess_copy((void *)(uintptr_t)uptr, &ru, sizeof(ru));
+    if (!linux_user_ok(uptr, sizeof(ru), 1) ||
+        vibeos_uaccess_copy((void *)(uintptr_t)uptr, &ru, sizeof(ru)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return 0;
 }
 
 /* wait4(): pid > 0 that child, -1 any, 0 the caller's group, < -1 group -pid. */
@@ -692,8 +698,8 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr, uint64_t o
         int st = w.status;
         (void)vibeos_uaccess_copy((void *)(uintptr_t)status_ptr, &st, sizeof(st));
     }
-    if (rusage_ptr != 0 && linux_user_ok(rusage_ptr, sizeof(linux_rusage_t), 1)) {
-        linux_rusage_of(w.cpu, rusage_ptr);
+    if (rusage_ptr != 0 && linux_rusage_of(w.cpu, rusage_ptr) != 0) {
+        return -VIBEOS_EFAULT;
     }
     return (long)w.pid;
 }
@@ -784,8 +790,8 @@ static long linux_sys_waitid(uint64_t idtype, uint64_t id, uint64_t info_ptr, ui
         vibeos_uaccess_copy((void *)(uintptr_t)info_ptr, &si, sizeof(si)) != 0) {
         return -VIBEOS_EFAULT;
     }
-    if (r > 0 && rusage_ptr != 0u) {
-        linux_rusage_of(w.cpu, rusage_ptr);
+    if (r > 0 && rusage_ptr != 0u && linux_rusage_of(w.cpu, rusage_ptr) != 0) {
+        return -VIBEOS_EFAULT;
     }
     return 0;
 }
@@ -1553,7 +1559,8 @@ static long linux_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     if (VIBEOS_ARG_INT(requested_pgid) < 0) {
         return -VIBEOS_EINVAL;
     }
-    pid = requested_pid == 0 ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
+    /* pid_t: the low 32 bits are the argument, for zero as for the rest (#73). */
+    pid = (uint32_t)requested_pid == 0u ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
     ks_lock(ks_sched_lock(), __func__);
     target = ks_task_by_pid(pid);
     /* Linux's rules, in its order (#40): the caller itself or one of its
@@ -1574,7 +1581,7 @@ static long linux_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     } else {
         tgid = ks_id(target)->tgid;
         sid = ks_id(target)->sid;
-        group = requested_pgid == 0 ? tgid : (uint32_t)requested_pgid;
+        group = (uint32_t)requested_pgid == 0u ? tgid : (uint32_t)requested_pgid;
         if (group != tgid) {
             for (i = 0; i < (int)ks_slots() && !found; i++) {
                 found = linux_task_live(i) && ks_id(i)->pgid == group && ks_id(i)->sid == sid;
@@ -1632,7 +1639,7 @@ static long linux_sys_getsid(uint64_t requested_pid) {
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return -VIBEOS_EINVAL;
     }
-    pid = requested_pid == 0 ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
+    pid = (uint32_t)requested_pid == 0u ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
     /* The sid is read from the slot the lookup found, so the two are one
      * critical section: otherwise the answer can be another process's (H-007). */
     ks_lock(ks_sched_lock(), __func__);
