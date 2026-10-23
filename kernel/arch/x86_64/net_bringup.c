@@ -209,8 +209,13 @@ void hw_net_bringup(void) {
             }
         }
         {
+            /* Until the next tick, not for a count of pauses: an answer can
+             * only come in an interrupt, and the stack's timers run on ticks,
+             * so 400 turns are 4 seconds however fast the core is (#109). The
+             * count stays as the bound if no tick ever came. */
+            uint64_t t = g_timer_ticks;
             uint32_t d;
-            for (d = 0; d < 200000u; d++) {
+            for (d = 0; d < 200000u && g_timer_ticks == t; d++) {
                 __asm__ __volatile__("pause" ::: "memory");
             }
         }

@@ -8,6 +8,7 @@
 
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/device.h"
+#include "arch_hw_internal.h"   /* g_timer_ticks, VIBEOS_HW_TIMER_HZ */
 
 #define KBD_DATA 0x60u
 
@@ -202,6 +203,7 @@ static int kbd_wait_writable(void) {
 static int kbd_probe(const vibeos_dev_env_t *env) {
     uint32_t before = g_irqs;
     uint32_t spins;
+    uint64_t t0 = g_timer_ticks;
 
     (void)env;
     if (kbd_wait_writable() == 0) {
@@ -210,7 +212,12 @@ static int kbd_probe(const vibeos_dev_env_t *env) {
             kbd_outb(KBD_DATA, KBD_SC_SPACE_RELEASE);
         }
     }
-    for (spins = 0; spins < 50000000u && g_irqs == before; spins++) {
+    /* A tenth of a second, which an interrupt that can come at all comes in
+     * a thousand times over; the count of turns stays as the bound if the
+     * clock is not running yet (#116). */
+    for (spins = 0; spins < 50000000u && g_irqs == before &&
+                    g_timer_ticks - t0 < VIBEOS_HW_TIMER_HZ / 10u;
+         spins++) {
         __asm__ __volatile__("pause" ::: "memory");
     }
     g_irq_proved = (g_irqs != before) ? 1u : 0u;
