@@ -215,7 +215,7 @@ again itself.
 | M-122 | L | `fallocate()` reports success without reserving the requested range: mode 0 only extends visible size via `truncate`, and `FALLOC_FL_KEEP_SIZE` does nothing. Future writes can still fail for lack of space | **known gap, documented** (reviewed 2026-10-22). Not new: the comment above `linux_sys_fallocate` says the size is guaranteed and the space is not, and `linux_syscalls.def` row 285 is PARTIAL for exactly that. The remedy proposed below - EOPNOTSUPP for mode 0 - would break the programs that call fallocate to extend a file, which is what the size guarantee is for; reserving space needs a filesystem that can promise it. Lowered M to L | `kernel/abi/linux/fs.c:1045-1082`. Issue [#17](https://github.com/Greepolis/VibeOS/issues/17). Until the filesystem layer can reserve the range, reject both modes with `EOPNOTSUPP` rather than silently succeed; test both modes and, once supported, verify actual reservation and KEEP_SIZE semantics |
 | M-123 | L | `timerfd_settime()` accepts `TFD_TIMER_CANCEL_ON_SET` without `TFD_TIMER_ABSTIME`, although Linux rejects that invalid flag combination with EINVAL | **withdrawn** (2026-10-22): not a defect. Linux accepts the combination - a probe on the host's kernel (5.15) answered 0 for `timerfd_settime(fd, TFD_TIMER_CANCEL_ON_SET, ...)` on CLOCK_REALTIME and on CLOCK_MONOTONIC; CANCEL_ON_SET only takes effect beside ABSTIME on a settable clock, and is otherwise ignored, as VibeOS ignores it. The fix proposed below would make VibeOS refuse what Linux accepts | `kernel/abi/linux/events.c:108-134`. Issue [#18](https://github.com/Greepolis/VibeOS/issues/18). Reject CANCEL_ON_SET unless ABSTIME is also set; add an ABI test for the invalid combination |
 
-## Fourteenth review (2026-10-22, GitHub issues #19-#70)
+## Fourteenth review (2026-10-22, GitHub issues #19-#78)
 
 Filed as GitHub issues; #14-#18 are M-119..M-123 above. Every claim about what Linux does was probed on the host's 5.15 before it was acted on.
 
@@ -249,6 +249,11 @@ Filed as GitHub issues; #14-#18 are M-119..M-123 above. Every claim about what L
 | #65, #66 | UDP and TCP demultiplexed by port alone | **fixed** d3c812b |
 | #67 | DNS retry after ARP miss | **withdrawn by its author** |
 | #70 | int arguments read as 64 bits | **fixed** 032efcf - descriptors narrowed where they are looked up |
+| #71 | sched_setaffinity accepts a mask under eight bytes | **withdrawn by its author**: a one-byte mask suffices for eight CPUs |
+| #72, #73, #76, #77 | wait4/waitid dropped an unwritable rusage; setpgid/getsid tested 64 bits for zero; mprotect took unknown bits; poll ignored RLIMIT_NOFILE | **fixed** 324fcc5 - each probed on 5.15; mmap's unknown bits and select's nfds Linux accepts, and so does this |
+| #74 | MADV_DONTNEED leaves a private file page as the program wrote it | **known gap, open**: a private file region keeps no file or offset - its pages are copied at mmap - so there is nothing to read back. Needs a file reference in the region, through fork, split and teardown |
+| #75 | MLOCK_ONFAULT / MCL_ONFAULT lock eagerly | **approximation, documented**: Linux mappings are populated at mmap here, so every page exists to lock; eager is more than ONFAULT asks, visible only to mincore over swapped pages |
+| #78 | failed mremap growth under MCL_FUTURE keeps its region | **not a defect**: vibeos_umem_unmap removes the region; `t_mremap_lock_rollback` shows it, and a sabotage doing what the issue describes goes red |
 
 ## Found internally while verifying the above
 
