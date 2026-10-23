@@ -187,3 +187,13 @@
     if (prot & ~(uint64_t)(LINUX_PROT_READ | LINUX_PROT_WRITE | LINUX_PROT_EXEC | LINUX_PROT_SEM |
 +++ new
     if (0 && prot & ~(uint64_t)(LINUX_PROT_READ | LINUX_PROT_WRITE | LINUX_PROT_EXEC | LINUX_PROT_SEM |
+
+### an mremap growth that cannot be locked keeps its region (#78)
+--- old
+                    (void)vibeos_umem_unmap(me, ps, old + old_len, old + new_len);
+                    return -VIBEOS_EAGAIN;
++++ new
+                    for (i = old_len; i < new_len; i += 4096ull) {
+                        (void)vibeos_vmspace_unmap(&v, old + i);
+                    }
+                    return -VIBEOS_EAGAIN;

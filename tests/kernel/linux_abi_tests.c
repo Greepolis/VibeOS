@@ -261,6 +261,27 @@ static void t_kill_permission(void) {
            "except for SIGCONT, which a session allows");
 }
 
+/* An mremap that grows in place and cannot lock the growth under MCL_FUTURE
+ * gives the growth back - pages and region both (#78 said the region stayed). */
+static void t_mremap_lock_rollback(void) {
+    uint64_t rl, vec;
+    long m, r;
+
+    (void)fresh(85);
+    rl = kf_ualloc(16);
+    vec = kf_ualloc(8);
+    m = sys(9, 0, 4096, 3, 0x22, (uint64_t)-1, 0, 0);
+    ((uint64_t *)kf_uptr(rl))[0] = 4096;
+    ((uint64_t *)kf_uptr(rl))[1] = 4096;
+    expect(m > 0 && SYS1(105, 1000) == 0 && SYS2(160, 8 /* RLIMIT_MEMLOCK */, rl) == 0 &&
+               SYS1(151, 2 /* MCL_FUTURE */) == 0,
+           "a mapping, a user, a lock limit of one page, MCL_FUTURE");
+    r = SYS4(25, (uint64_t)m, 4096, 3u * 4096u, 0);
+    expect(r == -VIBEOS_EAGAIN && SYS3(27, (uint64_t)m + 4096u, 4096, vec) == -VIBEOS_ENOMEM &&
+               SYS3(27, (uint64_t)m, 4096, vec) == 0,
+           "growth that cannot be locked is EAGAIN, and leaves no region past the old end");
+}
+
 /* A process-directed signal reaches a process once, on a thread that takes it
  * (#52, #53); a thread's id names its process to kill(tid, 0) (#54); tgkill
  * judges the pair before the permission (#55). */
@@ -6789,6 +6810,7 @@ int test_linux_handlers(void) {
     t_sigreturn_forged();
     t_kill_permission();
     t_kill_threads();
+    t_mremap_lock_rollback();
     t_flock_range_overflow();
     t_registry_answers();
     t_uname_and_clock();
