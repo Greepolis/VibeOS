@@ -246,5 +246,21 @@ int test_fdtable(void) {
     vibeos_fdtable_destroy(&a);
     vibeos_file_put(f);
     if (!expect(vibeos_file_in_use() == 0u, "and every reference came back")) { return -1; }
+
+    /* ---- descriptions are handed out next-fit (#95) --------------------------- */
+    vibeos_file_reset();
+    f = vibeos_file_alloc(&g_ops, 0);
+    g = vibeos_file_alloc(&g_ops, 0);
+    vibeos_file_put(f);
+    old = vibeos_file_alloc(&g_ops, 0);
+    if (!expect(f && g && old && old > g, "a search starts past the last slot handed out")) { return -1; }
+    vibeos_file_put(g);
+    vibeos_file_put(old);
+    n = 0;
+    while (vibeos_file_alloc(&g_ops, 0)) {
+        n++;
+    }
+    if (!expect(n == (int)VIBEOS_FILE_MAX, "and wraps: every slot is found, the freed ones too")) { return -1; }
+    vibeos_file_reset();
     return 0;
 }

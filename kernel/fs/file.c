@@ -6,6 +6,11 @@
 #include "vibeos/abi_linux.h"   /* the kernel's errno values */
 
 static vibeos_file_t g_files[VIBEOS_FILE_MAX];
+/* Where the next search starts: past the last slot handed out. From zero
+ * every time, the long-lived descriptions at the front of the table - a
+ * shell's terminal, a daemon's sockets - were stepped over on every open,
+ * under the table's lock (#95). Under that lock too. */
+static uint32_t g_next;
 static void (*g_lock)(void);
 static void (*g_unlock)(void);
 
@@ -48,22 +53,25 @@ void vibeos_file_reset(void) {
         file_clear(&g_files[i]);
         g_files[i].gen = 0;
     }
+    g_next = 0;
     unlock();
 }
 
 vibeos_file_t *vibeos_file_alloc(const vibeos_file_ops_t *ops, uint32_t flags) {
-    uint32_t i;
+    uint32_t i, n;
     vibeos_file_t *f = 0;
 
     if (!ops) {
         return 0;
     }
     lock();
-    for (i = 0; i < VIBEOS_FILE_MAX; i++) {
+    for (n = 0; n < VIBEOS_FILE_MAX; n++) {
+        i = (g_next + n) % VIBEOS_FILE_MAX;
         /* Free is both: no reference, and no release still running. The last
          * put takes refs to zero before it runs the type's release, so refs
          * alone would hand out a slot whose pipe end is still being given back. */
         if (g_files[i].refs == 0u && g_files[i].ops == 0) {
+            g_next = (i + 1u) % VIBEOS_FILE_MAX;
             f = &g_files[i];
             file_clear(f);
             f->gen++;

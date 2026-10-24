@@ -49,3 +49,9 @@
         want = (old & ~clear) | set;
 +++ new
         want = old | set;
+
+### the description search starts at the front every time (#95)
+--- old
+            g_next = (i + 1u) % VIBEOS_FILE_MAX;
++++ new
+            g_next = 0;
