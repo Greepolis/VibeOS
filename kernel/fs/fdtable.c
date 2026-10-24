@@ -24,6 +24,17 @@ void vibeos_fdtable_init(vibeos_fdtable_t *t) {
     }
     t->limit = VIBEOS_FD_MAX;
     t->open = 0;
+    for (i = 0; i < VIBEOS_FD_MAX / 64u; i++) {
+        t->used[i] = 0;
+    }
+}
+
+static void mark(vibeos_fdtable_t *t, uint64_t fd, int on) {
+    if (on) {
+        t->used[fd / 64u] |= 1ull << (fd % 64u);
+    } else {
+        t->used[fd / 64u] &= ~(1ull << (fd % 64u));
+    }
 }
 
 static vibeos_fdent_t *slot(const vibeos_fdtable_t *t, uint64_t fd) {
@@ -102,11 +113,19 @@ int vibeos_fdtable_install(vibeos_fdtable_t *t, vibeos_file_t *f, uint32_t flags
         return VIBEOS_FDT_FULL;
     }
     /* Lowest first, as POSIX requires: a shell closes 1 and opens a file to
-     * redirect standard output, and the file had better be 1. */
-    for (fd = min; fd < t->limit && fd < VIBEOS_FD_MAX; fd++) {
-        vibeos_fdent_t *e = slot(t, fd);
-        if (e && e->file) {
+     * redirect standard output, and the file had better be 1. Found in the
+     * bitmap, the first word with a clear bit at or above `min`. */
+    for (fd = min; fd < t->limit && fd < VIBEOS_FD_MAX;) {
+        uint64_t free_bits = ~t->used[fd / 64u] & (~0ull << (fd % 64u));
+        vibeos_fdent_t *e;
+
+        if (free_bits == 0u) {
+            fd = (fd / 64u + 1u) * 64u;
             continue;
+        }
+        fd = (fd / 64u) * 64u + (uint32_t)__builtin_ctzll(free_bits);
+        if (fd >= t->limit) {
+            break;
         }
         e = slot_make(t, fd);
         if (!e) {
@@ -116,6 +135,7 @@ int vibeos_fdtable_install(vibeos_fdtable_t *t, vibeos_file_t *f, uint32_t flags
         e->flags = flags;
         e->access = 0;   /* a new entry grants nothing until it is told what */
         t->open++;
+        mark(t, fd, 1);
         return (int)fd;
     }
     return VIBEOS_FDT_FULL;
@@ -145,6 +165,7 @@ int vibeos_fdtable_install_at(vibeos_fdtable_t *t, uint64_t fd, vibeos_file_t *f
     e->file = f;
     e->flags = flags;
     e->access = 0;
+    mark(t, fd, 1);
     return 0;
 }
 
@@ -159,6 +180,7 @@ vibeos_file_t *vibeos_fdtable_remove(vibeos_fdtable_t *t, uint64_t fd) {
     e->file = 0;
     e->flags = 0;
     t->open--;
+    mark(t, fd, 0);
     return f;
 }
 
@@ -189,6 +211,7 @@ int vibeos_fdtable_copy(vibeos_fdtable_t *dst, const vibeos_fdtable_t *src) {
             d->flags = s->flags;
             d->access = s->access;   /* a handle keeps its rights across fork */
             dst->open++;
+            mark(dst, (uint64_t)pg * VIBEOS_FD_PER_PAGE + i, 1);
         }
     }
     return 0;
@@ -211,6 +234,7 @@ uint32_t vibeos_fdtable_drop_cloexec(vibeos_fdtable_t *t) {
                 e->file = 0;
                 e->flags = 0;
                 t->open--;
+                mark(t, (uint64_t)pg * VIBEOS_FD_PER_PAGE + i, 0);
                 vibeos_file_put(f);
                 n++;
             }
@@ -243,6 +267,9 @@ void vibeos_fdtable_destroy(vibeos_fdtable_t *t) {
         }
     }
     t->open = 0;
+    for (i = 0; i < VIBEOS_FD_MAX / 64u; i++) {
+        t->used[i] = 0;
+    }
 }
 
 int vibeos_fdtable_highest(const vibeos_fdtable_t *t) {

@@ -54,6 +54,10 @@ typedef struct vibeos_fdtable {
     vibeos_fdent_t *page[VIBEOS_FD_PAGES];
     uint32_t limit;   /* RLIMIT_NOFILE: descriptors below this may be installed */
     uint32_t open;    /* how many are installed                                 */
+    /* A bit per descriptor, set while one is installed: the lowest free number
+     * is a word at a time, not an entry at a time (#96). Kept by every
+     * function below that installs or removes, and by nobody else. */
+    uint64_t used[VIBEOS_FD_MAX / 64u];
 } vibeos_fdtable_t;
 
 /* Where the table's pages come from: at least 4096 bytes each. Registered once

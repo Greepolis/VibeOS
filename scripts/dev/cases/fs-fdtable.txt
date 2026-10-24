@@ -26,15 +26,9 @@
 
 ### install does not take the lowest free number
 --- old
-        vibeos_fdent_t *e = slot(t, fd);
-        if (e && e->file) {
-            continue;
-        }
+        fd = (fd / 64u) * 64u + (uint32_t)__builtin_ctzll(free_bits);
 +++ new
-        vibeos_fdent_t *e = slot(t, fd);
-        if ((e && e->file) || (fd < t->open && fd != 0)) {
-            continue;
-        }
+        fd = (fd / 64u) * 64u + 63u - (uint32_t)__builtin_clzll(free_bits);
 
 ### a fresh page is not cleared
 --- old
@@ -62,3 +56,18 @@
 --- old
         e->access = 0;   /* a new entry grants nothing until it is told what */
 +++ new
+
+### install_at leaves its number clear in the bitmap (#96)
+--- old
+    e->access = 0;
+    mark(t, fd, 1);
+    return 0;
++++ new
+    e->access = 0;
+    return 0;
+
+### a copy does not carry the bitmap (#96)
+--- old
+            mark(dst, (uint64_t)pg * VIBEOS_FD_PER_PAGE + i, 1);
++++ new
+            (void)0;

@@ -210,5 +210,41 @@ int test_fdtable(void) {
                 "a copy that cannot get a page leaves the child empty and takes no reference")) { return -1; }
     g_refuse_pages = 0;
     vibeos_fdtable_destroy(&a);
+
+    /* ---- the lowest free number, by the bitmap (#96) ------------------------ */
+    vibeos_fdtable_init(&a);
+    f = vibeos_file_alloc(&g_ops, 0);
+    for (i = 0; i < 130u; i++) {
+        vibeos_file_get(f);
+        if (vibeos_fdtable_install(&a, f, 0, 0) != (int)i) {
+            break;
+        }
+    }
+    if (!expect(i == 130u, "130 installs take 0..129 in order")) { return -1; }
+    vibeos_file_put(vibeos_fdtable_remove(&a, 70));
+    vibeos_file_put(vibeos_fdtable_remove(&a, 3));
+    vibeos_file_get(f);
+    vibeos_file_get(f);
+    vibeos_file_get(f);
+    if (!expect(vibeos_fdtable_install(&a, f, 0, 0) == 3 && vibeos_fdtable_install(&a, f, 0, 64) == 70 &&
+                vibeos_fdtable_install(&a, f, 0, 64) == 130,
+                "a freed number is found again, lowest first, at or above min, across a word")) { return -1; }
+    vibeos_file_get(f);
+    vibeos_file_get(f);
+    vibeos_file_get(f);
+    if (!expect(vibeos_fdtable_install_at(&a, 200, f, 0, &old) == 0 && old == NULL &&
+                vibeos_fdtable_install(&a, f, 0, 199) == 199 && vibeos_fdtable_install(&a, f, 0, 200) == 201,
+                "a number installed by install_at is not handed out again")) { return -1; }
+    vibeos_fdtable_init(&b);
+    if (!expect(vibeos_fdtable_copy(&b, &a) == 0, "the table copies")) { return -1; }
+    vibeos_file_put(vibeos_fdtable_remove(&b, 5));
+    vibeos_file_get(f);
+    vibeos_file_get(f);
+    if (!expect(vibeos_fdtable_install(&b, f, 0, 0) == 5 && vibeos_fdtable_install(&a, f, 0, 0) == 131,
+                "a copy carries the bitmap, and its own changes stay its own")) { return -1; }
+    vibeos_fdtable_destroy(&b);
+    vibeos_fdtable_destroy(&a);
+    vibeos_file_put(f);
+    if (!expect(vibeos_file_in_use() == 0u, "and every reference came back")) { return -1; }
     return 0;
 }
