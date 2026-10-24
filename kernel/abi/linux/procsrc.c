@@ -414,6 +414,12 @@ static int src_next_fd(uint32_t pid, uint32_t from, uint32_t *fd) {
     return r;
 }
 
+/* The names maps gives a region, each as long as the field it is copied into:
+ * the copy loop reads up to that length, and gcc, which unrolls it, cannot
+ * see that it stops at the terminator of a shorter literal. */
+static const char k_heap[sizeof(((vibeos_procfs_map_t *)0)->name)] = "[heap]";
+static const char k_stack[sizeof(((vibeos_procfs_map_t *)0)->name)] = "[stack]";
+
 static int src_maps(uint32_t pid, uint64_t after, vibeos_procfs_map_t *outs, uint32_t max) {
     vibeos_procstate_t *ps;
     const vibeos_vma_t *v;
@@ -450,9 +456,9 @@ static int src_maps(uint32_t pid, uint64_t after, vibeos_procfs_map_t *outs, uin
                     ((v->prot & VIBEOS_PROT_EXEC) ? VIBEOS_PROCFS_MAP_X : 0u) |
                     ((v->prot & VIBEOS_PROT_SHARED) ? VIBEOS_PROCFS_MAP_SHARED : 0u);
         if (v->backing == VIBEOS_BACKING_ANON && ps->mm->brk_cur > v->base && ps->mm->brk_cur <= out->end) {
-            name = "[heap]";
+            name = k_heap;
         } else if (sp > v->base && sp <= out->end) {
-            name = "[stack]";
+            name = k_stack;
         }
         for (i = 0; name && name[i] && i + 1u < sizeof(out->name); i++) {
             out->name[i] = name[i];
