@@ -40,3 +40,17 @@
 +++ new
         if (old == 0u && value != 0u) {
             (void)0;
+
+# Not a case: fat_set_entry forgetting the chain cursor (#119). Removing it
+# goes NOT RED, and for a reason: every operation that cuts a chain - truncate,
+# the undo of a failed write - walks to the new end through fat_chain_at first,
+# which moves the cursor onto a valid cluster; and a freed chain's first
+# cluster is reused only once the allocation hint wraps round to it, which no
+# fixture here reaches. The forgetting is what keeps that true for the next
+# caller that cuts a chain without walking it, so it stays.
+
+### the FAT chain cursor is taken from past the index asked for (#119)
+--- old
+    if (first >= 2u && g_fat_cur->cur_first == first && g_fat_cur->cur_index <= index &&
++++ new
+    if (first >= 2u && g_fat_cur->cur_first == first &&

@@ -62,6 +62,15 @@ typedef struct {
      * known until first asked, and forgotten if a write half-failed. */
     uint32_t free_count;
     uint8_t  free_known;
+    /* Where the last walk down a chain stopped: the chain's first cluster,
+     * the index reached and the cluster there. A file is written and read 4
+     * KiB at a time, and each piece counted the whole chain and walked it from
+     * the start again (#119). Kept under the driver's lock, and forgotten by
+     * fat_set_entry whenever a write could change a chain's prefix - anything
+     * but linking a free cluster on, or an end-of-chain becoming a link. */
+    uint32_t cur_first;
+    uint32_t cur_index;
+    uint32_t cur_cl;
     int      mounted;
     /* Which cache - and so which device - this volume lives on.
      *
@@ -356,6 +365,7 @@ static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
     g_fat_cur = vol;
     g_fat_cur->mounted = 0;
     g_fat_cur->free_known = 0;
+    g_fat_cur->cur_first = 0;
     g_fat_cur->cache = bc;
     g_fat_cur->part_sectors = 0;   /* no bound until this volume's is known */
 
@@ -877,6 +887,12 @@ static int fat_set_entry(uint32_t cluster, uint32_t value) {
             g_fat_cur->free_known = 0;   /* which copy holds what is unknown now */
             return -1;
         }
+    }
+    /* An append keeps every chain's prefix: a free cluster taking a value, or
+     * the end-of-chain mark of a last cluster becoming a link. Anything else -
+     * a free, a truncate's new end, a relink - may cut through the cursor. */
+    if (!((old == 0u && value != 0u) || (fat_chain_end(old) && value != 0u))) {
+        g_fat_cur->cur_first = 0;
     }
     if (g_fat_cur->free_known && cluster >= 2u && cluster - 2u < g_fat_cur->max_clusters) {
         if (old == 0u && value != 0u) {
@@ -1763,26 +1779,55 @@ static uint32_t fat_cluster_bytes(void) {
 
 /* How many clusters a chain has. A chain that does not end is a corrupt
  * volume: counted, and reported as longer than any file. */
-static uint32_t fat_chain_count(uint32_t first) {
-    uint32_t n = 0, cl = first;
+/* Start a walk down `first` at the cursor, if it is on this chain at or
+ * before `index`, and otherwise at the start. */
+static void fat_chain_from(uint32_t first, uint32_t index, uint32_t *cl, uint32_t *at) {
+    *cl = first;
+    *at = 0;
+    if (first >= 2u && g_fat_cur->cur_first == first && g_fat_cur->cur_index <= index &&
+        g_fat_cur->cur_cl >= 2u) {
+        *cl = g_fat_cur->cur_cl;
+        *at = g_fat_cur->cur_index;
+    }
+}
 
+static void fat_chain_mark(uint32_t first, uint32_t index, uint32_t cl) {
+    g_fat_cur->cur_first = first;
+    g_fat_cur->cur_index = index;
+    g_fat_cur->cur_cl = cl;
+}
+
+static uint32_t fat_chain_count(uint32_t first) {
+    uint32_t n, cl, last = 0;
+
+    fat_chain_from(first, ~0u, &cl, &n);
     while (cl >= 2u && !fat_chain_end(cl)) {
         if (++n > g_fat_cur->max_clusters) {
             vibeos_mbz_hit(VIBEOS_MBZ_FAT_CHAIN_BAD, first);
             return n;
         }
+        last = cl;
         cl = fat_get_entry(cl);
+    }
+    if (last != 0u) {
+        fat_chain_mark(first, n - 1u, last);   /* the last cluster: where an append goes on */
     }
     return n;
 }
 
 static uint32_t fat_chain_at(uint32_t first, uint32_t index) {
-    uint32_t cl = first;
+    uint32_t cl, at;
 
-    while (index-- > 0u && cl >= 2u && !fat_chain_end(cl)) {
+    fat_chain_from(first, index, &cl, &at);
+    while (at < index && cl >= 2u && !fat_chain_end(cl)) {
         cl = fat_get_entry(cl);
+        at++;
     }
-    return (cl >= 2u && !fat_chain_end(cl)) ? cl : 0u;
+    if (cl >= 2u && !fat_chain_end(cl)) {
+        fat_chain_mark(first, index, cl);
+        return cl;
+    }
+    return 0u;
 }
 
 /* Bytes [off, off + len) of a chain: written from `src`, or zeroed when there
