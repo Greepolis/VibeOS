@@ -123,10 +123,35 @@ static uint32_t exfat_nth_cluster(vibeos_exfat_t *fs, uint32_t first, int contig
         vibeos_mbz_hit(VIBEOS_MBZ_EXFAT_BAD_METADATA, index);
         return 0;
     }
-    for (i = 0; i < index; i++) {
+    i = 0;
+    {
+        uint32_t s1 = __atomic_load_n(&fs->cur_seq, __ATOMIC_ACQUIRE);
+        uint32_t f = __atomic_load_n(&fs->cur_first, __ATOMIC_RELAXED);
+        uint32_t at = __atomic_load_n(&fs->cur_index, __ATOMIC_RELAXED);
+        uint32_t cl = __atomic_load_n(&fs->cur_cluster, __ATOMIC_RELAXED);
+
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if ((s1 & 1u) == 0u && s1 == __atomic_load_n(&fs->cur_seq, __ATOMIC_RELAXED) &&
+            f == first && first != 0u && at <= index && cl != 0u) {
+            i = at;
+            c = cl;
+        }
+    }
+    for (; i < index; i++) {
         c = exfat_next_cluster(fs, c);
         if (c == 0u) {
             return 0;
+        }
+    }
+    {
+        uint32_t s = __atomic_load_n(&fs->cur_seq, __ATOMIC_RELAXED);
+
+        if ((s & 1u) == 0u &&
+            __atomic_compare_exchange_n(&fs->cur_seq, &s, s + 1u, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            __atomic_store_n(&fs->cur_first, first, __ATOMIC_RELAXED);
+            __atomic_store_n(&fs->cur_index, index, __ATOMIC_RELAXED);
+            __atomic_store_n(&fs->cur_cluster, c, __ATOMIC_RELAXED);
+            __atomic_store_n(&fs->cur_seq, s + 2u, __ATOMIC_RELEASE);
         }
     }
     return c;
@@ -200,6 +225,8 @@ int vibeos_exfat_mount(vibeos_exfat_t *fs, vibeos_blockcache_t *cache,
     fs->part_lba = part_lba;
     fs->part_sectors = 0u;   /* set by the storage layer after mount */
     fs->mounted = 0;
+    fs->cur_first = 0;
+    fs->cur_seq = 0;
 
     if (vibeos_blockcache_read(cache, part_lba, sec) != 0) {
         return -1;

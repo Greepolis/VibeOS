@@ -37,6 +37,17 @@ typedef struct {
     uint32_t cluster_count;
     uint32_t root_cluster;
     int mounted;
+    /* Where the last walk down a fragmented file's chain stopped: its first
+     * cluster, the index reached and the cluster there. A sequential read is
+     * 4 KiB at a time, and each piece walked the chain from the start again
+     * (#106); from here it walks on. The volume is read-only, so the chain
+     * does not change. Reads come from several cores: `cur_seq` is odd while
+     * a writer fills the three, and a reader that sees it move walks from the
+     * start, which is never wrong. */
+    uint32_t cur_first;
+    uint32_t cur_index;
+    uint32_t cur_cluster;
+    uint32_t cur_seq;
 } vibeos_exfat_t;
 
 int vibeos_exfat_mount(vibeos_exfat_t *fs, vibeos_blockcache_t *cache,

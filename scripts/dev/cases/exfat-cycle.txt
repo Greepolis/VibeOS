@@ -61,3 +61,15 @@
             return more < 0 ? -1 : 0;
 +++ new
             return 0;
+
+### the exFAT cursor is taken from past the index asked for (#106)
+--- old
+            f == first && first != 0u && at <= index && cl != 0u) {
++++ new
+            f == first && first != 0u && cl != 0u) {
+
+### the exFAT cursor is taken for another file's chain (#106)
+--- old
+            f == first && first != 0u && at <= index && cl != 0u) {
++++ new
+            first != 0u && at <= index && cl != 0u) {

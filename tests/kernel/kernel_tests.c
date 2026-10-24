@@ -7747,7 +7747,7 @@ static void xf_build(void) {
     (void)xf_entry(root + off, "SUB", 30u, 0u, 1, 1);
 
     sub = xf_cluster(30);
-    (void)xf_entry(sub, "DEEP.TXT", 40u, 10u, 0, 1);
+    (void)xf_entry(sub, "DEEP.TXT", 40u, 10u, 0, 0);   /* chained: two files walk the table (#106) */
 
     /* A malformed set at the end of the root: a file entry whose secondary is
      * not a stream entry. A driver that does not insist on the stream decodes
@@ -8012,6 +8012,14 @@ static int test_exfat_lookup_and_read(void) {
     if (buf[0] != 0xC8u || buf[VIBEOS_BLOCK_SIZE] != 0xCAu) {
         return -1;
     }
+    /* A piece at a time, forwards and back (#106): the walk goes on from where
+     * the last one stopped, and never from past the index asked for. */
+    if (vibeos_fs_read_at(&mnt, &node, VIBEOS_BLOCK_SIZE, buf, 1u) != 1 || buf[0] != 0xCAu ||
+        fs.cur_index != 1u || fs.cur_cluster == 0u ||
+        vibeos_fs_read_at(&mnt, &node, 0, buf, 1u) != 1 || buf[0] != 0xC8u ||
+        vibeos_fs_read_at(&mnt, &node, VIBEOS_BLOCK_SIZE, buf, 1u) != 1 || buf[0] != 0xCAu) {
+        return -2;
+    }
 
     /* A directory, and a file inside it. */
     if (vibeos_fs_lookup(&mnt, "/sub", &node) != 0 || !node.is_dir) {
@@ -8022,6 +8030,17 @@ static int test_exfat_lookup_and_read(void) {
     }
     if (vibeos_fs_read_at(&mnt, &node, 0, buf, 10u) != 10 || buf[0] != 0x77u) {
         return -1;
+    }
+    /* Another file's first piece, after the cursor was left on CHAINED.BIN's
+     * (#106): the cursor is that chain's, not this one's. */
+    {
+        vibeos_fs_node_t ch;
+
+        if (vibeos_fs_lookup(&mnt, "CHAINED.BIN", &ch) != 0 ||
+            vibeos_fs_read_at(&mnt, &ch, 0, buf, 1u) != 1 || buf[0] != 0xC8u ||
+            vibeos_fs_read_at(&mnt, &node, 0, buf, 1u) != 1 || buf[0] != 0x77u) {
+            return -3;
+        }
     }
     /* Asking for more than the file holds returns the file, not the buffer.
      * An unclamped read walks into the next cluster and hands back bytes that
