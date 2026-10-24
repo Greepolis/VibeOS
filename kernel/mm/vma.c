@@ -125,6 +125,9 @@ static void vma_link_after(vibeos_vma_list_t *list, vibeos_vma_t *prev,
 
 static void vma_unlink_after(vibeos_vma_list_t *list, vibeos_vma_t *prev,
                              vibeos_vma_t *v) {
+    if (list->hint == v) {
+        list->hint = 0;   /* about to be the pool's, and then anybody's */
+    }
     if (prev) {
         prev->next = v->next;
     } else {
@@ -218,17 +221,29 @@ int vibeos_vma_insert_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t le
     return vma_insert_tmpl(list, base, len, &t);
 }
 
+void vibeos_vma_list_reset(vibeos_vma_list_t *list) {
+    if (list) {
+        list->head = 0;
+        list->count = 0;
+        list->hint = 0;
+    }
+}
+
 vibeos_vma_t *vibeos_vma_find_locked(vibeos_vma_list_t *list, uint64_t va) {
     vibeos_vma_t *cur;
 
     if (!list) {
         return 0;
     }
-    for (cur = list->head; cur; cur = cur->next) {
+    /* From the last region found when the address is not below it: the list
+     * is sorted, so nothing before it can hold `va`. */
+    cur = (list->hint && list->hint->base <= va) ? list->hint : list->head;
+    for (; cur; cur = cur->next) {
         if (va < cur->base) {
             return 0;   /* sorted, so nothing further can contain it */
         }
         if (va < cur->base + cur->len) {
+            list->hint = cur;
             return cur;
         }
     }
@@ -468,6 +483,7 @@ void vibeos_vma_clear_locked(vibeos_vma_list_t *list) {
     }
     list->head = 0;
     list->count = 0;
+    list->hint = 0;
 }
 
 int vibeos_vma_insert_alloc(vibeos_vma_list_t *list, uint64_t base, uint64_t len,

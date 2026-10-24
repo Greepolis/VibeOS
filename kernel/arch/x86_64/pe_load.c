@@ -104,8 +104,7 @@ int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
 
     /* As the ELF path does, before anything is mapped: the struct arrives
      * holding the previous program's regions. */
-    ps->mm->vmas.head = 0;
-    ps->mm->vmas.count = 0;
+    vibeos_vma_list_reset(&ps->mm->vmas);
     if (hw_pe_map_one(p, ps, hdr, len < staged ? len : staged, len, file_id,
                       VIBEOS_HW_USER_BASE, VIBEOS_HW_PE_EXE_END,
                       VIBEOS_HW_PE_EXE_MOVED, VIBEOS_HW_PE_DLL_BASE, 0, path, exe,

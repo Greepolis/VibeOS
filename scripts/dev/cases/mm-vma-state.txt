@@ -69,3 +69,17 @@
     r = vma_change_locked(list, base, len, what & ~VIBEOS_VMA_CHANGE_ALLOC, prot, user_prot,
 +++ new
     r = vma_change_locked(list, base, len, what, prot, user_prot,
+
+### a region given back to the pool stays the lookup hint (#99)
+--- old
+    if (list->hint == v) {
+        list->hint = 0;   /* about to be the pool's, and then anybody's */
+    }
++++ new
+    (void)0;
+
+### a lookup starts at the hint whatever the address (#99)
+--- old
+    cur = (list->hint && list->hint->base <= va) ? list->hint : list->head;
++++ new
+    cur = list->hint ? list->hint : list->head;

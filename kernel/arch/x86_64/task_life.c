@@ -571,8 +571,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
      * away the regions just built for the new one. mprotect then refused the
      * RELRO that a C library performs on its own image during startup, which
      * is how the dynamic loader reported "RELRO protection failed". */
-    ps->mm->vmas.head = 0;
-    ps->mm->vmas.count = 0;
+    vibeos_vma_list_reset(&ps->mm->vmas);
     if (hw_map_elf_image(&p->as, &ps->mm->vmas, &img, elf, file_id, len, 0) != 0) {
         { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "map_image"); goto fail; }
     }
@@ -800,8 +799,7 @@ static vibeos_mm_t *hw_mm_new(void) {
             __atomic_store_n(&m->mm_busy, 0u, __ATOMIC_RELEASE);
             m->brk_cur = 0;
             __atomic_store_n(&m->mmap_cur, 0ull, __ATOMIC_RELEASE);
-            m->vmas.head = 0;
-            m->vmas.count = 0;
+            vibeos_vma_list_reset(&m->vmas);
             m->mlock_future = 0;
             return m;
         }

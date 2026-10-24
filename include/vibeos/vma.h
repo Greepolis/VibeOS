@@ -62,7 +62,17 @@ typedef struct vibeos_vma {
 typedef struct vibeos_vma_list {
     vibeos_vma_t *head;             /* sorted by base, never overlapping */
     uint32_t count;
+    /* The region the last lookup found: the next one, which is nearly always
+     * at or after it - a loop over a range's pages - starts there instead of
+     * at the head (#99). Always a region of this list or null: whatever gives
+     * a region back to the pool clears it, and so does vibeos_vma_list_reset,
+     * which is how a list is emptied without its regions being freed. */
+    vibeos_vma_t *hint;
 } vibeos_vma_list_t;
+
+/* An empty list, forgetting what it held without giving it back: exec and a
+ * recycled address space start from this. */
+void vibeos_vma_list_reset(vibeos_vma_list_t *list);
 
 /* Where regions come from. The list does not allocate: the caller supplies a
  * pool, because this layer is host-tested with a static array and used in the
