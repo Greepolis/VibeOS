@@ -3970,6 +3970,32 @@ static __attribute__((noinline)) void dirty_stack(void) {
     }
 }
 
+/* /proc/self/maps over more regions than one batch of the source (#105):
+ * every region, once, in address order. */
+static void t_proc_maps_batches(void) {
+    static char text[8192];
+    uint64_t prev = 0;
+    long n, i, lines = 0;
+    int sorted = 1;
+
+    (void)fresh(92);
+    for (i = 0; i < 40; i++) {
+        /* Alternate protections, so that neighbours are not one region. */
+        (void)SYS6(9, 0, 4096, (i & 1) ? 1 : 3, 0x22, (uint64_t)-1, 0);
+    }
+    n = read_whole("/proc/self/maps", text, (long)sizeof(text) - 1);
+    for (i = 0; n > 0 && i < n; i++) {
+        if (i == 0 || text[i - 1] == '\n') {
+            uint64_t start = strtoull(text + i, 0, 16);
+
+            sorted = sorted && (lines == 0 || start >= prev);
+            prev = start;
+            lines++;
+        }
+    }
+    expect(n > 0 && lines >= 40 && sorted, "maps lists every region, past a batch, in order");
+}
+
 static long proc_write(const char *path, const char *text) {
     long fd = SYS2(2, ustr(path), 1), n;
 
@@ -6872,6 +6898,7 @@ int test_linux_handlers(void) {
     t_futex_share();
     t_sched_l6();
     t_ipc_msg();
+    t_proc_maps_batches();
     t_ipc_sem();
     t_sem_undo_share();
     t_ipc_shm();

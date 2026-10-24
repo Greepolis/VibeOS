@@ -414,12 +414,12 @@ static int src_next_fd(uint32_t pid, uint32_t from, uint32_t *fd) {
     return r;
 }
 
-static int src_map(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out) {
+static int src_maps(uint32_t pid, uint64_t after, vibeos_procfs_map_t *outs, uint32_t max) {
     vibeos_procstate_t *ps;
     const vibeos_vma_t *v;
     uint64_t sp = 0;
-    uint32_t n = 0, i;
-    int s, r = -1;
+    uint32_t n = 0, i, got = 0;
+    int s;
 
     ks_lock(ks_sched_lock(), __func__);
     s = src_owner(pid);
@@ -431,15 +431,16 @@ static int src_map(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out) {
     if (!ps) {
         return -1;
     }
-    for (i = 0; i < sizeof(*out); i++) {
-        ((unsigned char *)out)[i] = 0;
-    }
     ks_mm_lock(ps);
-    for (v = ps->mm->vmas.head; v && n < 4096u; v = v->next, n++) {
+    for (v = ps->mm->vmas.head; v && n < 4096u && got < max; v = v->next, n++) {
         const char *name = 0;
+        vibeos_procfs_map_t *out = &outs[got];
 
-        if (n != index) {
+        if (v->base < after) {
             continue;
+        }
+        for (i = 0; i < sizeof(*out); i++) {
+            ((unsigned char *)out)[i] = 0;
         }
         out->start = v->base;
         out->end = v->base + v->len;
@@ -456,12 +457,11 @@ static int src_map(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out) {
         for (i = 0; name && name[i] && i + 1u < sizeof(out->name); i++) {
             out->name[i] = name[i];
         }
-        r = 0;
-        break;
+        got++;
     }
     ks_mm_unlock(ps);
     ks_procstate_put(ps);
-    return r;
+    return (int)got;
 }
 
 /* Linux since 5.18 says 256 - a full pool - once the generator is seeded, and
@@ -524,7 +524,7 @@ void linux_procfs_bind(vibeos_procfs_t *pf) {
     pf->cmdline = src_cmdline;
     pf->link = src_link;
     pf->next_fd = src_next_fd;
-    pf->map = src_map;
+    pf->maps = src_maps;
     pf->uptime_ms = src_uptime_ms;
     pf->entropy_avail = linux_entropy_avail;
     linux_inotify_limits(&pf->inotify_queued, &pf->inotify_instances, &pf->inotify_watches);

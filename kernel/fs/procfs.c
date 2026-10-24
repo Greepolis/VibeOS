@@ -471,35 +471,45 @@ static void pf_p_comm(const vibeos_procfs_t *pf, const vibeos_procfs_proc_t *p, 
     pf_char(o, '\n');
 }
 
-/* Linux's maps line: range, permissions, offset, device, inode, and the name
- * from column 73 when there is one. A region here does not remember which file
- * it came from by name, so only the heap and the stack are named. */
-static void pf_p_maps(const vibeos_procfs_t *pf, const vibeos_procfs_proc_t *p, pf_out_t *o) {
-    vibeos_procfs_map_t m;
-    uint32_t i;
+/* One map line: range, permissions, offset, device, inode, and the name from
+ * column 73 when there is one. */
+static void pf_map_line(const vibeos_procfs_map_t *m, pf_out_t *o) {
+    uint64_t at = o->len;
 
-    for (i = 0; pf->map && pf->map(p->pid, i, &m) == 0; i++) {
-        uint64_t at = o->len;
-
-        pf_x(o, m.start, 8);
-        pf_char(o, '-');
-        pf_x(o, m.end, 8);
-        pf_char(o, ' ');
-        pf_char(o, (m.prot & VIBEOS_PROCFS_MAP_R) ? 'r' : '-');
-        pf_char(o, (m.prot & VIBEOS_PROCFS_MAP_W) ? 'w' : '-');
-        pf_char(o, (m.prot & VIBEOS_PROCFS_MAP_X) ? 'x' : '-');
-        pf_char(o, (m.prot & VIBEOS_PROCFS_MAP_SHARED) ? 's' : 'p');
-        pf_char(o, ' ');
-        pf_x(o, m.offset, 8);
-        pf_str(o, " 00:00 0 ");
-        if (m.name[0]) {
-            while (o->len - at < 73u) {
-                pf_char(o, ' ');
-            }
-            m.name[sizeof(m.name) - 1u] = 0;
-            pf_str(o, m.name);
+    pf_x(o, m->start, 8);
+    pf_char(o, '-');
+    pf_x(o, m->end, 8);
+    pf_char(o, ' ');
+    pf_char(o, (m->prot & VIBEOS_PROCFS_MAP_R) ? 'r' : '-');
+    pf_char(o, (m->prot & VIBEOS_PROCFS_MAP_W) ? 'w' : '-');
+    pf_char(o, (m->prot & VIBEOS_PROCFS_MAP_X) ? 'x' : '-');
+    pf_char(o, (m->prot & VIBEOS_PROCFS_MAP_SHARED) ? 's' : 'p');
+    pf_char(o, ' ');
+    pf_x(o, m->offset, 8);
+    pf_str(o, " 00:00 0 ");
+    if (m->name[0]) {
+        while (o->len - at < 73u) {
+            pf_char(o, ' ');
         }
-        pf_char(o, '\n');
+        pf_str(o, m->name);
+    }
+    pf_char(o, '\n');
+}
+
+/* Linux's maps. A region here does not remember which file it came from by
+ * name, so only the heap and the stack are named. Sixteen regions a call,
+ * each batch from where the last ended. */
+static void pf_p_maps(const vibeos_procfs_t *pf, const vibeos_procfs_proc_t *p, pf_out_t *o) {
+    vibeos_procfs_map_t batch[16];
+    uint64_t after = 0;
+    int n = 16, k;
+
+    while (pf->maps && n == 16 && (n = pf->maps(p->pid, after, batch, 16u)) > 0) {
+        for (k = 0; k < n; k++) {
+            batch[k].name[sizeof(batch[k].name) - 1u] = 0;
+            pf_map_line(&batch[k], o);
+        }
+        after = batch[n - 1].end;
     }
 }
 

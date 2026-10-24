@@ -136,8 +136,11 @@ typedef struct {
     long (*link)(uint32_t pid, uint32_t which, uint32_t fd, char *buf, uint32_t cap);
     /* Its lowest open descriptor at or above `from`: 0 and *fd, or negative. */
     int (*next_fd)(uint32_t pid, uint32_t from, uint32_t *fd);
-    /* Its `index`th region, in address order: 0, or negative past the last. */
-    int (*map)(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out);
+    /* Its regions that start at or above `after`, in address order: up to
+     * `max` of them into `out`, and how many - 0 past the last, negative for
+     * no such process. A batch from an address, not one region by index: by
+     * index, each line walked the list from its head (#105). */
+    int (*maps)(uint32_t pid, uint64_t after, vibeos_procfs_map_t *out, uint32_t max);
     /* Whether the caller may look inside process `pid` - its maps and where
      * its links point: 0, or a negated errno (EACCES). Null lets everybody,
      * which is what a machine with one user and no source of credentials is. */

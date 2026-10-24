@@ -67,3 +67,10 @@
             if (pid == 0u || pf->proc(pid, &w->p) != 0 || (w->p.tgid ? w->p.tgid : w->p.pid) != tgid) {
 +++ new
             if (pid == 0u || pf->proc(pid, &w->p) != 0) {
+
+### maps stops after one batch of regions (#105)
+--- old
+        after = batch[n - 1].end;
++++ new
+        after = batch[n - 1].end;
+        n = 0;
