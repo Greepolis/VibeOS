@@ -174,6 +174,26 @@ static void in_notify(vibeos_fsmount_t *mnt, const char *path, uint64_t id, uint
     if (fsn & VIBEOS_FSN_NLINK) {
         mask |= LINUX_IN_ATTRIB;
     }
+    /* Nobody watching this mount for any of it: no lookup of the directory.
+     * Every read, write, open and close of a file comes through here once an
+     * instance exists anywhere, and the lookup was the cost of each (#117).
+     * Asked again under the lock below, so a watch added between the two is
+     * at worst a record this event did not make - as for a watch added just
+     * after it. */
+    {
+        int any = 0;
+
+        ks_lock(&g_in_lock, __func__);
+        for (i = 0; i < IN_WATCHES && !any; i++) {
+            /* A deletion drops a watch whatever it asked for. */
+            any = g_inw[i].inst >= 0 && g_inw[i].mnt == mnt &&
+                  ((g_inw[i].mask & mask) != 0u || (mask & LINUX_IN_DELETE_SELF) != 0u);
+        }
+        ks_unlock(&g_in_lock);
+        if (!any) {
+            return;
+        }
+    }
     have_parent = name[0] != 0 && !(fsn & VIBEOS_FSN_NLINK) && vibeos_fs_lookup(mnt, dir, &parent) == 0;
     ks_lock(&g_in_lock, __func__);
     /* Its directory first: everything but what only the node hears, named.

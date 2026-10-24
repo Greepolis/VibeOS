@@ -14,3 +14,13 @@
     vibeos_fs_set_notify(in_notify);
 +++ new
     vibeos_fs_set_notify(0);
+
+### inotify returns before the lookup even with a watch to tell (#117)
+--- old
+        if (!any) {
+            return;
+        }
++++ new
+        if (!any || 1) {
+            return;
+        }
