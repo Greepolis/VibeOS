@@ -52,3 +52,15 @@
     if (off > value_len || value_len - off < 16u) {
         return 0;
     }
+
+### the NTFS cursor is taken from past the cluster asked for (#107)
+--- old
+    if (cur->have && vcn >= cur->seen) {
++++ new
+    if (cur->have) {
+
+### the NTFS cursor is taken for another record's runs (#107)
+--- old
+    if ((s1 & 1u) != 0u || __atomic_load_n(&fs->cur_id, __ATOMIC_RELAXED) != id || id == 0u) {
++++ new
+    if ((s1 & 1u) != 0u || id == 0u) {

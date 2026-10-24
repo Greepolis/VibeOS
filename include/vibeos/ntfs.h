@@ -57,6 +57,21 @@ typedef struct {
      * shared buffer here would be the page cache defect again in a
      * smaller shape. */
     uint8_t index_block[VIBEOS_NTFS_INDEX_BLOCK_MAX];
+    /* Where the last read stopped in a file's run list: the record, the
+     * decoder's offset and running LCN after the run it was in, the cluster
+     * that run begins at in the file, and the run itself. A read 4 KiB at a
+     * time decoded the list from its first run for every cluster (#107). The
+     * volume is read-only, so a record's runs stay where they are. `cur_seq`
+     * is odd while a reader stores these; one that sees it move starts at the
+     * first run, which is never wrong. */
+    uint64_t cur_id;
+    uint64_t cur_seen;
+    uint64_t cur_len;
+    int64_t cur_prev;
+    int64_t cur_start;
+    uint32_t cur_off;
+    uint32_t cur_sparse;
+    uint32_t cur_seq;
 } vibeos_ntfs_t;
 
 int vibeos_ntfs_mount(vibeos_ntfs_t *fs, vibeos_blockcache_t *cache,

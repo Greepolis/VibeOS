@@ -8465,6 +8465,12 @@ static int test_ntfs_mount_and_read(void) {
      * than cluster zero, which only works if the offset was read as a signed
      * delta. Read as unsigned it lands at cluster 306 - off this volume, and
      * on a real one simply somebody else's data. */
+    /* The cursor (#107): the last read left it on BIG.BIN's run list, a read
+     * of an earlier cluster does not take it, and a later one does. */
+    if (fs.cur_id != node.id || vibeos_fs_read_at(&mnt, &node, 0, buf, 1u) != 1 ||
+        fs.cur_seen != 0u) {
+        return -7;
+    }
     if (vibeos_fs_read_at(&mnt, &node, 4u * VIBEOS_BLOCK_SIZE, buf, 16u) != 16) {
         return -1;
     }

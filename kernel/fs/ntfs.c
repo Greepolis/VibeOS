@@ -261,6 +261,8 @@ int vibeos_ntfs_mount(vibeos_ntfs_t *fs, vibeos_blockcache_t *cache,
     fs->part_sectors = 0;   /* storage.c sets it from the partition table */
     fs->vol_sectors = 0;
     fs->mounted = 0;
+    fs->cur_id = 0;
+    fs->cur_seq = 0;
 
     if (vibeos_blockcache_read(cache, part_lba, sec) != 0) {
         return -1;
@@ -373,28 +375,88 @@ static int ntfs_next_run(const uint8_t *runs, uint32_t len, uint32_t *off,
     return 1;
 }
 
-/* Where in the volume a file's cluster `vcn` lives. Returns 0 when the file has
- * no such cluster, and sets `*sparse` when it is a hole. */
-static int64_t ntfs_map_vcn(const uint8_t *runs, uint32_t runs_len, uint64_t vcn,
-                            int *sparse) {
-    uint32_t off = 0;
-    int64_t prev = 0;
-    uint64_t seen = 0;
+/* Where a walk down a run list stands: after the run `run`, which begins at
+ * the file's cluster `seen`; `off` and `prev` are the decoder's. `have` is 0
+ * before the first run. */
+typedef struct {
+    uint32_t off;
+    int64_t prev;
+    uint64_t seen;
     ntfs_run_t run;
+    int have;
+} ntfs_cursor_t;
 
-    while (ntfs_next_run(runs, runs_len, &off, &prev, &run)) {
+/* Where in the volume a file's cluster `vcn` lives. Returns 0 when the file has
+ * no such cluster, and sets `*sparse` when it is a hole. From the cursor when
+ * it is at or before `vcn` - a read moves forwards - and from the first run
+ * otherwise; the cursor is left on the run that answered. */
+static int64_t ntfs_map_vcn(const uint8_t *runs, uint32_t runs_len, uint64_t vcn,
+                            int *sparse, ntfs_cursor_t *cur) {
+    ntfs_cursor_t c;
+
+    if (cur->have && vcn >= cur->seen) {
+        c = *cur;
+    } else {
+        c.off = 0;
+        c.prev = 0;
+        c.seen = 0;
+        c.have = 0;
+    }
+    for (;;) {
+        if (!c.have) {
+            if (!ntfs_next_run(runs, runs_len, &c.off, &c.prev, &c.run)) {
+                return -1;
+            }
+            c.have = 1;
+        }
         /* vcn >= seen here, so the difference is exact; `vcn < seen + length`
          * wrapped on a crafted length (the review's second NTFS candidate). */
-        if (vcn - seen < run.length) {
-            *sparse = run.sparse;
-            return run.sparse ? 0 : (int64_t)((uint64_t)run.start + (vcn - seen));
+        if (vcn - c.seen < c.run.length) {
+            *cur = c;
+            *sparse = c.run.sparse;
+            return c.run.sparse ? 0 : (int64_t)((uint64_t)c.run.start + (vcn - c.seen));
         }
-        if (run.length > ~0ull - seen) {
+        if (c.run.length > ~0ull - c.seen) {
             return -1;   /* a run list longer than any volume */
         }
-        seen += run.length;
+        c.seen += c.run.length;
+        c.have = 0;
     }
-    return -1;
+}
+
+/* The cursor the last read of record `id` left, if nobody is storing one. */
+static void ntfs_cursor_load(vibeos_ntfs_t *fs, uint64_t id, ntfs_cursor_t *c) {
+    uint32_t s1 = __atomic_load_n(&fs->cur_seq, __ATOMIC_ACQUIRE);
+
+    c->have = 0;
+    if ((s1 & 1u) != 0u || __atomic_load_n(&fs->cur_id, __ATOMIC_RELAXED) != id || id == 0u) {
+        return;
+    }
+    c->off = __atomic_load_n(&fs->cur_off, __ATOMIC_RELAXED);
+    c->prev = __atomic_load_n(&fs->cur_prev, __ATOMIC_RELAXED);
+    c->seen = __atomic_load_n(&fs->cur_seen, __ATOMIC_RELAXED);
+    c->run.length = __atomic_load_n(&fs->cur_len, __ATOMIC_RELAXED);
+    c->run.start = __atomic_load_n(&fs->cur_start, __ATOMIC_RELAXED);
+    c->run.sparse = (int)__atomic_load_n(&fs->cur_sparse, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    c->have = s1 == __atomic_load_n(&fs->cur_seq, __ATOMIC_RELAXED);
+}
+
+static void ntfs_cursor_store(vibeos_ntfs_t *fs, uint64_t id, const ntfs_cursor_t *c) {
+    uint32_t s = __atomic_load_n(&fs->cur_seq, __ATOMIC_RELAXED);
+
+    if (!c->have || (s & 1u) != 0u ||
+        !__atomic_compare_exchange_n(&fs->cur_seq, &s, s + 1u, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        return;
+    }
+    __atomic_store_n(&fs->cur_id, id, __ATOMIC_RELAXED);
+    __atomic_store_n(&fs->cur_off, c->off, __ATOMIC_RELAXED);
+    __atomic_store_n(&fs->cur_prev, c->prev, __ATOMIC_RELAXED);
+    __atomic_store_n(&fs->cur_seen, c->seen, __ATOMIC_RELAXED);
+    __atomic_store_n(&fs->cur_len, c->run.length, __ATOMIC_RELAXED);
+    __atomic_store_n(&fs->cur_start, c->run.start, __ATOMIC_RELAXED);
+    __atomic_store_n(&fs->cur_sparse, (uint32_t)c->run.sparse, __ATOMIC_RELAXED);
+    __atomic_store_n(&fs->cur_seq, s + 2u, __ATOMIC_RELEASE);
 }
 
 /* ---- name handling --------------------------------------------------------*/
@@ -573,6 +635,7 @@ static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
     uint32_t value_len;
     uint32_t seen = 0;
     uint32_t block_bytes;
+    ntfs_cursor_t idx_cur;
     int r;
 
     if (!attr || attr[8] != 0u) {
@@ -643,10 +706,11 @@ static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
         if (clusters_per_block == 0ull) {
             clusters_per_block = 1ull;   /* a block smaller than a cluster */
         }
+        idx_cur.have = 0;   /* the blocks are visited in order: one walk */
         for (blk = 0; blk < NTFS_MAX_INDEX_BLOCKS; blk++) {
             uint64_t vcn = (uint64_t)blk * clusters_per_block;
             int sparse = 0;
-            int64_t lcn = ntfs_map_vcn(runs, runs_len, vcn, &sparse);
+            int64_t lcn = ntfs_map_vcn(runs, runs_len, vcn, &sparse, &idx_cur);
 
             if (lcn < 0) {
                 break;              /* past the end of the allocation */
@@ -803,7 +867,9 @@ static long ntfs_op_read_at(void *fsv, const vibeos_fs_node_t *node,
     {
         const uint8_t *runs = attr.runs;
         uint32_t runs_len = attr.runs_len;
+        ntfs_cursor_t cur;
 
+        ntfs_cursor_load(fs, node->id, &cur);
         while (done < len) {
             uint64_t vcn = (offset + done) / fs->cluster_bytes;
             uint32_t within = (uint32_t)((offset + done) % fs->cluster_bytes);
@@ -815,10 +881,11 @@ static long ntfs_op_read_at(void *fsv, const vibeos_fs_node_t *node,
             if (chunk > len - done) {
                 chunk = len - done;
             }
-            lcn = ntfs_map_vcn(runs, runs_len, vcn, &sparse);
+            lcn = ntfs_map_vcn(runs, runs_len, vcn, &sparse, &cur);
             if (lcn < 0) {
                 return (done > 0u) ? (long)done : -1;
             }
+            ntfs_cursor_store(fs, node->id, &cur);
             if (sparse) {
                 for (i = 0; i < chunk; i++) {
                     dst[done + i] = 0;
