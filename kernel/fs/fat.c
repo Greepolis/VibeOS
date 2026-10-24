@@ -57,6 +57,11 @@ typedef struct {
     uint8_t  sectors_per_cluster;
     uint8_t  is_fat32;
     uint32_t alloc_hint;      /* where the last search for a free cluster ended */
+    /* The free clusters, counted once and then kept by the one function that
+     * writes the table: statfs read the whole FAT for every df (#86). Not
+     * known until first asked, and forgotten if a write half-failed. */
+    uint32_t free_count;
+    uint8_t  free_known;
     int      mounted;
     /* Which cache - and so which device - this volume lives on.
      *
@@ -350,6 +355,7 @@ static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
 
     g_fat_cur = vol;
     g_fat_cur->mounted = 0;
+    g_fat_cur->free_known = 0;
     g_fat_cur->cache = bc;
     g_fat_cur->part_sectors = 0;   /* no bound until this volume's is known */
 
@@ -847,7 +853,7 @@ static uint8_t g_fatbuf[SECTOR_SIZE] __attribute__((aligned(16)));
 /* Write one FAT entry to every FAT copy. */
 static int fat_set_entry(uint32_t cluster, uint32_t value) {
     uint32_t per_sec = g_fat_cur->is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
-    uint32_t s = cluster / per_sec, i = cluster % per_sec, copy;
+    uint32_t s = cluster / per_sec, i = cluster % per_sec, copy, old;
 
     if (s >= g_fat_cur->sectors_per_fat) {
         return -1;
@@ -857,14 +863,26 @@ static int fat_set_entry(uint32_t cluster, uint32_t value) {
     }
     fat_cache_drop();
     if (g_fat_cur->is_fat32) {
-        wr32(&g_fatbuf[i * 4u], value & 0x0FFFFFFFu);
+        old = rd32(&g_fatbuf[i * 4u]) & 0x0FFFFFFFu;
+        value &= 0x0FFFFFFFu;
+        wr32(&g_fatbuf[i * 4u], value);
     } else {
+        old = rd16(&g_fatbuf[i * 2u]);
+        value &= 0xFFFFu;
         wr16(&g_fatbuf[i * 2u], (uint16_t)value);
     }
     for (copy = 0; copy < 2u; copy++) {
         if (fat_sector_write(g_fat_cur->fat_lba + copy * g_fat_cur->sectors_per_fat + s,
                                            g_fatbuf) != 0) {
+            g_fat_cur->free_known = 0;   /* which copy holds what is unknown now */
             return -1;
+        }
+    }
+    if (g_fat_cur->free_known && cluster >= 2u && cluster - 2u < g_fat_cur->max_clusters) {
+        if (old == 0u && value != 0u) {
+            g_fat_cur->free_count--;
+        } else if (old != 0u && value == 0u) {
+            g_fat_cur->free_count++;
         }
     }
     return 0;
@@ -2139,9 +2157,12 @@ static uint32_t fat_free_clusters(void) {
     uint32_t per_sec = g_fat_cur->is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
     uint32_t s, i, free_n = 0;
 
+    if (g_fat_cur->free_known) {
+        return g_fat_cur->free_count;
+    }
     for (s = 0; s < g_fat_cur->sectors_per_fat; s++) {
         if (fat_sector_read(g_fat_cur->fat_lba + s, g_fatbuf) != 0) {
-            break;
+            return free_n;   /* a count from a table read in part is not kept */
         }
         for (i = 0; i < per_sec; i++) {
             uint32_t cl = s * per_sec + i;
@@ -2156,6 +2177,8 @@ static uint32_t fat_free_clusters(void) {
             }
         }
     }
+    g_fat_cur->free_count = free_n;
+    g_fat_cur->free_known = 1;
     return free_n;
 }
 

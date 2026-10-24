@@ -390,6 +390,16 @@ int test_fat(void) {
     }
     expect(i > 400u && i < 512u && r == -VIBEOS_ENOSPC,
            "the root directory of a FAT16 volume holds 512 entries and then refuses");
+    {
+        /* The count statfs keeps (#86) against one a fresh mount makes by
+         * reading the table, after every write above. */
+        uint64_t kept = free_clusters();
+
+        vibeos_fat_forget_volumes();
+        expect(vibeos_fat_fs_driver()->mount(&g_m, &g_bc, FIRST, (uint32_t)(g_img_sectors - FIRST), 0) == 0 &&
+                   free_clusters() == kept,
+               "the free count kept across writes is the count the table gives");
+    }
 
     free(g_img);
     g_img = 0;

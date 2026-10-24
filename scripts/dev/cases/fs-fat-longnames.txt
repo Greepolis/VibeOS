@@ -32,3 +32,11 @@
     base = (seq - 1u) * 13u;
 +++ new
     base = 0u;
+
+### the kept free count misses a cluster taken (#86)
+--- old
+        if (old == 0u && value != 0u) {
+            g_fat_cur->free_count--;
++++ new
+        if (old == 0u && value != 0u) {
+            (void)0;
