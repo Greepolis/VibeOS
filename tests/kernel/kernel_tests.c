@@ -7182,6 +7182,16 @@ static int test_ext2_read(void) {
             return -1;
         }
     }
+    /* The next block of the same file: its inode and its pointer block come
+     * from the caches, and the bytes are still the right ones (#108, #115). */
+    {
+        uint64_t hits = vibeos_ext2_cache_hits();
+
+        if (vibeos_fs_read_at(&mnt, &node, 13u * E2_BLOCK, buf, 16u) != 16 || buf[0] != 0xC1u ||
+            vibeos_ext2_cache_hits() < hits + 2u) {
+            return -2;
+        }
+    }
     return 0;
 }
 

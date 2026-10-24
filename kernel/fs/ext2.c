@@ -51,6 +51,56 @@ static int ext2_read_block(vibeos_ext2_t *fs, uint32_t block, uint8_t *out) {
 #define EXT2_MAX_BLOCK 4096u
 #define EXT2_MAX_INODE_SIZE 256u
 
+static uint64_t g_ext2_hits;
+
+uint64_t vibeos_ext2_cache_hits(void) {
+    return __atomic_load_n(&g_ext2_hits, __ATOMIC_RELAXED);
+}
+
+/* Copy `n` bytes out of a cache slot if it holds `key`; 1 if it did. A slot
+ * being written - its sequence odd, or moved while this copied - is a miss:
+ * the caller reads the disk, which is never wrong. No lock, so nothing the
+ * architecture has to register for a cache this small. */
+static int ext2_cache_get(uint32_t *seq, const uint32_t *slot_key, uint32_t key,
+                          const uint8_t *from, uint8_t *out, uint32_t n) {
+    uint32_t s1, s2, i;
+
+    if (key == 0u) {
+        return 0;
+    }
+    s1 = __atomic_load_n(seq, __ATOMIC_ACQUIRE);
+    if ((s1 & 1u) != 0u || __atomic_load_n(slot_key, __ATOMIC_RELAXED) != key) {
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        out[i] = __atomic_load_n(&from[i], __ATOMIC_RELAXED);
+    }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    s2 = __atomic_load_n(seq, __ATOMIC_RELAXED);
+    if (s1 != s2) {
+        return 0;
+    }
+    __atomic_add_fetch(&g_ext2_hits, 1ull, __ATOMIC_RELAXED);
+    return 1;
+}
+
+/* Fill a slot, unless another core is filling it: then this one is not
+ * cached, which costs a read later and nothing now. */
+static void ext2_cache_put(uint32_t *seq, uint32_t *slot_key, uint32_t key, uint8_t *to,
+                           const uint8_t *from, uint32_t n) {
+    uint32_t s = __atomic_load_n(seq, __ATOMIC_RELAXED), i;
+
+    if ((s & 1u) != 0u ||
+        !__atomic_compare_exchange_n(seq, &s, s + 1u, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        return;
+    }
+    __atomic_store_n(slot_key, key, __ATOMIC_RELAXED);
+    for (i = 0; i < n; i++) {
+        __atomic_store_n(&to[i], from[i], __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(seq, s + 2u, __ATOMIC_RELEASE);
+}
+
 int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
                       uint64_t part_lba) {
     uint8_t sb[VIBEOS_BLOCK_SIZE * 2u];
@@ -62,6 +112,10 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     fs->cache = cache;
     fs->part_lba = part_lba;
     fs->mounted = 0;
+    fs->cached_ino = 0;
+    fs->cached_ptr_block = 0;
+    fs->ino_seq = 0;
+    fs->ptr_seq = 0;
 
     /* The superblock is at byte 1024, whatever the block size, which is why it
      * is read as sectors rather than as a block: the block size is what we are
@@ -129,6 +183,9 @@ static int ext2_read_inode(vibeos_ext2_t *fs, uint32_t ino, uint8_t *out) {
     if (ino == 0u) {
         return -1;   /* inode zero does not exist; it means "no entry" */
     }
+    if (ext2_cache_get(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, 128u)) {
+        return 0;
+    }
     group = (ino - 1u) / fs->inodes_per_group;
     index = (ino - 1u) % fs->inodes_per_group;
     if (group >= fs->group_count) {
@@ -155,6 +212,23 @@ static int ext2_read_inode(vibeos_ext2_t *fs, uint32_t ino, uint8_t *out) {
             out[i] = block[offset + i];
         }
     }
+    ext2_cache_put(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, 128u);
+    return 0;
+}
+
+/* The last level of pointers a block number is mapped through: the block of
+ * pointers that consecutive data blocks share, kept between calls. */
+static int ext2_read_ptrs(vibeos_ext2_t *fs, uint32_t block, uint8_t *out) {
+    if (fs->block_size > sizeof(fs->cached_ptrs)) {
+        return ext2_read_block(fs, block, out);
+    }
+    if (ext2_cache_get(&fs->ptr_seq, &fs->cached_ptr_block, block, fs->cached_ptrs, out, fs->block_size)) {
+        return 0;
+    }
+    if (ext2_read_block(fs, block, out) != 0) {
+        return -1;
+    }
+    ext2_cache_put(&fs->ptr_seq, &fs->cached_ptr_block, block, fs->cached_ptrs, out, fs->block_size);
     return 0;
 }
 
@@ -176,7 +250,7 @@ static int ext2_map_block(vibeos_ext2_t *fs, const uint8_t *inode, uint32_t n,
     n -= 12u;
     if (n < per) {
         uint32_t ind = rd32(inode + 40u + 12u * 4u);
-        if (ind == 0u || ext2_read_block(fs, ind, block) != 0) {
+        if (ind == 0u || ext2_read_ptrs(fs, ind, block) != 0) {
             return -1;
         }
         *out = rd32(block + n * 4u);
@@ -190,7 +264,7 @@ static int ext2_map_block(vibeos_ext2_t *fs, const uint8_t *inode, uint32_t n,
             return -1;
         }
         mid = rd32(block + (n / per) * 4u);
-        if (mid == 0u || ext2_read_block(fs, mid, block) != 0) {
+        if (mid == 0u || ext2_read_ptrs(fs, mid, block) != 0) {
             return -1;
         }
         *out = rd32(block + (n % per) * 4u);
@@ -208,7 +282,7 @@ static int ext2_map_block(vibeos_ext2_t *fs, const uint8_t *inode, uint32_t n,
             return -1;
         }
         b = rd32(block + ((n / per) % per) * 4u);
-        if (b == 0u || ext2_read_block(fs, b, block) != 0) {
+        if (b == 0u || ext2_read_ptrs(fs, b, block) != 0) {
             return -1;
         }
         *out = rd32(block + (n % per) * 4u);

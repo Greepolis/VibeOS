@@ -42,7 +42,24 @@ typedef struct {
     uint32_t group_desc_block;
     uint32_t blocks_count;        /* the volume's length in blocks: every block read is bounded by it */
     int mounted;
+    /* What sequential reads ask for again and again (#108, #115): the inode of
+     * the file being read - the regular-file layer reads 4 KiB at a time and
+     * each call fetched it anew - and the last pointer block a block number
+     * was mapped through, which consecutive blocks share. The volume is
+     * read-only, so neither goes stale; 0 is "nothing held". Reads of one
+     * volume come from several cores, so each slot has a sequence: odd
+     * while a writer fills it, and a reader that saw it move takes a miss. */
+    uint32_t cached_ino;
+    uint32_t cached_ptr_block;
+    uint32_t ino_seq;
+    uint32_t ptr_seq;
+    uint8_t cached_inode[128];
+    uint8_t cached_ptrs[4096];
 } vibeos_ext2_t;
+
+/* How many inode and pointer-block reads the caches answered: the counter
+ * that says they are used at all. */
+uint64_t vibeos_ext2_cache_hits(void);
 
 /* Read the superblock and remember the geometry. Returns 0 on success.
  * Refuses anything it does not fully understand rather than guessing: a
