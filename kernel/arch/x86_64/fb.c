@@ -46,17 +46,19 @@ int vibeos_x86_64_fb_ready(void) {
     return g_ready;
 }
 
+/* Half a screen at a time, in one bulk move: a line at a time moved nearly the
+ * whole framebuffer for every newline once the console was full (#118). The
+ * cursor lands mid-screen and the next half-screen of output costs no copy. */
 static void fb_scroll(void) {
-    uint32_t row_px = g_w * FB_FONT_H;
-    uint32_t i, last = g_w * g_h - row_px;
+    uint32_t lines = g_rows > 1u ? g_rows / 2u : 1u;
+    uint32_t shift = g_w * FB_FONT_H * lines;
+    uint32_t i, last = g_w * g_h - shift;
 
-    for (i = 0; i < last; i++) {
-        g_fb[i] = g_fb[i + row_px];
-    }
+    __builtin_memmove(g_fb, g_fb + shift, (uint64_t)last * sizeof(*g_fb));
     for (i = last; i < g_w * g_h; i++) {
         g_fb[i] = FB_BG;
     }
-    g_cy = g_rows - 1u;
+    g_cy = g_rows - lines;
 }
 
 static void fb_draw_glyph(char c, uint32_t cx, uint32_t cy) {
