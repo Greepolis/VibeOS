@@ -74,6 +74,12 @@ typedef struct {
 } linux_futex_waiter_t;
 
 static linux_futex_waiter_t g_futex_waiters[LINUX_FUTEX_TABLE];
+/* One past the highest slot in use: nothing at or above it is held, so a wake,
+ * a requeue and a count stop there instead of at the 512th (#100). A slot is
+ * taken lowest-free first, so this stays near the number of sleepers. Raised
+ * when a slot above it is taken and lowered when the top one is released;
+ * under g_futex_lock. */
+static uint32_t g_futex_hi;
 
 /* The most entries one process may hold: a quarter of the table (M-110). */
 #define LINUX_FUTEX_PER_PROCESS (LINUX_FUTEX_TABLE / 4u)
@@ -124,7 +130,7 @@ static long futex_wake_locked(const vibeos_procstate_t *ps, uint64_t key, uint32
     long woke = 0;
     uint32_t i;
 
-    for (i = 0; i < LINUX_FUTEX_TABLE && (uint32_t)woke < count; i++) {
+    for (i = 0; i < g_futex_hi && (uint32_t)woke < count; i++) {
         linux_futex_waiter_t *w = &g_futex_waiters[i];
 
         if (!w->used || w->addr != key || w->ps != ps || (w->bitset & mask) == 0u) {
@@ -242,7 +248,8 @@ static long futex_enqueue(const futex_word_t *words, uint32_t n, uint32_t bitset
         }
     }
     /* Counted first, so that a vector that does not fit takes nothing. */
-    for (i = 0, k = 0; i < LINUX_FUTEX_TABLE && k < n; i++) {
+    /* Every slot from g_futex_hi up is free. */
+    for (i = 0, k = LINUX_FUTEX_TABLE - g_futex_hi; i < g_futex_hi && k < n; i++) {
         k += futex_slot_free(i) ? 1u : 0u;
     }
     if (k < n) {
@@ -256,7 +263,7 @@ static long futex_enqueue(const futex_word_t *words, uint32_t n, uint32_t bitset
     {
         uint32_t tgid = ks_id(me)->tgid, mine = 0;
 
-        for (i = 0; i < LINUX_FUTEX_TABLE; i++) {
+        for (i = 0; i < g_futex_hi; i++) {
             mine += !futex_slot_free(i) && ks_id(g_futex_waiters[i].task)->tgid == tgid;
         }
         if (mine + n > LINUX_FUTEX_PER_PROCESS) {
@@ -283,6 +290,9 @@ static long futex_enqueue(const futex_word_t *words, uint32_t n, uint32_t bitset
         w->index = k;
         w->woken = 0;
         w->woken_by = -1;
+        if (i + 1u > g_futex_hi) {
+            g_futex_hi = i + 1u;
+        }
         k++;
     }
 
@@ -340,13 +350,16 @@ static long futex_sleep(uint32_t leader, uint64_t deadline, uint64_t addr) {
      * call returns and the signal is delivered on the way out all the same. */
     ks_lock(&g_futex_lock, __func__);
     r = g_futex_waiters[leader].woken ? (long)g_futex_waiters[leader].woken_by : -1;
-    for (i = 0; i < LINUX_FUTEX_TABLE; i++) {
+    for (i = 0; i < g_futex_hi; i++) {
         linux_futex_waiter_t *w = &g_futex_waiters[i];
 
         if (w->used && w->leader == leader && w->task == me && w->seq == seq) {
             w->addr = 0;
             w->used = 0;   /* released by its owner, and only here */
         }
+    }
+    while (g_futex_hi > 0u && !g_futex_waiters[g_futex_hi - 1u].used) {
+        g_futex_hi--;
     }
     ks_unlock(&g_futex_lock);
     if (r < 0) {
@@ -435,7 +448,7 @@ static long futex_requeue(uint64_t a1, int priv1, uint64_t a2, int priv2, uint32
         }
     }
     done = futex_wake_locked(ps1, k1, nwake, LINUX_FUTEX_BITSET_MATCH_ANY);
-    for (i = 0; i < LINUX_FUTEX_TABLE && nmove > 0u; i++) {
+    for (i = 0; i < g_futex_hi && nmove > 0u; i++) {
         linux_futex_waiter_t *w = &g_futex_waiters[i];
 
         if (!w->used || w->addr != k1 || w->ps != ps1 || ks_seq(w->task) != w->seq ||
