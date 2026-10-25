@@ -251,27 +251,30 @@ int vibeos_frame_reserve(uint64_t base, uint64_t len) {
             return -1;
         }
     }
+    /* Marked first, then unlinked in one walk of the free list: a frame on
+     * the list is free, so the reserved ones are exactly those it now holds
+     * marked otherwise. One walk per frame was quadratic in the size of the
+     * range - 4 GiB and up of a high region at boot (#134). */
     for (addr = base & ~0xFFFull; addr < base + len; addr += 4096ull) {
-        uint32_t index = frame_index(addr);
+        g_table[frame_index(addr)].state = (uint8_t)VIBEOS_FRAME_RESERVED;
+    }
+    prev = FRAME_NONE;
+    cur = g_free_head;
+    while (cur != FRAME_NONE) {
+        uint32_t next = g_table[cur].lru_next;
 
-        /* Unlink from wherever it sits in the free list. The list is short-lived
-         * at this point - reservation happens once, at boot - so a walk is
-         * cheaper than a doubly linked list everywhere else would then pay for. */
-        prev = FRAME_NONE;
-        for (cur = g_free_head; cur != FRAME_NONE; cur = g_table[cur].lru_next) {
-            if (cur == index) {
-                if (prev == FRAME_NONE) {
-                    g_free_head = g_table[cur].lru_next;
-                } else {
-                    g_table[prev].lru_next = g_table[cur].lru_next;
-                }
-                g_free_count--;
-                break;
+        if (g_table[cur].state == (uint8_t)VIBEOS_FRAME_RESERVED) {
+            if (prev == FRAME_NONE) {
+                g_free_head = next;
+            } else {
+                g_table[prev].lru_next = next;
             }
+            g_table[cur].lru_next = FRAME_NONE;
+            g_free_count--;
+        } else {
             prev = cur;
         }
-        g_table[index].state = (uint8_t)VIBEOS_FRAME_RESERVED;
-        g_table[index].lru_next = FRAME_NONE;
+        cur = next;
     }
     vibeos_mm_stats()->frames_free = g_free_count;
     return 0;
