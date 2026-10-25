@@ -259,6 +259,10 @@ Filed as GitHub issues; #14-#18 are M-119..M-123 above. Every claim about what L
 | #98 | real-timer table walked every tick with none armed | **fixed** 293890d - sabotage in `sched-ptimer.txt` |
 | #102 | quarantine drain stopped at 32 frames | **fixed** ffb06d9 |
 | #109, #116 | boot DHCP and keyboard waits counted in pauses | **fixed** d5c2316 - bounded by ticks, the count kept as a backstop |
+| #96, #95, #86, #108, #115, #106, #107, #119, #117, #105, #99, #100, #97, #110, #90, #132, #133, #138, #139, #134, #118, #94, #137 | performance fixes, each one commit | **fixed** 2026-10-23..25 - 6/6 boots on each batch on a quiet host |
+| #135, #141 | frame pool above the identity map; a failed fork kept its kernel stack | **fixed** 1dbf951, 2026-10-25 |
+| #17, #75 | fallocate reserves nothing; ONFAULT locks eagerly | **closed as documented approximations** |
+| label `perf-phase` (30 issues) | the rest of #74, #79-#131, #136, #140 | **deferred to a performance phase after W4**: each changes a shared mechanism (readiness wakeups, cache locking, ring buffers, the boot order) and none is a defect; to be taken with the benchmarks #85 asks for |
 
 ## Found internally while verifying the above
 
