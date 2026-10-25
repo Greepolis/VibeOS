@@ -50,6 +50,11 @@ typedef struct {
     int64_t maxmsg, msgsize, curmsgs;
     uint64_t bytes;
     linux_mq_msg_t *head;
+    /* The last message: a send of a priority no higher than its goes after
+     * it at once, where the walk from the head used to cross every message
+     * of the queue (#110) - and that is how most programs send, at one
+     * priority. Null with head; kept by every place that changes the list. */
+    linux_mq_msg_t *tail;
     uint32_t receivers;       /* waiting in a receive now */
     uint32_t notify_tgid;     /* 0: nobody asked */
     uint32_t notify_sig;
@@ -129,6 +134,7 @@ static void mq_drop_ref(int q) {
     if (--g_mq[q].refs == 0u && !g_mq[q].named) {
         list = g_mq[q].head;
         g_mq[q].head = 0;
+        g_mq[q].tail = 0;
         g_mq[q].used = 0;
     }
     linux_ipc_unlock();
@@ -363,6 +369,7 @@ static long linux_sys_mq_open(uint64_t name_uptr, uint64_t oflag, uint64_t mode,
             m->curmsgs = 0;
             m->bytes = 0;
             m->head = 0;
+            m->tail = 0;
             m->receivers = 0;
             m->notify_tgid = 0;
             q = (int)i;
@@ -417,6 +424,7 @@ static long linux_sys_mq_unlink(uint64_t name_uptr) {
         if (g_mq[q].refs == 0u) {
             list = g_mq[q].head;
             g_mq[q].head = 0;
+            g_mq[q].tail = 0;
             g_mq[q].used = 0;
         }
     }
@@ -494,12 +502,15 @@ static long mq_send_look(void *ctx) {
 
     linux_ipc_lock();
     if (q->curmsgs < q->maxmsg) {
-        linux_mq_msg_t **at = &q->head;
+        linux_mq_msg_t **at = (q->tail && q->tail->prio >= s->m->prio) ? &q->tail->next : &q->head;
 
         while (*at && (*at)->prio >= s->m->prio) {
             at = &(*at)->next;   /* after every message of its priority or above */
         }
         s->m->next = *at;
+        if (*at == 0) {
+            q->tail = s->m;   /* it went last */
+        }
         *at = s->m;
         q->bytes += s->m->len;
         s->m = 0;
@@ -614,6 +625,9 @@ static long mq_recv_look(void *ctx) {
     if (q->head) {
         s->m = q->head;
         q->head = s->m->next;
+        if (q->head == 0) {
+            q->tail = 0;
+        }
         q->curmsgs--;
         q->bytes -= s->m->len;
         if (s->counted) {
@@ -815,6 +829,7 @@ void linux_mq_reset(void) {
     for (i = 0; i < LINUX_MQ_QUEUES; i++) {
         g_mq[i].used = 0;
         g_mq[i].head = 0;
+        g_mq[i].tail = 0;
     }
     g_mq_msg_max = g_mq_msg_default = 10;
     g_mq_msgsize_max = g_mq_msgsize_default = 8192;
