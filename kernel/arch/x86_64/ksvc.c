@@ -489,6 +489,17 @@ int ks_alloc_kstack(int slot) {
     return t->kstack_top ? 0 : -1;
 }
 
+void ks_free_kstack(int slot) {
+    hw_task_t *t = &g_tasks[slot];
+
+    if (t->kstack_base != 0u) {
+        hw_release_kstack(t->kstack_base, t->kstack_pages);
+    }
+    t->kstack_base = 0;
+    t->kstack_pages = 0;
+    t->kstack_top = 0;
+}
+
 void ks_fork_regs(int child, int parent, const ks_regs_t *frame) {
     hw_task_t *c = &g_tasks[child];
     const hw_task_t *p = &g_tasks[parent];

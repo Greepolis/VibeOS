@@ -759,6 +759,7 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
                             uint32_t file_id, uint64_t file_len, const hw_reloc_t *reloc);
 void hw_seed_at_random(uint8_t out[16]);
 void hw_drain_dead_kstack(void);
+void hw_release_kstack(uint64_t base, uint32_t pages);
 extern vibeos_service_supervisor_t g_runtime_supervisor;
 extern uint8_t g_runtime_supervisor_ready;
 const char *hw_task_state_name(int state);

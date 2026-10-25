@@ -195,6 +195,11 @@ static void hw_free_kstack_pages(uint64_t base, uint32_t pages) {
     }
 }
 
+/* A stack that never ran: nobody can be standing on it. */
+void hw_release_kstack(uint64_t base, uint32_t pages) {
+    hw_free_kstack_pages(base, pages);
+}
+
 void hw_drain_dead_kstack(void) {
     hw_cpu_t *cpu = hw_this_cpu();
     uint64_t base;

@@ -1364,7 +1364,10 @@ void ks_drop_aspace(int slot) {
         g_t[slot].has_as = 0;
     }
 }
-int ks_alloc_kstack(int slot) { (void)slot; return 0; }
+static int g_kf_kstacks;   /* stacks given and not given back */
+int ks_alloc_kstack(int slot) { (void)slot; g_kf_kstacks++; return 0; }
+void ks_free_kstack(int slot) { (void)slot; g_kf_kstacks--; }
+int kf_kstacks(void) { return g_kf_kstacks; }
 void ks_fork_regs(int child, int parent, const ks_regs_t *frame) {
     (void)frame;
     g_t[child].img = g_t[parent].img;

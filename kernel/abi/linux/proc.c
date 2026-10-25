@@ -142,6 +142,7 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
         ks_mm_unlock(pps);
         ks_procstate_put(cps);
         ks_set_ps(idx, 0);
+        ks_free_kstack(idx);   /* never ran: given back here, or never (#141) */
         linux_fork_unwind_aspace(idx, share);
         (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
@@ -226,6 +227,7 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
     if (linux_fds_copy(cps, pps) != 0) {
         ks_procstate_put(cps);
         ks_set_ps(idx, 0);
+        ks_free_kstack(idx);   /* as above (#141) */
         linux_fork_unwind_aspace(idx, share);
         (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;

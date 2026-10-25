@@ -54,6 +54,8 @@ const vibeos_siginfo_t *kf_siginfo(int slot, uint32_t sig);
 typedef long (*kf_entry_t)(struct ks_regs *frame, uint64_t nr, const uint64_t a[6]);
 
 void kf_reset(void);
+/* Kernel stacks allocated and not freed (#141). */
+int kf_kstacks(void);
 int kf_spawn(uint32_t pid, uint32_t sid);           /* a user task; its slot   */
 /* The page at `va` in `slot`'s space is frame `frame`, mapped MAP_SHARED: what
  * ks_pageinfo reports for it. A negative slot forgets them all. */

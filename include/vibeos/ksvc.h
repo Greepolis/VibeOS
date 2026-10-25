@@ -208,6 +208,10 @@ void ks_set_user_sp(int slot, uint64_t sp);
 int ks_poke_u32(int slot, uint64_t va, uint32_t val);        /* 0, or -1 with nothing kept */
 void ks_drop_aspace(int slot);
 int ks_alloc_kstack(int slot);                    /* 0, or -1                   */
+/* Give back a stack ks_alloc_kstack gave a slot that never ran: a fork that
+ * fails after the stack is made (#141). Not for a task that has run - exit's
+ * deferred release is for that, since it stands on its stack. */
+void ks_free_kstack(int slot);
 void ks_fork_regs(int child, int parent, const ks_regs_t *frame);
 void ks_thread_regs(int child, int parent, const ks_regs_t *frame,
                     uint64_t stack, uint64_t tls);
