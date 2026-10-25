@@ -48,6 +48,10 @@ const vibeos_backing_ops_t *vibeos_backing_anon(void) {
 
 static vibeos_cache_entry_t *g_table;
 static uint32_t g_entries;
+/* The farthest any entry was placed from its hash slot: no entry lies further,
+ * so a lookup stops there instead of at the end of a full table (#94). Only
+ * grows, under the cache's lock; reset with the table. */
+static uint32_t g_max_probe;
 static vibeos_cache_read_fn g_read;
 static void *g_read_ctx;
 static uint32_t g_hand;         /* the clock hand */
@@ -80,6 +84,7 @@ void vibeos_cache_init(vibeos_cache_entry_t *table, uint32_t entries,
 
     g_table = table;
     g_entries = entries;
+    g_max_probe = 0;
     g_read = read;
     g_read_ctx = ctx;
     g_hand = 0;
@@ -111,7 +116,7 @@ static uint32_t cache_slot(uint32_t file_id, uint64_t offset) {
 static vibeos_cache_entry_t *cache_lookup(uint32_t file_id, uint64_t offset) {
     uint32_t i, slot = cache_slot(file_id, offset);
 
-    for (i = 0; i < g_entries; i++) {
+    for (i = 0; i < g_entries && i <= g_max_probe; i++) {
         vibeos_cache_entry_t *e = &g_table[(slot + i) % g_entries];
         if (e->file_id == 0u) {
             return 0;           /* an empty slot ends the probe */
@@ -210,6 +215,9 @@ static vibeos_cache_entry_t *cache_place(uint32_t file_id, uint64_t offset) {
         if (e->file_id == 0u) {
             e->file_id = file_id;
             e->offset = offset;
+            if (i > g_max_probe) {
+                g_max_probe = i;
+            }
             return e;
         }
     }
