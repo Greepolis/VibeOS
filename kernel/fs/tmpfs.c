@@ -170,7 +170,20 @@ static void tf_drop_pages(vibeos_tmpfs_t *t, vibeos_tmpfs_inode_t *in, uint64_t 
     }
     if (in->dind) {
         uint64_t base = VIBEOS_TMPFS_DIRECT + PTRS;
-        for (i = 0; i < PTRS; i++) {
+        /* Only the middle pages that can hold a page at or past `keep` and
+         * below the end the inode has: the whole double-indirect range was
+         * walked - 262,144 slots - for a truncate of a small file (#138). A
+         * directory's size counts records, a file's bytes; one page of
+         * margin each, for a record reserved and not yet counted. */
+        uint64_t end = tf_is(in, VIBEOS_S_IFDIR) ? in->size / DIRENTS_PER_PAGE + 2u
+                                                 : in->size / VIBEOS_TMPFS_PAGE + 2u;
+        uint64_t i_lo = keep > base ? (keep - base) / PTRS : 0u;
+        uint64_t i_hi = end > base ? (end - base) / PTRS + 1u : 1u;
+
+        if (i_hi > PTRS) {
+            i_hi = PTRS;
+        }
+        for (i = i_lo; i < i_hi; i++) {
             uint8_t **mid = in->dind[i];
             if (!mid) {
                 continue;
