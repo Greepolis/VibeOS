@@ -41,7 +41,8 @@ int vibeos_pmm_init(vibeos_pmm_t *pmm, uintptr_t base, size_t size_bytes, size_t
     return 0;
 }
 
-int vibeos_pmm_pick_usable_region(const vibeos_boot_info_t *boot_info, size_t page_size, uintptr_t *out_base, size_t *out_size) {
+int vibeos_pmm_pick_usable_region(const vibeos_boot_info_t *boot_info, size_t page_size, uint64_t limit,
+                                  uintptr_t *out_base, size_t *out_size) {
     uint64_t i;
     uintptr_t best_base = 0;
     size_t best_size = 0;
@@ -62,6 +63,15 @@ int vibeos_pmm_pick_usable_region(const vibeos_boot_info_t *boot_info, size_t pa
         }
         region_base = (uintptr_t)region->base;
         region_size = (size_t)region->length;
+        /* Past what the kernel can reach: the largest region was picked
+         * wherever it lay, and frames above the identity map were handed out
+         * that no store could reach (#135). */
+        if (limit != 0u && region->base >= limit) {
+            continue;
+        }
+        if (limit != 0u && region->length > limit - region->base) {
+            region_size = (size_t)(limit - region->base);
+        }
         if (boot_info->initrd_size > 0) {
             uint64_t region_end64 = region->base + region->length;
             uint64_t initrd_end64 = boot_info->initrd_base + boot_info->initrd_size;
@@ -103,10 +113,11 @@ int vibeos_pmm_pick_usable_region(const vibeos_boot_info_t *boot_info, size_t pa
     return 0;
 }
 
-int vibeos_pmm_init_from_boot_info(vibeos_pmm_t *pmm, const vibeos_boot_info_t *boot_info, size_t page_size) {
+int vibeos_pmm_init_from_boot_info(vibeos_pmm_t *pmm, const vibeos_boot_info_t *boot_info, size_t page_size,
+                                   uint64_t limit) {
     uintptr_t base;
     size_t size_bytes;
-    if (vibeos_pmm_pick_usable_region(boot_info, page_size, &base, &size_bytes) != 0) {
+    if (vibeos_pmm_pick_usable_region(boot_info, page_size, limit, &base, &size_bytes) != 0) {
         return -1;
     }
     return vibeos_pmm_init(pmm, base, size_bytes, page_size);

@@ -1400,7 +1400,8 @@ void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[HW] no boot_info: using the static page pool\n");
         return;
     }
-    if (vibeos_pmm_init_from_boot_info(&g_hw_pmm, boot_info, 4096) != 0) {
+    /* Only what the identity map reaches (#135). */
+    if (vibeos_pmm_init_from_boot_info(&g_hw_pmm, boot_info, 4096, VIBEOS_HW_IDENTITY_LIMIT) != 0) {
         vibeos_x86_64_serial_puts("[HW] PMM init failed: falling back to the static page pool\n");
         return;
     }
@@ -1823,7 +1824,6 @@ int hw_elf_read_cached(void *ctx, uint64_t off, uint32_t len, void *buf) {
         uint32_t take = 4096u - within;
         uint64_t phys = 0;
         const uint8_t *src;
-        uint32_t i;
 
         if (take > len - done) {
             take = len - done;
@@ -1834,9 +1834,7 @@ int hw_elf_read_cached(void *ctx, uint64_t off, uint32_t len, void *buf) {
             return -1;
         }
         src = (const uint8_t *)(uintptr_t)phys;
-        for (i = 0; i < take; i++) {
-            d[done + i] = src[within + i];
-        }
+        __builtin_memcpy(d + done, src + within, take);   /* a bulk copy (#133) */
         (void)vibeos_frame_put(phys);
         done += take;
     }

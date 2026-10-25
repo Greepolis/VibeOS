@@ -591,7 +591,7 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
 
     /* Physical memory next: the frame allocator underpins everything that
      * follows, and it can only be built from the firmware memory map. */
-    if (vibeos_pmm_init_from_boot_info(&kernel->pmm, boot_info, 4096) != 0) {
+    if (vibeos_pmm_init_from_boot_info(&kernel->pmm, boot_info, 4096, 0) != 0) {
         return kernel_boot_fail(kernel, 1001, "pmm_init failed");
     }
     if (vibeos_pmm_remaining(&kernel->pmm) < kernel->pmm.page_size) {

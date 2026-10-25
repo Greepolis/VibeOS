@@ -14,8 +14,13 @@ typedef struct vibeos_pmm {
 } vibeos_pmm_t;
 
 int vibeos_pmm_init(vibeos_pmm_t *pmm, uintptr_t base, size_t size_bytes, size_t page_size);
-int vibeos_pmm_pick_usable_region(const vibeos_boot_info_t *boot_info, size_t page_size, uintptr_t *out_base, size_t *out_size);
-int vibeos_pmm_init_from_boot_info(vibeos_pmm_t *pmm, const vibeos_boot_info_t *boot_info, size_t page_size);
+/* `limit` is the end of the physical memory the kernel can reach, 0 for none:
+ * a region is cut at it and one wholly above it is not picked (#135) - the
+ * x86-64 kernel identity-maps 4 GiB. */
+int vibeos_pmm_pick_usable_region(const vibeos_boot_info_t *boot_info, size_t page_size, uint64_t limit,
+                                  uintptr_t *out_base, size_t *out_size);
+int vibeos_pmm_init_from_boot_info(vibeos_pmm_t *pmm, const vibeos_boot_info_t *boot_info, size_t page_size,
+                                   uint64_t limit);
 /* Take a physical range out of the allocator.
  *
  * This exists because a virtual address can be claimed by a process while the

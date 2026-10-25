@@ -67,6 +67,26 @@ static int test_pmm(void) {
     void *a;
     void *b;
     void *block;
+
+    /* #135: a bigger region above the limit is not picked, and one that
+     * crosses it is cut there. */
+    regions[0].base = 0x100000;
+    regions[0].length = 0x9000;
+    regions[0].type = VIBEOS_MEMORY_REGION_USABLE;
+    regions[0].reserved = 0;
+    regions[1].base = 0x100000000ull;
+    regions[1].length = 0x40000000ull;
+    regions[1].type = VIBEOS_MEMORY_REGION_USABLE;
+    regions[1].reserved = 0;
+    regions[2].base = 0xFFFF0000ull;
+    regions[2].length = 0x20000ull;
+    regions[2].type = VIBEOS_MEMORY_REGION_USABLE;
+    regions[2].reserved = 0;
+    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 3) != 0 ||
+        vibeos_pmm_pick_usable_region(&boot_info, 4096, 0x100000000ull, &picked_base, &picked_size) != 0 ||
+        picked_base != 0xFFFF0000ull || picked_size != 0x10000u) {
+        return -2;
+    }
     if (vibeos_pmm_init(&pmm, 0x100000, 8192, 4096) != 0) {
         return -1;
     }
@@ -102,13 +122,13 @@ static int test_pmm(void) {
     if (vibeos_bootloader_set_initrd(&boot_info, 0x100000, 0x4000) != 0) {
         return -1;
     }
-    if (vibeos_pmm_pick_usable_region(&boot_info, 0x1000, &picked_base, &picked_size) != 0) {
+    if (vibeos_pmm_pick_usable_region(&boot_info, 0x1000, 0, &picked_base, &picked_size) != 0) {
         return -1;
     }
     if (picked_base != 0x300000 || picked_size != 0x6000) {
         return -1;
     }
-    if (vibeos_pmm_init_from_boot_info(&pmm, &boot_info, 0x1000) != 0) {
+    if (vibeos_pmm_init_from_boot_info(&pmm, &boot_info, 0x1000, 0) != 0) {
         return -1;
     }
     if (pmm.base != 0x300000 || pmm.size_bytes != 0x6000) {
