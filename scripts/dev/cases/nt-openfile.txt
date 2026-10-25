@@ -65,3 +65,27 @@
         (void)nt_io_event(event, 1);
 +++ new
         (void)0;
+
+### FileEndOfFileInformation changes nothing (W4 step 3)
+--- old
+               : f->ops->truncate(f, get64(b, 0)) == 0 ? VIBEOS_STATUS_SUCCESS
++++ new
+               : 1 ? VIBEOS_STATUS_SUCCESS
+
+### a rename says it moved and did not (W4 step 3)
+--- old
+                int r = vibeos_fs_rename(m1, t1, t2, b[0] ? 0u : VIBEOS_RENAME_NOREPLACE);
++++ new
+                int r = 0;
+
+### FileDispositionInformation is ignored (W4 step 3)
+--- old
+            f->unlink_on_release = b[0] ? 1 : 0;   /* the name goes with the last handle */
++++ new
+            (void)0;
+
+### FileNameInformation reports success when it did not fit (W4 step 3)
+--- old
+                st = VIBEOS_STATUS_BUFFER_OVERFLOW;   /* what fitted was written */
++++ new
+                st = VIBEOS_STATUS_SUCCESS;

@@ -662,6 +662,80 @@ static void t_read_write_file(void) {
            "the event is set when the read completes");
 }
 
+/* NtQueryInformationFile or NtSetInformationFile with class `cls` on `len`
+ * bytes at `buf`. The status, and the status block's count. */
+static long file_info(int set, uint64_t h, uint64_t buf, uint32_t len, uint32_t cls, uint64_t *count) {
+    uint64_t iosb = kf_ualloc(16), rest[1] = { cls };
+    long r;
+
+    kf_next_sp(stack_args(rest, 1));
+    r = nt(set ? VIBEOS_NT_NR_NtSetInformationFile : VIBEOS_NT_NR_NtQueryInformationFile, h, iosb, buf, len, 0);
+    *count = ((uint64_t *)kf_uptr(iosb))[1];
+    return r;
+}
+
+/* W4 step 3: what a handle says of its file, and what may be set through it. */
+static void t_file_information(void) {
+    const uint32_t rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE | VIBEOS_DELETE;
+    uint64_t h = 0, h2 = 0, info = 0, n = 0, buf = kf_ualloc(256);
+    uint8_t *b = (uint8_t *)kf_uptr(buf);
+    static const char to[] = "\\??\\C:\\tmp\\moved.txt";
+    uint32_t i;
+
+    fresh(45);
+    expect(create_file(&h, &info, rw, "\\??\\C:\\tmp\\info.txt", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS),
+           "a file to ask about");
+    memcpy(b, "0123456789", 10);
+    (void)rw_file(1, h, 0, buf, 10, 0, &n);
+    memset(b, 0xEE, 256);
+    expect(file_info(0, h, buf, 24, 5, &n) == ST(VIBEOS_STATUS_SUCCESS) && n == 24u &&
+               *(uint64_t *)(b + 8) == 10u && b[21] == 0u,
+           "FileStandardInformation: ten bytes at the end of the file, not a directory");
+    expect(file_info(0, h, buf, 8, 14, &n) == ST(VIBEOS_STATUS_SUCCESS) && *(uint64_t *)b == 10u,
+           "FilePositionInformation: after the ten written");
+    expect(file_info(0, h, buf, 23, 5, &n) == ST(VIBEOS_STATUS_INFO_LENGTH_MISMATCH) &&
+               file_info(0, h, buf, 64, 99, &n) == ST(VIBEOS_STATUS_INVALID_INFO_CLASS),
+           "a buffer short of the class is a length mismatch, an unknown class invalid");
+    /* The fake's clock may stand at zero, which is no time: 0, as Windows has
+     * it, or a time since 1601 - never a raw count of nanoseconds. */
+    expect(file_info(0, h, buf, 40, 4, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (*(uint32_t *)(b + 32) & ~1u) == 0x20u &&
+               (*(uint64_t *)(b + 16) == 0u || *(uint64_t *)(b + 16) >= 116444736000000000ull),
+           "FileBasicInformation: an archive file, its write time since 1601");
+    expect(file_info(0, h, buf, 8, 9, &n) == ST(VIBEOS_STATUS_BUFFER_OVERFLOW) && n == 8u &&
+               *(uint32_t *)b == 2u * 13u,
+           "FileNameInformation too small: the length, the start, and BUFFER_OVERFLOW");
+    expect(file_info(0, h, buf, 64, 9, &n) == ST(VIBEOS_STATUS_SUCCESS) && n == 4u + 26u &&
+               b[4] == '\\' && b[6] == 't' && b[12] == '\\',
+           "and whole: \\tmp\\info.txt from the volume's root");
+    *(uint64_t *)b = 4;
+    expect(file_info(1, h, buf, 8, 20, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               file_info(0, h, buf, 24, 5, &n) == ST(VIBEOS_STATUS_SUCCESS) && *(uint64_t *)(b + 8) == 4u,
+           "FileEndOfFileInformation cuts the file to four bytes");
+    *(uint64_t *)b = 1;
+    expect(file_info(1, h, buf, 8, 14, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               rw_file(0, h, 0, buf, 3, 0, &n) == ST(VIBEOS_STATUS_SUCCESS) && n == 3u && memcmp(b, "123", 3) == 0,
+           "FilePositionInformation moves where the next read starts");
+    memset(b, 0, 256);
+    b[0] = 0;   /* ReplaceIfExists: no */
+    *(uint32_t *)(b + 16) = (uint32_t)(2u * strlen(to));
+    for (i = 0; to[i]; i++) {
+        b[20u + 2u * i] = (uint8_t)to[i];
+    }
+    expect(file_info(1, h, buf, 20u + 2u * (uint32_t)strlen(to), 10, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               create_file(&h2, &info, rw, "\\??\\C:\\tmp\\moved.txt", 1, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, h2, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               create_file(&h2, &info, rw, "\\??\\C:\\tmp\\info.txt", 1, 0) ==
+                   ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND),
+           "FileRenameInformation moves the file to its new name");
+    b[0] = 1;
+    expect(file_info(1, h, buf, 1, 13, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               create_file(&h2, &info, rw, "\\??\\C:\\tmp\\moved.txt", 1, 0) ==
+                   ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND),
+           "FileDispositionInformation: the file goes with its last handle");
+}
+
 /* A Linux call, from the NT tests: to make files with owners and modes, which
  * NtCreateFile (W4) cannot yet. */
 static long lsys(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2) {
@@ -1775,6 +1849,7 @@ int test_nt_abi(void) {
     t_delay();
     t_handles_and_names();
     t_read_write_file();
+    t_file_information();
     t_create_file();
     t_sections();
     t_open_file_permissions();

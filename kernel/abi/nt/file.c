@@ -400,6 +400,301 @@ static long nt_create_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t io
     return nt_file_open_or_create(out, (uint32_t)want, oa, iosb_u, (uint32_t)disposition, (uint32_t)options);
 }
 
+/* ---- a file's information (W4 step 3) ---------------------------------------------
+ *
+ * The classes a program asks most, laid out as ntifs.h lays them out - the
+ * offsets are written beside each, and Wine's tests read every one. Times are
+ * Windows', 100 ns since 1601; the attributes are what the mode says: a
+ * directory, or a file that is read-only when nobody may write it. */
+#define NT_EPOCH_1601_100NS 116444736000000000ull
+#define NT_ATTR_READONLY  0x01u
+#define NT_ATTR_DIRECTORY 0x10u
+#define NT_ATTR_ARCHIVE   0x20u
+
+enum {
+    NT_FI_BASIC = 4, NT_FI_STANDARD = 5, NT_FI_INTERNAL = 6, NT_FI_NAME = 9, NT_FI_RENAME = 10,
+    NT_FI_DISPOSITION = 13, NT_FI_POSITION = 14, NT_FI_ALL = 18, NT_FI_ALLOCATION = 19,
+    NT_FI_END_OF_FILE = 20, NT_FI_NETWORK_OPEN = 34, NT_FI_ATTRIBUTE_TAG = 35
+};
+
+static uint64_t nt_time_of(uint64_t ns) {
+    return ns == 0u ? 0u : ns / 100u + NT_EPOCH_1601_100NS;
+}
+
+static void put64(uint8_t *b, uint32_t at, uint64_t v) {
+    uint32_t i;
+    for (i = 0; i < 8u; i++) {
+        b[at + i] = (uint8_t)(v >> (8u * i));
+    }
+}
+
+static void put32(uint8_t *b, uint32_t at, uint32_t v) {
+    uint32_t i;
+    for (i = 0; i < 4u; i++) {
+        b[at + i] = (uint8_t)(v >> (8u * i));
+    }
+}
+
+static uint64_t get64(const uint8_t *b, uint32_t at) {
+    uint64_t v = 0;
+    uint32_t i;
+    for (i = 0; i < 8u; i++) {
+        v |= (uint64_t)b[at + i] << (8u * i);
+    }
+    return v;
+}
+
+static uint32_t nt_attrs_of(const vibeos_file_stat_t *s) {
+    uint32_t a = (s->mode & 0170000u) == 0040000u ? NT_ATTR_DIRECTORY : NT_ATTR_ARCHIVE;
+    return (s->mode & 0222u) == 0u ? a | NT_ATTR_READONLY : a;
+}
+
+/* FILE_BASIC_INFORMATION: creation, access, write, change; attributes at 32. */
+static void nt_basic(uint8_t *b, uint32_t at, const vibeos_file_stat_t *s) {
+    put64(b, at + 0u, nt_time_of(s->ctime_ns));
+    put64(b, at + 8u, nt_time_of(s->atime_ns));
+    put64(b, at + 16u, nt_time_of(s->mtime_ns));
+    put64(b, at + 24u, nt_time_of(s->ctime_ns));
+    put32(b, at + 32u, nt_attrs_of(s));
+}
+
+/* FILE_STANDARD_INFORMATION: allocation, end of file, links, delete pending,
+ * directory. */
+static void nt_standard(uint8_t *b, uint32_t at, const vibeos_file_stat_t *s, const vibeos_file_t *f) {
+    int dir = (s->mode & 0170000u) == 0040000u;
+    put64(b, at + 0u, dir ? 0u : (s->size + 4095u) & ~4095ull);
+    put64(b, at + 8u, dir ? 0u : s->size);
+    put32(b, at + 16u, s->nlink ? s->nlink : 1u);
+    b[at + 20u] = f->unlink_on_release ? 1u : 0u;
+    b[at + 21u] = dir ? 1u : 0u;
+}
+
+/* FILE_NAME_INFORMATION at `at`: the length in bytes, then the name from the
+ * volume's root in UTF-16 - "\\dir\\file" - as much as fits. The bytes it
+ * needed, whole. */
+static uint32_t nt_name_info(uint8_t *b, uint32_t at, uint32_t cap, const vibeos_file_t *f) {
+    uint32_t n = 0, i, need;
+
+    while (f->path[n]) {
+        n++;
+    }
+    need = 4u + 2u * n;
+    if (cap >= at + 4u) {
+        put32(b, at, 2u * n);
+    }
+    for (i = 0; i < n && at + 4u + 2u * i + 2u <= cap; i++) {
+        uint16_t c = (uint16_t)(uint8_t)(f->path[i] == '/' ? '\\' : f->path[i]);
+        b[at + 4u + 2u * i] = (uint8_t)c;
+        b[at + 5u + 2u * i] = (uint8_t)(c >> 8);
+    }
+    return need;
+}
+
+/* NtQueryInformationFile(File, IoStatusBlock, Information, Length, Class). */
+static long nt_query_information_file(uint64_t file, uint64_t iosb_u, uint64_t out, uint64_t len,
+                                      uint64_t cls) {
+    uint8_t b[512];
+    uint32_t need, done, st = VIBEOS_STATUS_SUCCESS, i;
+    vibeos_file_stat_t s;
+    vibeos_nt_iosb_t iosb;
+    vibeos_file_t *f;
+
+    switch ((uint32_t)cls) {
+        case NT_FI_BASIC: need = 40u; break;
+        case NT_FI_STANDARD: need = 24u; break;
+        case NT_FI_INTERNAL: case NT_FI_POSITION: case NT_FI_ATTRIBUTE_TAG: need = 8u; break;
+        case NT_FI_NAME: need = 4u; break;
+        case NT_FI_NETWORK_OPEN: need = 56u; break;
+        case NT_FI_ALL: need = 100u; break;
+        default: return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
+    }
+    if (len < need) {
+        return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
+    }
+    f = nt_file_get(file);
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    for (i = 0; i < sizeof(b); i++) {
+        b[i] = 0;
+    }
+    vibeos_file_stat_clear(&s);
+    if (f->ops->stat) {
+        (void)f->ops->stat(f, &s);
+    }
+    done = need;
+    switch ((uint32_t)cls) {
+        case NT_FI_BASIC:
+            nt_basic(b, 0, &s);
+            break;
+        case NT_FI_STANDARD:
+            nt_standard(b, 0, &s, f);
+            break;
+        case NT_FI_INTERNAL:
+            put64(b, 0, s.ino);
+            break;
+        case NT_FI_POSITION:
+            put64(b, 0, f->pos);
+            break;
+        case NT_FI_ATTRIBUTE_TAG:
+            put32(b, 0, nt_attrs_of(&s));
+            break;
+        case NT_FI_NETWORK_OPEN:
+            nt_basic(b, 0, &s);       /* the four times, then sizes, then attributes */
+            put64(b, 32u, (s.size + 4095u) & ~4095ull);
+            put64(b, 40u, s.size);
+            put32(b, 48u, nt_attrs_of(&s));
+            break;
+        default: {
+            /* NAME alone, or ALL: basic 0, standard 40, internal 64, EA 72,
+             * access 76, position 80, mode 88, alignment 92, name 96. */
+            uint32_t at = (uint32_t)cls == NT_FI_NAME ? 0u : 96u;
+            uint32_t cap = len < sizeof(b) ? (uint32_t)len : (uint32_t)sizeof(b);
+            uint32_t whole;
+
+            if ((uint32_t)cls == NT_FI_ALL) {
+                nt_basic(b, 0, &s);
+                nt_standard(b, 40u, &s, f);
+                put64(b, 64u, s.ino);
+                put64(b, 80u, f->pos);
+            }
+            whole = at + nt_name_info(b, at, cap, f);
+            done = whole <= cap ? whole : cap;
+            if (whole > cap) {
+                st = VIBEOS_STATUS_BUFFER_OVERFLOW;   /* what fitted was written */
+            }
+            break;
+        }
+    }
+    vibeos_file_put(f);
+    if (vibeos_uaccess_copy((void *)(uintptr_t)out, b, done) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    iosb.status = st;
+    iosb.information = done;
+    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(st);
+}
+
+/* NtSetInformationFile(File, IoStatusBlock, Information, Length, Class). */
+static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in, uint64_t len,
+                                    uint64_t cls) {
+    uint8_t b[8u + 8u + 4u + 2u * VIBEOS_FILE_PATH];
+    uint32_t need, st = VIBEOS_STATUS_SUCCESS;
+    vibeos_nt_iosb_t iosb;
+    vibeos_file_t *f;
+
+    switch ((uint32_t)cls) {
+        case NT_FI_BASIC: need = 40u; break;
+        case NT_FI_POSITION: case NT_FI_END_OF_FILE: case NT_FI_ALLOCATION: need = 8u; break;
+        case NT_FI_DISPOSITION: need = 1u; break;
+        case NT_FI_RENAME: need = 20u; break;
+        default: return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
+    }
+    if (len < need) {
+        return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
+    }
+    if (len > sizeof(b)) {
+        len = sizeof(b);
+    }
+    if (vibeos_uaccess_copy(b, (const void *)(uintptr_t)in, (uint32_t)len) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    f = nt_file_get(file);
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    switch ((uint32_t)cls) {
+        case NT_FI_POSITION:
+            vibeos_file_pos_take(f);
+            f->pos = get64(b, 0);
+            vibeos_file_pos_give(f);
+            break;
+        case NT_FI_END_OF_FILE:
+            st = !f->ops->truncate ? VIBEOS_STATUS_INVALID_PARAMETER
+               : f->ops->truncate(f, get64(b, 0)) == 0 ? VIBEOS_STATUS_SUCCESS
+               : VIBEOS_STATUS_ACCESS_DENIED;
+            break;
+        case NT_FI_ALLOCATION:
+            break;   /* a reservation hint: space is not reserved (#17) */
+        case NT_FI_DISPOSITION:
+            f->unlink_on_release = b[0] ? 1 : 0;   /* the name goes with the last handle */
+            break;
+        case NT_FI_BASIC: {
+            /* Times that are neither 0 (unchanged) nor -1 (do not update),
+             * as the access and write times setattr keeps. */
+            vibeos_fsmount_t *m = 0;
+            const char *tail = 0;
+            vibeos_fs_attr_t a;
+            uint64_t at = get64(b, 8), wt = get64(b, 16);
+
+            a.valid = 0;
+            a.atime_ns = a.mtime_ns = 0;
+            if (at != 0u && at != ~0ull && at >= NT_EPOCH_1601_100NS) {
+                a.valid |= VIBEOS_ATTR_ATIME;
+                a.atime_ns = (at - NT_EPOCH_1601_100NS) * 100u;
+            }
+            if (wt != 0u && wt != ~0ull && wt >= NT_EPOCH_1601_100NS) {
+                a.valid |= VIBEOS_ATTR_MTIME;
+                a.mtime_ns = (wt - NT_EPOCH_1601_100NS) * 100u;
+            }
+            if (a.valid != 0u && (vibeos_fs_resolve(f->path, &m, &tail) != 0 ||
+                                  vibeos_fs_setattr(m, *tail ? tail : "/", &a) != 0)) {
+                st = VIBEOS_STATUS_ACCESS_DENIED;
+            }
+            break;
+        }
+        default: {
+            /* FILE_RENAME_INFORMATION: replace if exists at 0, root directory
+             * at 8 (refused unless 0), name length at 16, name at 20 - an NT
+             * path, onto the VFS as NtCreateFile's is. */
+            nt_name_t name;
+            uint32_t nl = (uint32_t)b[16] | (uint32_t)b[17] << 8 | (uint32_t)b[18] << 16 |
+                          (uint32_t)b[19] << 24, i;
+            char to[VIBEOS_FILE_PATH];
+            vibeos_fsmount_t *m1 = 0, *m2 = 0;
+            const char *t1 = 0, *t2 = 0;
+
+            if (get64(b, 8) != 0u || nl == 0u || (nl & 1u) || 20u + nl > (uint32_t)len ||
+                nl / 2u > sizeof(name.chars) / sizeof(name.chars[0])) {
+                st = VIBEOS_STATUS_INVALID_PARAMETER;
+                break;
+            }
+            name.len = nl / 2u;
+            for (i = 0; i < name.len; i++) {
+                name.chars[i] = (uint16_t)(b[20u + 2u * i] | (uint16_t)b[21u + 2u * i] << 8);
+            }
+            st = nt_vfs_path(&name, to, sizeof(to));
+            if (st != VIBEOS_STATUS_SUCCESS) {
+                break;
+            }
+            if (vibeos_fs_resolve(f->path, &m1, &t1) != 0 || vibeos_fs_resolve(to, &m2, &t2) != 0) {
+                st = VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND;
+            } else if (m1 != m2) {
+                st = VIBEOS_STATUS_NOT_SAME_DEVICE;
+            } else {
+                int r = vibeos_fs_rename(m1, t1, t2, b[0] ? 0u : VIBEOS_RENAME_NOREPLACE);
+                st = r == 0 ? VIBEOS_STATUS_SUCCESS
+                   : r == -VIBEOS_EEXIST ? VIBEOS_STATUS_OBJECT_NAME_COLLISION
+                   : nt_status_of_open(r);
+                if (r == 0) {
+                    vibeos_file_paths_moved(f->path, to);
+                }
+            }
+            break;
+        }
+    }
+    vibeos_file_put(f);
+    iosb.status = st;
+    iosb.information = 0;
+    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(st);
+}
+
 #define NT_FILE_SERVICES(X) \
     X(VIBEOS_NT_NR_NtOpenFile, NtOpenFile, OPEN, \
       PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
@@ -407,6 +702,12 @@ static long nt_create_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t io
     X(VIBEOS_NT_NR_NtCreateFile, NtCreateFile, OPEN, \
       PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
       nt_create_file(ARG(0), NT_ARG32(1), ARG(2), ARG(3), NT_ARG32(7), NT_ARG32(8), ARG(9), NT_ARG32(10))) \
+    X(VIBEOS_NT_NR_NtQueryInformationFile, NtQueryInformationFile, FSTAT, \
+      PTRS(OUT(1, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(2, 3)), \
+      nt_query_information_file(ARG(0), ARG(1), ARG(2), NT_ARG32(3), NT_ARG32(4))) \
+    X(VIBEOS_NT_NR_NtSetInformationFile, NtSetInformationFile, FSTAT, \
+      PTRS(OUT(1, sizeof(vibeos_nt_iosb_t)), NT_IN_BUF(2, 3)), \
+      nt_set_information_file(ARG(0), ARG(1), ARG(2), NT_ARG32(3), NT_ARG32(4))) \
     X(VIBEOS_NT_NR_NtReadFile, NtReadFile, READ, \
       PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6), IN_OPT(7, 8)), \
       nt_rw(0, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), ARG(7))) \
