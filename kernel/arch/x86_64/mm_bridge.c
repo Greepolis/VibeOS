@@ -2806,15 +2806,24 @@ int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
      * defect happens. */
     {
         const uint64_t *pg = (const uint64_t *)(uintptr_t)(fault_va & ~0xFFFull);
+        const uint64_t *ent = vibeos_vmspace_entry(&v, fault_va & ~0xFFFull);
         uint64_t fold_before = 0ull, fold_after = 0ull;
         uint32_t q;
+        /* Only where there will be a copy to check: a page with one owner
+         * takes the fast path, write granted on the same frame, and its two
+         * folds compared a frame with itself - 1,024 reads per fault that
+         * could never differ (#137). Asked before the resolution; a sharer
+         * that leaves meanwhile only makes this fold a page that was not
+         * copied after all, which agrees with itself. */
+        int check = ent && (*ent & 1ull) &&
+                    vibeos_frame_owners(*ent & 0x000FFFFFFFFFF000ull) > 1u;
 
-        for (q = 0; q < 512u; q++) {
+        for (q = 0; check && q < 512u; q++) {
             fold_before = (fold_before * 31ull) ^ pg[q];
         }
         handled = vibeos_vmspace_fault(&v, fault_va, 1);
         if (handled) {
-            for (q = 0; q < 512u; q++) {
+            for (q = 0; check && q < 512u; q++) {
                 fold_after = (fold_after * 31ull) ^ pg[q];
             }
             /* Every resolution, so the fold's zero can be read against how
