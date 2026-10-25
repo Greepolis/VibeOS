@@ -549,3 +549,50 @@ What the step boots found that was not the step's: M-117 (kill(pid, 0) and a
 thread on its way out, fixed in part and reopened when it recurred) and M-070
 again, an end-of-boot swap slot in a swap regime the 16 KiB kernel stacks
 moved the boot into; both in the tracker, the second now instrumented.
+
+## W4 (from 2026-10-25): files
+
+Measured by `ntdll:file`, `ntdll:directory` and `kernel32:file`. Twenty-six
+services are W4's in the registry; before it, NtOpenFile opened an existing
+file to read and NtWriteFile wrote at the file's own position, which is what
+loading a DLL and printing to a console need.
+
+**What W4 has to decide is how Windows' file model sits on the VFS.** A handle
+is a description already (W2), so most of this is translation: dispositions
+and options onto create and truncate, the information classes onto stat and
+the description's position, and Windows' names onto the VFS's. The two places
+where the models differ, and which each step below has to answer for:
+
+- *names*: Windows compares without case, and a filesystem under C: may not;
+  the walk has to find `Foo` when asked for `FOO` on tmpfs as FAT already does;
+- *sharing*: Windows refuses an open that conflicts with another handle's share
+  mode; nothing in the VFS keeps share modes yet.
+
+Order, each a commit with host tests and sabotage cases:
+
+1. **NtCreateFile, and NtOpenFile complete.** The six dispositions, the access
+   rights onto the description's mode, DIRECTORY_FILE / NON_DIRECTORY_FILE,
+   DELETE_ON_CLOSE, the synchronous-I/O options, and the status block's
+   `Information` saying what happened (opened, created, overwritten,
+   superseded).
+2. **NtReadFile and NtWriteFile complete.** A byte offset, the two special
+   offsets (the file's position; the end of the file), STATUS_END_OF_FILE, and
+   an event set on completion. Completion is always synchronous here; an APC
+   is W5's, with threads that can be alerted.
+3. **NtQueryInformationFile and NtSetInformationFile.** Basic, Standard,
+   Position, EndOfFile, Allocation, Disposition, Rename, Link, Name, Attribute
+   tag, Network open, All.
+4. **The small services.** NtQueryAttributesFile, NtQueryFullAttributesFile,
+   NtQueryVolumeInformationFile, NtFlushBuffersFile, NtDeleteFile, and
+   NtCancelIoFile* (nothing is ever pending).
+5. **NtQueryDirectoryFile.** The directory classes, a mask with `*` and `?`,
+   restart and single-entry.
+6. **Names without case** on every filesystem under C:, and names beyond ASCII
+   (UTF-16 to UTF-8 and back).
+7. **Share modes and byte-range locks.** The share check at open, NtLockFile
+   and NtUnlockFile on the record-lock table (`kernel/fs/filelock.c`).
+8. **kernel32's file API** over the services: CreateFile, ReadFile, WriteFile,
+   SetFilePointer(Ex), GetFileSize(Ex), the Find* family, DeleteFile, MoveFile,
+   CreateDirectory, GetFileAttributes(Ex) and their A forms.
+9. **The oracle.** The three tests staged and run at boot, and what they say
+   recorded here.
