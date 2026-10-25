@@ -76,6 +76,10 @@ uint32_t vibeos_open_walk_flags(uint32_t flags);
  * refuses an existing one, O_TRUNC empties it, O_APPEND writes at its end,
  * O_RDWR reads and writes. Opening to write on a filesystem that writes
  * nothing is EROFS. 0 and a negated errno in *err otherwise. */
+/* A description's offset, taken in turn: what read, write and seek take, for a
+ * personality that moves it itself (getdents, NtReadFile at an offset). */
+void vibeos_file_pos_take(vibeos_file_t *f);
+void vibeos_file_pos_give(vibeos_file_t *f);
 vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t mode,
                                 long *err);
 

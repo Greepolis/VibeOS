@@ -7,9 +7,9 @@
 
 ### NtWriteFile reads its ULONG length as 64 bits
 --- old
-      nt_write_file(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5), NT_ARG32(6), ARG(7)))
+      nt_rw(1, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), ARG(7)))
 +++ new
-      nt_write_file(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5), ARG(6), ARG(7)))
+      nt_rw(1, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), ARG(6), ARG(7)))
 
 ### a handle that is not a multiple of four is taken as one
 --- old
@@ -17,11 +17,11 @@
 +++ new
     if (me < 0 || handle == 0u || handle / 4u > (uint64_t)VIBEOS_FD_MAX) {
 
-### an offset is ignored instead of refused
+### an offset on a file without offsets is ignored instead of refused
 --- old
-    if (event != 0u || apc != 0u || offset != 0u) {
+            n = -VIBEOS_EINVAL;   /* a console or a pipe has no offsets */
 +++ new
-    if (event != 0u || apc != 0u) {
+            n = write ? f->ops->write(f, buf, len) : f->ops->read(f, buf, len);
 
 ### the status block reports nothing written
 --- old

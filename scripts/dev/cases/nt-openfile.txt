@@ -45,3 +45,23 @@
         info = disposition == NT_FILE_SUPERSEDE ? NT_FILE_SUPERSEDED : NT_FILE_OVERWRITTEN;
 +++ new
         info = NT_FILE_OPENED;
+
+### a read at the end says success with nothing read (W4 step 2)
+--- old
+       : (!write && n == 0 && len != 0u) ? VIBEOS_STATUS_END_OF_FILE : VIBEOS_STATUS_SUCCESS;
++++ new
+       : VIBEOS_STATUS_SUCCESS;
+
+### a write at the end of the file goes to offset zero (W4 step 2)
+--- old
+        if (off == NT_OFF_END) {
+            vibeos_file_stat_t s;
++++ new
+        if (0) {
+            vibeos_file_stat_t s;
+
+### the event is never set on completion (W4 step 2)
+--- old
+        (void)nt_io_event(event, 1);
++++ new
+        (void)0;

@@ -133,12 +133,12 @@ static void t_write_file(void) {
     expect(nt(VIBEOS_NT_NR_NtWriteFile, 4u * 300u, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
            "a handle naming no descriptor is INVALID_HANDLE");
     kf_next_sp(stack_args(rest, 5));
-    expect(nt(VIBEOS_NT_NR_NtWriteFile, 8, 0x40, 0, 0, 0) == ST(VIBEOS_STATUS_NOT_IMPLEMENTED),
-           "an event asks for W4's asynchronous completion: refused, not ignored");
+    expect(nt(VIBEOS_NT_NR_NtWriteFile, 8, 0x40, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
+           "an event that is no event's handle is refused before anything is written (W4)");
     rest[3] = off;
     kf_next_sp(stack_args(rest, 5));
-    expect(nt(VIBEOS_NT_NR_NtWriteFile, 8, 0, 0, 0, 0) == ST(VIBEOS_STATUS_NOT_IMPLEMENTED) &&
-           con_count("nt-he") == 1, "an offset is W4's: refused, and nothing written");
+    expect(nt(VIBEOS_NT_NR_NtWriteFile, 8, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+           con_count("nt-he") == 1, "an offset on the console, which has none: refused, nothing written (W4)");
     rest[3] = 0;
     rest[0] = 0x10u;   /* the status block is nobody's memory */
     kf_next_sp(stack_args(rest, 5));
@@ -607,6 +607,59 @@ static void t_create_file(void) {
            create_file(&h, &info, rw, "\\??\\C:\\w4\\b.txt", 2, 0x41) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
            create_file(&h, &info, rw, "\\??\\C:\\w4\\b.txt", 2, 0x1000) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
            "an unknown disposition, both kinds asked, DELETE_ON_CLOSE without DELETE");
+}
+
+/* NtReadFile or NtWriteFile of `len` bytes at `buf`, at *offset when `offset`
+ * is not null, with `event` for completion. The status, and the count. */
+static long rw_file(int write, uint64_t h, uint64_t event, uint64_t buf, uint32_t len,
+                    const uint64_t *offset, uint64_t *count) {
+    uint64_t iosb = kf_ualloc(16), off = 0;
+    uint64_t rest[5];
+    long r;
+
+    if (offset) {
+        off = kf_ualloc(8);
+        *(uint64_t *)kf_uptr(off) = *offset;
+    }
+    rest[0] = iosb;
+    rest[1] = buf;
+    rest[2] = len;
+    rest[3] = off;
+    rest[4] = 0;
+    kf_next_sp(stack_args(rest, 5));
+    r = nt(write ? VIBEOS_NT_NR_NtWriteFile : VIBEOS_NT_NR_NtReadFile, h, event, 0, 0, 0);
+    *count = ((uint64_t *)kf_uptr(iosb))[1];
+    return r;
+}
+
+/* W4 step 2: offsets, the two that are not, the end of the file, events. */
+static void t_read_write_file(void) {
+    const uint32_t rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE;
+    uint64_t h = 0, info = 0, n = 0, ev = 0, buf = kf_ualloc(32);
+    const uint64_t at4 = 4, end = 0xFFFFFFFFFFFFFFFFull, cur = 0xFFFFFFFFFFFFFFFEull, past = 100;
+    char *b = (char *)kf_uptr(buf);
+
+    fresh(44);
+    kf_fs_add("/w4", 0, 0, 1);
+    expect(create_file(&h, &info, rw, "\\??\\C:\\w4\\rw.txt", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS),
+           "a file to read and write");
+    memcpy(b, "abcdefgh", 8);
+    expect(rw_file(1, h, 0, buf, 8, 0, &n) == ST(VIBEOS_STATUS_SUCCESS) && n == 8u, "eight bytes at the position");
+    memcpy(b, "XY", 2);
+    expect(rw_file(1, h, 0, buf, 2, &at4, &n) == ST(VIBEOS_STATUS_SUCCESS) && n == 2u &&
+               rw_file(1, h, 0, buf, 2, &end, &n) == ST(VIBEOS_STATUS_SUCCESS),
+           "two at offset four, two at the end");
+    memset(b, 0, 32);
+    expect(rw_file(0, h, 0, buf, 32, &(uint64_t){0}, &n) == ST(VIBEOS_STATUS_SUCCESS) && n == 10u &&
+               memcmp(b, "abcdXYghXY", 10) == 0,
+           "read back from offset zero: the file is what the writes made it");
+    expect(rw_file(0, h, 0, buf, 4, &cur, &n) == ST(VIBEOS_STATUS_END_OF_FILE) && n == 0u &&
+               rw_file(0, h, 0, buf, 4, &past, &n) == ST(VIBEOS_STATUS_END_OF_FILE),
+           "at the position, now the end, and past the end: STATUS_END_OF_FILE");
+    expect(create_event(&ev, 0x1F0003u, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               rw_file(0, h, ev, buf, 2, &at4, &n) == ST(VIBEOS_STATUS_SUCCESS) && event_state(ev) == 1 &&
+               memcmp(b, "XY", 2) == 0,
+           "the event is set when the read completes");
 }
 
 /* A Linux call, from the NT tests: to make files with owners and modes, which
@@ -1721,6 +1774,7 @@ int test_nt_abi(void) {
     t_semaphores();
     t_delay();
     t_handles_and_names();
+    t_read_write_file();
     t_create_file();
     t_sections();
     t_open_file_permissions();

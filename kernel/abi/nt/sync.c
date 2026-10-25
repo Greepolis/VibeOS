@@ -163,6 +163,12 @@ static long event_change(uint64_t h, uint64_t prev_u, int how) {
 }
 
 static long nt_set_event(uint64_t h, uint64_t prev) { return event_change(h, prev, EV_SET); }
+
+/* For the file services (W4): the event an I/O was given is reset when it
+ * starts and set when it completes, as Windows does. A status, 0 for success. */
+uint32_t nt_io_event(uint64_t h, int set) {
+    return (uint32_t)event_change(h, 0, set ? EV_SET : EV_RESET);   /* NT_STATUS: the status itself */
+}
 static long nt_reset_event(uint64_t h, uint64_t prev) { return event_change(h, prev, EV_RESET); }
 static long nt_clear_event(uint64_t h) { return event_change(h, 0, EV_RESET); }
 static long nt_pulse_event(uint64_t h, uint64_t prev) { return event_change(h, prev, EV_PULSE); }

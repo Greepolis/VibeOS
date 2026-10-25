@@ -138,6 +138,8 @@ uint32_t nt_ob_open(const vibeos_file_ops_t *ops, const nt_name_t *name, vibeos_
 /* What `want` grants of `ops`'s type: the generic rights mapped onto its own. */
 uint32_t nt_map_access(const vibeos_file_ops_t *ops, uint32_t want);
 uint32_t nt_map_access_with(const nt_type_t *t, uint32_t want);
+/* Reset (set = 0) or set an event handle for an I/O (sync.c). */
+uint32_t nt_io_event(uint64_t h, int set);
 /* An NT path - "\??\C:\..." - as the VFS path it names. A status. */
 uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap);
 /* A handle for `f`, taking over the caller's reference (released on failure). */

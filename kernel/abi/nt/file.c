@@ -62,39 +62,81 @@ uint32_t nt_status_of_errno(long err) {
     }
 }
 
-/* NtWriteFile(File, Event, ApcRoutine, ApcContext, IoStatusBlock, Buffer,
- * Length, ByteOffset, Key). The bytes go through the description's own write,
- * the same one Linux's write() reaches, so a console, a pipe or a file behaves
- * here as it does there. The status block is written last, as Windows writes
- * it on completion: STATUS_SUCCESS and the count, or the failure and zero.
+/* The two offsets that are not offsets (Windows' FILE_WRITE_TO_END_OF_FILE
+ * and FILE_USE_FILE_POINTER_POSITION, as LARGE_INTEGER high-low -1:-1 and
+ * -1:-2). */
+#define NT_OFF_END     0xFFFFFFFFFFFFFFFFull
+#define NT_OFF_CURRENT 0xFFFFFFFFFFFFFFFEull
+
+/* NtReadFile and NtWriteFile(File, Event, ApcRoutine, ApcContext,
+ * IoStatusBlock, Buffer, Length, ByteOffset, Key), W4 step 2.
  *
- * An event, an APC or an offset asks for what W4 provides - asynchronous
- * completion and positioned writes - and is answered STATUS_NOT_IMPLEMENTED
- * rather than ignored: a program that asked for its write at offset 4096 and
- * got it at the file's position would have had a different file written. */
-static long nt_write_file(uint64_t file, uint64_t event, uint64_t apc, uint64_t apc_ctx,
-                          uint64_t iosb_u, uint64_t buf, uint64_t len, uint64_t offset) {
+ * At ByteOffset when one is given, at the handle's position otherwise or when
+ * it says so, at the end for a write that asks; the position moves past what
+ * was moved either way, as on a synchronous handle - and every handle here is
+ * synchronous: the call returns complete. The event is reset as the call
+ * starts and set as it completes; an APC is W5's, with threads that can be
+ * alerted, and is refused rather than never called. A read at or past the end
+ * is STATUS_END_OF_FILE with nothing moved. The status block is written last. */
+static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64_t iosb_u,
+                  uint64_t buf, uint64_t len, uint64_t offp) {
     vibeos_file_t *f;
     vibeos_nt_iosb_t iosb;
+    uint64_t off = NT_OFF_CURRENT;
     long n;
     uint32_t st;
 
-    (void)apc_ctx;
-    if (event != 0u || apc != 0u || offset != 0u) {
+    if (apc != 0u) {
         return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
+    }
+    if (offp != 0u && vibeos_uaccess_copy(&off, (const void *)(uintptr_t)offp, sizeof(off)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     f = nt_file_get(file);
     if (!f) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
     }
-    /* `len` is the row's NT_ARG32: 32 bits already, decided in one place. */
-    n = f->ops->write ? f->ops->write(f, buf, len) : -VIBEOS_EBADF;
+    if (event != 0u && (st = nt_io_event(event, 0)) != VIBEOS_STATUS_SUCCESS) {
+        vibeos_file_put(f);
+        return NT_STATUS(st);
+    }
+    if (off == NT_OFF_CURRENT || !(write ? f->ops->pwrite : f->ops->pread)) {
+        /* `len` is the row's NT_ARG32: 32 bits already, decided in one place. */
+        if (off != NT_OFF_CURRENT && off != NT_OFF_END) {
+            n = -VIBEOS_EINVAL;   /* a console or a pipe has no offsets */
+        } else if (write) {
+            n = f->ops->write ? f->ops->write(f, buf, len) : -VIBEOS_EBADF;
+        } else {
+            n = f->ops->read ? f->ops->read(f, buf, len) : -VIBEOS_EBADF;
+        }
+    } else {
+        if (off == NT_OFF_END) {
+            vibeos_file_stat_t s;
+
+            vibeos_file_stat_clear(&s);
+            off = (f->ops->stat && f->ops->stat(f, &s) == 0) ? s.size : f->size;
+        }
+        if (off >= 0x8000000000000000ull) {
+            n = -VIBEOS_EINVAL;
+        } else {
+            n = write ? f->ops->pwrite(f, buf, len, off) : f->ops->pread(f, buf, len, off);
+            if (n >= 0) {
+                vibeos_file_pos_take(f);
+                f->pos = off + (uint64_t)n;
+                vibeos_file_pos_give(f);
+            }
+        }
+    }
     vibeos_file_put(f);
-    st = n < 0 ? nt_status_of_errno(n) : VIBEOS_STATUS_SUCCESS;
+    st = n < 0 ? nt_status_of_errno(n)
+       : (!write && n == 0 && len != 0u) ? VIBEOS_STATUS_END_OF_FILE : VIBEOS_STATUS_SUCCESS;
     iosb.status = st;
     iosb.information = n < 0 ? 0u : (uint64_t)n;
     if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    if (event != 0u) {
+        (void)nt_io_event(event, 1);
     }
     return NT_STATUS(st);
 }
@@ -365,8 +407,11 @@ static long nt_create_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t io
     X(VIBEOS_NT_NR_NtCreateFile, NtCreateFile, OPEN, \
       PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
       nt_create_file(ARG(0), NT_ARG32(1), ARG(2), ARG(3), NT_ARG32(7), NT_ARG32(8), ARG(9), NT_ARG32(10))) \
+    X(VIBEOS_NT_NR_NtReadFile, NtReadFile, READ, \
+      PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6), IN_OPT(7, 8)), \
+      nt_rw(0, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), ARG(7))) \
     X(VIBEOS_NT_NR_NtWriteFile, NtWriteFile, WRITE, \
       PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_IN_BUF(5, 6), IN_OPT(7, 8)), \
-      nt_write_file(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5), NT_ARG32(6), ARG(7)))
+      nt_rw(1, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), ARG(7)))
 
 NT_DEFINE_SERVICES(file, NT_FILE_SERVICES)
