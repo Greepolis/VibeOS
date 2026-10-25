@@ -1682,6 +1682,7 @@ void hw_task_exit(uint64_t code) {
     }
     if (dying >= 0) {
         g_tasks[dying].on_cpu = 0;
+        vibeos_task_touch();
     }
     cpu->current_task = next;
     (void)hw_task_set_state(next, HW_TASK_RUNNING, __func__);

@@ -62,6 +62,18 @@ static const uint16_t g_weight[40] = {
  * overflow. */
 #define VRUNTIME_SCALE 1024ull
 
+/* Moves with every change should_preempt could see - a class, a priority,
+ * an affinity, a slot admitted or forgotten (#90). */
+static uint64_t g_policy_gen;
+
+uint64_t vibeos_sched_policy_generation(void) {
+    return __atomic_load_n(&g_policy_gen, __ATOMIC_ACQUIRE);
+}
+
+static void policy_moved(void) {
+    (void)__atomic_add_fetch(&g_policy_gen, 1ull, __ATOMIC_ACQ_REL);
+}
+
 uint32_t vibeos_sched_policy_quantum(vibeos_sched_class_t cls) {
     switch (cls) {
         /* Short: a kernel task is expected to finish or block quickly, and
@@ -86,6 +98,7 @@ static int slot_ok(uint32_t slot) {
 }
 
 int vibeos_sched_policy_init(uint32_t slots) {
+    policy_moved();
     uint32_t i;
 
     if (slots == 0u || slots > VIBEOS_SCHED_MAX_SLOTS) {
@@ -128,6 +141,7 @@ static uint64_t class_floor(uint8_t cls) {
 
 int vibeos_sched_policy_admit(uint32_t slot, vibeos_sched_class_t cls, int nice,
                         uint32_t cpu_mask) {
+    policy_moved();
     uint64_t floor;
 
     /* A slot past the table is a policy nobody sized - or never initialised,
@@ -158,6 +172,7 @@ int vibeos_sched_policy_admit(uint32_t slot, vibeos_sched_class_t cls, int nice,
 }
 
 int vibeos_sched_policy_set_class(uint32_t slot, vibeos_sched_class_t cls, uint32_t rt_prio) {
+    policy_moved();
     if (!slot_ok(slot) || cls == VIBEOS_SCHED_KERNEL ||
         (uint32_t)cls >= (uint32_t)VIBEOS_SCHED_CLASS_COUNT) {
         return -1;
@@ -183,6 +198,7 @@ uint32_t vibeos_sched_policy_rt_prio(uint32_t slot) {
 }
 
 void vibeos_sched_policy_forget(uint32_t slot) {
+    policy_moved();
     if (slot < g_slots) {
         g_task[slot].present = 0;
     }
@@ -216,6 +232,7 @@ int vibeos_sched_policy_nice(uint32_t slot) {
 }
 
 int vibeos_sched_policy_set_affinity(uint32_t slot, uint32_t cpu_mask) {
+    policy_moved();
     if (!slot_ok(slot)) {
         return -1;
     }

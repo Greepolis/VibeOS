@@ -62,6 +62,12 @@ uint32_t vibeos_task_generation(uint32_t slot);
  * Allocating a slot (FREE to SETUP) bumps the generation. Releasing one
  * (ZOMBIE to FREE) is the publish point, and is the last thing its caller may
  * do to the slot. */
+/* Moves whenever a task may have become runnable - every state change, and
+ * vibeos_task_touch for what the table does not see (a core letting a task
+ * go). A scheduler that asked a question of the runnable set can ask this
+ * whether the answer may have changed (#90). */
+uint64_t vibeos_task_runnable_gen(void);
+void vibeos_task_touch(void);
 int vibeos_task_transition(uint32_t slot, vibeos_task_state_t to,
                            const char *why);
 

@@ -509,9 +509,16 @@ uint32_t hw_slice_for(int slot) {
 static int hw_higher_class_runnable(hw_cpu_t *cpu, int current) {
     uint32_t i;
     uint64_t runnable = 0;
+    /* Read before the walk: a change during it moves them, and the next tick
+     * then walks again. */
+    uint64_t tg = vibeos_task_runnable_gen(), pg = vibeos_sched_policy_generation();
+    int r;
 
     if (current < 0 || current >= VIBEOS_HW_MAX_TASKS) {
         return 1;
+    }
+    if (cpu->hc_current == current && cpu->hc_task_gen == tg && cpu->hc_policy_gen == pg) {
+        return 0;
     }
     for (i = 0; i < (uint32_t)VIBEOS_HW_MAX_TASKS; i++) {
         if ((int)i != current && hw_task_runnable(0, i, (uint32_t)cpu->index)) {
@@ -521,7 +528,11 @@ static int hw_higher_class_runnable(hw_cpu_t *cpu, int current) {
     /* The rule itself lives with the policy, so this cannot half-implement it:
      * this function tested only "current is IDLE", and a KERNEL task waited
      * behind a NORMAL one for the rest of its slice (M-035). */
-    return vibeos_sched_policy_should_preempt((uint32_t)cpu->index, current, runnable);
+    r = vibeos_sched_policy_should_preempt((uint32_t)cpu->index, current, runnable);
+    cpu->hc_current = r ? -1 : current;
+    cpu->hc_task_gen = tg;
+    cpu->hc_policy_gen = pg;
+    return r;
 }
 
 int hw_pick_next(hw_cpu_t *cpu) {
@@ -897,6 +908,7 @@ void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
         /* Only now is it safe for another core to take it: its context is
          * saved and this core is about to stop touching it. */
         g_tasks[cur].on_cpu = 0;
+        vibeos_task_touch();
     }
     cpu->current_task = next;
     (void)hw_task_set_state(next, HW_TASK_RUNNING, __func__);

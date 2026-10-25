@@ -350,6 +350,13 @@ typedef struct hw_cpu {
     volatile int online;
     /* Ticks left in the current task's slice. See hw_schedule. */
     uint32_t slice_left;
+    /* The last "nothing of a higher class is runnable" this core worked out,
+     * for which task and against which generations of the task table and the
+     * policy: while neither moved, the answer stands, and a tick costs no
+     * walk of every slot (#90). Only a "no" is kept - a "yes" ends the slice. */
+    uint64_t hc_task_gen;
+    uint64_t hc_policy_gen;
+    int hc_current;     /* -1: nothing kept */
     /* A kernel stack whose task has exited but whose core has not yet left it.
      *
      * The stack a task exits on is the one it is standing on. It cannot be

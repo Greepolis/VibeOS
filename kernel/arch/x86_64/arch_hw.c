@@ -431,6 +431,7 @@ void hw_load_gdt(uint32_t cpu_index) {
     cpu->self = cpu;
     cpu->index = cpu_index;
     cpu->current_task = -1;
+    cpu->hc_current = -1;
     cpu->idle_task = -1;
     hw_setup_tss_descriptor(5u + 2u * cpu_index, (uint64_t)(uintptr_t)&cpu->tss,
                             (uint32_t)(sizeof(cpu->tss) - 1u));

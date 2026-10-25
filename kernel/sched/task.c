@@ -121,6 +121,16 @@ const char *vibeos_task_last_why(uint32_t slot) {
     return g_why[slot];
 }
 
+static uint64_t g_task_gen;
+
+uint64_t vibeos_task_runnable_gen(void) {
+    return __atomic_load_n(&g_task_gen, __ATOMIC_ACQUIRE);
+}
+
+void vibeos_task_touch(void) {
+    (void)__atomic_add_fetch(&g_task_gen, 1ull, __ATOMIC_ACQ_REL);
+}
+
 int vibeos_task_transition(uint32_t slot, vibeos_task_state_t to,
                            const char *why) {
     vibeos_task_state_t from;
@@ -143,6 +153,7 @@ int vibeos_task_transition(uint32_t slot, vibeos_task_state_t to,
      * its next occupant will have, so a reference taken before the release
      * would validate against the new tenant - which is exactly the failure the
      * generation exists to catch. */
+    vibeos_task_touch();
     if (from == VIBEOS_TASK_FREE && to == VIBEOS_TASK_SETUP) {
         g_generation[slot]++;
         g_ran[slot] = 0;
