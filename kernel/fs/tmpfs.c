@@ -13,7 +13,7 @@
 typedef struct {
     uint32_t ino;
     uint16_t len;
-    uint16_t pad;
+    uint16_t hash;   /* tf_name_hash of the name: compared before the name is */
     char name[VIBEOS_NAME_MAX + 1u];
 } tf_dirent_t;
 
@@ -344,6 +344,18 @@ static tf_dirent_t *tf_dirent(vibeos_tmpfs_t *t, vibeos_tmpfs_inode_t *dir, uint
     return (tf_dirent_t *)(void *)(page + (slot % DIRENTS_PER_PAGE) * sizeof(tf_dirent_t));
 }
 
+/* FNV-1a folded to sixteen bits. A lookup used to compare every record's
+ * name in turn, finding each record's page again for each (#97); now it walks
+ * a page at a time and compares a name only when its length and this agree. */
+static uint16_t tf_name_hash(const char *name, uint32_t len) {
+    uint32_t h = 2166136261u, i;
+
+    for (i = 0; i < len; i++) {
+        h = (h ^ (uint8_t)name[i]) * 16777619u;
+    }
+    return (uint16_t)(h ^ (h >> 16));
+}
+
 static int tf_name_eq(const tf_dirent_t *d, const char *name, uint32_t len) {
     uint32_t i;
     if (d->len != len) {
@@ -361,16 +373,26 @@ static int tf_name_eq(const tf_dirent_t *d, const char *name, uint32_t len) {
 static int64_t tf_find(vibeos_tmpfs_t *t, uint32_t dir, const char *name, uint32_t len,
                        uint32_t *ino) {
     vibeos_tmpfs_inode_t *d = &t->inode[dir];
-    uint64_t s;
+    uint16_t h = tf_name_hash(name, len);
+    uint64_t s = 0;
 
-    for (s = 0; s < d->size; s++) {
+    while (s < d->size) {
+        /* A page of records at once: the page is found once, not per record. */
         tf_dirent_t *e = tf_dirent(t, d, s, 0);
-        if (e && tf_name_eq(e, name, len)) {
-            if (ino) {
-                *ino = e->ino;
-            }
-            return (int64_t)s;
+        uint64_t k, end = s - s % DIRENTS_PER_PAGE + DIRENTS_PER_PAGE;
+
+        if (end > d->size) {
+            end = d->size;
         }
+        for (k = 0; e && s + k < end; k++) {
+            if (e[k].hash == h && tf_name_eq(&e[k], name, len)) {
+                if (ino) {
+                    *ino = e[k].ino;
+                }
+                return (int64_t)(s + k);
+            }
+        }
+        s = end;
     }
     return -1;
 }
@@ -393,6 +415,7 @@ static int tf_add(vibeos_tmpfs_t *t, uint32_t dir, const char *name, uint32_t le
     }
     e->ino = ino;
     e->len = (uint16_t)len;
+    e->hash = tf_name_hash(name, len);
     tf_copy(e->name, name, len);
     e->name[len] = 0;
     d->size++;
