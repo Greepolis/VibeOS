@@ -420,8 +420,19 @@ void vibeos_elf_fill_page_via(const vibeos_elf_image_t *img,
     if (!img || !read || !dst) {
         return;
     }
-    for (k = 0; k < VIBEOS_ELF_PAGE_SIZE; k++) {
-        d[k] = 0;   /* .bss and the padding either side of a segment */
+    /* .bss and the padding either side of a segment are zero - unless one
+     * segment's file bytes cover the whole page, which is most pages of a
+     * program's text, and then the clear was overwritten entirely (#132). */
+    {
+        int whole = 0;
+
+        for (i = 0; i < img->count && !whole; i++) {
+            whole = img->seg[i].vaddr <= page_va &&
+                    img->seg[i].vaddr + img->seg[i].filesz >= page_va + VIBEOS_ELF_PAGE_SIZE;
+        }
+        for (k = 0; !whole && k < VIBEOS_ELF_PAGE_SIZE; k++) {
+            d[k] = 0;
+        }
     }
     for (i = 0; i < img->count; i++) {
         const vibeos_elf_segment_t *s = &img->seg[i];
