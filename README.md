@@ -1,13 +1,20 @@
-# VibeOS
+# VibeOS — Experimental x86-64 Operating System
 
-VibeOS is a from-scratch operating system project focused on:
-- modular architecture
-- security-first design
-- high-performance kernel/runtime paths
-- multi-platform compatibility strategy (Linux/Windows/macOS software layers)
+VibeOS is an open-source operating system built from scratch for **x86-64 PCs**.
+It boots through **UEFI**, brings up multiple CPU cores (**SMP**), and runs
+ELF64 programs in **ring 3** through a Linux-compatible system-call ABI.
 
-The system boots on UEFI firmware, brings up every core, and runs real ELF
-programs in ring 3 through the Linux system-call ABI.
+The project explores kernel architecture, memory management, preemptive
+multitasking, Linux userspace compatibility, filesystems, and TCP/IP networking.
+It can be booted and tested with **QEMU + OVMF**, without physical hardware.
+
+> **Project status:** experimental and actively developed. This is not a
+> general-purpose replacement for Linux or Windows; see [What runs today](#what-runs-today)
+> for implemented features and [Current Focus](#current-focus) for work in progress.
+
+**Key areas:** x86-64 kernel · UEFI boot · SMP · ELF64 · Linux syscall ABI ·
+copy-on-write fork · filesystems · TCP/IP · QEMU
+
 
 ## What runs today
 
@@ -69,8 +76,8 @@ than asserted.
 
 - a ring-3 program that draws its own window and receives its own input; the
   GUI is currently kernel code
-- keyboard into that window, so the machine is usable without a serial cable
-- dynamic executables, then threads with real futexes
+- keyboard input into that window, so the machine is usable without a serial cable
+- thread support and real futex-based synchronization
 
 ## Build and Test
 
