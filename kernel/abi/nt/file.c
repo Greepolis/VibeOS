@@ -164,25 +164,77 @@ static const nt_type_t g_file_type = {
     "File", NT_FILE_ALL_ACCESS, 0x00120089u, 0x00120116u, 0x001200A0u, 0, 0,
 };
 
-/* NtOpenFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
- * ShareAccess, OpenOptions): an existing file, to read - which is what loading
- * a DLL needs. Asking to write is W4's, and is refused as not implemented
- * rather than opened read-only behind the caller's back. */
-static long nt_open_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb_u,
-                         uint64_t share, uint64_t options) {
+/* NtCreateFile's dispositions and the options both services read (W4 step 1). */
+#define NT_FILE_SUPERSEDE      0u
+#define NT_FILE_OPEN           1u
+#define NT_FILE_CREATE         2u
+#define NT_FILE_OPEN_IF        3u
+#define NT_FILE_OVERWRITE      4u
+#define NT_FILE_OVERWRITE_IF   5u
+#define NT_FILE_DIRECTORY_FILE      0x00000001u
+#define NT_FILE_NON_DIRECTORY_FILE  0x00000040u
+#define NT_FILE_DELETE_ON_CLOSE     0x00001000u
+/* What the status block's Information says happened. */
+#define NT_FILE_SUPERSEDED     0u
+#define NT_FILE_CREATED        2u
+#define NT_FILE_OVERWRITTEN    3u
+
+/* The directory a walk's last component is in, as Linux's openat asks it of
+ * the same walk. */
+static int nt_parent_of(const vibeos_path_t *w, vibeos_fs_node_t *dir) {
+    char parent[VIBEOS_PATH_MAX];
+    vibeos_path_t pw;
+    uint32_t cut = 0, i;
+
+    for (i = 0; w->path[i]; i++) {
+        if (w->path[i] == '/') {
+            cut = i;
+        }
+    }
+    for (i = 0; i < cut; i++) {
+        parent[i] = w->path[i];
+    }
+    if (cut == 0u) {
+        parent[cut++] = '/';
+    }
+    parent[cut] = 0;
+    if (vibeos_path_walk("/", "/", parent, 0u, &pw) != 0) {
+        return -1;
+    }
+    *dir = pw.node;
+    return 0;
+}
+
+/* Open or make the file an NT name names, as `disposition` and `options` say,
+ * and install a handle to it: NtCreateFile whole, and NtOpenFile as its OPEN.
+ *
+ * Decided before anything is touched, in Windows' order: the name, then
+ * whether it exists and what the disposition makes of that, then whether it is
+ * the kind of file the options asked for, then permission. A refusal leaves
+ * the file as it was - an OVERWRITE refused for permission must not have
+ * truncated anything. */
+static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uint64_t iosb_u,
+                             uint32_t disposition, uint32_t options) {
     nt_name_t name;
-    uint32_t attributes = 0, st, access;
+    uint32_t attributes = 0, st, access, flags, info, may;
     char path[VIBEOS_FILE_PATH];
     vibeos_path_t w;
     vibeos_cred_t who;
     vibeos_file_t *f;
     vibeos_nt_iosb_t iosb;
     long err = 0;
-    int rc;
+    int rc, isdir;
     uint64_t h;
 
-    (void)share;
-    (void)options;
+    if (disposition > NT_FILE_OVERWRITE_IF ||
+        ((options & NT_FILE_DIRECTORY_FILE) && (options & NT_FILE_NON_DIRECTORY_FILE))) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
+    /* A directory is made or opened, never superseded or overwritten. */
+    if ((options & NT_FILE_DIRECTORY_FILE) && disposition != NT_FILE_CREATE &&
+        disposition != NT_FILE_OPEN && disposition != NT_FILE_OPEN_IF) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
     st = nt_read_attributes(oa, &name, &attributes);
     if (st == VIBEOS_STATUS_SUCCESS && name.len == 0u) {
         st = VIBEOS_STATUS_OBJECT_NAME_INVALID;
@@ -193,41 +245,89 @@ static long nt_open_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
-    access = (uint32_t)want;
-    if (access & VIBEOS_GENERIC_ALL) {
-        access |= NT_FILE_ALL_ACCESS;
+    access = nt_map_access_with(&g_file_type, want);
+    if ((options & NT_FILE_DELETE_ON_CLOSE) && !(access & VIBEOS_DELETE)) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);   /* Windows asks DELETE for it */
     }
-    if (access & (VIBEOS_GENERIC_WRITE | NT_FILE_WRITE_DATA | NT_FILE_APPEND_DATA |
-                  NT_FILE_WRITE_EA | NT_FILE_WRITE_ATTRIBUTES | VIBEOS_DELETE)) {
-        return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
-    }
-    /* Walked and opened as the caller, as openat is: search permission on
-     * every directory, read permission on the file, and execute permission
-     * when FILE_EXECUTE is asked - the loader asks it. Walked by the kernel
-     * for itself it was a way to learn whether any path existed, and to map a
-     * program its owner had kept to themselves (M-105). */
     nt_cred(&who);
-    rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, &w);
+    rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_CREAT), &who, &w);
     if (rc != 0) {
         return NT_STATUS(nt_status_of_open(rc));
     }
-    if (vibeos_cred_may(&who, 0, w.node.mode, w.node.uid, w.node.gid,
-                        VIBEOS_MAY_READ | (((uint32_t)want & NT_FILE_EXECUTE) ? VIBEOS_MAY_EXEC : 0u)) != 0) {
-        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+    if (w.exists && disposition == NT_FILE_CREATE) {
+        return NT_STATUS(VIBEOS_STATUS_OBJECT_NAME_COLLISION);
     }
-    f = vibeos_open_path(&w, VIBEOS_O_RDONLY, 0, &err);
+    if (!w.exists && (disposition == NT_FILE_OPEN || disposition == NT_FILE_OVERWRITE)) {
+        return NT_STATUS(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND);
+    }
+    isdir = w.exists ? w.node.is_dir : (options & NT_FILE_DIRECTORY_FILE) != 0u;
+    if (isdir && (options & NT_FILE_NON_DIRECTORY_FILE)) {
+        return NT_STATUS(VIBEOS_STATUS_FILE_IS_A_DIRECTORY);
+    }
+    if (!isdir && (options & NT_FILE_DIRECTORY_FILE)) {
+        return NT_STATUS(VIBEOS_STATUS_NOT_A_DIRECTORY);
+    }
+    /* What the handle may do to the data decides the description's mode;
+     * attributes alone open it to read, which reads nothing. */
+    flags = (access & (NT_FILE_WRITE_DATA | NT_FILE_APPEND_DATA))
+                ? ((access & NT_FILE_READ_DATA) ? VIBEOS_O_RDWR : VIBEOS_O_WRONLY)
+                : VIBEOS_O_RDONLY;
+    if (isdir) {
+        if (flags != VIBEOS_O_RDONLY && w.exists) {
+            return NT_STATUS(VIBEOS_STATUS_FILE_IS_A_DIRECTORY);
+        }
+        flags = VIBEOS_O_RDONLY | VIBEOS_O_DIRECTORY;
+    }
+    info = NT_FILE_OPENED;
+    if (w.exists && (disposition == NT_FILE_SUPERSEDE || disposition == NT_FILE_OVERWRITE ||
+                     disposition == NT_FILE_OVERWRITE_IF)) {
+        flags |= VIBEOS_O_TRUNC;
+        info = disposition == NT_FILE_SUPERSEDE ? NT_FILE_SUPERSEDED : NT_FILE_OVERWRITTEN;
+    }
+    if (w.exists) {
+        may = ((flags & VIBEOS_O_ACCMODE) != VIBEOS_O_WRONLY && (access & NT_FILE_READ_DATA)
+                   ? VIBEOS_MAY_READ : 0u) |
+              ((flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDONLY || (flags & VIBEOS_O_TRUNC)
+                   ? VIBEOS_MAY_WRITE : 0u) |
+              ((access & NT_FILE_EXECUTE) && !isdir ? VIBEOS_MAY_EXEC : 0u);
+        if (may != 0u && vibeos_cred_may(&who, 0, w.node.mode, w.node.uid, w.node.gid, may) != 0) {
+            return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+        }
+    } else {
+        /* A new name in its directory: write and search permission there,
+         * which the walk's parent carries. */
+        vibeos_fs_node_t dir;
+
+        if (nt_parent_of(&w, &dir) == 0 &&
+            vibeos_cred_may(&who, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC) != 0) {
+            return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+        }
+        if (isdir) {
+            if (vibeos_fs_mkdir(w.mnt, w.tail) != 0) {
+                return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+            }
+            rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, &w);
+            if (rc != 0) {
+                return NT_STATUS(nt_status_of_open(rc));
+            }
+        } else {
+            flags |= VIBEOS_O_CREAT;
+        }
+        info = NT_FILE_CREATED;
+    }
+    f = vibeos_open_path(&w, flags, 0644u, &err);
     if (!f) {
         return NT_STATUS(nt_status_of_open(err));
     }
-    /* A file's generic rights are mapped here, not by the object manager: a
-     * file is the VFS's description, not one of its types. */
-    access = nt_map_access_with(&g_file_type, (uint32_t)want);
+    if (options & NT_FILE_DELETE_ON_CLOSE) {
+        f->unlink_on_release = 1;   /* the name goes with the last handle */
+    }
     st = nt_handle_install(f, access, attributes, &h);
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
     iosb.status = VIBEOS_STATUS_SUCCESS;
-    iosb.information = NT_FILE_OPENED;
+    iosb.information = info;
     if (vibeos_uaccess_copy((void *)(uintptr_t)out, &h, sizeof(h)) != 0 ||
         vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
         (void)nt_close_handle(h);
@@ -236,10 +336,35 @@ static long nt_open_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
 }
 
+/* NtOpenFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
+ * ShareAccess, OpenOptions): NtCreateFile's FILE_OPEN. Share modes are W4
+ * step 7's. */
+static long nt_open_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb_u,
+                         uint64_t share, uint64_t options) {
+    (void)share;
+    return nt_file_open_or_create(out, (uint32_t)want, oa, iosb_u, NT_FILE_OPEN, (uint32_t)options);
+}
+
+/* NtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
+ * AllocationSize, FileAttributes, ShareAccess, CreateDisposition,
+ * CreateOptions, EaBuffer, EaLength). The allocation size is a hint and the
+ * attributes ride on FAT's directory entry, which step 3 sets; extended
+ * attributes are refused rather than dropped. */
+static long nt_create_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb_u,
+                           uint64_t disposition, uint64_t options, uint64_t ea, uint64_t ea_len) {
+    if (ea != 0u && ea_len != 0u) {
+        return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
+    }
+    return nt_file_open_or_create(out, (uint32_t)want, oa, iosb_u, (uint32_t)disposition, (uint32_t)options);
+}
+
 #define NT_FILE_SERVICES(X) \
     X(VIBEOS_NT_NR_NtOpenFile, NtOpenFile, OPEN, \
       PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
       nt_open_file(ARG(0), NT_ARG32(1), ARG(2), ARG(3), NT_ARG32(4), NT_ARG32(5))) \
+    X(VIBEOS_NT_NR_NtCreateFile, NtCreateFile, OPEN, \
+      PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
+      nt_create_file(ARG(0), NT_ARG32(1), ARG(2), ARG(3), NT_ARG32(7), NT_ARG32(8), ARG(9), NT_ARG32(10))) \
     X(VIBEOS_NT_NR_NtWriteFile, NtWriteFile, WRITE, \
       PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_IN_BUF(5, 6), IN_OPT(7, 8)), \
       nt_write_file(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5), NT_ARG32(6), ARG(7)))

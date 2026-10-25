@@ -557,6 +557,58 @@ static long open_file(uint64_t *h, uint32_t access, const char *nt_path) {
     return r;
 }
 
+/* NtCreateFile: the handle, and what the status block's Information said. */
+static long create_file(uint64_t *h, uint64_t *info, uint32_t access, const char *nt_path,
+                        uint32_t disposition, uint32_t options) {
+    uint64_t out = kf_ualloc(8), iosb = kf_ualloc(16);
+    uint64_t rest[7] = { 0, 0, 7u, disposition, options, 0, 0 };
+    long r;
+
+    kf_next_sp(stack_args(rest, 7));
+    r = nt(VIBEOS_NT_NR_NtCreateFile, out, access, oattr(nt_path, VIBEOS_OBJ_CASE_INSENSITIVE), iosb, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    *info = ((uint64_t *)kf_uptr(iosb))[1];
+    return r;
+}
+
+/* W4 step 1: the dispositions, the options, and what each says it did. */
+static void t_create_file(void) {
+    const uint32_t rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE;
+    uint64_t h = 0, info = 9;
+
+    fresh(43);
+    kf_fs_add("/w4", 0, 0, 1);
+    expect(create_file(&h, &info, rw, "\\??\\C:\\w4\\a.txt", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               info == 2u && nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "FILE_CREATE makes a file, and says FILE_CREATED");
+    expect(create_file(&h, &info, rw, "\\??\\C:\\w4\\a.txt", 2, 0) == ST(VIBEOS_STATUS_OBJECT_NAME_COLLISION),
+           "FILE_CREATE of a name that exists is a collision");
+    expect(create_file(&h, &info, rw, "\\??\\C:\\w4\\none.txt", 1, 0) ==
+               ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND) &&
+           create_file(&h, &info, rw, "\\??\\C:\\w4\\none.txt", 4, 0) ==
+               ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND),
+           "FILE_OPEN and FILE_OVERWRITE want the file to exist");
+    expect(create_file(&h, &info, rw, "\\??\\C:\\w4\\a.txt", 3, 0) == ST(VIBEOS_STATUS_SUCCESS) && info == 1u &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           create_file(&h, &info, rw, "\\??\\C:\\w4\\a.txt", 5, 0) == ST(VIBEOS_STATUS_SUCCESS) && info == 3u &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           create_file(&h, &info, rw, "\\??\\C:\\w4\\a.txt", 0, 0) == ST(VIBEOS_STATUS_SUCCESS) && info == 0u &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "FILE_OPEN_IF opens, FILE_OVERWRITE_IF overwrites, FILE_SUPERSEDE supersedes");
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\w4\\d", 2, 0x1) == ST(VIBEOS_STATUS_SUCCESS) &&
+               info == 2u && nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "FILE_DIRECTORY_FILE with FILE_CREATE makes a directory");
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\w4\\d", 1, 0x40) ==
+               ST(VIBEOS_STATUS_FILE_IS_A_DIRECTORY) &&
+           create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\w4\\a.txt", 1, 0x1) ==
+               ST(VIBEOS_STATUS_NOT_A_DIRECTORY),
+           "a directory is not a non-directory file, and a file is not a directory");
+    expect(create_file(&h, &info, rw, "\\??\\C:\\w4\\b.txt", 6, 0) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+           create_file(&h, &info, rw, "\\??\\C:\\w4\\b.txt", 2, 0x41) == ST(VIBEOS_STATUS_INVALID_PARAMETER) &&
+           create_file(&h, &info, rw, "\\??\\C:\\w4\\b.txt", 2, 0x1000) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "an unknown disposition, both kinds asked, DELETE_ON_CLOSE without DELETE");
+}
+
 /* A Linux call, from the NT tests: to make files with owners and modes, which
  * NtCreateFile (W4) cannot yet. */
 static long lsys(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2) {
@@ -657,8 +709,9 @@ static void t_sections(void) {
     expect(open_file(&fh, 0x00120089u, "\\BaseNamedObjects\\text.txt") ==
                ST(VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD),
            "an NT path outside \\??\\ names no file W2 can open");
-    expect(open_file(&fh, VIBEOS_GENERIC_WRITE, "\\??\\C:\\win\\text.txt") ==
-               ST(VIBEOS_STATUS_NOT_IMPLEMENTED), "writing is W4's: refused, not opened read-only");
+    expect(open_file(&fh, VIBEOS_GENERIC_WRITE, "\\??\\C:\\win\\text.txt") == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, fh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a file opened to write (W4)");
     expect(open_file(&fh, 0x00120089u, "\\??\\C:\\win\\text.txt") == ST(VIBEOS_STATUS_SUCCESS) &&
            fh >= 16u, "a file opened to read, by its NT path");
     expect(create_section(&sh, 0x08000000u /* SEC_COMMIT */, fh) == ST(VIBEOS_STATUS_SUCCESS) &&
@@ -1668,6 +1721,7 @@ int test_nt_abi(void) {
     t_semaphores();
     t_delay();
     t_handles_and_names();
+    t_create_file();
     t_sections();
     t_open_file_permissions();
     t_object_share();

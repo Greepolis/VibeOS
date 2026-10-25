@@ -16,15 +16,6 @@
 +++ new
     if (n->chars[5] != ':') {
 
-### a file asked for writing is opened to read
---- old
-        return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
-    }
-    /* Walked and opened as the caller, as openat is: search permission on
-+++ new
-    }
-    /* Walked and opened as the caller, as openat is: search permission on
-
 ### a missing file is not "not found"
 --- old
         case VIBEOS_ENOENT:  return VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND;
@@ -39,9 +30,18 @@
 
 ### NtOpenFile opens without asking for read permission (M-105)
 --- old
-        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
-    }
-    f = vibeos_open_path(&w, VIBEOS_O_RDONLY, 0, &err);
+        if (may != 0u && vibeos_cred_may(&who, 0, w.node.mode, w.node.uid, w.node.gid, may) != 0) {
 +++ new
-    }
-    f = vibeos_open_path(&w, VIBEOS_O_RDONLY, 0, &err);
+        if (0) {
+
+### FILE_CREATE opens a name that exists (W4 step 1)
+--- old
+    if (w.exists && disposition == NT_FILE_CREATE) {
++++ new
+    if (0) {
+
+### an overwrite says it opened (W4 step 1)
+--- old
+        info = disposition == NT_FILE_SUPERSEDE ? NT_FILE_SUPERSEDED : NT_FILE_OVERWRITTEN;
++++ new
+        info = NT_FILE_OPENED;
