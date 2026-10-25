@@ -61,6 +61,25 @@ copy-on-write fork · filesystems · TCP/IP · QEMU
 - **Networking**: a portable TCP/IP stack over virtio-net - ARP, IPv4, ICMP,
   UDP, TCP, DHCP and DNS - verified end to end against a host echo server in
   CI on every push.
+- **Threads and synchronisation**: `clone` threads with TLS, futexes (private
+  and shared, `futex_waitv`, robust lists), pthreads in musl and glibc, a
+  per-process descriptor table shared by its threads.
+- **Processes as Linux defines them**: credentials and permission checks,
+  process groups and sessions, resource limits, POSIX timers, `signalfd`,
+  `timerfd`, `eventfd`, `epoll`, `inotify`, `/proc`, record and OFD locks,
+  SysV IPC and POSIX message queues, Unix and INET sockets with descriptor
+  passing.
+- **Memory**: demand paging with swap and reclaim, shared and file mappings,
+  `mremap`, `mlock`, a page cache, guarded kernel stacks.
+- **Measured against Linux itself**: LTP's own tests run in the guest, and a
+  corpus of eighteen workloads - SQLite and Lua among them, built against musl
+  and against glibc - is compared line for line with what the same BusyBox
+  prints on Linux.
+- **A Windows personality**: an NT system-call layer with our own `ntdll`;
+  Wine's conformance tests for the implemented areas run on VibeOS (W1-W3:
+  objects and handles, files, synchronisation, virtual memory and sections).
+- **Storage drivers**: virtio-blk and AHCI (SATA), so the importable
+  VirtualBox and VMware images read their disk too.
 - **A serial shell** with line editing and file commands, and `Ctrl-C` that
   becomes a real `SIGINT`.
 - **A screen**: a PS/2 mouse on IRQ12 and a framebuffer desktop with a pointer
@@ -74,10 +93,12 @@ than asserted.
 
 ## Current Focus
 
-- a ring-3 program that draws its own window and receives its own input; the
-  GUI is currently kernel code
-- keyboard input into that window, so the machine is usable without a serial cable
-- thread support and real futex-based synchronization
+- **Windows compatibility, W4**: the next phase of the NT personality
+- **A desktop from Linux**: rather than a GUI of our own, expose `/dev/fb0` and
+  evdev input to user space and run an existing Linux compositor on them; the
+  shell stays ours
+- **A performance phase** after W4: the issues labelled `perf-phase` on GitHub,
+  each taken with a benchmark that says whether it is worth its risk
 
 ## Build and Test
 
