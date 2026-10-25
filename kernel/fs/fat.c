@@ -799,6 +799,9 @@ static int fat_open_locked(const char *path, uint32_t *out_cluster, uint32_t *ou
 
 /* Read `len` bytes at byte offset `off` from a file given by its first cluster
  * and size. Returns bytes read (0 at EOF). */
+static void fat_chain_from(uint32_t first, uint32_t index, uint32_t *cl, uint32_t *at);
+static void fat_chain_mark(uint32_t first, uint32_t index, uint32_t cl);
+
 static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t off,
                                void *buf, uint32_t len) {
     uint32_t cluster_bytes, cluster, skip, done = 0;
@@ -814,10 +817,20 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
         len = size - off;
     }
     cluster_bytes = (uint32_t)g_fat_cur->sectors_per_cluster * SECTOR_SIZE;
-    cluster = first_cluster;
     g_fat_chain_error = 0;
-    for (skip = off / cluster_bytes; skip > 0 && !fat_chain_end(cluster); skip--) {
-        cluster = fat_next_cluster(cluster);
+    /* From the chain cursor when it is on this file at or before the cluster
+     * wanted: a read 4 KiB at a time walked from the first cluster for each
+     * piece (#139). The writer's cursor (#119), kept under the same lock. */
+    {
+        uint32_t at, want = off / cluster_bytes;
+
+        fat_chain_from(first_cluster, want, &cluster, &at);
+        for (skip = want - at; skip > 0 && !fat_chain_end(cluster); skip--) {
+            cluster = fat_next_cluster(cluster);
+        }
+        if (cluster >= 2u && !fat_chain_end(cluster) && !g_fat_chain_error) {
+            fat_chain_mark(first_cluster, want, cluster);
+        }
     }
     off %= cluster_bytes;
 
