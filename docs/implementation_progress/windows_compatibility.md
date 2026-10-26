@@ -65,7 +65,45 @@ loader, objects and waits, memory, files, threads and exceptions, processes, the
   processes (`vibeos_mm_t`, M-100), and kernel stacks with guard pages and the
   double fault on an IST stack (M-108).
 
+## What W4 added (2026-10-25 to 2026-10-26)
+
+Files, one commit a step (`kernel/abi/nt/file.c`, `user/win/kernel32/`):
+
+1. NtCreateFile with its six dispositions, the directory options and
+   DELETE_ON_CLOSE; the status block says what happened.
+2. NtReadFile and NtWriteFile at an offset, the two special offsets,
+   END_OF_FILE, an event set on completion.
+3. NtQueryInformationFile and NtSetInformationFile: Basic, Standard, Internal,
+   Position, Name, All, Network open, Attribute tag; times, rename,
+   disposition, position, end of file, allocation.
+4. NtQuery(Full)AttributesFile, NtDeleteFile, NtFlushBuffersFile,
+   NtQueryVolumeInformationFile, the cancels.
+5. NtQueryDirectoryFile: six classes, a mask with `*` and `?` kept by the
+   handle, restart, single entry, BUFFER_OVERFLOW for an entry that does not
+   fit.
+6. Names without case on every filesystem under C: - a component the
+   filesystem does not find as written is looked for by folding, mount points
+   included - and names beyond ASCII, UTF-16 to UTF-8 and back.
+7. Share modes, claimed under the file layer's lock before an overwrite
+   truncates anything; NtLockFile and NtUnlockFile on the record-lock table,
+   mandatory as Windows' are.
+8. kernel32's file API over those services, every name with its A form.
+9. The oracle, below, and the kernel32 calls it reached first.
+
+Found on the way: an NtQueryDirectoryFile entry too big for the buffer copied
+the kernel's stack to the caller (fixed in step 6, before it was pushed). From
+a source review the same week: `vma_change_locked` walked on from a descriptor
+a merge had freed (55f4cf0), and a read-only NT section view could be made
+writable by NtProtectVirtualMemory (8b45ad2, H-033's class).
+
 ## Where the oracle stands
+
+At the end of W4 (2026-10-26): `ntdll:directory` runs to its end, 2707 checks
+and 70 failures against Wine's 4328 and none - the difference is the checks it
+skips or cannot reach. `ntdll:file` stops at QueueUserAPC (W5: APCs);
+`kernel32:file` at LocalAlloc, the next kernel32 call not written.
+
+Before W4:
 
 `ntdll:om`, `ntdll:sync` and `kernel32:sync` run and report their failures,
 and each ends at something W5 provides (threads, timers, keyed events) - see
@@ -79,7 +117,8 @@ below 0x30000000, where the arena has nothing), and it stops in
 
 ## Next checkpoint
 
-- W4: files - NtCreateFile, reading and writing, directories - measured by
-  `ntdll:file`, `ntdll:directory` and `kernel32:file`. Left from W3: a low
-  arena below four gigabytes for ZeroBits and address requirements, write
-  watches, RtlCreateUserStack.
+- W5: threads, APCs and timers - what `ntdll:file` and the sync tests stop
+  at. Left from W4: `kernel32:file` past LocalAlloc, `ntdll:directory`'s 70
+  failures, NtLockFile's wait and Key. Left from W3: a low arena below four
+  gigabytes for ZeroBits and address requirements, write watches,
+  RtlCreateUserStack.

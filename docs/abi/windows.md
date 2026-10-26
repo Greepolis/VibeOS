@@ -596,3 +596,11 @@ Order, each a commit with host tests and sabotage cases:
    CreateDirectory, GetFileAttributes(Ex) and their A forms.
 9. **The oracle.** The three tests staged and run at boot, and what they say
    recorded here.
+
+**Done 2026-10-26** (`check.sh all` green with clang, 6/6 boots). Each step is a commit with host tests and sabotage
+cases, all red. What the oracle says at the end of W4: `ntdll:directory` runs
+to its end (2707 checks, 70 failures; Wine 4328 and none); `ntdll:file` stops
+at QueueUserAPC, which is W5's; `kernel32:file` at LocalAlloc. What W4 left
+open: NtLockFile does not wait (LOCK_NOT_GRANTED whether or not the caller
+would) and keeps no Key; names fold ASCII only; a DLL's GetModuleFileName is
+refused until the loader's list is asked. Seventeen services the registry still gives W4 are MISSING and move on: named pipes and mailslots, I/O completion ports, extended attributes, scatter/gather, device and filesystem controls, change notification, NtCancelSynchronousIoFile and NtSetVolumeInformationFile - none of them was on the oracle's path.
