@@ -1577,3 +1577,532 @@ BOOL32 FindNextFileA(uint64_t h, void *data) {
     find_data_a(wide, (uint8_t *)data);
     return 1;
 }
+
+/* ---- where things are --------------------------------------------------------------
+ * C: is the boot volume, /tmp its temporary files and /win our DLLs; the
+ * filesystem's hierarchy is the roadmap's next item and may move each. The
+ * answer is copied when it fits, with its length; otherwise the size needed,
+ * terminator included, as Windows answers. */
+
+static uint32_t put_path_w(const char *s, uint16_t *buf, uint32_t size) {
+    uint32_t n = 0, i;
+
+    while (s[n]) {
+        n++;
+    }
+    if (!buf || size <= n) {
+        return n + 1u;
+    }
+    for (i = 0; i <= n; i++) {
+        buf[i] = (uint8_t)s[i];
+    }
+    return n;
+}
+
+static uint32_t put_path_a(const char *s, char *buf, uint32_t size) {
+    uint32_t n = 0, i;
+
+    while (s[n]) {
+        n++;
+    }
+    if (!buf || size <= n) {
+        return n + 1u;
+    }
+    for (i = 0; i <= n; i++) {
+        buf[i] = s[i];
+    }
+    return n;
+}
+
+uint32_t GetTempPathW(uint32_t size, uint16_t *buf) { return put_path_w("C:\\tmp\\", buf, size); }
+uint32_t GetTempPathA(uint32_t size, char *buf) { return put_path_a("C:\\tmp\\", buf, size); }
+uint32_t GetSystemDirectoryW(uint16_t *buf, uint32_t size) { return put_path_w("C:\\win", buf, size); }
+uint32_t GetSystemDirectoryA(char *buf, uint32_t size) { return put_path_a("C:\\win", buf, size); }
+uint32_t GetWindowsDirectoryW(uint16_t *buf, uint32_t size) { return put_path_w("C:\\win", buf, size); }
+uint32_t GetWindowsDirectoryA(char *buf, uint32_t size) { return put_path_a("C:\\win", buf, size); }
+
+/* ---- strings, times and the rest the file tests reach first (W4 step 9) ---------- */
+
+int32_t lstrlenA(const char *s) {
+    int32_t n = 0;
+
+    while (s && s[n]) {
+        n++;
+    }
+    return n;
+}
+
+int32_t lstrlenW(const uint16_t *s) {
+    return s ? (int32_t)wlen(s) : 0;
+}
+
+uint16_t *lstrcpyW(uint16_t *dst, const uint16_t *src) {
+    uint32_t i = 0;
+
+    do {
+        dst[i] = src[i];
+    } while (src[i++]);
+    return dst;
+}
+
+static uint16_t fold_w(uint16_t c) {
+    return (c >= 'a' && c <= 'z') ? (uint16_t)(c - 32u) : c;
+}
+
+static int32_t cmp_w(const uint16_t *a, const uint16_t *b, int nocase) {
+    for (;; a++, b++) {
+        uint16_t x = nocase ? fold_w(*a) : *a, y = nocase ? fold_w(*b) : *b;
+
+        if (x != y || x == 0u) {
+            return x < y ? -1 : x > y ? 1 : 0;
+        }
+    }
+}
+
+int32_t lstrcmpW(const uint16_t *a, const uint16_t *b) { return cmp_w(a, b, 0); }
+int32_t lstrcmpiW(const uint16_t *a, const uint16_t *b) { return cmp_w(a, b, 1); }
+
+static int32_t cmp_a(const char *a, const char *b, int nocase) {
+    for (;; a++, b++) {
+        uint16_t x = (uint8_t)*a, y = (uint8_t)*b;
+
+        if (nocase) {
+            x = fold_w(x);
+            y = fold_w(y);
+        }
+        if (x != y || x == 0u) {
+            return x < y ? -1 : x > y ? 1 : 0;
+        }
+    }
+}
+
+int32_t lstrcmpA(const char *a, const char *b) { return cmp_a(a, b, 0); }
+int32_t lstrcmpiA(const char *a, const char *b) { return cmp_a(a, b, 1); }
+
+void GetSystemTimeAsFileTime(int64_t *ft) {
+    (void)NtQuerySystemTime(ft);
+}
+
+int32_t CompareFileTime(const int64_t *a, const int64_t *b) {
+    uint64_t x = (uint64_t)*a, y = (uint64_t)*b;
+
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* GetFileType: a disk file, or a character device - the console. */
+uint32_t GetFileType(uint64_t h) {
+    vibeos_nt_iosb_t iosb;
+    uint32_t dev[2];
+    NTSTATUS_T st = NtQueryVolumeInformationFile(h, &iosb, dev, sizeof(dev), 4u /* Device */);
+
+    if (failed(st)) {
+        return 2u;   /* FILE_TYPE_CHAR: what is not on a volume is the console here */
+    }
+    return dev[0] == 7u ? 1u /* FILE_TYPE_DISK */ : 2u;
+}
+
+/* A critical section, while a process has one thread (threads are W5's): the
+ * owner and the recursion count kept where Windows keeps them, so a program
+ * that reads them finds what it expects. */
+void InitializeCriticalSection(void *cs) {
+    uint8_t *p = (uint8_t *)cs;
+    uint32_t i;
+
+    for (i = 0; i < 40u; i++) {
+        p[i] = 0;
+    }
+    *(int32_t *)(p + 8) = -1;   /* LockCount: free */
+}
+
+void EnterCriticalSection(void *cs) {
+    uint8_t *p = (uint8_t *)cs;
+
+    (*(int32_t *)(p + 8))++;
+    (*(int32_t *)(p + 12))++;
+    *(uint64_t *)(p + 16) = 1u;
+}
+
+BOOL32 TryEnterCriticalSection(void *cs) {
+    EnterCriticalSection(cs);
+    return 1;
+}
+
+void LeaveCriticalSection(void *cs) {
+    uint8_t *p = (uint8_t *)cs;
+
+    (*(int32_t *)(p + 8))--;
+    if (--(*(int32_t *)(p + 12)) == 0) {
+        *(uint64_t *)(p + 16) = 0u;
+    }
+}
+
+void DeleteCriticalSection(void *cs) {
+    (void)cs;
+}
+
+/* GetTempFileName: <path>\<prefix, three characters><hex>.tmp. With `unique`
+ * zero, a number is tried until a file of that name can be made, and the file
+ * is left behind - which is the point of asking. */
+uint32_t GetTempFileNameW(const uint16_t *path, const uint16_t *prefix, uint32_t unique, uint16_t *out) {
+    static const char hex[] = "0123456789ABCDEF";
+    uint32_t n, i, k, tries, num;
+    int64_t now = 0;
+
+    if (!path || !out) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    n = wlen(path);
+    if (n + 3u + 4u + 6u >= NAME_CHARS) {
+        set_error(ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    (void)NtQuerySystemTime(&now);
+    num = unique ? (unique & 0xFFFFu) : (uint32_t)(now / 10000) & 0xFFFFu;
+    for (tries = 0; tries < 65536u; tries++, num = (num + 1u) & 0xFFFFu) {
+        uint64_t h = 0;
+        NTSTATUS_T st;
+
+        if (num == 0u) {
+            continue;
+        }
+        k = 0;
+        for (i = 0; i < n; i++) {
+            out[k++] = path[i];
+        }
+        if (k && out[k - 1u] != '\\') {
+            out[k++] = '\\';
+        }
+        for (i = 0; prefix && i < 3u && prefix[i]; i++) {
+            out[k++] = prefix[i];
+        }
+        for (i = 0; i < 4u; i++) {
+            out[k++] = (uint16_t)hex[(num >> (12u - 4u * i)) & 0xFu];
+        }
+        out[k++] = '.';
+        out[k++] = 't';
+        out[k++] = 'm';
+        out[k++] = 'p';
+        out[k] = 0;
+        if (unique) {
+            return unique;
+        }
+        st = file_open(out, 0x80000000u /* GENERIC_READ */ | 0x40000000u, 0u, 2u /* FILE_CREATE */,
+                       0x40u, &h);
+        if (!failed(st)) {
+            (void)NtClose(h);
+            return num;
+        }
+        if (st != 0xC0000035u /* OBJECT_NAME_COLLISION */) {
+            fail(st);
+            return 0;
+        }
+    }
+    set_error(80u);   /* ERROR_FILE_EXISTS */
+    return 0;
+}
+
+uint32_t GetTempFileNameA(const char *path, const char *prefix, uint32_t unique, char *out) {
+    uint16_t wp[NAME_CHARS], wx[4] = { 0, 0, 0, 0 }, wo[NAME_CHARS];
+    uint32_t r, i;
+
+    if (!wide_name(path, wp)) {
+        return 0;
+    }
+    for (i = 0; prefix && i < 3u && prefix[i]; i++) {
+        wx[i] = (uint8_t)prefix[i];
+    }
+    r = GetTempFileNameW(wp, wx, unique, wo);
+    if (r != 0u) {
+        for (i = 0; wo[i]; i++) {
+            out[i] = narrow(wo[i]);
+        }
+        out[i] = 0;
+    }
+    return r;
+}
+
+/* ---- a file's attributes and times, the module's name, the directory -------------- */
+
+/* FILE_BASIC_INFORMATION through a handle opened for attributes alone: zero
+ * times are "leave as they are", as Windows reads them. */
+static BOOL32 set_basic(uint64_t h, const int64_t *created, const int64_t *accessed, const int64_t *written,
+                        uint32_t attributes) {
+    uint8_t basic[40];
+    vibeos_nt_iosb_t iosb;
+    uint32_t i;
+    NTSTATUS_T st;
+
+    for (i = 0; i < sizeof(basic); i++) {
+        basic[i] = 0;
+    }
+    if (created) {
+        *(int64_t *)basic = *created;
+    }
+    if (accessed) {
+        *(int64_t *)(basic + 8) = *accessed;
+    }
+    if (written) {
+        *(int64_t *)(basic + 16) = *written;
+    }
+    *(uint32_t *)(basic + 32) = attributes;
+    st = NtSetInformationFile(h, &iosb, basic, sizeof(basic), 4u /* Basic */);
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 SetFileAttributesW(const uint16_t *name, uint32_t attributes) {
+    uint64_t h = 0;
+    BOOL32 r;
+    NTSTATUS_T st = file_open(name, 0x100u /* FILE_WRITE_ATTRIBUTES */, 7u, 1u, 0u, &h);
+
+    if (failed(st)) {
+        return fail(st);
+    }
+    /* FILE_ATTRIBUTE_NORMAL alone is "none", which Basic spells as itself. */
+    r = set_basic(h, 0, 0, 0, attributes ? attributes : 0x80u);
+    (void)NtClose(h);
+    return r;
+}
+
+BOOL32 SetFileAttributesA(const char *name, uint32_t attributes) {
+    uint16_t w[NAME_CHARS];
+
+    return wide_name(name, w) ? SetFileAttributesW(w, attributes) : 0;
+}
+
+BOOL32 SetFileTime(uint64_t h, const int64_t *created, const int64_t *accessed, const int64_t *written) {
+    return set_basic(h, created, accessed, written, 0u);
+}
+
+BOOL32 GetFileTime(uint64_t h, int64_t *created, int64_t *accessed, int64_t *written) {
+    uint8_t basic[40];
+    vibeos_nt_iosb_t iosb;
+    NTSTATUS_T st = NtQueryInformationFile(h, &iosb, basic, sizeof(basic), 4u);
+
+    if (failed(st)) {
+        return fail(st);
+    }
+    if (created) {
+        *created = *(int64_t *)basic;
+    }
+    if (accessed) {
+        *accessed = *(int64_t *)(basic + 8);
+    }
+    if (written) {
+        *written = *(int64_t *)(basic + 16);
+    }
+    return 1;
+}
+
+/* BY_HANDLE_FILE_INFORMATION: attributes, three times, the volume's serial,
+ * the size high and low, the links, the index high and low. */
+BOOL32 GetFileInformationByHandle(uint64_t h, void *out) {
+    uint8_t all[100], *o = (uint8_t *)out;
+    vibeos_nt_iosb_t iosb;
+    uint32_t i;
+    NTSTATUS_T st = NtQueryInformationFile(h, &iosb, all, sizeof(all), 18u /* All */);
+
+    if (failed(st) && st != 0x80000005u /* the name did not fit, which is not asked for */) {
+        return fail(st);
+    }
+    *(uint32_t *)o = *(uint32_t *)(all + 32);
+    for (i = 0; i < 24u; i++) {
+        o[4u + i] = all[i];
+    }
+    *(uint32_t *)(o + 28) = 0x56494245u;   /* the volume's serial: one volume */
+    *(uint32_t *)(o + 32) = *(uint32_t *)(all + 52);
+    *(uint32_t *)(o + 36) = *(uint32_t *)(all + 48);
+    *(uint32_t *)(o + 40) = *(uint32_t *)(all + 56);
+    *(uint32_t *)(o + 44) = *(uint32_t *)(all + 64 + 4);
+    *(uint32_t *)(o + 48) = *(uint32_t *)(all + 64);
+    return 1;
+}
+
+/* A UNICODE_STRING of the process parameters, into a wide buffer. */
+static uint32_t params_string_w(uint32_t field, uint16_t *buf, uint32_t size) {
+    uint64_t params = vibeos_nt_rd64(peb() + VIBEOS_PEB_PROCESS_PARAMS);
+    const vibeos_ustring_t *u = (const vibeos_ustring_t *)(uintptr_t)(params + field);
+    uint32_t n = u->Length / 2u, i;
+
+    if (!buf || size == 0u) {
+        return 0;
+    }
+    for (i = 0; i < n && i + 1u < size; i++) {
+        buf[i] = u->Buffer[i];
+    }
+    buf[i] = 0;
+    if (i < n) {
+        set_error(122u);   /* ERROR_INSUFFICIENT_BUFFER: truncated, as Windows does */
+    }
+    return i;
+}
+
+uint32_t GetModuleFileNameW(uint64_t module, uint16_t *buf, uint32_t size) {
+    if (module != 0u && module != vibeos_nt_rd64(peb() + VIBEOS_PEB_IMAGE_BASE)) {
+        set_error(ERROR_MOD_NOT_FOUND);   /* a DLL's path: the loader's list is not asked yet */
+        return 0;
+    }
+    return params_string_w(VIBEOS_RUPP_IMAGE_PATH, buf, size);
+}
+
+uint32_t GetModuleFileNameA(uint64_t module, char *buf, uint32_t size) {
+    uint16_t w[NAME_CHARS];
+    uint32_t n, i;
+
+    n = GetModuleFileNameW(module, w, size < NAME_CHARS ? size : NAME_CHARS);
+    for (i = 0; i < n; i++) {
+        buf[i] = narrow(w[i]);
+    }
+    if (size) {
+        buf[n < size ? n : size - 1u] = 0;
+    }
+    return n;
+}
+
+/* GetFullPathName: what RtlDosPathNameToNtPathName_U makes of it, without
+ * the "\??\" in front. The part after the last separator is the file part. */
+uint32_t GetFullPathNameW(const uint16_t *name, uint32_t size, uint16_t *buf, uint16_t **file_part) {
+    vibeos_ustring_t nt;
+    uint32_t n, i, skip = 0, last = 0;
+
+    if (!name || !RtlDosPathNameToNtPathName_U(name, &nt, 0, 0)) {
+        set_error(ERROR_PATH_NOT_FOUND);
+        return 0;
+    }
+    n = nt.Length / 2u;
+    if (n >= 4u && nt.Buffer[0] == '\\' && nt.Buffer[1] == '?' && nt.Buffer[2] == '?' && nt.Buffer[3] == '\\') {
+        skip = 4u;
+    }
+    n -= skip;
+    if (!buf || size <= n) {
+        RtlFreeUnicodeString(&nt);
+        return n + 1u;
+    }
+    for (i = 0; i < n; i++) {
+        buf[i] = nt.Buffer[skip + i];
+        if (buf[i] == '\\') {
+            last = i + 1u;
+        }
+    }
+    buf[n] = 0;
+    RtlFreeUnicodeString(&nt);
+    if (file_part) {
+        *file_part = last < n ? buf + last : 0;
+    }
+    return n;
+}
+
+uint32_t GetFullPathNameA(const char *name, uint32_t size, char *buf, char **file_part) {
+    uint16_t w[NAME_CHARS], out[NAME_CHARS], *fp = 0;
+    uint32_t n, i;
+
+    if (!wide_name(name, w)) {
+        return 0;
+    }
+    n = GetFullPathNameW(w, NAME_CHARS, out, &fp);
+    if (n == 0u || n >= NAME_CHARS) {
+        return n;
+    }
+    if (!buf || size <= n) {
+        return n + 1u;
+    }
+    for (i = 0; i <= n; i++) {
+        buf[i] = narrow(out[i]);
+    }
+    if (file_part) {
+        *file_part = fp ? buf + (fp - out) : 0;
+    }
+    return n;
+}
+
+uint32_t GetCurrentDirectoryW(uint32_t size, uint16_t *buf) {
+    uint64_t params = vibeos_nt_rd64(peb() + VIBEOS_PEB_PROCESS_PARAMS);
+    const vibeos_ustring_t *u = (const vibeos_ustring_t *)(uintptr_t)(params + VIBEOS_RUPP_CURDIR_PATH);
+    uint32_t n = u->Length / 2u, i;
+
+    if (n > 3u && u->Buffer[n - 1u] == '\\') {
+        n--;   /* "C:\dir\" is kept with its separator and answered without */
+    }
+    if (n == 0u) {
+        return put_path_w("C:\\", buf, size);
+    }
+    if (!buf || size <= n) {
+        return n + 1u;
+    }
+    for (i = 0; i < n; i++) {
+        buf[i] = u->Buffer[i];
+    }
+    buf[n] = 0;
+    return n;
+}
+
+uint32_t GetCurrentDirectoryA(uint32_t size, char *buf) {
+    uint16_t w[NAME_CHARS];
+    uint32_t n = GetCurrentDirectoryW(NAME_CHARS, w), i;
+
+    if (n == 0u || n >= NAME_CHARS) {
+        return n;
+    }
+    if (!buf || size <= n) {
+        return n + 1u;
+    }
+    for (i = 0; i <= n; i++) {
+        buf[i] = narrow(w[i]);
+    }
+    return n;
+}
+
+/* ---- the 16-bit file calls, as Windows still exports them: CreateFile and
+ * friends with a handle as an int, and HFILE_ERROR (-1) for failure. */
+
+int32_t _lcreat(const char *name, int32_t attributes) {
+    uint64_t h = CreateFileA(name, 0xC0000000u, 3u, 0, 2u /* CREATE_ALWAYS */,
+                             (uint32_t)attributes & 7u, 0);
+
+    return h == INVALID_HANDLE ? -1 : (int32_t)h;
+}
+
+int32_t _lopen(const char *name, int32_t mode) {
+    static const uint32_t access[3] = { 0x80000000u, 0x40000000u, 0xC0000000u };
+    static const uint32_t share[8] = { 3u, 0u, 1u, 2u, 3u, 3u, 3u, 3u };
+    uint64_t h;
+
+    if ((mode & 3) == 3) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    h = CreateFileA(name, access[mode & 3], share[(mode >> 4) & 7], 0, 3u /* OPEN_EXISTING */, 0, 0);
+    return h == INVALID_HANDLE ? -1 : (int32_t)h;
+}
+
+int32_t _lclose(int32_t h) {
+    return CloseHandle((uint64_t)(uint32_t)h) ? 0 : -1;
+}
+
+uint32_t _lread(int32_t h, void *buf, uint32_t len) {
+    uint32_t got = 0;
+
+    return ReadFile((uint64_t)(uint32_t)h, buf, len, &got, 0) ? got : 0xFFFFFFFFu;
+}
+
+int32_t _hread(int32_t h, void *buf, int32_t len) {
+    return (int32_t)_lread(h, buf, (uint32_t)len);
+}
+
+/* A write of nothing is truncation to the file's position, as it was. */
+uint32_t _lwrite(int32_t h, const char *buf, uint32_t len) {
+    uint32_t put = 0;
+
+    if (len == 0u) {
+        return SetEndOfFile((uint64_t)(uint32_t)h) ? 0u : 0xFFFFFFFFu;
+    }
+    return WriteFile((uint64_t)(uint32_t)h, buf, len, &put, 0) ? put : 0xFFFFFFFFu;
+}
+
+int32_t _hwrite(int32_t h, const char *buf, int32_t len) {
+    return (int32_t)_lwrite(h, buf, (uint32_t)len);
+}
+
+int32_t _llseek(int32_t h, int32_t offset, int32_t origin) {
+    return (int32_t)SetFilePointer((uint64_t)(uint32_t)h, offset, 0, (uint32_t)origin);
+}

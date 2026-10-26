@@ -122,6 +122,8 @@ NT_IMPORT NTSTATUS_T NtQueryAttributesFile(void *attributes, void *basic);
 NT_IMPORT NTSTATUS_T NtQueryFullAttributesFile(void *attributes, void *full);
 NT_IMPORT NTSTATUS_T NtDeleteFile(void *attributes);
 NT_IMPORT NTSTATUS_T NtFlushBuffersFile(uint64_t file, vibeos_nt_iosb_t *iosb);
+NT_IMPORT NTSTATUS_T NtQueryVolumeInformationFile(uint64_t file, vibeos_nt_iosb_t *iosb, void *buf,
+                                                  uint32_t len, uint32_t cls);
 NT_IMPORT NTSTATUS_T NtCreateThreadEx(uint64_t *thread, uint32_t access, void *attributes,
                                       uint64_t process, void *start, void *param, uint32_t flags,
                                       uint64_t zero_bits, uint64_t stack_size, uint64_t max_stack,
