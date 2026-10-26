@@ -140,3 +140,9 @@
 +++ new
         sbi.size = o->u.sec.image_size + 1u;
 
+
+### a shared view through a read-only section handle has no write ceiling (H-033, NT)
+--- old
+            t.prot = (vibeos_prot_t)(t.prot | VIBEOS_PROT_NOWRITE);
++++ new
+            (void)0;

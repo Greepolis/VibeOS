@@ -2015,6 +2015,13 @@ static void t_data_sections(void) {
         zx = 0;
         expect(sec_map(s2, &bx, ~0ull, &zx, VIBEOS_NT_PAGE_READWRITE) == ST(VIBEOS_STATUS_ACCESS_DENIED),
                "a handle with SECTION_MAP_READ alone maps no writable view");
+        {
+            uint32_t old = 0;
+
+            expect(vprotect(bo, 0x1000u, VIBEOS_NT_PAGE_READWRITE, &old) == ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+                       kf_poke(bo, &q, 1) != 0 && kf_peek(b1, &y, 1) == 0 && y != q,
+                   "nor makes its read-only view writable afterwards (H-033's ceiling)");
+        }
         expect(sec_unmap(bo) == ST(VIBEOS_STATUS_SUCCESS), "and the view goes");
     }
 

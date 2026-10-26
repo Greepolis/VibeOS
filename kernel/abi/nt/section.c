@@ -373,6 +373,14 @@ static long map_data_view(const section_view_t *sec, vibeos_file_t *file, uint32
                      (protect & 0xFFu) != VIBEOS_NT_PAGE_WRITECOPY &&
                      (protect & 0xFFu) != VIBEOS_NT_PAGE_EXECUTE_WRITECOPY;
 
+        /* A shared view that may not be written now may never be: through a
+         * handle without SECTION_MAP_WRITE, or of a section that is not
+         * writable, NtProtectVirtualMemory must not make it so (H-033, this
+         * personality's). A copy-on-write view stores into its own pages. */
+        if (shared && (!(granted & NT_SECTION_MAP_WRITE) ||
+                       !(sec->protect & (VIBEOS_NT_PAGE_READWRITE | VIBEOS_NT_PAGE_EXECUTE_READWRITE)))) {
+            t.prot = (vibeos_prot_t)(t.prot | VIBEOS_PROT_NOWRITE);
+        }
         t.alloc_base = base;
         rc = vibeos_umem_map_file(me, ps, base, len, file, off, shared, &t);
         if (rc != 0) {
