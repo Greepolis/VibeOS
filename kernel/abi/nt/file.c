@@ -695,6 +695,221 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
     return NT_STATUS(st);
 }
 
+/* ---- the small services (W4 step 4) ------------------------------------------------- */
+
+/* The name an object-attributes block names, walked as the caller: 0 and the
+ * walk, or the status. */
+static uint32_t nt_walk_attributes(uint64_t oa, vibeos_path_t *w) {
+    nt_name_t name;
+    uint32_t attributes = 0, st;
+    char path[VIBEOS_FILE_PATH];
+    vibeos_cred_t who;
+    int rc;
+
+    st = nt_read_attributes(oa, &name, &attributes);
+    if (st == VIBEOS_STATUS_SUCCESS && name.len == 0u) {
+        st = VIBEOS_STATUS_OBJECT_NAME_INVALID;
+    }
+    if (st == VIBEOS_STATUS_SUCCESS) {
+        st = nt_vfs_path(&name, path, sizeof(path));
+    }
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return st;
+    }
+    nt_cred(&who);
+    rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, w);
+    return rc != 0 ? nt_status_of_open(rc) : VIBEOS_STATUS_SUCCESS;
+}
+
+/* NtQueryAttributesFile(ObjectAttributes, FILE_BASIC_INFORMATION) and
+ * NtQueryFullAttributesFile(ObjectAttributes, FILE_NETWORK_OPEN_INFORMATION):
+ * what a handle would say, without opening one. */
+static long nt_query_attributes(uint64_t oa, uint64_t out, int full) {
+    vibeos_path_t w;
+    vibeos_file_stat_t s;
+    uint8_t b[56];
+    uint32_t i, st = nt_walk_attributes(oa, &w);
+
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    for (i = 0; i < sizeof(b); i++) {
+        b[i] = 0;
+    }
+    vibeos_file_stat_from_node(&s, &w.node);
+    nt_basic(b, 0, &s);
+    if (full) {
+        put64(b, 32u, (s.size + 4095u) & ~4095ull);
+        put64(b, 40u, s.size);
+        put32(b, 48u, nt_attrs_of(&s));
+    }
+    if (vibeos_uaccess_copy((void *)(uintptr_t)out, b, full ? 56u : 40u) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
+/* NtDeleteFile(ObjectAttributes): the name goes now - a file unlinked, an
+ * empty directory removed. */
+static long nt_delete_file(uint64_t oa) {
+    vibeos_path_t w;
+    vibeos_cred_t who;
+    vibeos_fs_node_t dir;
+    uint32_t st = nt_walk_attributes(oa, &w);
+    int r;
+
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    nt_cred(&who);
+    if (nt_parent_of(&w, &dir) == 0 &&
+        vibeos_cred_may(&who, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+    }
+    r = w.node.is_dir ? vibeos_fs_rmdir(w.mnt, w.tail) : vibeos_fs_unlink(w.mnt, w.tail);
+    if (r == -VIBEOS_ENOTEMPTY) {
+        return NT_STATUS(VIBEOS_STATUS_DIRECTORY_NOT_EMPTY);
+    }
+    return NT_STATUS(r == 0 ? VIBEOS_STATUS_SUCCESS
+                     : r == -VIBEOS_EBUSY || r == -VIBEOS_EPERM ? VIBEOS_STATUS_CANNOT_DELETE
+                     : nt_status_of_open(r));
+}
+
+/* A status block saying `st` and `n`; the status, or an access violation. */
+static long nt_iosb_done(uint64_t iosb_u, uint32_t st, uint64_t n) {
+    vibeos_nt_iosb_t iosb;
+
+    iosb.status = st;
+    iosb.information = n;
+    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(st);
+}
+
+/* NtFlushBuffersFile(File, IoStatusBlock): the description's sync. */
+static long nt_flush_buffers_file(uint64_t file, uint64_t iosb_u) {
+    vibeos_file_t *f = nt_file_get(file);
+    int r;
+
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    r = f->ops->sync ? f->ops->sync(f) : 0;
+    vibeos_file_put(f);
+    return nt_iosb_done(iosb_u, r == 0 ? VIBEOS_STATUS_SUCCESS : nt_status_of_errno(r), 0);
+}
+
+/* The cancels: nothing is ever pending here - every I/O completes before its
+ * call returns - so NtCancelIoFile has cancelled all there was, and the two
+ * that name one request have found none. */
+static long nt_cancel_io_file(uint64_t file, uint64_t iosb_u) {
+    vibeos_file_t *f = nt_file_get(file);
+
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    vibeos_file_put(f);
+    return nt_iosb_done(iosb_u, VIBEOS_STATUS_SUCCESS, 0);
+}
+
+static long nt_cancel_io_file_ex(uint64_t file) {
+    vibeos_file_t *f = nt_file_get(file);
+
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    vibeos_file_put(f);
+    return NT_STATUS(VIBEOS_STATUS_NOT_FOUND);
+}
+
+/* NtQueryVolumeInformationFile(File, IoStatusBlock, Information, Length,
+ * Class): Volume (1), Size (3), Device (4), Attribute (5), FullSize (7). */
+static long nt_query_volume_information_file(uint64_t file, uint64_t iosb_u, uint64_t out,
+                                             uint64_t len, uint64_t cls) {
+    uint8_t b[64];
+    uint32_t need, done, i, st = VIBEOS_STATUS_SUCCESS;
+    vibeos_fsmount_t *m = 0;
+    const char *tail = 0, *type;
+    vibeos_fs_statfs_t sf;
+    vibeos_file_t *f;
+
+    switch ((uint32_t)cls) {
+        case 1: need = 18u; break;
+        case 3: need = 24u; break;
+        case 4: need = 8u; break;
+        case 5: need = 12u; break;
+        case 7: need = 32u; break;
+        default: return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
+    }
+    if (len < need) {
+        return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
+    }
+    f = nt_file_get(file);
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    for (i = 0; i < sizeof(b); i++) {
+        b[i] = 0;
+    }
+    sf.block_size = 512u;
+    sf.blocks = sf.blocks_free = 0;
+    type = "VibeFS";
+    if (f->path[0] == '/' && vibeos_fs_resolve(f->path, &m, &tail) == 0 && m) {
+        (void)vibeos_fs_statfs(m, &sf);
+        type = (m->type && m->type[0] == 'f') ? "FAT" : "NTFS";
+    }
+    if (sf.block_size == 0u) {
+        sf.block_size = 512u;
+    }
+    vibeos_file_put(f);
+    done = need;
+    switch ((uint32_t)cls) {
+        case 1:
+            break;   /* no creation time, serial 0, no label */
+        case 3:
+            put64(b, 0, sf.blocks);
+            put64(b, 8, sf.blocks_free);
+            put32(b, 16, 1u);
+            put32(b, 20, sf.block_size);
+            break;
+        case 7:
+            put64(b, 0, sf.blocks);
+            put64(b, 8, sf.blocks_free);
+            put64(b, 16, sf.blocks_free);
+            put32(b, 24, 1u);
+            put32(b, 28, sf.block_size);
+            break;
+        case 4:
+            put32(b, 0, 7u);   /* FILE_DEVICE_DISK */
+            break;
+        default: {
+            /* Case-preserved names, Unicode on disk; the name in UTF-16. */
+            uint32_t n = 0, cap = len < sizeof(b) ? (uint32_t)len : (uint32_t)sizeof(b);
+
+            put32(b, 0, 0x2u | 0x4u);
+            put32(b, 4, 255u);
+            while (type[n]) {
+                n++;
+            }
+            put32(b, 8, 2u * n);
+            for (i = 0; i < n && 12u + 2u * i + 2u <= cap; i++) {
+                b[12u + 2u * i] = (uint8_t)type[i];
+            }
+            done = 12u + 2u * n;
+            if (done > cap) {
+                done = cap;
+                st = VIBEOS_STATUS_BUFFER_OVERFLOW;
+            }
+            break;
+        }
+    }
+    if (vibeos_uaccess_copy((void *)(uintptr_t)out, b, done) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return nt_iosb_done(iosb_u, st, done);
+}
+
 #define NT_FILE_SERVICES(X) \
     X(VIBEOS_NT_NR_NtOpenFile, NtOpenFile, OPEN, \
       PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
@@ -708,6 +923,19 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
     X(VIBEOS_NT_NR_NtSetInformationFile, NtSetInformationFile, FSTAT, \
       PTRS(OUT(1, sizeof(vibeos_nt_iosb_t)), NT_IN_BUF(2, 3)), \
       nt_set_information_file(ARG(0), ARG(1), ARG(2), NT_ARG32(3), NT_ARG32(4))) \
+    X(VIBEOS_NT_NR_NtQueryAttributesFile, NtQueryAttributesFile, STAT, \
+      PTRS(OUT(1, 40)), nt_query_attributes(ARG(0), ARG(1), 0)) \
+    X(VIBEOS_NT_NR_NtQueryFullAttributesFile, NtQueryFullAttributesFile, STAT, \
+      PTRS(OUT(1, 56)), nt_query_attributes(ARG(0), ARG(1), 1)) \
+    X(VIBEOS_NT_NR_NtDeleteFile, NtDeleteFile, OPEN, NOPTR, nt_delete_file(ARG(0))) \
+    X(VIBEOS_NT_NR_NtFlushBuffersFile, NtFlushBuffersFile, FSTAT, \
+      PTRS(OUT(1, sizeof(vibeos_nt_iosb_t))), nt_flush_buffers_file(ARG(0), ARG(1))) \
+    X(VIBEOS_NT_NR_NtCancelIoFile, NtCancelIoFile, FSTAT, \
+      PTRS(OUT(1, sizeof(vibeos_nt_iosb_t))), nt_cancel_io_file(ARG(0), ARG(1))) \
+    X(VIBEOS_NT_NR_NtCancelIoFileEx, NtCancelIoFileEx, FSTAT, NOPTR, nt_cancel_io_file_ex(ARG(0))) \
+    X(VIBEOS_NT_NR_NtQueryVolumeInformationFile, NtQueryVolumeInformationFile, FSTAT, \
+      PTRS(OUT(1, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(2, 3)), \
+      nt_query_volume_information_file(ARG(0), ARG(1), ARG(2), NT_ARG32(3), NT_ARG32(4))) \
     X(VIBEOS_NT_NR_NtReadFile, NtReadFile, READ, \
       PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6), IN_OPT(7, 8)), \
       nt_rw(0, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), ARG(7))) \

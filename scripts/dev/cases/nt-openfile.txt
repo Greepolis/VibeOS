@@ -89,3 +89,18 @@
                 st = VIBEOS_STATUS_BUFFER_OVERFLOW;   /* what fitted was written */
 +++ new
                 st = VIBEOS_STATUS_SUCCESS;
+
+### NtDeleteFile removes nothing (W4 step 4)
+--- old
+    r = w.node.is_dir ? vibeos_fs_rmdir(w.mnt, w.tail) : vibeos_fs_unlink(w.mnt, w.tail);
++++ new
+    r = 0;
+
+### NtQueryFullAttributesFile leaves out the size (W4 step 4)
+--- old
+        put64(b, 40u, s.size);
+        put32(b, 48u, nt_attrs_of(&s));
+    }
++++ new
+        put32(b, 48u, nt_attrs_of(&s));
+    }

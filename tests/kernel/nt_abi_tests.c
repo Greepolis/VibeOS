@@ -736,6 +736,47 @@ static void t_file_information(void) {
            "FileDispositionInformation: the file goes with its last handle");
 }
 
+/* W4 step 4: attributes by name, deletion by name, the volume, the cancels. */
+static void t_small_file_services(void) {
+    const uint32_t rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE;
+    uint64_t h = 0, info = 0, n = 0, buf = kf_ualloc(64), iosb = kf_ualloc(16), rest[1];
+    uint8_t *b = (uint8_t *)kf_uptr(buf);
+
+    fresh(46);
+    expect(create_file(&h, &info, rw, "\\??\\C:\\tmp\\sv.txt", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               rw_file(1, h, 0, buf, 5, 0, &n) == ST(VIBEOS_STATUS_SUCCESS),
+           "a five-byte file");
+    expect(nt(VIBEOS_NT_NR_NtQueryFullAttributesFile, oattr("\\??\\C:\\tmp\\sv.txt", VIBEOS_OBJ_CASE_INSENSITIVE),
+              buf, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint64_t *)(b + 40) == 5u && (*(uint32_t *)(b + 48) & 0x10u) == 0u,
+           "NtQueryFullAttributesFile: its size, and not a directory");
+    expect(nt(VIBEOS_NT_NR_NtQueryAttributesFile, oattr("\\??\\C:\\tmp", VIBEOS_OBJ_CASE_INSENSITIVE),
+              buf, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) && (*(uint32_t *)(b + 32) & 0x10u) != 0u,
+           "NtQueryAttributesFile: a directory says so");
+    expect(nt(VIBEOS_NT_NR_NtFlushBuffersFile, h, iosb, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtCancelIoFile, h, iosb, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtCancelIoFileEx, h, 0, iosb, 0, 0) == ST(VIBEOS_STATUS_NOT_FOUND),
+           "a flush; a cancel finds nothing pending, one asked by request finds nothing");
+    rest[0] = 4;   /* FileFsDeviceInformation */
+    kf_next_sp(stack_args(rest, 1));
+    expect(nt(VIBEOS_NT_NR_NtQueryVolumeInformationFile, h, iosb, buf, 8, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)b == 7u,
+           "the volume is a disk");
+    expect(nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtDeleteFile, oattr("\\??\\C:\\tmp\\sv.txt", VIBEOS_OBJ_CASE_INSENSITIVE),
+                  0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtQueryAttributesFile, oattr("\\??\\C:\\tmp\\sv.txt", VIBEOS_OBJ_CASE_INSENSITIVE),
+                  buf, 0, 0, 0) == ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND),
+           "NtDeleteFile takes the name at once");
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\tmp\\dd", 2, 0x1) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               create_file(&h, &info, rw, "\\??\\C:\\tmp\\dd\\in", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtDeleteFile, oattr("\\??\\C:\\tmp\\dd", VIBEOS_OBJ_CASE_INSENSITIVE),
+                  0, 0, 0, 0) == ST(VIBEOS_STATUS_DIRECTORY_NOT_EMPTY),
+           "a directory with something in it is not deleted");
+}
+
 /* A Linux call, from the NT tests: to make files with owners and modes, which
  * NtCreateFile (W4) cannot yet. */
 static long lsys(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2) {
@@ -1850,6 +1891,7 @@ int test_nt_abi(void) {
     t_handles_and_names();
     t_read_write_file();
     t_file_information();
+    t_small_file_services();
     t_create_file();
     t_sections();
     t_open_file_permissions();
