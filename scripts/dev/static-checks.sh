@@ -68,6 +68,7 @@ run blast-radius           python3 scripts/dev/check-blast-radius.py
 run task-identity          python3 scripts/dev/check-task-identity.py
 # User memory only through the fault-safe copy (M-050..M-052).
 run user-access            python3 scripts/dev/check-user-access.py
+run nt-user-copy           python3 scripts/dev/check-nt-user-copy.py
 # Every socket call that waits re-verifies its socket (M-020).
 run net-stable             python3 scripts/dev/check-net-stable.py
 # docs/abi/ A2: a personality reaches the kernel only through vibeos/ksvc.h.

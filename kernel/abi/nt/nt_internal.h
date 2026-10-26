@@ -41,6 +41,10 @@
 
 /* The one call site of ks_user_ok for this personality (dispatch.c). */
 int nt_user_ok(uint64_t base, uint64_t len, int write);
+/* Copies to and from the calling program's memory: 0, or -1 for a range that
+ * is not the program's or a page that faulted (dispatch.c). */
+int nt_copy_in(void *dst, uint64_t src, uint64_t len);
+int nt_copy_out(uint64_t dst, const void *src, uint64_t len);
 
 /* A handle, as W1 has them: a descriptor of the process's table, (fd + 1) * 4.
  * Windows' handles are multiples of four counted from four, and the program's
@@ -49,7 +53,7 @@ int nt_user_ok(uint64_t base, uint64_t len, int write);
  * until then a handle and a descriptor are the same entry, which is why NT and
  * Linux code may share the table without disagreeing about it. The reference
  * returned is the caller's to put. */
-vibeos_file_t *nt_file_get(uint64_t handle);
+vibeos_file_t *nt_file_get(uint64_t handle, uint32_t need, uint32_t *granted);
 uint64_t nt_handle_of_fd(uint32_t fd);
 
 /* An errno a file operation answered, as the NTSTATUS Windows gives for it. */

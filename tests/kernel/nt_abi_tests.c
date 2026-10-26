@@ -854,6 +854,41 @@ static void dir_names(const uint8_t *b, char *out) {
     out[n] = 0;
 }
 
+/* v7 review: a file service does what its handle was granted, not what the
+ * description underneath could. A handle opened for attributes reads nothing,
+ * one opened to read writes nothing and sets no times, one that may only
+ * traverse a directory lists nothing. */
+static void t_handle_rights(void) {
+    uint64_t h = 0, d = 0, info = 0, n = 0, buf = kf_ualloc(512), iosb = kf_ualloc(16);
+    uint8_t *b = (uint8_t *)kf_uptr(buf);
+
+    fresh(50);
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE, "\\??\\C:\\tmp\\r.txt", 2, 0x40) ==
+                   ST(VIBEOS_STATUS_SUCCESS) &&
+               rw_file(1, h, 0, buf, 8, 0, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a file with eight bytes");
+    expect(create_file(&h, &info, 0x80u /* FILE_READ_ATTRIBUTES */, "\\??\\C:\\tmp\\r.txt", 1, 0x40) ==
+                   ST(VIBEOS_STATUS_SUCCESS) &&
+               rw_file(0, h, 0, buf, 8, 0, &n) == ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               file_info(0, h, buf, 40, 4, &n) == ST(VIBEOS_STATUS_SUCCESS),
+           "a handle for the attributes reads them, and not the data");
+    (void)nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0);
+    expect(create_file(&h, &info, 0x1u /* FILE_READ_DATA */, "\\??\\C:\\tmp\\r.txt", 1, 0x40) ==
+                   ST(VIBEOS_STATUS_SUCCESS) &&
+               rw_file(1, h, 0, buf, 8, 0, &n) == ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               (memset(b, 0, 40), file_info(1, h, buf, 40, 4, &n)) == ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               (*(uint64_t *)b = 1, file_info(1, h, buf, 8, 20, &n)) == ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               (b[0] = 1, file_info(1, h, buf, 1, 13, &n)) == ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               file_info(0, h, buf, 40, 4, &n) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "one opened to read writes nothing, cuts nothing, deletes nothing, and asks no attributes");
+    (void)nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0);
+    expect(create_file(&d, &info, 0x20u /* FILE_TRAVERSE */, "\\??\\C:\\tmp", 1, 0x1) == ST(VIBEOS_STATUS_SUCCESS) &&
+               query_dir(d, buf, 512, 12, 0, 0, 1, &n) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "a directory handle that may only traverse lists nothing");
+    (void)nt(VIBEOS_NT_NR_NtClose, d, 0, 0, 0, 0);
+}
+
 /* W4 step 5: listing a directory - masks, classes, restart, one at a time. */
 static void t_query_directory(void) {
     const uint32_t rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE;
@@ -886,6 +921,27 @@ static void t_query_directory(void) {
            "FileDirectoryInformation: its size, its name at 64, a file");
     expect(query_dir(h, buf, 512, 12, 0, "zz*", 1, &n) == ST(VIBEOS_STATUS_NO_SUCH_FILE),
            "a mask nothing matches, at the start: no such file");
+    {
+        /* v7 review: a mask whose buffer is not the program's is not read -
+         * the same "zz*" from the host's own memory, which matched nothing
+         * above, must not filter the listing now. */
+        static const uint16_t kmask[3] = { 'z', 'z', '*' };
+        uint64_t iosb = kf_ualloc(16), us = kf_ualloc(16), rest[7];
+
+        ((uint16_t *)kf_uptr(us))[0] = 6;
+        ((uint16_t *)kf_uptr(us))[1] = 6;
+        ((uint64_t *)kf_uptr(us))[1] = (uint64_t)(uintptr_t)kmask;
+        rest[0] = iosb;
+        rest[1] = buf;
+        rest[2] = 512;
+        rest[3] = 12;
+        rest[4] = 0;
+        rest[5] = us;
+        rest[6] = 1;
+        kf_next_sp(stack_args(rest, 7));
+        expect(nt(VIBEOS_NT_NR_NtQueryDirectoryFile, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "a mask in memory that is not the program's is not read");
+    }
     expect(query_dir(h, buf, 512, 12, 1, "*.TXT", 1, &n) == ST(VIBEOS_STATUS_SUCCESS) && *(uint32_t *)b == 0u &&
                (names[0] = (char)b[12], query_dir(h, buf, 512, 12, 0, 0, 0, &n) == ST(VIBEOS_STATUS_SUCCESS)) &&
                *(uint32_t *)b == 0u && (b[12] == 'a' || b[12] == 'c') && b[12] != names[0],
@@ -1006,6 +1062,15 @@ static void t_share_and_locks(void) {
     expect(lock_file(1, a, 4, 4, 1) == ST(VIBEOS_STATUS_SUCCESS) &&
                lock_file(1, b, 6, 4, 0) == ST(VIBEOS_STATUS_LOCK_NOT_GRANTED),
            "an exclusive lock refuses another handle's overlapping lock");
+    {
+        uint64_t ra = 0;
+
+        expect(create_file(&ra, &info, 0x80u /* FILE_READ_ATTRIBUTES */, "\\??\\C:\\tmp\\sh.txt", 1, 0x40) ==
+                       ST(VIBEOS_STATUS_SUCCESS) &&
+                   lock_file(1, ra, 32, 4, 1) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+               "a handle that may neither read nor write locks nothing (v7 review)");
+        (void)nt(VIBEOS_NT_NR_NtClose, ra, 0, 0, 0, 0);
+    }
     off = 5;
     expect(rw_file(0, b, 0, buf, 2, &off, &n) == ST(VIBEOS_STATUS_FILE_LOCK_CONFLICT) &&
                (off = 0, rw_file(0, b, 0, buf, 4, &off, &n)) == ST(VIBEOS_STATUS_SUCCESS) &&
@@ -2151,6 +2216,7 @@ int test_nt_abi(void) {
     t_query_directory();
     t_names();
     t_share_and_locks();
+    t_handle_rights();
     t_create_file();
     t_sections();
     t_open_file_permissions();

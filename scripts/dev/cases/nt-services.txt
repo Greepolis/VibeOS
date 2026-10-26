@@ -11,12 +11,6 @@
 +++ new
       nt_rw(1, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), ARG(6), ARG(7)))
 
-### a handle that is not a multiple of four is taken as one
---- old
-    if (me < 0 || handle == 0u || (handle & 3u) != 0u || handle / 4u > (uint64_t)VIBEOS_FD_MAX) {
-+++ new
-    if (me < 0 || handle == 0u || handle / 4u > (uint64_t)VIBEOS_FD_MAX) {
-
 ### an offset on a file without offsets is ignored instead of refused
 --- old
             n = -VIBEOS_EINVAL;   /* a console or a pipe has no offsets */

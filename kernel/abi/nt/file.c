@@ -10,24 +10,27 @@
 #include "vibeos/cred.h"
 #include "vibeos/filelock.h"
 
-vibeos_file_t *nt_file_get(uint64_t handle) {
-    vibeos_procstate_t *ps;
-    vibeos_file_t *f;
-    int me = ks_current();
+/* The file a handle names, if the handle was granted `need` - every bit of it.
+ * The only way a file service reaches a file: the mask a handle was opened or
+ * duplicated with is what it may do, and a service that took the description
+ * straight from the table let a handle opened for its attributes read the data,
+ * and a duplicate with fewer rights get them back (v7 review). `granted`, if
+ * given, says what the handle may do beyond `need`. */
+vibeos_file_t *nt_file_get(uint64_t handle, uint32_t need, uint32_t *granted) {
+    vibeos_file_t *f = 0;
 
-    /* Multiples of four from four; anything else names nothing. */
-    if (me < 0 || handle == 0u || (handle & 3u) != 0u || handle / 4u > (uint64_t)VIBEOS_FD_MAX) {
-        return 0;
+    return nt_handle_ref(handle, 0, need, &f, granted) == VIBEOS_STATUS_SUCCESS ? f : 0;
+}
+
+/* Why nt_file_get refused: asked again, for the status. */
+static uint32_t nt_file_refusal(uint64_t handle, uint32_t need) {
+    vibeos_file_t *f = 0;
+    uint32_t st = nt_handle_ref(handle, 0, need, &f, 0);
+
+    if (f) {
+        vibeos_file_put(f);
     }
-    ps = ks_ps(me);
-    if (!ps) {
-        return 0;
-    }
-    ks_lock(&ps->files_lock, __func__);
-    f = vibeos_fdtable_get(&ps->files, (uint32_t)(handle / 4u - 1u));
-    vibeos_file_get(f);
-    ks_unlock(&ps->files_lock);
-    return f;
+    return st == VIBEOS_STATUS_SUCCESS ? VIBEOS_STATUS_INVALID_HANDLE : st;
 }
 
 /* Who is asking: the process's credentials, which a Windows program has as a
@@ -97,18 +100,21 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
     vibeos_nt_iosb_t iosb;
     uint64_t off = NT_OFF_CURRENT;
     long n;
-    uint32_t st;
+    uint32_t st, need;
     int refused = 0;
 
     if (apc != 0u) {
         return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
     }
-    if (offp != 0u && vibeos_uaccess_copy(&off, (const void *)(uintptr_t)offp, sizeof(off)) != 0) {
+    if (offp != 0u && nt_copy_in(&off, offp, sizeof(off)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
-    f = nt_file_get(file);
+    /* FILE_READ_DATA, or FILE_WRITE_DATA - FILE_APPEND_DATA for a write at
+     * the end. */
+    need = write ? (off == NT_OFF_END ? 0x0004u : 0x0002u) : 0x0001u;
+    f = nt_file_get(file, need, 0);
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, need));
     }
     if (event != 0u && (st = nt_io_event(event, 0)) != VIBEOS_STATUS_SUCCESS) {
         vibeos_file_put(f);
@@ -153,7 +159,7 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
        : (!write && n == 0 && len != 0u) ? VIBEOS_STATUS_END_OF_FILE : VIBEOS_STATUS_SUCCESS;
     iosb.status = st;
     iosb.information = n < 0 ? 0u : (uint64_t)n;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+    if (nt_copy_out(iosb_u, &iosb, sizeof(iosb)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if (event != 0u) {
@@ -522,8 +528,8 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
     }
     iosb.status = VIBEOS_STATUS_SUCCESS;
     iosb.information = info;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)out, &h, sizeof(h)) != 0 ||
-        vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+    if (nt_copy_out(out, &h, sizeof(h)) != 0 ||
+        nt_copy_out(iosb_u, &iosb, sizeof(iosb)) != 0) {
         (void)nt_close_handle(h);
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
@@ -711,9 +717,9 @@ static long nt_query_information_file(uint64_t file, uint64_t iosb_u, uint64_t o
     if (len < need) {
         return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
     }
-    f = nt_file_get(file);
+    f = nt_file_get(file, ((uint32_t)cls == 4u || (uint32_t)cls == 18u || (uint32_t)cls == 34u || (uint32_t)cls == 35u ? 0x80u : 0u), 0);
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, ((uint32_t)cls == 4u || (uint32_t)cls == 18u || (uint32_t)cls == 34u || (uint32_t)cls == 35u ? 0x80u : 0u)));
     }
     for (i = 0; i < sizeof(b); i++) {
         b[i] = 0;
@@ -767,12 +773,12 @@ static long nt_query_information_file(uint64_t file, uint64_t iosb_u, uint64_t o
         }
     }
     vibeos_file_put(f);
-    if (vibeos_uaccess_copy((void *)(uintptr_t)out, b, done) != 0) {
+    if (nt_copy_out(out, b, done) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     iosb.status = st;
     iosb.information = done;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+    if (nt_copy_out(iosb_u, &iosb, sizeof(iosb)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(st);
@@ -799,12 +805,12 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
     if (len > sizeof(b)) {
         len = sizeof(b);
     }
-    if (vibeos_uaccess_copy(b, (const void *)(uintptr_t)in, (uint32_t)len) != 0) {
+    if (nt_copy_in(b, in, (uint32_t)len) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
-    f = nt_file_get(file);
+    f = nt_file_get(file, ((uint32_t)cls == 4u ? 0x100u : ((uint32_t)cls == 10u || (uint32_t)cls == 13u) ? VIBEOS_DELETE : ((uint32_t)cls == 19u || (uint32_t)cls == 20u) ? 0x2u : 0u), 0);
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, ((uint32_t)cls == 4u ? 0x100u : ((uint32_t)cls == 10u || (uint32_t)cls == 13u) ? VIBEOS_DELETE : ((uint32_t)cls == 19u || (uint32_t)cls == 20u) ? 0x2u : 0u)));
     }
     switch ((uint32_t)cls) {
         case NT_FI_POSITION:
@@ -889,7 +895,7 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
     vibeos_file_put(f);
     iosb.status = st;
     iosb.information = 0;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+    if (nt_copy_out(iosb_u, &iosb, sizeof(iosb)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(st);
@@ -943,7 +949,7 @@ static long nt_query_attributes(uint64_t oa, uint64_t out, int full) {
         put64(b, 40u, s.size);
         put32(b, 48u, nt_attrs_of(&s));
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)out, b, full ? 56u : 40u) != 0) {
+    if (nt_copy_out(out, b, full ? 56u : 40u) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
@@ -981,7 +987,7 @@ static long nt_iosb_done(uint64_t iosb_u, uint32_t st, uint64_t n) {
 
     iosb.status = st;
     iosb.information = n;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+    if (nt_copy_out(iosb_u, &iosb, sizeof(iosb)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(st);
@@ -989,11 +995,11 @@ static long nt_iosb_done(uint64_t iosb_u, uint32_t st, uint64_t n) {
 
 /* NtFlushBuffersFile(File, IoStatusBlock): the description's sync. */
 static long nt_flush_buffers_file(uint64_t file, uint64_t iosb_u) {
-    vibeos_file_t *f = nt_file_get(file);
+    vibeos_file_t *f = nt_file_get(file, 0x2u, 0);
     int r;
 
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, 0x2u));
     }
     r = f->ops->sync ? f->ops->sync(f) : 0;
     vibeos_file_put(f);
@@ -1004,20 +1010,20 @@ static long nt_flush_buffers_file(uint64_t file, uint64_t iosb_u) {
  * call returns - so NtCancelIoFile has cancelled all there was, and the two
  * that name one request have found none. */
 static long nt_cancel_io_file(uint64_t file, uint64_t iosb_u) {
-    vibeos_file_t *f = nt_file_get(file);
+    vibeos_file_t *f = nt_file_get(file, 0u, 0);
 
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, 0u));
     }
     vibeos_file_put(f);
     return nt_iosb_done(iosb_u, VIBEOS_STATUS_SUCCESS, 0);
 }
 
 static long nt_cancel_io_file_ex(uint64_t file) {
-    vibeos_file_t *f = nt_file_get(file);
+    vibeos_file_t *f = nt_file_get(file, 0u, 0);
 
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, 0u));
     }
     vibeos_file_put(f);
     return NT_STATUS(VIBEOS_STATUS_NOT_FOUND);
@@ -1045,9 +1051,9 @@ static long nt_query_volume_information_file(uint64_t file, uint64_t iosb_u, uin
     if (len < need) {
         return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
     }
-    f = nt_file_get(file);
+    f = nt_file_get(file, 0u, 0);
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, 0u));
     }
     for (i = 0; i < sizeof(b); i++) {
         b[i] = 0;
@@ -1104,7 +1110,7 @@ static long nt_query_volume_information_file(uint64_t file, uint64_t iosb_u, uin
             break;
         }
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)out, b, done) != 0) {
+    if (nt_copy_out(out, b, done) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return nt_iosb_done(iosb_u, st, done);
@@ -1185,9 +1191,9 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
     if (len < name_at) {
         return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
     }
-    f = nt_file_get(file);
+    f = nt_file_get(file, 0x1u, 0);
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, 0x1u));
     }
     if (!f->ops->readdir) {
         vibeos_file_put(f);
@@ -1209,10 +1215,10 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
         uint32_t n, k;
 
         f->nt_mask[0] = 0;
-        if (vibeos_uaccess_copy(us, (const void *)(uintptr_t)mask_u, sizeof(us)) == 0) {
+        if (nt_copy_in(us, mask_u, sizeof(us)) == 0) {
             n = ((uint32_t)us[0] | (uint32_t)us[1] << 8) / 2u;
             n = n < 63u ? n : 63u;
-            if (n != 0u && vibeos_uaccess_copy(chars, (const void *)(uintptr_t)get64(us, 8), 2u * n) == 0) {
+            if (n != 0u && nt_copy_in(chars, get64(us, 8), 2u * n) == 0) {
                 for (k = 0; k < n; k++) {
                     f->nt_mask[k] = chars[k] < 0x80u ? (char)chars[k] : '?';
                 }
@@ -1313,7 +1319,7 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
        : first ? VIBEOS_STATUS_NO_SUCH_FILE : VIBEOS_STATUS_NO_MORE_FILES;
     vibeos_file_pos_give(f);
     vibeos_file_put(f);
-    if (used != 0u && vibeos_uaccess_copy((void *)(uintptr_t)out, b, used) != 0) {
+    if (used != 0u && nt_copy_out(out, b, used) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if (event != 0u) {
@@ -1334,8 +1340,8 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
 static uint32_t nt_lock_range(uint64_t off_u, uint64_t len_u, uint64_t *start, uint64_t *end) {
     uint64_t off, len;
 
-    if (vibeos_uaccess_copy(&off, (const void *)(uintptr_t)off_u, 8u) != 0 ||
-        vibeos_uaccess_copy(&len, (const void *)(uintptr_t)len_u, 8u) != 0) {
+    if (nt_copy_in(&off, off_u, 8u) != 0 ||
+        nt_copy_in(&len, len_u, 8u) != 0) {
         return VIBEOS_STATUS_ACCESS_VIOLATION;
     }
     if (len == 0u || off + len - 1u < off) {
@@ -1353,7 +1359,7 @@ static uint32_t nt_lock_range(uint64_t off_u, uint64_t len_u, uint64_t *start, u
 static long nt_lock_file(uint64_t file, uint64_t event, uint64_t apc, uint64_t iosb_u, uint64_t off_u,
                          uint64_t len_u, uint64_t exclusive) {
     uint64_t start = 0, end = 0;
-    uint32_t st;
+    uint32_t st, granted = 0;
     vibeos_file_t *f;
     int r;
 
@@ -1364,9 +1370,13 @@ static long nt_lock_file(uint64_t file, uint64_t event, uint64_t apc, uint64_t i
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
-    f = nt_file_get(file);
+    f = nt_file_get(file, 0u, &granted);
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, 0u));
+    }
+    if ((granted & 0x3u) == 0u) {   /* FILE_READ_DATA or FILE_WRITE_DATA, as Windows asks */
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
     if (!f->mnt || f->isdir) {
         vibeos_file_put(f);
@@ -1392,16 +1402,20 @@ static long nt_lock_file(uint64_t file, uint64_t event, uint64_t apc, uint64_t i
 static long nt_unlock_file(uint64_t file, uint64_t iosb_u, uint64_t off_u, uint64_t len_u) {
     uint64_t start = 0, end = 0;
     vibeos_flk_info_t held;
-    uint32_t st;
+    uint32_t st, granted = 0;
     vibeos_file_t *f;
 
     st = nt_lock_range(off_u, len_u, &start, &end);
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
-    f = nt_file_get(file);
+    f = nt_file_get(file, 0u, &granted);
     if (!f) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+        return NT_STATUS(nt_file_refusal(file, 0u));
+    }
+    if ((granted & 0x3u) == 0u) {   /* FILE_READ_DATA or FILE_WRITE_DATA, as Windows asks */
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
     /* Is it ours? Asked as somebody else: our own lock is then in the way,
      * and only a lock that starts and ends where this one does is a lock
@@ -1446,7 +1460,7 @@ static long nt_unlock_file(uint64_t file, uint64_t iosb_u, uint64_t off_u, uint6
       PTRS(OUT(1, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(2, 3)), \
       nt_query_volume_information_file(ARG(0), ARG(1), ARG(2), NT_ARG32(3), NT_ARG32(4))) \
     X(VIBEOS_NT_NR_NtQueryDirectoryFile, NtQueryDirectoryFile, GETDENTS, \
-      PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6)), \
+      PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6), IN_OPT(9, 16)), \
       nt_query_directory_file(ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), NT_ARG32(7), \
                               ARG(8) & 0xFFu, ARG(9), ARG(10) & 0xFFu)) \
     X(VIBEOS_NT_NR_NtLockFile, NtLockFile, FCNTL, \

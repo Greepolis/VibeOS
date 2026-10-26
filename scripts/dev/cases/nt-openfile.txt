@@ -63,14 +63,14 @@
 ### the event is never set on completion (W4 step 2)
 --- old
     iosb.information = n < 0 ? 0u : (uint64_t)n;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+    if (nt_copy_out(iosb_u, &iosb, sizeof(iosb)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if (event != 0u) {
         (void)nt_io_event(event, 1);
 +++ new
     iosb.information = n < 0 ? 0u : (uint64_t)n;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+    if (nt_copy_out(iosb_u, &iosb, sizeof(iosb)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if (event != 0u) {
@@ -251,3 +251,19 @@
         held.owner != VIBEOS_FLK_OWNER_FILE(f) || held.start != start || held.end != end) {
 +++ new
         held.owner != VIBEOS_FLK_OWNER_FILE(f)) {
+
+### a file service ignores what its handle was granted (v7 review)
+--- old
+    return nt_handle_ref(handle, 0, need, &f, granted) == VIBEOS_STATUS_SUCCESS ? f : 0;
++++ new
+    return nt_handle_ref(handle, 0, 0u, &f, granted) == VIBEOS_STATUS_SUCCESS ? f : 0;
+
+### NtLockFile asks no rights of its handle (v7 review)
+--- old
+    if ((granted & 0x3u) == 0u) {   /* FILE_READ_DATA or FILE_WRITE_DATA, as Windows asks */
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+    }
+    if (!f->mnt || f->isdir) {
++++ new
+    if (!f->mnt || f->isdir) {

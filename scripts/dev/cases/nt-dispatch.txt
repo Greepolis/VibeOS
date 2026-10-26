@@ -33,3 +33,14 @@
         ks_con_puts(s->name);
 +++ new
         ks_con_puts("");
+
+### nt_copy_in copies from wherever a structure points (v7 review)
+--- old
+    if (!nt_user_ok(src, len, 0)) {
++++ new
+    if (0) {
+
+# nt_copy_out's own range check has no case: every output the NT services
+# write today is an argument its row declares, so the dispatcher refuses a bad
+# one before the handler runs, and removing the check here goes NOT RED
+# (checked 2026-10-26). It is there for the first output that is not.

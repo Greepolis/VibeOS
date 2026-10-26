@@ -44,6 +44,34 @@ int nt_user_ok(uint64_t base, uint64_t len, int write) {
     return ks_user_ok(base, len, write);
 }
 
+/* The only two places this personality touches a program's memory: the range
+ * judged as the program's, then copied fault-safely. The row's check covers
+ * the arguments it declares; a pointer found inside a structure - a
+ * UNICODE_STRING's buffer, a rename's name - is a program's too, and the
+ * copy alone is fault-safe, not range-checked: ring 0 reads any mapped page,
+ * so an unjudged kernel address read back through a listing's mask made it an
+ * oracle on kernel memory (v7 review). check-nt-user-copy.py keeps every
+ * other copy out of kernel/abi/nt. */
+int nt_copy_in(void *dst, uint64_t src, uint64_t len) {
+    if (len == 0u) {
+        return 0;
+    }
+    if (!nt_user_ok(src, len, 0)) {
+        return -1;
+    }
+    return vibeos_uaccess_copy(dst, (const void *)(uintptr_t)src, len);
+}
+
+int nt_copy_out(uint64_t dst, const void *src, uint64_t len) {
+    if (len == 0u) {
+        return 0;
+    }
+    if (!nt_user_ok(dst, len, 1)) {
+        return -1;
+    }
+    return vibeos_uaccess_copy((void *)(uintptr_t)dst, src, len);
+}
+
 /* Every table, once, before the first NT process exists - and the rows held
  * against the registry in both directions, as the Linux tables are: a row for a
  * service the .def calls MISSING, or a DONE line with no row, is a kernel whose
@@ -111,7 +139,7 @@ long nt_syscall(struct ks_regs *frame, uint64_t nr, const uint64_t a[6]) {
         uint64_t len = (uint64_t)(s->args - 4u) * 8u;
 
         if (s->args > VIBEOS_CALL_ARGS || !nt_user_ok(at, len, 0) ||
-            vibeos_uaccess_copy(&call.a[4], (const void *)(uintptr_t)at, len) != 0) {
+            nt_copy_in(&call.a[4], at, len) != 0) {
             return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
         }
     }

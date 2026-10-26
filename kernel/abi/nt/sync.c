@@ -45,7 +45,7 @@ const vibeos_file_ops_t g_nt_event_ops = {
 };
 
 static long put_handle(uint64_t uptr, uint64_t h) {
-    if (vibeos_uaccess_copy((void *)(uintptr_t)uptr, &h, sizeof(h)) != 0) {
+    if (nt_copy_out(uptr, &h, sizeof(h)) != 0) {
         return -1;
     }
     return 0;
@@ -156,7 +156,7 @@ static long event_change(uint64_t h, uint64_t prev_u, int how) {
     nt_ob_unlock();
     vibeos_file_put(f);
     if (prev_u != 0u &&
-        vibeos_uaccess_copy((void *)(uintptr_t)prev_u, &prev, sizeof(prev)) != 0) {
+        nt_copy_out(prev_u, &prev, sizeof(prev)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
@@ -196,8 +196,8 @@ static long nt_query_event(uint64_t h, uint64_t cls, uint64_t buf, uint64_t len,
     info.event_state = o->u.ev.state;
     nt_ob_unlock();
     vibeos_file_put(f);
-    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &info, sizeof(info)) != 0 ||
-        (ret != 0u && vibeos_uaccess_copy((void *)(uintptr_t)ret, &got, sizeof(got)) != 0)) {
+    if (nt_copy_out(buf, &info, sizeof(info)) != 0 ||
+        (ret != 0u && nt_copy_out(ret, &got, sizeof(got)) != 0)) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
@@ -286,7 +286,7 @@ static long nt_release_mutant(uint64_t h, uint64_t prev_u) {
     }
     nt_ob_unlock();
     vibeos_file_put(f);
-    if (prev_u != 0u && vibeos_uaccess_copy((void *)(uintptr_t)prev_u, &prev, sizeof(prev)) != 0) {
+    if (prev_u != 0u && nt_copy_out(prev_u, &prev, sizeof(prev)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
@@ -318,8 +318,8 @@ static long nt_query_mutant(uint64_t h, uint64_t cls, uint64_t buf, uint64_t len
     info.abandoned_state = o->u.mu.abandoned ? 1u : 0u;
     nt_ob_unlock();
     vibeos_file_put(f);
-    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &info, sizeof(info)) != 0 ||
-        (ret != 0u && vibeos_uaccess_copy((void *)(uintptr_t)ret, &got, sizeof(got)) != 0)) {
+    if (nt_copy_out(buf, &info, sizeof(info)) != 0 ||
+        (ret != 0u && nt_copy_out(ret, &got, sizeof(got)) != 0)) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
@@ -406,7 +406,7 @@ static long nt_release_semaphore(uint64_t h, uint64_t count, uint64_t prev_u) {
     o->u.sem.count += n;
     nt_ob_unlock();
     vibeos_file_put(f);
-    if (prev_u != 0u && vibeos_uaccess_copy((void *)(uintptr_t)prev_u, &prev, sizeof(prev)) != 0) {
+    if (prev_u != 0u && nt_copy_out(prev_u, &prev, sizeof(prev)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
@@ -437,8 +437,8 @@ static long nt_query_semaphore(uint64_t h, uint64_t cls, uint64_t buf, uint64_t 
     info.maximum_count = o->u.sem.max;
     nt_ob_unlock();
     vibeos_file_put(f);
-    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &info, sizeof(info)) != 0 ||
-        (ret != 0u && vibeos_uaccess_copy((void *)(uintptr_t)ret, &got, sizeof(got)) != 0)) {
+    if (nt_copy_out(buf, &info, sizeof(info)) != 0 ||
+        (ret != 0u && nt_copy_out(ret, &got, sizeof(got)) != 0)) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
@@ -493,7 +493,7 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u) {
     long result;
 
     if (timeout_u != 0u &&
-        vibeos_uaccess_copy(&t, (const void *)(uintptr_t)timeout_u, sizeof(t)) != 0) {
+        nt_copy_in(&t, timeout_u, sizeof(t)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     for (i = 0; i < n; i++) {
@@ -608,7 +608,7 @@ static long nt_delay_execution(uint64_t alertable, uint64_t interval_u) {
     int me = ks_current();
 
     (void)alertable;
-    if (vibeos_uaccess_copy(&t, (const void *)(uintptr_t)interval_u, sizeof(t)) != 0) {
+    if (nt_copy_in(&t, interval_u, sizeof(t)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     deadline = wait_deadline(t, &forever, 0);
@@ -644,7 +644,7 @@ static long nt_wait_multiple(uint64_t count, uint64_t handles_u, uint64_t type,
     }
     /* Judged here, not by the row: the length is the count's, in handles. */
     if (!nt_user_ok(handles_u, (uint64_t)n * 8u, 0) ||
-        vibeos_uaccess_copy(handles, (const void *)(uintptr_t)handles_u, (uint64_t)n * 8u) != 0) {
+        nt_copy_in(handles, handles_u, (uint64_t)n * 8u) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return nt_wait(n, handles, (uint32_t)type == 0u, timeout);

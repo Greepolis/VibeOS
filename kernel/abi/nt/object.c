@@ -108,7 +108,7 @@ uint32_t nt_read_attributes(uint64_t oa, nt_name_t *out, uint32_t *attributes) {
         return VIBEOS_STATUS_SUCCESS;   /* no attributes: an unnamed object */
     }
     if (!nt_user_ok(oa, sizeof(blk), 0) ||
-        vibeos_uaccess_copy(blk, (const void *)(uintptr_t)oa, sizeof(blk)) != 0) {
+        nt_copy_in(blk, oa, sizeof(blk)) != 0) {
         return VIBEOS_STATUS_ACCESS_VIOLATION;
     }
     for (len = 0, i = 0; i < 4u; i++) {
@@ -129,7 +129,7 @@ uint32_t nt_read_attributes(uint64_t oa, nt_name_t *out, uint32_t *attributes) {
         return VIBEOS_STATUS_SUCCESS;
     }
     if (!nt_user_ok(uname, sizeof(us), 0) ||
-        vibeos_uaccess_copy(us, (const void *)(uintptr_t)uname, sizeof(us)) != 0) {
+        nt_copy_in(us, uname, sizeof(us)) != 0) {
         return VIBEOS_STATUS_ACCESS_VIOLATION;
     }
     length = (uint16_t)(us[VIBEOS_USTR_LENGTH] | (us[VIBEOS_USTR_LENGTH + 1] << 8));
@@ -146,7 +146,7 @@ uint32_t nt_read_attributes(uint64_t oa, nt_name_t *out, uint32_t *attributes) {
         return VIBEOS_STATUS_OBJECT_NAME_INVALID;
     }
     if (!nt_user_ok(buf, length, 0) ||
-        vibeos_uaccess_copy(out->chars, (const void *)(uintptr_t)buf, length) != 0) {
+        nt_copy_in(out->chars, buf, length) != 0) {
         return VIBEOS_STATUS_ACCESS_VIOLATION;
     }
     out->len = length / 2u;
@@ -435,7 +435,7 @@ static long nt_duplicate_object(uint64_t src_proc, uint64_t src, uint64_t dst_pr
         vibeos_file_get(f);   /* the new handle's own */
         st = nt_handle_install(f, access, (uint32_t)attributes, &h);
         if (st == VIBEOS_STATUS_SUCCESS &&
-            vibeos_uaccess_copy((void *)(uintptr_t)dst_u, &h, sizeof(h)) != 0) {
+            nt_copy_out(dst_u, &h, sizeof(h)) != 0) {
             (void)nt_close_handle(h);
             st = VIBEOS_STATUS_ACCESS_VIOLATION;
         }

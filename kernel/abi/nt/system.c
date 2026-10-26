@@ -17,7 +17,7 @@ static uint64_t nt_now_100ns(void) {
 }
 
 static long nt_put64(uint64_t uptr, uint64_t v) {
-    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, &v, sizeof(v)) == 0
+    return nt_copy_out(uptr, &v, sizeof(v)) == 0
                ? NT_STATUS(VIBEOS_STATUS_SUCCESS)
                : NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
 }
@@ -77,11 +77,11 @@ static long nt_query_system_information(uint64_t cls, uint64_t buf, uint64_t len
     sbi.maximum_user_address = VIBEOS_NT_MAX_USER_ADDRESS;
     sbi.active_processors_mask = mask;
     sbi.processors = (uint8_t)n;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &sbi, sizeof(sbi)) != 0) {
+    if (nt_copy_out(buf, &sbi, sizeof(sbi)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if (ret_len != 0u &&
-        vibeos_uaccess_copy((void *)(uintptr_t)ret_len, &got, sizeof(got)) != 0) {
+        nt_copy_out(ret_len, &got, sizeof(got)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);

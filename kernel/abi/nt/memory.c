@@ -110,11 +110,11 @@ static vibeos_procstate_t *nt_mm_self(uint64_t process, int *me) {
 }
 
 static int nt_get64(uint64_t uptr, uint64_t *v) {
-    return vibeos_uaccess_copy(v, (const void *)(uintptr_t)uptr, sizeof(*v));
+    return nt_copy_in(v, uptr, sizeof(*v));
 }
 
 static int nt_put64(uint64_t uptr, uint64_t v) {
-    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, &v, sizeof(v));
+    return nt_copy_out(uptr, &v, sizeof(v));
 }
 
 /* Where the allocation based at `ab` ends. Its regions are contiguous - a
@@ -377,7 +377,7 @@ static uint32_t nt_ext_params(uint64_t params_u, uint64_t count, nt_place_t *at,
         return VIBEOS_STATUS_ACCESS_VIOLATION;
     }
     for (i = 0; i < count; i++) {
-        if (vibeos_uaccess_copy(&p, (const void *)(uintptr_t)(params_u + i * sizeof(p)),
+        if (nt_copy_in(&p, (params_u + i * sizeof(p)),
                                 sizeof(p)) != 0) {
             return VIBEOS_STATUS_ACCESS_VIOLATION;
         }
@@ -393,7 +393,7 @@ static uint32_t nt_ext_params(uint64_t params_u, uint64_t count, nt_place_t *at,
             continue;
         }
         if (!nt_user_ok(p.value, sizeof(a), 0) ||
-            vibeos_uaccess_copy(&a, (const void *)(uintptr_t)p.value, sizeof(a)) != 0) {
+            nt_copy_in(&a, p.value, sizeof(a)) != 0) {
             return VIBEOS_STATUS_ACCESS_VIOLATION;
         }
         if (a.alignment != 0u && ((a.alignment & (a.alignment - 1u)) != 0u ||
@@ -707,7 +707,7 @@ static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)old_u, &old, sizeof(old)) != 0 ||
+    if (nt_copy_out(old_u, &old, sizeof(old)) != 0 ||
         nt_put64(base_u, start) != 0 || nt_put64(size_u, end - start) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
@@ -780,7 +780,7 @@ static long nt_query_virtual_memory(uint64_t process, uint64_t va, uint64_t cls,
         mbi.region_size = end - page;
     }
     ks_mm_unlock(ps);
-    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &mbi, sizeof(mbi)) != 0 ||
+    if (nt_copy_out(buf, &mbi, sizeof(mbi)) != 0 ||
         (ret_len != 0u && nt_put64(ret_len, got) != 0)) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }

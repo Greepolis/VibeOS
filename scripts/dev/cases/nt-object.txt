@@ -68,3 +68,9 @@
         if (creator != 0u && mine >= NT_OB_PER_PROCESS) {
 +++ new
         if (0 && mine >= NT_OB_PER_PROCESS) {
+
+### a handle that is not a multiple of four is taken as one (moved with nt_file_get, v7 review)
+--- old
+    if (h == 0u || (h & 3u) != 0u || h / 4u > (uint64_t)VIBEOS_FD_MAX) {
++++ new
+    if (h == 0u || h / 4u > (uint64_t)VIBEOS_FD_MAX) {

@@ -60,11 +60,11 @@ static long nt_query_information_process(uint64_t process, uint64_t cls, uint64_
     pbi.inherited_from_pid = t->ppid;
     /* The buffer was judged by the row; the copy is fault-safe for the sibling
      * that unmaps it in between. */
-    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &pbi, sizeof(pbi)) != 0) {
+    if (nt_copy_out(buf, &pbi, sizeof(pbi)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if (ret_len != 0u &&
-        vibeos_uaccess_copy((void *)(uintptr_t)ret_len, &got, sizeof(got)) != 0) {
+        nt_copy_out(ret_len, &got, sizeof(got)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);

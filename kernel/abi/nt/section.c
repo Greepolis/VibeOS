@@ -154,7 +154,7 @@ static long create_data_section(uint64_t out, uint32_t want, uint64_t oa, uint64
         return NT_STATUS(VIBEOS_STATUS_INVALID_PAGE_PROTECTION);
     }
     if (max_size_u != 0u &&
-        vibeos_uaccess_copy(&size, (const void *)(uintptr_t)max_size_u, sizeof(size)) != 0) {
+        nt_copy_in(&size, max_size_u, sizeof(size)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if ((int64_t)size < 0) {
@@ -323,10 +323,10 @@ static long map_data_view(const section_view_t *sec, vibeos_file_t *file, uint32
     if ((granted & need) != need) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
-    if (vibeos_uaccess_copy(&want_base, (const void *)(uintptr_t)base_u, sizeof(want_base)) != 0 ||
-        vibeos_uaccess_copy(&want_size, (const void *)(uintptr_t)size_u, sizeof(want_size)) != 0 ||
+    if (nt_copy_in(&want_base, base_u, sizeof(want_base)) != 0 ||
+        nt_copy_in(&want_size, size_u, sizeof(want_size)) != 0 ||
         (offset_u != 0u &&
-         vibeos_uaccess_copy(&off, (const void *)(uintptr_t)offset_u, sizeof(off)) != 0)) {
+         nt_copy_in(&off, offset_u, sizeof(off)) != 0)) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if ((off & (VIBEOS_NT_ALLOCATION_GRANULARITY - 1u)) != 0u ||
@@ -391,8 +391,8 @@ static long map_data_view(const section_view_t *sec, vibeos_file_t *file, uint32
     if (st != 0u) {
         return NT_STATUS(st);
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)base_u, &base, sizeof(base)) != 0 ||
-        vibeos_uaccess_copy((void *)(uintptr_t)size_u, &len, sizeof(len)) != 0) {
+    if (nt_copy_out(base_u, &base, sizeof(base)) != 0 ||
+        nt_copy_out(size_u, &len, sizeof(len)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
@@ -445,7 +445,7 @@ static long nt_map_view_of_section(uint64_t sec_h, uint64_t process, uint64_t ba
         vibeos_file_put(file);
         return r;
     }
-    if (vibeos_uaccess_copy(&want_base, (const void *)(uintptr_t)base_u, sizeof(want_base)) != 0) {
+    if (nt_copy_in(&want_base, base_u, sizeof(want_base)) != 0) {
         vibeos_file_put(file);
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
@@ -468,8 +468,8 @@ static long nt_map_view_of_section(uint64_t sec_h, uint64_t process, uint64_t ba
         return NT_STATUS(rc == -VIBEOS_ENOMEM ? VIBEOS_STATUS_NO_MEMORY
                                               : NT_STATUS_INVALID_IMAGE_FORMAT);
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)base_u, &base, sizeof(base)) != 0 ||
-        vibeos_uaccess_copy((void *)(uintptr_t)size_u, &size, sizeof(size)) != 0) {
+    if (nt_copy_out(base_u, &base, sizeof(base)) != 0 ||
+        nt_copy_out(size_u, &size, sizeof(size)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     /* Moved is a success with its own number: the loader then knows the
@@ -551,9 +551,9 @@ static long nt_query_section(uint64_t sec_h, uint64_t cls, uint64_t buf, uint64_
     if (len < sizeof(sbi)) {
         return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &sbi, sizeof(sbi)) != 0 ||
+    if (nt_copy_out(buf, &sbi, sizeof(sbi)) != 0 ||
         (ret_len != 0u &&
-         vibeos_uaccess_copy((void *)(uintptr_t)ret_len, &got, sizeof(got)) != 0)) {
+         nt_copy_out(ret_len, &got, sizeof(got)) != 0)) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
