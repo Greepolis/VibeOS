@@ -106,6 +106,22 @@ NT_IMPORT NTSTATUS_T NtCreateFile(uint64_t *file, uint32_t access, void *attribu
                                   vibeos_nt_iosb_t *iosb, int64_t *allocation, uint32_t file_attributes,
                                   uint32_t share, uint32_t disposition, uint32_t options, void *ea,
                                   uint32_t ea_length);
+/* The file services (W4). */
+NT_IMPORT NTSTATUS_T NtReadFile(uint64_t file, uint64_t event, void *apc, void *apc_ctx,
+                                vibeos_nt_iosb_t *iosb, void *buf, uint32_t len,
+                                const int64_t *offset, const uint32_t *key);
+NT_IMPORT NTSTATUS_T NtQueryInformationFile(uint64_t file, vibeos_nt_iosb_t *iosb, void *buf,
+                                            uint32_t len, uint32_t cls);
+NT_IMPORT NTSTATUS_T NtSetInformationFile(uint64_t file, vibeos_nt_iosb_t *iosb, const void *buf,
+                                          uint32_t len, uint32_t cls);
+NT_IMPORT NTSTATUS_T NtQueryDirectoryFile(uint64_t file, uint64_t event, void *apc, void *apc_ctx,
+                                          vibeos_nt_iosb_t *iosb, void *buf, uint32_t len,
+                                          uint32_t cls, uint8_t single, const vibeos_ustring_t *mask,
+                                          uint8_t restart);
+NT_IMPORT NTSTATUS_T NtQueryAttributesFile(void *attributes, void *basic);
+NT_IMPORT NTSTATUS_T NtQueryFullAttributesFile(void *attributes, void *full);
+NT_IMPORT NTSTATUS_T NtDeleteFile(void *attributes);
+NT_IMPORT NTSTATUS_T NtFlushBuffersFile(uint64_t file, vibeos_nt_iosb_t *iosb);
 NT_IMPORT NTSTATUS_T NtCreateThreadEx(uint64_t *thread, uint32_t access, void *attributes,
                                       uint64_t process, void *start, void *param, uint32_t flags,
                                       uint64_t zero_bits, uint64_t stack_size, uint64_t max_stack,

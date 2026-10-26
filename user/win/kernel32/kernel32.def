@@ -4,6 +4,8 @@
 LIBRARY kernel32.dll
 EXPORTS
 CloseHandle
+CreateDirectoryA
+CreateDirectoryW
 CreateEventA
 CreateEventW
 CreateFileA
@@ -15,8 +17,16 @@ CreateMutexW
 CreateSemaphoreA
 CreateSemaphoreW
 CreateThread
+DeleteFileA
+DeleteFileW
 DuplicateHandle
 ExitProcess
+FindClose
+FindFirstFileA
+FindFirstFileW
+FindNextFileA
+FindNextFileW
+FlushFileBuffers
 FreeLibrary
 GetCurrentProcess
 GetCurrentProcessId
@@ -25,6 +35,12 @@ GetCurrentThreadId
 GetEnvironmentVariableA
 GetEnvironmentVariableW
 GetErrorMode
+GetFileAttributesA
+GetFileAttributesExA
+GetFileAttributesExW
+GetFileAttributesW
+GetFileSize
+GetFileSizeEx
 GetLastError
 GetModuleHandleA
 GetModuleHandleW
@@ -46,6 +62,8 @@ LoadLibraryA
 LoadLibraryW
 MapViewOfFile
 MapViewOfFileEx
+MoveFileA
+MoveFileW
 OpenEventA
 OpenEventW
 OpenFileMappingA
@@ -53,11 +71,17 @@ OpenFileMappingW
 OpenMutexA
 OpenMutexW
 PulseEvent
+ReadFile
 ReleaseMutex
 ReleaseSemaphore
+RemoveDirectoryA
+RemoveDirectoryW
 ResetEvent
+SetEndOfFile
 SetErrorMode
 SetEvent
+SetFilePointer
+SetFilePointerEx
 SetLastError
 SetUnhandledExceptionFilter
 Sleep

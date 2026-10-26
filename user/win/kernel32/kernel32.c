@@ -1116,3 +1116,464 @@ void GetNativeSystemInfo(void *out) {
     GetSystemInfo(out);   /* a 64-bit program is native */
 }
 
+
+/* ---- files (docs/abi/windows.md W4 step 8) ---------------------------------------------
+ *
+ * Each of these is a few NT services, as Windows' own kernel32 is: a DOS path
+ * becomes an NT one through RtlDosPathNameToNtPathName_U, every name is asked
+ * for without case, and a failed status becomes the last error through the
+ * table ntdll keeps. Nothing here knows the VFS. */
+
+#define INVALID_FILE_ATTRIBUTES  0xFFFFFFFFu
+#define INVALID_SET_FILE_POINTER 0xFFFFFFFFu
+#define ERROR_NO_MORE_FILES      18u
+#define ERROR_FILE_NOT_FOUND     2u
+#define ERROR_PATH_NOT_FOUND     3u
+
+/* An NT name for the DOS path `name`, in `n`; 0 and the last error if there
+ * is none. The caller frees `nt_name`. */
+static void *file_attributes(named_t *n, const uint16_t *name, vibeos_ustring_t *nt_name) {
+    if (!name || !RtlDosPathNameToNtPathName_U(name, nt_name, 0, 0)) {
+        set_error(ERROR_PATH_NOT_FOUND);
+        return 0;
+    }
+    (void)attributes_w(n, 0, 0, 0);
+    *(uint64_t *)(n->oa + VIBEOS_OA_OBJECT_NAME) = (uint64_t)(uintptr_t)nt_name;
+    *(uint32_t *)(n->oa + VIBEOS_OA_ATTRIBUTES) |= VIBEOS_OBJ_CASE_INSENSITIVE;
+    return n->oa;
+}
+
+/* NtCreateFile on a DOS path, synchronous. A status. */
+static NTSTATUS_T file_open(const uint16_t *name, uint32_t access, uint32_t share, uint32_t disposition,
+                            uint32_t options, uint64_t *h) {
+    named_t n;
+    vibeos_ustring_t nt_name;
+    vibeos_nt_iosb_t iosb;
+    NTSTATUS_T st;
+
+    if (!file_attributes(&n, name, &nt_name)) {
+        return 0xC000003Au;   /* OBJECT_PATH_NOT_FOUND */
+    }
+    st = NtCreateFile(h, access | VIBEOS_SYNCHRONIZE, n.oa, &iosb, 0, 0, share, disposition,
+                      options | 0x20u /* FILE_SYNCHRONOUS_IO_NONALERT */, 0, 0);
+    RtlFreeUnicodeString(&nt_name);
+    return st;
+}
+
+/* The A form's name, widened, or 0 with the last error set. */
+static const uint16_t *wide_name(const char *name, uint16_t *w) {
+    if (!name) {
+        set_error(ERROR_PATH_NOT_FOUND);
+        return 0;
+    }
+    if (widen(name, w, NAME_CHARS) < 0) {
+        set_error(ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    return w;
+}
+
+BOOL32 ReadFile(uint64_t h, void *buf, uint32_t len, uint32_t *read, void *overlapped) {
+    vibeos_nt_iosb_t iosb;
+    NTSTATUS_T st;
+
+    (void)overlapped;   /* asynchronous I/O is W5's */
+    if (read) {
+        *read = 0;
+    }
+    st = NtReadFile(h, 0, 0, 0, &iosb, buf, len, 0, 0);
+    if (st == 0xC0000011u) {
+        return 1;   /* END_OF_FILE: a read at the end succeeds and reads nothing */
+    }
+    if (failed(st)) {
+        return fail(st);
+    }
+    if (read) {
+        *read = (uint32_t)iosb.information;
+    }
+    return 1;
+}
+
+BOOL32 FlushFileBuffers(uint64_t h) {
+    vibeos_nt_iosb_t iosb;
+    NTSTATUS_T st = NtFlushBuffersFile(h, &iosb);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 GetFileSizeEx(uint64_t h, int64_t *size) {
+    vibeos_nt_iosb_t iosb;
+    uint8_t std[24];
+    NTSTATUS_T st = NtQueryInformationFile(h, &iosb, std, sizeof(std), 5u /* Standard */);
+
+    if (failed(st)) {
+        return fail(st);
+    }
+    *size = *(int64_t *)(std + 8);
+    return 1;
+}
+
+uint32_t GetFileSize(uint64_t h, uint32_t *high) {
+    int64_t size;
+
+    if (!GetFileSizeEx(h, &size)) {
+        return 0xFFFFFFFFu;
+    }
+    if (high) {
+        *high = (uint32_t)((uint64_t)size >> 32);
+    }
+    set_error(0);   /* a low word of all ones is a size too: the caller asks */
+    return (uint32_t)size;
+}
+
+BOOL32 SetFilePointerEx(uint64_t h, int64_t distance, int64_t *new_pos, uint32_t method) {
+    vibeos_nt_iosb_t iosb;
+    int64_t base = 0;
+    NTSTATUS_T st;
+
+    if (method == 1u) {        /* FILE_CURRENT */
+        st = NtQueryInformationFile(h, &iosb, &base, 8u, 14u /* Position */);
+        if (failed(st)) {
+            return fail(st);
+        }
+    } else if (method == 2u) { /* FILE_END */
+        if (!GetFileSizeEx(h, &base)) {
+            return 0;
+        }
+    } else if (method != 0u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    base += distance;
+    if (base < 0) {
+        set_error(131u);   /* ERROR_NEGATIVE_SEEK */
+        return 0;
+    }
+    st = NtSetInformationFile(h, &iosb, &base, 8u, 14u);
+    if (failed(st)) {
+        return fail(st);
+    }
+    if (new_pos) {
+        *new_pos = base;
+    }
+    return 1;
+}
+
+uint32_t SetFilePointer(uint64_t h, int32_t low, int32_t *high, uint32_t method) {
+    int64_t distance = high ? (int64_t)(((uint64_t)(uint32_t)*high << 32) | (uint32_t)low) : (int64_t)low;
+    int64_t pos;
+
+    if (!SetFilePointerEx(h, distance, &pos, method)) {
+        return INVALID_SET_FILE_POINTER;
+    }
+    if (high) {
+        *high = (int32_t)((uint64_t)pos >> 32);
+    }
+    set_error(0);
+    return (uint32_t)pos;
+}
+
+BOOL32 SetEndOfFile(uint64_t h) {
+    vibeos_nt_iosb_t iosb;
+    int64_t pos;
+    NTSTATUS_T st = NtQueryInformationFile(h, &iosb, &pos, 8u, 14u);
+
+    if (!failed(st)) {
+        st = NtSetInformationFile(h, &iosb, &pos, 8u, 20u /* EndOfFile */);
+    }
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 CreateDirectoryW(const uint16_t *name, const void *sa) {
+    uint64_t h = 0;
+    NTSTATUS_T st;
+
+    (void)sa;
+    st = file_open(name, 0x100000u /* SYNCHRONIZE */ | 1u /* FILE_LIST_DIRECTORY */, 3u, 2u /* FILE_CREATE */,
+                   1u /* FILE_DIRECTORY_FILE */, &h);
+    if (failed(st)) {
+        return fail(st);
+    }
+    (void)NtClose(h);
+    return 1;
+}
+
+BOOL32 CreateDirectoryA(const char *name, const void *sa) {
+    uint16_t w[NAME_CHARS];
+
+    return wide_name(name, w) ? CreateDirectoryW(w, sa) : 0;
+}
+
+/* DeleteFile: an open for DELETE that goes with its handle - a file, never a
+ * directory - so a file somebody holds without sharing deletion stays. */
+BOOL32 DeleteFileW(const uint16_t *name) {
+    uint64_t h = 0;
+    NTSTATUS_T st = file_open(name, VIBEOS_DELETE, 7u, 1u /* FILE_OPEN */,
+                              0x40u /* NON_DIRECTORY */ | 0x1000u /* DELETE_ON_CLOSE */, &h);
+
+    if (failed(st)) {
+        return fail(st);
+    }
+    (void)NtClose(h);
+    return 1;
+}
+
+BOOL32 DeleteFileA(const char *name) {
+    uint16_t w[NAME_CHARS];
+
+    return wide_name(name, w) ? DeleteFileW(w) : 0;
+}
+
+/* RemoveDirectory: it has to be a directory, and empty. */
+BOOL32 RemoveDirectoryW(const uint16_t *name) {
+    uint64_t h = 0;
+    uint8_t info[8];
+    vibeos_nt_iosb_t iosb;
+    NTSTATUS_T st = file_open(name, VIBEOS_DELETE, 7u, 1u, 1u /* DIRECTORY_FILE */, &h);
+
+    if (!failed(st)) {
+        info[0] = 1;   /* FileDispositionInformation: DeleteFile */
+        st = NtSetInformationFile(h, &iosb, info, 1u, 13u);
+        (void)NtClose(h);
+    }
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 RemoveDirectoryA(const char *name) {
+    uint16_t w[NAME_CHARS];
+
+    return wide_name(name, w) ? RemoveDirectoryW(w) : 0;
+}
+
+/* MoveFile: FileRenameInformation on an open of the source, without replacing. */
+BOOL32 MoveFileW(const uint16_t *from, const uint16_t *to) {
+    vibeos_ustring_t nt_to;
+    vibeos_nt_iosb_t iosb;
+    uint64_t h = 0;
+    uint8_t info[20u + 2u * (NAME_CHARS + 8u)];
+    uint32_t i, len;
+    NTSTATUS_T st;
+
+    if (!to || !RtlDosPathNameToNtPathName_U(to, &nt_to, 0, 0)) {
+        set_error(ERROR_PATH_NOT_FOUND);
+        return 0;
+    }
+    len = nt_to.Length;
+    if (len > 2u * (NAME_CHARS + 8u)) {
+        RtlFreeUnicodeString(&nt_to);
+        set_error(ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    for (i = 0; i < 20u; i++) {
+        info[i] = 0;
+    }
+    *(uint32_t *)(info + 16) = len;
+    for (i = 0; i < len; i++) {
+        info[20u + i] = ((const uint8_t *)nt_to.Buffer)[i];
+    }
+    RtlFreeUnicodeString(&nt_to);
+    st = file_open(from, VIBEOS_DELETE, 7u, 1u, 0u, &h);
+    if (!failed(st)) {
+        st = NtSetInformationFile(h, &iosb, info, 20u + len, 10u /* Rename */);
+        (void)NtClose(h);
+    }
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 MoveFileA(const char *from, const char *to) {
+    uint16_t wf[NAME_CHARS], wt[NAME_CHARS];
+
+    return wide_name(from, wf) && wide_name(to, wt) ? MoveFileW(wf, wt) : 0;
+}
+
+uint32_t GetFileAttributesW(const uint16_t *name) {
+    named_t n;
+    vibeos_ustring_t nt_name;
+    uint8_t basic[40];
+    NTSTATUS_T st;
+
+    if (!file_attributes(&n, name, &nt_name)) {
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    st = NtQueryAttributesFile(n.oa, basic);
+    RtlFreeUnicodeString(&nt_name);
+    if (failed(st)) {
+        fail(st);
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    return *(uint32_t *)(basic + 32);
+}
+
+uint32_t GetFileAttributesA(const char *name) {
+    uint16_t w[NAME_CHARS];
+
+    return wide_name(name, w) ? GetFileAttributesW(w) : INVALID_FILE_ATTRIBUTES;
+}
+
+/* WIN32_FILE_ATTRIBUTE_DATA: attributes, three times, the size high then low. */
+BOOL32 GetFileAttributesExW(const uint16_t *name, uint32_t level, void *out) {
+    named_t n;
+    vibeos_ustring_t nt_name;
+    uint8_t full[56], *o = (uint8_t *)out;
+    uint32_t i;
+    NTSTATUS_T st;
+
+    if (level != 0u) {   /* GetFileExInfoStandard is the only level */
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (!file_attributes(&n, name, &nt_name)) {
+        return 0;
+    }
+    st = NtQueryFullAttributesFile(n.oa, full);
+    RtlFreeUnicodeString(&nt_name);
+    if (failed(st)) {
+        return fail(st);
+    }
+    *(uint32_t *)o = *(uint32_t *)(full + 48);
+    for (i = 0; i < 24u; i++) {
+        o[4u + i] = full[i];   /* creation, last access, last write */
+    }
+    *(uint32_t *)(o + 28) = *(uint32_t *)(full + 44);
+    *(uint32_t *)(o + 32) = *(uint32_t *)(full + 40);
+    return 1;
+}
+
+BOOL32 GetFileAttributesExA(const char *name, uint32_t level, void *out) {
+    uint16_t w[NAME_CHARS];
+
+    return wide_name(name, w) ? GetFileAttributesExW(w, level, out) : 0;
+}
+
+/* ---- FindFirstFile: a directory handle and its mask ---------------------------------
+ *
+ * The find handle is the directory's own handle; NtQueryDirectoryFile keeps the
+ * mask and the place with it, which is all a search is. One entry a call, in
+ * FILE_DIRECTORY_INFORMATION, turned into WIN32_FIND_DATAW. */
+
+static uint32_t find_entry(uint64_t h, const vibeos_ustring_t *mask, int restart, uint8_t *data) {
+    uint8_t e[64u + 2u * NAME_CHARS];
+    vibeos_nt_iosb_t iosb;
+    uint32_t i, n;
+    NTSTATUS_T st;
+
+    st = NtQueryDirectoryFile(h, 0, 0, 0, &iosb, e, sizeof(e), 1u /* Directory */, 1, mask, restart);
+    if (failed(st) || st == 0x80000006u /* NO_MORE_FILES */) {
+        return st;
+    }
+    for (i = 0; i < 592u; i++) {
+        data[i] = 0;
+    }
+    *(uint32_t *)data = *(uint32_t *)(e + 56);
+    for (i = 0; i < 24u; i++) {
+        data[4u + i] = e[8u + i];   /* creation, last access, last write */
+    }
+    *(uint32_t *)(data + 28) = *(uint32_t *)(e + 44);
+    *(uint32_t *)(data + 32) = *(uint32_t *)(e + 40);
+    n = *(uint32_t *)(e + 60) / 2u;
+    n = n < NAME_CHARS - 1u ? n : NAME_CHARS - 1u;
+    for (i = 0; i < 2u * n; i++) {
+        data[44u + i] = e[64u + i];
+    }
+    return 0;
+}
+
+uint64_t FindFirstFileW(const uint16_t *pattern, void *data) {
+    uint16_t dir[NAME_CHARS];
+    vibeos_ustring_t mask;
+    uint32_t i, cut = 0, len;
+    uint64_t h = 0;
+    NTSTATUS_T st;
+
+    if (!pattern || (len = wlen(pattern)) >= NAME_CHARS) {
+        set_error(ERROR_PATH_NOT_FOUND);
+        return INVALID_HANDLE;
+    }
+    for (i = 0; i < len; i++) {
+        dir[i] = pattern[i];
+        if (pattern[i] == '\\' || pattern[i] == '/') {
+            cut = i + 1u;
+        }
+    }
+    if (cut == len) {
+        set_error(ERROR_FILE_NOT_FOUND);   /* "dir\": nothing to look for */
+        return INVALID_HANDLE;
+    }
+    dir[cut] = 0;
+    if (cut == 0u) {
+        dir[0] = '.';
+        dir[1] = 0;
+    }
+    mask.Length = (uint16_t)(2u * (len - cut));
+    mask.MaximumLength = mask.Length;
+    mask.Buffer = (vibeos_wchar_t *)(uintptr_t)(pattern + cut);
+    st = file_open(dir, 1u /* FILE_LIST_DIRECTORY */, 7u, 1u, 1u /* DIRECTORY_FILE */, &h);
+    if (!failed(st)) {
+        st = find_entry(h, &mask, 1, (uint8_t *)data);
+        if (st != 0u) {
+            (void)NtClose(h);
+        }
+    }
+    if (st != 0u) {
+        set_error(st == 0x80000006u || st == 0xC000000Fu ? ERROR_FILE_NOT_FOUND
+                                                         : RtlNtStatusToDosError((vibeos_ntstatus_t)st));
+        return INVALID_HANDLE;
+    }
+    return h;
+}
+
+BOOL32 FindNextFileW(uint64_t h, void *data) {
+    uint32_t st = find_entry(h, 0, 0, (uint8_t *)data);
+
+    if (st != 0u) {
+        set_error(st == 0x80000006u ? ERROR_NO_MORE_FILES : RtlNtStatusToDosError((vibeos_ntstatus_t)st));
+        return 0;
+    }
+    return 1;
+}
+
+BOOL32 FindClose(uint64_t h) {
+    NTSTATUS_T st = NtClose(h);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+/* WIN32_FIND_DATAA from the wide one: the same fields, the name narrowed. */
+static void find_data_a(const uint8_t *w, uint8_t *a) {
+    uint32_t i;
+
+    for (i = 0; i < 44u; i++) {
+        a[i] = w[i];
+    }
+    for (i = 0; i < NAME_CHARS; i++) {
+        a[44u + i] = (uint8_t)narrow(*(const uint16_t *)(w + 44u + 2u * i));
+    }
+    for (i = 0; i < 14u; i++) {
+        a[304u + i] = 0;
+    }
+}
+
+uint64_t FindFirstFileA(const char *pattern, void *data) {
+    uint16_t w[NAME_CHARS];
+    uint8_t wide[592];
+    uint64_t h;
+
+    if (!wide_name(pattern, w)) {
+        return INVALID_HANDLE;
+    }
+    h = FindFirstFileW(w, wide);
+    if (h != INVALID_HANDLE) {
+        find_data_a(wide, (uint8_t *)data);
+    }
+    return h;
+}
+
+BOOL32 FindNextFileA(uint64_t h, void *data) {
+    uint8_t wide[592];
+
+    if (!FindNextFileW(h, wide)) {
+        return 0;
+    }
+    find_data_a(wide, (uint8_t *)data);
+    return 1;
+}
