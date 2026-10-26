@@ -13,3 +13,16 @@
     int r = vibeos_fs_getattr(f->mnt, &held, &node);
 +++ new
     int r = -VIBEOS_ENOSYS;
+
+### a delete-on-close removes whatever is at the path now (v7 review)
+--- old
+    if (f->unlink_on_release && f->mnt && vibeos_file_still_at_path(f)) {
++++ new
+    if (f->unlink_on_release && f->mnt) {
+
+### a directory marked for deletion stays (v7 review)
+--- old
+    file_notify(f, VIBEOS_FSN_CLOSE_NOWRITE);
+    release_name(f);
++++ new
+    file_notify(f, VIBEOS_FSN_CLOSE_NOWRITE);

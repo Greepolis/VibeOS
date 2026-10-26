@@ -210,6 +210,10 @@ static long linux_rename_at(uint64_t olddir, uint64_t old_uptr, uint64_t newdir,
                          (flags & LINUX_RENAME_NOREPLACE) ? VIBEOS_RENAME_NOREPLACE : 0u);
     if (r == 0 && a.node.is_dir) {
         linux_paths_moved(a.path, b.path);
+    } else if (r == 0) {
+        /* A file's descriptions follow it too: one left naming the old path
+         * removed whatever came to be there on a delete-on-close (v7 review). */
+        vibeos_file_paths_moved(a.path, b.path);
     }
     return r;
 }

@@ -1256,6 +1256,38 @@ static void t_write_permissions(void) {
            "its own file it deletes");
 }
 
+/* v7 review: a delete-on-close follows its file. Renamed away by a Linux
+ * call, with another file made at the old name, the close takes the file it
+ * was opened on and leaves the newcomer; and a directory marked for deletion
+ * goes, which unlink alone could not do. */
+static void t_delete_follows_file(void) {
+    uint64_t h = 0, d = 0, info = 0, n = 0, buf = kf_ualloc(16), st = kf_ualloc(144);
+
+    fresh(53);
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ | VIBEOS_DELETE, "\\??\\C:\\tmp\\doc", 2, 0x1040) ==
+               ST(VIBEOS_STATUS_SUCCESS),
+           "a file that goes with its handle");
+    expect(lsys(82 /* rename */, lstr("/tmp/doc"), lstr("/tmp/moved"), 0) == 0 &&
+               lsys(85 /* creat */, lstr("/tmp/doc"), 0644, 0) >= 0 &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "renamed by Linux, a newcomer made at its old name, and closed");
+    expect(lsys(4 /* stat */, lstr("/tmp/doc"), st, 0) == 0 && lsys(4, lstr("/tmp/moved"), st, 0) < 0,
+           "the close took the file it was opened on, not the newcomer");
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ | VIBEOS_DELETE, "\\??\\C:\\tmp\\doc2", 2, 0x1040) ==
+                   ST(VIBEOS_STATUS_SUCCESS) &&
+               lsys(87 /* unlink */, lstr("/tmp/doc2"), 0, 0) == 0 &&
+               lsys(85 /* creat */, lstr("/tmp/doc2"), 0644, 0) >= 0 &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               lsys(4, lstr("/tmp/doc2"), st, 0) == 0,
+           "unlinked under it and replaced, the close removes nothing: the name is somebody else's now");
+    expect(create_file(&d, &info, VIBEOS_GENERIC_READ | VIBEOS_DELETE, "\\??\\C:\\tmp\\gone", 2, 0x1) ==
+                   ST(VIBEOS_STATUS_SUCCESS) &&
+               (((uint8_t *)kf_uptr(buf))[0] = 1, file_info(1, d, buf, 1, 13, &n)) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, d, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               lsys(4, lstr("/tmp/gone"), st, 0) < 0,
+           "and a directory marked for deletion is removed at its last close");
+}
+
 static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
     uint64_t out = kf_ualloc(8);
     uint64_t rest[3] = { 0x02u /* PAGE_READONLY */, attributes, file };
@@ -2327,6 +2359,7 @@ int test_nt_abi(void) {
     t_share_and_locks();
     t_handle_rights();
     t_write_permissions();
+    t_delete_follows_file();
     t_create_file();
     t_sections();
     t_open_file_permissions();

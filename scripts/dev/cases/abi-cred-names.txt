@@ -55,3 +55,12 @@
     return vibeos_fs_link(a.mnt, a.tail, b.tail);
 +++ new
     return vibeos_fs_link(a.mnt, a.tail, b.tail);
+
+### a renamed file's descriptions keep the old path (v7 review)
+--- old
+        vibeos_file_paths_moved(a.path, b.path);
+    }
+    return r;
++++ new
+    }
+    return r;

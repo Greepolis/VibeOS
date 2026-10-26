@@ -390,12 +390,22 @@ static int regular_sync(vibeos_file_t *f) {
 /* The last reference to a description went. Nothing to do for a file with a
  * name of its own; one made by memfd_create takes its name with it, and its
  * pages go back unless a mapping still holds them. */
+/* A name marked to go with its last handle (NT's DELETE_ON_CLOSE and
+ * disposition). It goes only if it still names this file: a rename or an
+ * unlink since the open moved the file away or put another one there, and
+ * removing by path then took somebody else's (v7 review, M-080's family). A
+ * directory goes by rmdir, which refuses one with entries - and directories
+ * have their own release, which did not look at the mark at all. */
+static void release_name(vibeos_file_t *f) {
+    if (f->unlink_on_release && f->mnt && vibeos_file_still_at_path(f)) {
+        (void)(f->isdir ? vibeos_fs_rmdir(f->mnt, tail_of(f)) : vibeos_fs_unlink(f->mnt, tail_of(f)));
+    }
+}
+
 static void regular_release(vibeos_file_t *f) {
     file_notify(f, (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDONLY ? VIBEOS_FSN_CLOSE_WRITE
                                                                     : VIBEOS_FSN_CLOSE_NOWRITE);
-    if (f->unlink_on_release && f->mnt) {
-        (void)vibeos_fs_unlink(f->mnt, tail_of(f));
-    }
+    release_name(f);
 }
 
 static int regular_share_page(vibeos_file_t *f, uint64_t off, void **page) {
@@ -516,6 +526,7 @@ static int dir_sync(vibeos_file_t *f) {
 
 static void dir_release(vibeos_file_t *f) {
     file_notify(f, VIBEOS_FSN_CLOSE_NOWRITE);
+    release_name(f);
 }
 
 const vibeos_file_ops_t vibeos_fops_dir = {
