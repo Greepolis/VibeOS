@@ -153,7 +153,6 @@ int vibeos_task_transition(uint32_t slot, vibeos_task_state_t to,
      * its next occupant will have, so a reference taken before the release
      * would validate against the new tenant - which is exactly the failure the
      * generation exists to catch. */
-    vibeos_task_touch();
     if (from == VIBEOS_TASK_FREE && to == VIBEOS_TASK_SETUP) {
         g_generation[slot]++;
         g_ran[slot] = 0;
@@ -163,8 +162,15 @@ int vibeos_task_transition(uint32_t slot, vibeos_task_state_t to,
         g_ready_at[slot] = vibeos_account_ticks();
     }
 
-    g_state[slot] = (uint8_t)to;
+    __atomic_store_n(&g_state[slot], (uint8_t)to, __ATOMIC_RELEASE);
     g_why[slot] = why;
+    /* After the state, never before: a core that reads the moved generation
+     * and then the old state caches "nothing higher is runnable" under the
+     * new generation, and keeps it until something else moves - a REALTIME
+     * task made ready meanwhile waits out a whole slice (v7 review). Moved
+     * after, a core that saw the old state saw the old generation too, and
+     * looks again on its next tick. */
+    vibeos_task_touch();
     return 0;
 }
 
