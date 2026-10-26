@@ -1,0 +1,16 @@
+# The boot frame pool's choice of region (kernel/mm/pmm.c); caught by
+# test_pmm in tests/kernel/kernel_tests.c on the host.
+#
+# Target source: kernel/mm/pmm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/mm/pmm.c scripts/dev/cases/mm-pmm.txt build-gcc-Release
+
+# "A region wholly above the limit is skipped" has no case: removing the skip
+# goes NOT RED, correctly - the cut on the next line takes such a region to
+# nothing for a base at the limit, and the skip is what keeps a base above it
+# from wrapping `limit - base`. Checked 2026-10-26.
+
+### an initrd's suffix runs past the identity map's limit (v7 review)
+--- old
+            uint64_t region_end64 = region->base + region_size;
++++ new
+            uint64_t region_end64 = region->base + region->length;

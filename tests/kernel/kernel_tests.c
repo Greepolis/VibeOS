@@ -87,6 +87,16 @@ static int test_pmm(void) {
         picked_base != 0xFFFF0000ull || picked_size != 0x10000u) {
         return -2;
     }
+    /* v7 review: an initrd at the start of that region leaves a suffix, and
+     * the suffix was measured from the region's own end, past the limit. */
+    boot_info.initrd_base = 0xFFFF0000ull;
+    boot_info.initrd_size = 0x1000u;
+    if (vibeos_pmm_pick_usable_region(&boot_info, 4096, 0x100000000ull, &picked_base, &picked_size) != 0 ||
+        picked_base != 0xFFFF1000ull || picked_size != 0xF000u) {
+        return -3;
+    }
+    boot_info.initrd_base = 0;
+    boot_info.initrd_size = 0;
     if (vibeos_pmm_init(&pmm, 0x100000, 8192, 4096) != 0) {
         return -1;
     }

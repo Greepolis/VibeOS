@@ -73,7 +73,10 @@ int vibeos_pmm_pick_usable_region(const vibeos_boot_info_t *boot_info, size_t pa
             region_size = (size_t)(limit - region->base);
         }
         if (boot_info->initrd_size > 0) {
-            uint64_t region_end64 = region->base + region->length;
+            /* The end after the limit's cut, not the region's own: taken
+             * from the length, a suffix past the initrd ran on above the
+             * identity map, and the cut was undone (v7 review). */
+            uint64_t region_end64 = region->base + region_size;
             uint64_t initrd_end64 = boot_info->initrd_base + boot_info->initrd_size;
             if (!(boot_info->initrd_base >= region_end64 || initrd_end64 <= region->base)) {
                 uint64_t prefix = (boot_info->initrd_base > region->base) ? (boot_info->initrd_base - region->base) : 0;
