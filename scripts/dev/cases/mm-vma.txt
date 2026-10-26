@@ -54,3 +54,9 @@
             (void)into_prev;
             vma_try_merge(list, prev, cur);
             cur = next;
+
+### one address space takes the whole region pool (M-127)
+--- old
+    if (list && list->count >= (quota ? quota : 1u)) {
++++ new
+    if (0) {

@@ -60,10 +60,18 @@ uint32_t vibeos_vma_live(void) {
     return g_live;
 }
 
-static vibeos_vma_t *vma_alloc(void) {
+/* No address space holds more than a quarter of the pool (M-127): the pool
+ * is every process's, and one that mapped page after page with alternating
+ * protections took all of it, after which nobody else could map anything.
+ * The futex and record-lock tables bound a process the same way. */
+static vibeos_vma_t *vma_alloc(const vibeos_vma_list_t *list) {
     vibeos_vma_t *v = g_free;
+    uint32_t quota = g_pool_entries / 4u;
 
     if (!v) {
+        return 0;
+    }
+    if (list && list->count >= (quota ? quota : 1u)) {
         return 0;
     }
     g_free = v->next;
@@ -186,12 +194,12 @@ static int vma_insert_tmpl(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
         prev = cur;
     }
 
-    v = vma_alloc();
+    v = vma_alloc(list);
     if (!v) {
-        /* Counted, not silent. Every caller ignores the return - a region that
-         * cannot be described is not a reason to fail an mmap that worked -
-         * so without this the pool running dry looks like mprotect refusing
-         * addresses for no reason, several services later. */
+        /* Counted, not silent: the pool running dry, or this address space
+         * at its quarter of it (M-127). Every caller fails its mmap, exec or
+         * allocation for it now; before the 2026-10-07 review they ignored it,
+         * and the count was the only trace. */
         vibeos_mm_stats()->vmas_refused++;
         return -1;
     }
@@ -255,7 +263,7 @@ vibeos_vma_t *vibeos_vma_find_locked(vibeos_vma_list_t *list, uint64_t va) {
  * has changed. */
 static vibeos_vma_t *vma_split(vibeos_vma_list_t *list, vibeos_vma_t *v,
                                uint64_t at) {
-    vibeos_vma_t *hi = vma_alloc();
+    vibeos_vma_t *hi = vma_alloc(list);
 
     if (!hi) {
         return 0;
@@ -457,7 +465,7 @@ int vibeos_vma_clone_locked(vibeos_vma_list_t *dst, const vibeos_vma_list_t *src
     }
     dst->count = 0;
     for (cur = src->head; cur; cur = cur->next) {
-        vibeos_vma_t *v = vma_alloc();
+        vibeos_vma_t *v = vma_alloc(dst);
         if (!v) {
             /* Empty it again rather than handing back half a picture: a
              * process whose regions describe some of its memory is worse than

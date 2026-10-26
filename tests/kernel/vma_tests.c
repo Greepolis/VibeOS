@@ -189,6 +189,27 @@ int test_vma(void) {
         goto fail;
     }
 
+    /* M-127: one address space holds no more than a quarter of the pool, and
+     * the rest is still there for another. Regions alternate protection so
+     * that none merges. */
+    setup();
+    memset(&l, 0, sizeof(l));
+    memset(&child, 0, sizeof(child));
+    {
+        uint32_t i, got = 0;
+
+        for (i = 0; i < POOL; i++) {
+            if (anon(&l, 0x100000ull + (uint64_t)i * PAGE, PAGE, (i & 1u) ? RO : RW) == 0) {
+                got++;
+            }
+        }
+        if (got != POOL / 4u || walk_count(&l) != POOL / 4u ||
+            anon(&child, 0x900000ull, PAGE, RW) != 0) {
+            printf("FAIL:vma one address space took more than its quarter of the pool\n");
+            goto fail;
+        }
+    }
+
     /* ---- 9. clone, and clone running out of descriptors ------------------ */
     setup();
     memset(&l, 0, sizeof(l));
@@ -218,17 +239,25 @@ int test_vma(void) {
      * picture: a process whose regions describe some of its memory is worse
      * than one whose fork failed. */
     {
-        vibeos_vma_list_t big, small;
+        vibeos_vma_list_t big, others[3], small;
         uint32_t i;
 
         setup();
         memset(&big, 0, sizeof(big));
+        memset(others, 0, sizeof(others));
         memset(&small, 0, sizeof(small));
+        /* The pool emptied by four lists, each at its quarter (M-127). */
         for (i = 0; i < POOL; i++) {
             /* Every other page, so nothing merges and each insert costs one. */
-            if (anon(&big, 0x100000ull + (uint64_t)i * 2ull * PAGE, PAGE, RW) != 0) {
+            vibeos_vma_list_t *to = i < POOL / 4u ? &big : &others[i / (POOL / 4u) - 1u];
+
+            if (anon(to, 0x100000ull + (uint64_t)i * 2ull * PAGE, PAGE, RW) != 0) {
                 break;
             }
+        }
+        if (vibeos_vma_live() != POOL) {
+            printf("FAIL:vma four lists did not empty the pool\n");
+            goto fail;
         }
         if (vibeos_vma_clone(&small, &big) == 0) {
             printf("FAIL:vma cloned into an exhausted pool\n");

@@ -6630,14 +6630,19 @@ static void t_memory_calls(void) {
      * review, 2026-10-07). The pool is emptied by a list of this test's own,
      * one page every other page so nothing merges. */
     {
-        static vibeos_vma_list_t hog;
+        /* Five lists: each holds a quarter of the pool at most (M-127). */
+        static vibeos_vma_list_t hog[5];
         vibeos_vmspace_t vs;
         uint64_t three = (uint64_t)MMAP(0x31000000ull, 3u * 4096u, 3, 0x22 | 0x10 /* MAP_FIXED */, -1, 0), a;
-        int full = 0;
+        uint32_t k;
 
-        memset(&hog, 0, sizeof(hog));
-        for (a = 0x100000000ull; !full; a += 8192u) {
-            full = vibeos_vma_insert(&hog, a, 4096u, VIBEOS_PROT_READ, VIBEOS_BACKING_ANON, 0, 0) != 0;
+        memset(hog, 0, sizeof(hog));
+        for (k = 0, a = 0x100000000ull; k < 5u; k++) {
+            int full = 0;
+
+            for (; !full; a += 8192u) {
+                full = vibeos_vma_insert(&hog[k], a, 4096u, VIBEOS_PROT_READ, VIBEOS_BACKING_ANON, 0, 0) != 0;
+            }
         }
         vs = ks_vm(ks_current());
         expect(three == 0x31000000ull &&
@@ -6646,7 +6651,9 @@ static void t_memory_calls(void) {
                "with no region descriptor left, mmap is ENOMEM and maps nothing");
         expect(SYS2(11, three + 4096u, 4096) == -VIBEOS_ENOMEM && vibeos_vmspace_mapped(&vs, three + 4096u),
                "and munmap of a region's middle is ENOMEM and unmaps nothing");
-        vibeos_vma_clear(&hog);
+        for (k = 0; k < 5u; k++) {
+            vibeos_vma_clear(&hog[k]);
+        }
         expect(SYS2(11, three + 4096u, 4096) == 0 && !vibeos_vmspace_mapped(&vs, three + 4096u),
                "with descriptors again, the same munmap goes through");
         (void)SYS2(11, three, 3u * 4096u);
