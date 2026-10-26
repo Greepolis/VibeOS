@@ -47,7 +47,7 @@ static int fresh(uint32_t pid) {
 
 /* The arguments past the fourth, where Windows' convention leaves them: a
  * stack whose pointer the call arrives with, the fifth at sp + 0x28. */
-static uint64_t stack_args(const uint64_t *rest, uint32_t n) {
+static uint64_t stack_args_(const uint64_t *rest, uint32_t n) {
     uint64_t sp = kf_ualloc(0x28u + 8u * 16u);
     uint32_t i;
 
@@ -56,6 +56,13 @@ static uint64_t stack_args(const uint64_t *rest, uint32_t n) {
     }
     return sp;
 }
+
+/* `rest` is always an array, and asking for more of it than it holds is a
+ * compile error: two helpers declared six and passed seven, and only the CI's
+ * sanitizer build saw the read past the end, for a week. */
+#define stack_args(rest, n)                                                              \
+    (stack_args_((rest), (n)) +                                                          \
+     0u * sizeof(char[(n) <= sizeof(rest) / sizeof((rest)[0]) ? 1 : -1]))
 
 static void t_registry(void) {
     static const vibeos_row_t past[] = {
@@ -505,13 +512,13 @@ static void t_handles_and_names(void) {
            "the console's handle is not an event");
 
     /* Duplicating: the same object, the rights asked for or the same ones. */
-    kf_next_sp(stack_args((const uint64_t[3]){ VIBEOS_EVENT_ALL_ACCESS, 0, VIBEOS_DUPLICATE_SAME_ACCESS }, 3));
+    kf_next_sp(stack_args_((const uint64_t[3]){ VIBEOS_EVENT_ALL_ACCESS, 0, VIBEOS_DUPLICATE_SAME_ACCESS }, 3));
     expect(nt(VIBEOS_NT_NR_NtDuplicateObject, VIBEOS_NT_CURRENT_PROCESS, a,
               VIBEOS_NT_CURRENT_PROCESS, out, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
            *(uint64_t *)kf_uptr(out) != a &&
            nt(VIBEOS_NT_NR_NtSetEvent, *(uint64_t *)kf_uptr(out), 0, 0, 0, 0) ==
                ST(VIBEOS_STATUS_ACCESS_DENIED), "SAME_ACCESS copies the rights, not more");
-    kf_next_sp(stack_args((const uint64_t[3]){ VIBEOS_GENERIC_ALL, 0, VIBEOS_DUPLICATE_CLOSE_SOURCE }, 3));
+    kf_next_sp(stack_args_((const uint64_t[3]){ VIBEOS_GENERIC_ALL, 0, VIBEOS_DUPLICATE_CLOSE_SOURCE }, 3));
     expect(nt(VIBEOS_NT_NR_NtDuplicateObject, VIBEOS_NT_CURRENT_PROCESS, a,
               VIBEOS_NT_CURRENT_PROCESS, out, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
            nt(VIBEOS_NT_NR_NtSetEvent, *(uint64_t *)kf_uptr(out), 0, 0, 0, 0) ==
@@ -1345,7 +1352,7 @@ static long map_view(uint64_t sec, uint64_t process, uint64_t *base, uint64_t *s
     uint64_t rest[6] = { 0, 0, s, 1, 0, 0x02u };
 
     *(uint64_t *)kf_uptr(b) = 0;
-    kf_next_sp(stack_args(rest, 7));
+    kf_next_sp(stack_args(rest, 6));
     {
         long r = nt(VIBEOS_NT_NR_NtMapViewOfSection, sec, process, b, 0, 0);
         *base = *(uint64_t *)kf_uptr(b);
@@ -2189,7 +2196,7 @@ static long sec_map(uint64_t sec, uint64_t *base, uint64_t off, uint64_t *size, 
     rest[5] = protect;    /* Win32Protect      */
     *(uint64_t *)kf_uptr(b) = *base;
     *(uint64_t *)kf_uptr(s) = *size;
-    kf_next_sp(stack_args(rest, 7));
+    kf_next_sp(stack_args(rest, 6));
     r = nt(VIBEOS_NT_NR_NtMapViewOfSection, sec, VIBEOS_NT_CURRENT_PROCESS, b, 0, 0);
     *base = *(uint64_t *)kf_uptr(b);
     *size = *(uint64_t *)kf_uptr(s);
