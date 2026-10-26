@@ -54,3 +54,10 @@
     if (first >= 2u && g_fat_cur->cur_first == first && g_fat_cur->cur_index <= index &&
 +++ new
     if (first >= 2u && g_fat_cur->cur_first == first &&
+
+# The chain cursor dropped when a table write fails half-way (v7 review) has no
+# case: through the VFS it goes NOT RED, because every caller that cuts a chain
+# changes the directory entry - size and first cluster - before the table, so a
+# read stops before it reaches the cursor. Two attempts (truncate to one
+# cluster, to none) agreed with a fresh walk either way. Checked 2026-10-26;
+# the reset stays as the rule "a write that may have landed invalidates".

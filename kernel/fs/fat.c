@@ -898,6 +898,10 @@ static int fat_set_entry(uint32_t cluster, uint32_t value) {
         if (fat_sector_write(g_fat_cur->fat_lba + copy * g_fat_cur->sectors_per_fat + s,
                                            g_fatbuf) != 0) {
             g_fat_cur->free_known = 0;   /* which copy holds what is unknown now */
+            /* And so is the chain the cursor was walking: the first copy may
+             * hold the change already, and a cursor kept past it skips or
+             * repeats clusters (v7 review). */
+            g_fat_cur->cur_first = 0;
             return -1;
         }
     }
