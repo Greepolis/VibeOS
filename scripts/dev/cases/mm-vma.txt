@@ -41,3 +41,16 @@
 # anonymous region has no offset to be wrong about, so it stays green until
 # file backing arrives at P4 and then fails as a file being read from the wrong
 # place. The test covers it by cloning a FILE-backed region and splitting it.
+
+### a change that merges regions walks on from a pointer read before the merge
+--- old
+            vma_try_merge(list, prev, cur);
+            if (!into_prev) {
+                prev = cur;
+            }
+            cur = prev->next;
++++ new
+            vibeos_vma_t *next = cur->next;
+            (void)into_prev;
+            vma_try_merge(list, prev, cur);
+            cur = next;

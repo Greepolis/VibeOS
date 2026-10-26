@@ -426,9 +426,18 @@ static int vma_change_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t le
             cur->alloc_prot = alloc_prot;
         }
         {
-            vibeos_vma_t *next = cur->next;
+            /* The merge may absorb cur's successor into cur, and cur into
+             * prev, freeing each: what survives is read after it, never a
+             * pointer taken before. Reading cur->next first walked into a
+             * freed descriptor whenever a change made two regions alike. */
+            int into_prev = prev && prev->base + prev->len == cur->base &&
+                            vma_same_kind(prev, prev->base + prev->len, cur);
+
             vma_try_merge(list, prev, cur);
-            cur = next;
+            if (!into_prev) {
+                prev = cur;
+            }
+            cur = prev->next;
         }
     }
     return 0;

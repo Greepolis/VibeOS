@@ -173,6 +173,22 @@ int test_vma(void) {
         goto fail;
     }
 
+    /* One change across five regions that it makes alike: each merge frees
+     * a descriptor, the successor among them, and the walk has to continue
+     * from what survived rather than from a pointer read before the merge. */
+    setup();
+    memset(&l, 0, sizeof(l));
+    if (anon(&l, 0x70000ull, PAGE, RW) != 0 || anon(&l, 0x71000ull, PAGE, RO) != 0 ||
+        anon(&l, 0x72000ull, PAGE, RW) != 0 || anon(&l, 0x73000ull, PAGE, RO) != 0 ||
+        anon(&l, 0x74000ull, PAGE, RW) != 0 || walk_count(&l) != 5u) {
+        goto fail;
+    }
+    if (vibeos_vma_protect(&l, 0x70000ull, 5ull * PAGE, RW) != 0 || walk_count(&l) != 1u ||
+        vibeos_vma_live() != 1u || !ordered(&l) || l.head->len != 5ull * PAGE) {
+        printf("FAIL:vma a change that merges several regions walked a freed one\n");
+        goto fail;
+    }
+
     /* ---- 9. clone, and clone running out of descriptors ------------------ */
     setup();
     memset(&l, 0, sizeof(l));
