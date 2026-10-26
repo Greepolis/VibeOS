@@ -24,9 +24,9 @@
 
 ### NtOpenFile walks with the kernel's authority (M-105)
 --- old
-    rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, &w);
+                             &who, &w);
 +++ new
-    rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), 0, &w);
+                             0, &w);
 
 ### NtOpenFile opens without asking for read permission (M-105)
 --- old
@@ -178,7 +178,7 @@
 
 ### a mount point is not found without case (W4 step 6)
 --- old
-                if (k + 1u == start && mp[k] == '/' && nt_fold_eq(path + start, mp + start, end - start)) {
+                    if (k == pl && mp[k] == '/' && nt_fold_eq(path + start, mp + k + 1u, end - start)) {
 +++ new
                 if (0) {
 
@@ -336,3 +336,14 @@
                                                     (disposition == NT_FILE_CREATE ? VIBEOS_O_EXCL : 0u)),
 +++ new
                                                     0u),
+
+### an NT program's walks start at the machine's root (v7 review)
+--- old
+    if (i == 0u) {
+        out[i++] = '/';
+    }
+    out[i] = 0;
++++ new
+    i = 0;
+    out[i++] = '/';
+    out[i] = 0;

@@ -201,27 +201,54 @@ static int nt_fold_eq(const char *a, const char *b, uint32_t n) {
     return b[n] == 0;
 }
 
+/* Where C: is: the process's root, which chroot moves. The walks of a
+ * program's paths start there and cannot climb out of it; they started at the
+ * machine's root, so a chrooted NT program reached the whole filesystem (v7
+ * review). */
+static void nt_root(char *out, uint32_t cap) {
+    int me = ks_current();
+    vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
+    uint32_t i = 0;
+
+    if (ps) {
+        ks_lock(&ps->files_lock, __func__);
+        for (; ps->root[i] && i + 1u < cap; i++) {
+            out[i] = ps->root[i];
+        }
+        ks_unlock(&ps->files_lock);
+    }
+    if (i == 0u) {
+        out[i++] = '/';
+    }
+    out[i] = 0;
+}
+
 static void nt_case_resolve(char *path) {
+    char root[VIBEOS_PATH_MAX];
     uint32_t start = 1, end;
 
+    nt_root(root, sizeof(root));
     while (path[start]) {
-        vibeos_path_t w;
+        vibeos_path_t w, pw;
         char saved;
 
         for (end = start; path[end] && path[end] != '/'; end++) {
         }
         saved = path[end];
         path[end] = 0;
-        if (vibeos_path_walk("/", "/", path, 0u, &w) != 0 || !w.exists) {
+        if (vibeos_path_walk(root, root, path, 0u, &w) != 0 || !w.exists) {
             vibeos_fsmount_t *m = 0;
             const char *tail = 0;
             char name[VIBEOS_NAME_MAX + 1u];
-            uint32_t i, k, found = 0;
+            uint32_t i, k, found = 0, pl = 0;
             uint64_t size;
             int is_dir;
 
-            path[start - 1u] = 0;   /* the parent: "" is the root */
-            if (vibeos_fs_resolve(start == 1u ? "/" : path, &m, &tail) == 0) {
+            /* The parent, as the walk from the root finds it: its machine
+             * path is what the mount table and the filesystem are asked by. */
+            path[start - 1u] = 0;
+            if (vibeos_path_walk(root, root, start == 1u ? "/" : path, 0u, &pw) == 0 && pw.exists &&
+                vibeos_fs_resolve(pw.path, &m, &tail) == 0) {
                 while (*tail == '/') {
                     tail++;
                 }
@@ -233,18 +260,27 @@ static void nt_case_resolve(char *path) {
                         found = 1;
                     }
                 }
-            }
-            /* A mount point need not be an entry of the filesystem under it. */
-            for (i = 0; !found && i < vibeos_fs_mount_count(); i++) {
-                const char *mp = vibeos_fs_mount_path(i);
-
-                for (k = 0; k + 1u < start && mp[k] == path[k]; k++) {
+                /* A mount point need not be an entry of the filesystem under
+                 * it: one directly below the parent's machine path. */
+                while (pw.path[pl]) {
+                    pl++;
                 }
-                if (k + 1u == start && mp[k] == '/' && nt_fold_eq(path + start, mp + start, end - start)) {
-                    for (k = 0; k < end - start; k++) {
-                        path[start + k] = mp[start + k];
+                if (pl == 1u) {
+                    pl = 0;   /* the machine's root: "/" + name */
+                }
+                for (i = 0; !found && i < vibeos_fs_mount_count(); i++) {
+                    const char *mp = vibeos_fs_mount_path(i);
+
+                    for (k = 0; k < pl && mp[k] == pw.path[k]; k++) {
                     }
-                    found = 1;
+                    if (k == pl && mp[k] == '/' && nt_fold_eq(path + start, mp + k + 1u, end - start)) {
+                        uint32_t c;
+
+                        for (c = 0; c < end - start; c++) {
+                            path[start + c] = mp[k + 1u + c];
+                        }
+                        found = 1;
+                    }
                 }
             }
             path[start - 1u] = '/';
@@ -402,7 +438,7 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
                              uint32_t share, uint32_t disposition, uint32_t options) {
     nt_name_t name;
     uint32_t attributes = 0, st, access, flags, info, may;
-    char path[VIBEOS_FILE_PATH];
+    char path[VIBEOS_FILE_PATH], root[VIBEOS_PATH_MAX];
     vibeos_path_t w;
     vibeos_cred_t who;
     vibeos_file_t *f;
@@ -439,7 +475,8 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
     /* FILE_CREATE makes the name itself or nothing: a symbolic link left at
      * it is the name taken, not a way to make a file wherever it points - as
      * O_CREAT|O_EXCL does not follow one (v7 review). */
-    rc = vibeos_path_walk_as("/", "/", path,
+    nt_root(root, sizeof(root));
+    rc = vibeos_path_walk_as(root, root, path,
                              vibeos_open_walk_flags(VIBEOS_O_CREAT |
                                                     (disposition == NT_FILE_CREATE ? VIBEOS_O_EXCL : 0u)),
                              &who, &w);
@@ -516,7 +553,7 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
             if (vibeos_fs_mkdir(w.mnt, w.tail) != 0) {
                 return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
             }
-            rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, &w);
+            rc = vibeos_path_walk_as(root, root, path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, &w);
             if (rc != 0) {
                 return NT_STATUS(nt_status_of_open(rc));
             }
@@ -970,7 +1007,10 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
                 if ((st = nt_may_remove_path(f->path, &who)) != VIBEOS_STATUS_SUCCESS) {
                     break;
                 }
-                if (vibeos_path_walk_as("/", "/", to, vibeos_open_walk_flags(VIBEOS_O_CREAT), &who, &tw) != 0) {
+                char root[VIBEOS_PATH_MAX];
+
+                nt_root(root, sizeof(root));
+                if (vibeos_path_walk_as(root, root, to, vibeos_open_walk_flags(VIBEOS_O_CREAT), &who, &tw) != 0) {
                     st = VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND;
                     break;
                 }
@@ -1013,7 +1053,7 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
 static uint32_t nt_walk_attributes(uint64_t oa, vibeos_path_t *w) {
     nt_name_t name;
     uint32_t attributes = 0, st;
-    char path[VIBEOS_FILE_PATH];
+    char path[VIBEOS_FILE_PATH], root[VIBEOS_PATH_MAX];
     vibeos_cred_t who;
     int rc;
 
@@ -1028,7 +1068,8 @@ static uint32_t nt_walk_attributes(uint64_t oa, vibeos_path_t *w) {
         return st;
     }
     nt_cred(&who);
-    rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, w);
+    nt_root(root, sizeof(root));
+    rc = vibeos_path_walk_as(root, root, path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, w);
     return rc != 0 ? nt_status_of_open(rc) : VIBEOS_STATUS_SUCCESS;
 }
 

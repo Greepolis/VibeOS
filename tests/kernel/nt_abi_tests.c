@@ -1288,6 +1288,36 @@ static void t_delete_follows_file(void) {
            "and a directory marked for deletion is removed at its last close");
 }
 
+/* v7 review: C: is the process's root. Rooted elsewhere, an NT program finds
+ * what is inside and nothing outside - by name, by "..", or by a case it
+ * guessed. Latent until chroot exists (L8): every root is "/" today. */
+static void t_nt_chroot(void) {
+    uint64_t h = 0, info = 0;
+    int me = fresh(54);
+
+    expect(lsys(83 /* mkdir */, lstr("/tmp/jail"), 0755, 0) == 0 &&
+               lsys(85 /* creat */, lstr("/tmp/jail/In.txt"), 0644, 0) >= 0 &&
+               lsys(85, lstr("/tmp/out.txt"), 0644, 0) >= 0 &&
+               (strcpy(ks_ps(me)->root, "/tmp/jail"), 1),
+           "a process rooted in a directory with one file - chroot is L8's, so the root is set as it will -"
+           " and another file outside");
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\in.TXT", 1, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "C:\\ is its root: the file inside opens, in another case");
+    {
+        long up = create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\..\\out.txt", 1, 0x40);
+        long abs = create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\tmp\\out.txt", 1, 0x40);
+
+        if (up != ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND) || (abs != ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND) &&
+                                                               abs != ST(VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND))) {
+            printf("  chroot: .. %lx, machine path %lx\n", up, abs);
+        }
+        expect(up == ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND) &&
+                   (abs == ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND) || abs == ST(VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND)),
+               "and nothing outside: not by .., not by the machine's path");
+    }
+}
+
 static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
     uint64_t out = kf_ualloc(8);
     uint64_t rest[3] = { 0x02u /* PAGE_READONLY */, attributes, file };
@@ -2360,6 +2390,7 @@ int test_nt_abi(void) {
     t_handle_rights();
     t_write_permissions();
     t_delete_follows_file();
+    t_nt_chroot();
     t_create_file();
     t_sections();
     t_open_file_permissions();
