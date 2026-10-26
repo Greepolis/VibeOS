@@ -91,6 +91,7 @@ typedef struct vibeos_inet_socket {
     uint16_t remote_port;
     uint32_t remote_ip;
     uint32_t owner_pid;         /* 0 while owned by the kernel/control plane */
+    uint32_t reuse_uid;         /* who asked to share the port (M-130)      */
 
     /* TCP sequence state. */
     uint32_t snd_una;        /* oldest unacknowledged byte                  */
@@ -316,7 +317,9 @@ int vibeos_inet_bind_addr(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t po
  * users, and that half is not here. */
 #define VIBEOS_INET_REUSE_ADDR 1u
 #define VIBEOS_INET_REUSE_PORT 2u
-int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int how);
+/* `uid`: whose socket it is, for SO_REUSEPORT - Linux shares a port only
+ * between sockets of one effective user (M-130). */
+int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int how, uint32_t uid);
 long vibeos_inet_recv_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t len, uint32_t flags);
 long vibeos_inet_recvfrom_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t len, uint32_t flags,
                              uint32_t *out_ip, uint16_t *out_port, uint32_t *full_len);

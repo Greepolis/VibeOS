@@ -4729,14 +4729,19 @@ static int test_inet_input_review(void) {
         int a3 = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
 
         if (a1 < 0 || a2 < 0 || a3 < 0 ||
-            vibeos_inet_set_reuse(&net, a1, (int)VIBEOS_INET_REUSE_PORT) != 0 ||
-            vibeos_inet_set_reuse(&net, a2, (int)VIBEOS_INET_REUSE_PORT) != 0 ||
+            vibeos_inet_set_reuse(&net, a1, (int)VIBEOS_INET_REUSE_PORT, 0u) != 0 ||
+            vibeos_inet_set_reuse(&net, a2, (int)VIBEOS_INET_REUSE_PORT, 0u) != 0 ||
             vibeos_inet_bind_addr(&net, a1, 0, 7200) != 0 || vibeos_inet_listen(&net, a1) != 0 ||
             vibeos_inet_bind_addr(&net, a2, 0, 7200) != 0 || vibeos_inet_listen(&net, a2) != 0) {
             return -15;
         }
         if (vibeos_inet_bind_addr(&net, a3, 0, 7200) == 0) {
             return -16;
+        }
+        /* M-130: asking is not enough when the socket is another user's. */
+        if (vibeos_inet_set_reuse(&net, a3, (int)VIBEOS_INET_REUSE_PORT, 1000u) != 0 ||
+            vibeos_inet_bind_addr(&net, a3, 0, 7200) == 0) {
+            return -17;
         }
     }
     return 0;

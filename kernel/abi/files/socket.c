@@ -159,6 +159,14 @@ static int in_reuse(const vibeos_file_t *f) {
                  ((fl & VIBEOS_SKF_REUSEPORT) ? VIBEOS_INET_REUSE_PORT : 0u));
 }
 
+/* The caller's effective user, whom SO_REUSEPORT shares a port with. */
+static uint32_t in_uid(void) {
+    int me = ks_current();
+    vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
+
+    return ps ? ps->cred.euid : 0u;
+}
+
 static long in_bind(vibeos_file_t *f, const vibeos_sockaddr_t *a) {
     int sock;
     long r;
@@ -173,7 +181,7 @@ static long in_bind(vibeos_file_t *f, const vibeos_sockaddr_t *a) {
         return -VIBEOS_EBADF;
     }
     ks_lock(ks_net_lock(), __func__);
-    (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f));
+    (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f), in_uid());
     r = vibeos_inet_bind_addr(ks_net(), sock, a->ip, a->port);
     ks_unlock(ks_net_lock());
     return r == 0 ? 0 : inet_errno(r);
@@ -191,7 +199,7 @@ static long in_listen(vibeos_file_t *f, int backlog) {
         return -VIBEOS_EBADF;
     }
     ks_lock(ks_net_lock(), __func__);
-    (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f));
+    (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f), in_uid());
     r = vibeos_inet_listen(ks_net(), sock);
     ks_unlock(ks_net_lock());
     return r == 0 ? 0 : inet_errno(r);
@@ -549,7 +557,7 @@ static long in_setopt(vibeos_file_t *f, int opt, const void *val, uint32_t len) 
     if (r == 0 && (opt == VIBEOS_SO_REUSEADDR || opt == VIBEOS_SO_REUSEPORT) &&
         (sock = vibeos_sockfile_stable(f)) >= 0) {
         ks_lock(ks_net_lock(), __func__);
-        (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f));
+        (void)vibeos_inet_set_reuse(ks_net(), sock, in_reuse(f), in_uid());
         ks_unlock(ks_net_lock());
     }
     return r;

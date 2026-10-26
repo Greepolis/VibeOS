@@ -114,7 +114,7 @@
 
 ### SO_REUSEPORT is stored and shares nothing (#60)
 --- old
-        if (s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) {
+        if ((s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) && s->reuse_uid == o->reuse_uid) {
 +++ new
         if (0) {
 
@@ -123,3 +123,9 @@
             dhcp_send_lease(net, net->dhcp_server);
 +++ new
             dhcp_send(net, 3, net->ip, net->dhcp_server);
+
+### SO_REUSEPORT shares a port with another user's socket (M-130)
+--- old
+        if ((s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) && s->reuse_uid == o->reuse_uid) {
++++ new
+        if (s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) {

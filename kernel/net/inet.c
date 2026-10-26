@@ -622,8 +622,9 @@ static int port_taken(const vibeos_inet_t *net, const vibeos_inet_socket_t *s, u
             (s->type == VIBEOS_INET_SOCK_UDP || (o->state != VIBEOS_TCP_LISTEN))) {
             continue;
         }
-        if (s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) {
-            continue;   /* both asked to share it */
+        if ((s->reuse & o->reuse & VIBEOS_INET_REUSE_PORT) && s->reuse_uid == o->reuse_uid) {
+            continue;   /* both asked to share it, and both are one user's: another
+                         * user's socket would take half the port's traffic (M-130) */
         }
         return 1;
     }
@@ -676,13 +677,14 @@ int vibeos_inet_bind_addr(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t po
     return 0;
 }
 
-int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int how) {
+int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int how, uint32_t uid) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
 
     if (!s) {
         return -VIBEOS_INET_EINVAL;
     }
     s->reuse = (uint8_t)((uint32_t)how & (VIBEOS_INET_REUSE_ADDR | VIBEOS_INET_REUSE_PORT));
+    s->reuse_uid = uid;
     return 0;
 }
 
