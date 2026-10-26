@@ -910,6 +910,221 @@ static long nt_query_volume_information_file(uint64_t file, uint64_t iosb_u, uin
     return nt_iosb_done(iosb_u, st, done);
 }
 
+/* ---- directories (W4 step 5) ---------------------------------------------------------- */
+
+static char nt_fold(char c) {
+    return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+}
+
+/* A mask with '*' (any run) and '?' (any one), without case, as Windows
+ * matches names: "*" and "*.*" match everything, a dot included or not. */
+static int nt_mask_match(const char *m, const char *n) {
+    if (m[0] == 0) {
+        return 1;
+    }
+    if (m[0] == '*' && m[1] == '.' && m[2] == '*' && m[3] == 0) {
+        return 1;
+    }
+    while (*m) {
+        if (*m == '*') {
+            m++;
+            if (*m == 0) {
+                return 1;
+            }
+            for (; *n; n++) {
+                if (nt_mask_match(m, n)) {
+                    return 1;
+                }
+            }
+            return 0;
+        }
+        if (*n == 0 || (*m != '?' && nt_fold(*m) != nt_fold(*n))) {
+            return 0;
+        }
+        m++;
+        n++;
+    }
+    return *n == 0;
+}
+
+/* Where each class puts the name, and how much is before it: Directory (1)
+ * 64, FullDirectory (2) 68, BothDirectory (3) 94, Names (12) 12,
+ * IdBothDirectory (37) 104, IdFullDirectory (38) 80. 0: not a class here. */
+static uint32_t nt_dir_name_at(uint32_t cls) {
+    switch (cls) {
+        case 1: return 64u;
+        case 2: return 68u;
+        case 3: return 94u;
+        case 12: return 12u;
+        case 37: return 104u;
+        case 38: return 80u;
+        default: return 0u;
+    }
+}
+
+/* NtQueryDirectoryFile(File, Event, ApcRoutine, ApcContext, IoStatusBlock,
+ * FileInformation, Length, FileInformationClass, ReturnSingleEntry, FileName,
+ * RestartScan): the entries after the handle's position that match its mask,
+ * as many as fit, each 8-aligned and chained by NextEntryOffset. The mask is
+ * taken from FileName on the first call or a restart and kept. Nothing at all
+ * on a first call is NO_SUCH_FILE; nothing more after that NO_MORE_FILES. */
+static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc, uint64_t iosb_u,
+                                    uint64_t out, uint64_t len, uint64_t cls, uint64_t single,
+                                    uint64_t mask_u, uint64_t restart) {
+    uint8_t b[4096];
+    uint32_t name_at = nt_dir_name_at((uint32_t)cls), used = 0, last = 0, st, cap, entries = 0;
+    vibeos_file_t *f;
+    int first;
+
+    if (apc != 0u) {
+        return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);   /* W5's */
+    }
+    if (name_at == 0u) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
+    }
+    if (len < name_at) {
+        return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
+    }
+    f = nt_file_get(file);
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    if (!f->ops->readdir) {
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);   /* not a directory */
+    }
+    if (event != 0u && (st = nt_io_event(event, 0)) != VIBEOS_STATUS_SUCCESS) {
+        vibeos_file_put(f);
+        return NT_STATUS(st);
+    }
+    vibeos_file_pos_take(f);
+    if (restart) {
+        f->pos = 0;
+    }
+    first = f->pos == 0u;
+    if (first && mask_u != 0u) {
+        /* UNICODE_STRING: Length (bytes) at 0, Buffer at 8. */
+        uint8_t us[16];
+        uint16_t chars[63];
+        uint32_t n, k;
+
+        f->nt_mask[0] = 0;
+        if (vibeos_uaccess_copy(us, (const void *)(uintptr_t)mask_u, sizeof(us)) == 0) {
+            n = ((uint32_t)us[0] | (uint32_t)us[1] << 8) / 2u;
+            n = n < 63u ? n : 63u;
+            if (n != 0u && vibeos_uaccess_copy(chars, (const void *)(uintptr_t)get64(us, 8), 2u * n) == 0) {
+                for (k = 0; k < n; k++) {
+                    f->nt_mask[k] = chars[k] < 0x80u ? (char)chars[k] : '?';
+                }
+                f->nt_mask[n] = 0;
+            }
+        }
+    } else if (first) {
+        f->nt_mask[0] = 0;
+    }
+    cap = len < sizeof(b) ? (uint32_t)len : (uint32_t)sizeof(b);
+    for (;;) {
+        vibeos_dirent_t de;
+        vibeos_file_stat_t s;
+        uint32_t nl = 0, rec, k, at;
+        int got = f->ops->readdir(f, f->pos, &de);
+
+        if (got == VIBEOS_READDIR_END) {
+            break;
+        }
+        if (got == VIBEOS_READDIR_SKIP || !nt_mask_match(f->nt_mask, de.name)) {
+            f->pos++;
+            continue;
+        }
+        while (de.name[nl]) {
+            nl++;
+        }
+        rec = name_at + 2u * nl;
+        at = (used + 7u) & ~7u;
+        if (at + rec > cap) {
+            if (entries == 0u) {
+                /* Not even one fits: as much of it as fits, and the warning;
+                 * the position stays, so the next call gets it whole. */
+                rec = cap - at;
+                st = VIBEOS_STATUS_BUFFER_OVERFLOW;
+                goto partial;
+            }
+            break;
+        }
+        for (k = at; k < at + rec; k++) {
+            b[k] = 0;
+        }
+        vibeos_file_stat_clear(&s);
+        s.mode = de.mode;
+        s.ino = de.ino;
+        {
+            /* What stat would say of it: its size and times, by its path. */
+            char child[VIBEOS_FILE_PATH];
+            uint32_t p = 0, q = 0;
+            vibeos_path_t w;
+
+            while (f->path[p] && p + 1u < sizeof(child)) {
+                child[p] = f->path[p];
+                p++;
+            }
+            if (p > 1u && p + 1u < sizeof(child)) {
+                child[p++] = '/';
+            }
+            while (de.name[q] && p + 1u < sizeof(child)) {
+                child[p++] = de.name[q++];
+            }
+            child[p] = 0;
+            if (vibeos_path_walk("/", "/", child, 0u, &w) == 0) {
+                vibeos_file_stat_from_node(&s, &w.node);
+            }
+        }
+        if ((uint32_t)cls == 12u) {
+            put32(b, at + 4u, (uint32_t)f->pos);
+            put32(b, at + 8u, 2u * nl);
+        } else {
+            put32(b, at + 4u, (uint32_t)f->pos);
+            nt_basic(b, at + 8u, &s);   /* the four times; its attributes word lands on EndOfFile and is overwritten */
+            put64(b, at + 40u, (s.mode & 0170000u) == 0040000u ? 0u : s.size);
+            put64(b, at + 48u, (s.mode & 0170000u) == 0040000u ? 0u : (s.size + 4095u) & ~4095ull);
+            put32(b, at + 56u, nt_attrs_of(&s));
+            put32(b, at + 60u, 2u * nl);
+            if ((uint32_t)cls == 37u) {
+                put64(b, at + 96u, s.ino);
+            } else if ((uint32_t)cls == 38u) {
+                put64(b, at + 72u, s.ino);
+            }
+        }
+        for (k = 0; k < nl; k++) {
+            b[at + name_at + 2u * k] = (uint8_t)de.name[k];
+        }
+        if (entries != 0u) {
+            put32(b, last, at - last);   /* the previous entry's NextEntryOffset */
+        }
+        last = at;
+        used = at + rec;
+        entries++;
+        f->pos++;
+        if (single) {
+            break;
+        }
+    }
+    st = entries != 0u ? VIBEOS_STATUS_SUCCESS
+       : first ? VIBEOS_STATUS_NO_SUCH_FILE : VIBEOS_STATUS_NO_MORE_FILES;
+    if (0) {
+partial:
+        used = cap;
+    }
+    vibeos_file_pos_give(f);
+    vibeos_file_put(f);
+    if (used != 0u && vibeos_uaccess_copy((void *)(uintptr_t)out, b, used) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    if (event != 0u) {
+        (void)nt_io_event(event, 1);
+    }
+    return nt_iosb_done(iosb_u, st, used);
+}
+
 #define NT_FILE_SERVICES(X) \
     X(VIBEOS_NT_NR_NtOpenFile, NtOpenFile, OPEN, \
       PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
@@ -936,6 +1151,10 @@ static long nt_query_volume_information_file(uint64_t file, uint64_t iosb_u, uin
     X(VIBEOS_NT_NR_NtQueryVolumeInformationFile, NtQueryVolumeInformationFile, FSTAT, \
       PTRS(OUT(1, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(2, 3)), \
       nt_query_volume_information_file(ARG(0), ARG(1), ARG(2), NT_ARG32(3), NT_ARG32(4))) \
+    X(VIBEOS_NT_NR_NtQueryDirectoryFile, NtQueryDirectoryFile, GETDENTS, \
+      PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6)), \
+      nt_query_directory_file(ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), NT_ARG32(7), \
+                              ARG(8) & 0xFFu, ARG(9), ARG(10) & 0xFFu)) \
     X(VIBEOS_NT_NR_NtReadFile, NtReadFile, READ, \
       PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6), IN_OPT(7, 8)), \
       nt_rw(0, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), ARG(7))) \

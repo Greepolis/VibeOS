@@ -205,6 +205,10 @@ struct vibeos_file {
      * W2): its slot in kernel/abi/nt/object.c's table. The description is the
      * object; handles to it are descriptors naming it. */
     int nt_ob;
+    /* The mask NtQueryDirectoryFile was given with the first call on this
+     * handle, or after a restart (W4 step 5): kept by the description, as
+     * Windows keeps it by the handle. Empty matches everything. */
+    char nt_mask[64];
 };
 
 void vibeos_file_set_lock(void (*lock)(void), void (*unlock)(void));

@@ -62,8 +62,18 @@
 
 ### the event is never set on completion (W4 step 2)
 --- old
+    iosb.information = n < 0 ? 0u : (uint64_t)n;
+    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    if (event != 0u) {
         (void)nt_io_event(event, 1);
 +++ new
+    iosb.information = n < 0 ? 0u : (uint64_t)n;
+    if (vibeos_uaccess_copy((void *)(uintptr_t)iosb_u, &iosb, sizeof(iosb)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    if (event != 0u) {
         (void)0;
 
 ### FileEndOfFileInformation changes nothing (W4 step 3)
@@ -104,3 +114,50 @@
 +++ new
         put32(b, 48u, nt_attrs_of(&s));
     }
+
+### a directory mask matches with case (W4 step 5)
+--- old
+        if (*n == 0 || (*m != '?' && nt_fold(*m) != nt_fold(*n))) {
++++ new
+        if (*n == 0 || (*m != '?' && *m != *n)) {
+
+### a directory listing forgets the mask after the first call (W4 step 5)
+--- old
+    } else if (first) {
+        f->nt_mask[0] = 0;
+    }
++++ new
+    } else {
+        f->nt_mask[0] = 0;
+    }
+
+### a restarted listing keeps its place (W4 step 5)
+--- old
+    if (restart) {
+        f->pos = 0;
+    }
++++ new
+
+### a single directory entry is not single (W4 step 5)
+--- old
+        if (single) {
+            break;
+        }
++++ new
+
+### an empty first listing says no more files (W4 step 5)
+--- old
+       : first ? VIBEOS_STATUS_NO_SUCH_FILE : VIBEOS_STATUS_NO_MORE_FILES;
++++ new
+       : VIBEOS_STATUS_NO_MORE_FILES;
+
+### an entry too big for the buffer is skipped (W4 step 5)
+--- old
+                rec = cap - at;
+                st = VIBEOS_STATUS_BUFFER_OVERFLOW;
+                goto partial;
++++ new
+                rec = cap - at;
+                st = VIBEOS_STATUS_BUFFER_OVERFLOW;
+                f->pos++;
+                goto partial;

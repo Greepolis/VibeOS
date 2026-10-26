@@ -777,6 +777,101 @@ static void t_small_file_services(void) {
            "a directory with something in it is not deleted");
 }
 
+/* NtQueryDirectoryFile on `h` into `len` bytes at `buf`, class `cls`, with
+ * `mask` (0: none). The status, and the status block's count. */
+static long query_dir(uint64_t h, uint64_t buf, uint32_t len, uint32_t cls, int single, const char *mask,
+                      int restart, uint64_t *count) {
+    uint64_t iosb = kf_ualloc(16), us = 0, rest[7];
+    long r;
+
+    if (mask) {
+        uint64_t chars = kf_ualloc(128);
+        uint32_t i;
+
+        us = kf_ualloc(16);
+        for (i = 0; mask[i]; i++) {
+            ((uint16_t *)kf_uptr(chars))[i] = (uint8_t)mask[i];
+        }
+        ((uint16_t *)kf_uptr(us))[0] = (uint16_t)(2u * i);
+        ((uint16_t *)kf_uptr(us))[1] = (uint16_t)(2u * i);
+        ((uint64_t *)kf_uptr(us))[1] = chars;
+    }
+    rest[0] = iosb;
+    rest[1] = buf;
+    rest[2] = len;
+    rest[3] = cls;
+    rest[4] = (uint64_t)single;
+    rest[5] = us;
+    rest[6] = (uint64_t)restart;
+    kf_next_sp(stack_args(rest, 7));
+    r = nt(VIBEOS_NT_NR_NtQueryDirectoryFile, h, 0, 0, 0, 0);
+    *count = ((uint64_t *)kf_uptr(iosb))[1];
+    return r;
+}
+
+/* The names in a buffer of FILE_NAMES_INFORMATION, joined by ','. */
+static void dir_names(const uint8_t *b, char *out) {
+    uint32_t at = 0, n = 0, k;
+
+    for (;;) {
+        uint32_t len = *(const uint32_t *)(b + at + 8);
+
+        for (k = 0; k < len / 2u; k++) {
+            out[n++] = (char)b[at + 12u + 2u * k];
+        }
+        out[n++] = ',';
+        if (*(const uint32_t *)(b + at) == 0u) {
+            break;
+        }
+        at += *(const uint32_t *)(b + at);
+    }
+    out[n] = 0;
+}
+
+/* W4 step 5: listing a directory - masks, classes, restart, one at a time. */
+static void t_query_directory(void) {
+    const uint32_t rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE;
+    uint64_t h = 0, f = 0, info = 0, n = 0, buf = kf_ualloc(512);
+    uint8_t *b = (uint8_t *)kf_uptr(buf);
+    char names[256];
+
+    fresh(47);
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\tmp\\ls", 2, 0x1) == ST(VIBEOS_STATUS_SUCCESS),
+           "a directory to list");
+    (void)create_file(&f, &info, rw, "\\??\\C:\\tmp\\ls\\a.txt", 2, 0x40);
+    (void)rw_file(1, f, 0, buf, 7, 0, &n);
+    (void)nt(VIBEOS_NT_NR_NtClose, f, 0, 0, 0, 0);
+    (void)create_file(&f, &info, rw, "\\??\\C:\\tmp\\ls\\b.log", 2, 0x40);
+    (void)nt(VIBEOS_NT_NR_NtClose, f, 0, 0, 0, 0);
+    (void)create_file(&f, &info, rw, "\\??\\C:\\tmp\\ls\\c.TXT", 2, 0x40);
+    (void)nt(VIBEOS_NT_NR_NtClose, f, 0, 0, 0, 0);
+    memset(b, 0xEE, 512);
+    expect(query_dir(h, buf, 512, 12, 0, "*.txt", 0, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (dir_names(b, names), strstr(names, "a.txt,") && strstr(names, "c.TXT,") && !strstr(names, "b.log")),
+           "a mask matches without case, and only what it matches");
+    expect(query_dir(h, buf, 512, 12, 0, "*.log", 0, &n) == ST(VIBEOS_STATUS_NO_MORE_FILES),
+           "the mask is the first call's; after it, nothing more");
+    expect(query_dir(h, buf, 512, 12, 1, "?.log", 1, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)b == 0u && *(uint32_t *)(b + 8) == 10u && b[12] == 'b',
+           "a restart takes the new mask; a single entry ends the chain");
+    expect(query_dir(h, buf, 512, 1, 0, "a.txt", 1, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint64_t *)(b + 40) == 7u && *(uint32_t *)(b + 60) == 10u && b[64] == 'a' &&
+               (*(uint32_t *)(b + 56) & 0x10u) == 0u,
+           "FileDirectoryInformation: its size, its name at 64, a file");
+    expect(query_dir(h, buf, 512, 12, 0, "zz*", 1, &n) == ST(VIBEOS_STATUS_NO_SUCH_FILE),
+           "a mask nothing matches, at the start: no such file");
+    expect(query_dir(h, buf, 512, 12, 1, "*.TXT", 1, &n) == ST(VIBEOS_STATUS_SUCCESS) && *(uint32_t *)b == 0u &&
+               (names[0] = (char)b[12], query_dir(h, buf, 512, 12, 0, 0, 0, &n) == ST(VIBEOS_STATUS_SUCCESS)) &&
+               *(uint32_t *)b == 0u && (b[12] == 'a' || b[12] == 'c') && b[12] != names[0],
+           "one at a time: each call one entry, and the mask holds across them");
+    expect(query_dir(h, buf, 512, 99, 0, 0, 1, &n) == ST(VIBEOS_STATUS_INVALID_INFO_CLASS) &&
+               query_dir(h, buf, 20, 1, 0, 0, 1, &n) == ST(VIBEOS_STATUS_INFO_LENGTH_MISMATCH),
+           "an unknown class, a buffer short of the header");
+    expect(query_dir(h, buf, 70, 1, 0, "a.txt", 1, &n) == ST(VIBEOS_STATUS_BUFFER_OVERFLOW) &&
+               query_dir(h, buf, 512, 1, 0, 0, 0, &n) == ST(VIBEOS_STATUS_SUCCESS) && b[64] == 'a',
+           "an entry that does not fit: the overflow, and the next call has it whole");
+}
+
 /* A Linux call, from the NT tests: to make files with owners and modes, which
  * NtCreateFile (W4) cannot yet. */
 static long lsys(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2) {
@@ -852,7 +947,7 @@ static long map_view(uint64_t sec, uint64_t process, uint64_t *base, uint64_t *s
     uint64_t rest[6] = { 0, 0, s, 1, 0, 0x02u };
 
     *(uint64_t *)kf_uptr(b) = 0;
-    kf_next_sp(stack_args(rest, 6));
+    kf_next_sp(stack_args(rest, 7));
     {
         long r = nt(VIBEOS_NT_NR_NtMapViewOfSection, sec, process, b, 0, 0);
         *base = *(uint64_t *)kf_uptr(b);
@@ -1696,7 +1791,7 @@ static long sec_map(uint64_t sec, uint64_t *base, uint64_t off, uint64_t *size, 
     rest[5] = protect;    /* Win32Protect      */
     *(uint64_t *)kf_uptr(b) = *base;
     *(uint64_t *)kf_uptr(s) = *size;
-    kf_next_sp(stack_args(rest, 6));
+    kf_next_sp(stack_args(rest, 7));
     r = nt(VIBEOS_NT_NR_NtMapViewOfSection, sec, VIBEOS_NT_CURRENT_PROCESS, b, 0, 0);
     *base = *(uint64_t *)kf_uptr(b);
     *size = *(uint64_t *)kf_uptr(s);
@@ -1892,6 +1987,7 @@ int test_nt_abi(void) {
     t_read_write_file();
     t_file_information();
     t_small_file_services();
+    t_query_directory();
     t_create_file();
     t_sections();
     t_open_file_permissions();
