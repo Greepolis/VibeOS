@@ -1408,6 +1408,21 @@ same condition in a helper above it and went NOT RED with the test right.
 `check-sabotage-anchors.py` counts anchors found more than once in their
 target; give such an anchor a line of context.
 
+**A rule that lives in a sentence is rewritten wrong in the next new code.**
+M-105 found NtOpenFile asking no permissions; three weeks later W4's rename,
+disposition and delete paths asked none either, NtQueryDirectoryFile copied
+from a pointer nobody had judged, and no file service asked what its handle
+was granted - in two days of new code, every class this file already
+described. The review said so: the classes recur. What stopped them recurring
+in the Linux layer was never the paragraph but the check (`check-user-access`,
+the row's pointer table, `linux_may_*` in one place). So the NT personality
+has its own now: every copy goes through `nt_copy_in`/`nt_copy_out` and
+`check-nt-user-copy.py` refuses any other; every function that changes the
+filesystem asks a credential question or `check-nt-fs-permission.py` fails;
+the questions themselves live in `cred.c`, shared by both personalities;
+and `nt_file_get` cannot be called without naming the rights a service needs.
+When a new personality or layer starts, port the checks before the code.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:
