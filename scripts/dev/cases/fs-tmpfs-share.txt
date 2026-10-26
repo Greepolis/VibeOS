@@ -24,3 +24,9 @@
         } else if (!(pg = tf_block(T, in, off, &cx))) {
 +++ new
         } else if (!(pg = tf_block(T, in, off, 0))) {
+
+### a truncate stops at the size, past a middle page a failed write left (v7 review)
+--- old
+        if (i_hi < in->dind_top) {
++++ new
+        if (0) {

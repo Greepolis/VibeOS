@@ -305,6 +305,24 @@ int test_tmpfs(void) {
     r = wr("x", 0, big, sizeof(big));
     expect(r == 2 * VIBEOS_TMPFS_PAGE, "a write that runs out of pages keeps what fitted");
     expect(wr("x", sizeof(big), big, 10) == -VIBEOS_ENOSPC, "and the next is ENOSPC");
+    /* v7 review: a write far past the end makes the double-indirect page and
+     * a middle page, then finds no page for the data. The size never moved,
+     * so a truncate bounded by it walked short of that middle page, which
+     * stayed allocated for the life of the file. */
+    fresh(64);
+    expect(mk("far") == 0, "a file");
+    {
+        uint64_t before = g_t.pages_used, idx = VIBEOS_TMPFS_DIRECT + 512u + 5u * 512u + 3u;
+        vibeos_fs_node_t fn;
+
+        expect(wr("far", 0, big, 1) == 1, "a byte at the start");
+        g_alloc_limit = 2;
+        expect(wr("far", idx * VIBEOS_TMPFS_PAGE, big, 1) == -VIBEOS_ENOSPC,
+               "a write far out whose data page does not fit");
+        g_alloc_limit = -1;
+        expect(node("far", &fn) == 0 && vibeos_fs_truncate(&g_m, &fn, 0) == 0 && g_t.pages_used == before,
+               "and a truncate gives back the pointer pages it left");
+    }
     fresh(64);
     g_alloc_limit = 0;
     expect(mk("y") == -VIBEOS_ENOSPC, "no page for a directory record is ENOSPC");

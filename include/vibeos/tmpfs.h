@@ -50,6 +50,9 @@ typedef struct {
     uint8_t *direct[VIBEOS_TMPFS_DIRECT];
     uint8_t **ind;                /* one page of page pointers                  */
     uint8_t ***dind;              /* one page of pages of page pointers         */
+    uint32_t dind_top;            /* one past the highest middle page made: a
+                                   * write past the end can make one and then
+                                   * fail, leaving it beyond the size (v7 review) */
 } vibeos_tmpfs_inode_t;
 
 typedef struct {

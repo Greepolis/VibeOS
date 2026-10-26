@@ -127,6 +127,9 @@ static uint8_t **tf_slot(vibeos_tmpfs_t *t, vibeos_tmpfs_inode_t *in, uint64_t i
             if (!alloc || !(*top = (uint8_t **)(void *)tf_page(t, alloc))) {
                 return 0;
             }
+            if (idx / PTRS + 1u > in->dind_top) {
+                in->dind_top = (uint32_t)(idx / PTRS + 1u);
+            }
         }
         return &(*top)[idx % PTRS];
     }
@@ -180,6 +183,11 @@ static void tf_drop_pages(vibeos_tmpfs_t *t, vibeos_tmpfs_inode_t *in, uint64_t 
         uint64_t i_lo = keep > base ? (keep - base) / PTRS : 0u;
         uint64_t i_hi = end > base ? (end - base) / PTRS + 1u : 1u;
 
+        /* And as far as a middle page was ever made: the size says nothing of
+         * one a failed write past the end left behind (v7 review). */
+        if (i_hi < in->dind_top) {
+            i_hi = in->dind_top;
+        }
         if (i_hi > PTRS) {
             i_hi = PTRS;
         }
@@ -202,6 +210,7 @@ static void tf_drop_pages(vibeos_tmpfs_t *t, vibeos_tmpfs_inode_t *in, uint64_t 
         if (keep <= base) {
             tf_unpage(t, in->dind);
             in->dind = 0;
+            in->dind_top = 0;
         }
     }
 }
