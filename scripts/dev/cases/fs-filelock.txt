@@ -130,3 +130,10 @@
             (!first || e->start < first->start)) {
 +++ new
         if ((type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) && !first) {
+
+### a Windows handle's touching locks are joined (v7 review)
+--- old
+            if ((owner >> 62) == 3u) {
+                break;
+            }
++++ new

@@ -11,3 +11,8 @@
 +++ new
     r = vibeos_fs_lookup(f->mnt, f->path + f->tail + (f->path[f->tail] == '/'), out);
     (void)held;
+
+### a Windows handle's locks outlive it (v7 review)
+--- old
+        vibeos_flk_drop_owner(VIBEOS_FLK_OWNER_NT(f));
++++ new

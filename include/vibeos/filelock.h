@@ -47,6 +47,10 @@
 
 #define VIBEOS_FLK_OWNER_PROC(tgid) ((1ull << 62) | (uint64_t)(tgid))
 #define VIBEOS_FLK_OWNER_FILE(f)    ((2ull << 62) | ((uint64_t)(uintptr_t)(f) >> 2))
+/* A Windows handle's: the description's too, and gone with it, but its locks
+ * are kept as they were taken - never joined to their neighbours - because
+ * Windows gives back only a range exactly as it was locked (v7 review). */
+#define VIBEOS_FLK_OWNER_NT(f)      ((3ull << 62) | ((uint64_t)(uintptr_t)(f) >> 2))
 
 typedef struct {
     uint32_t type;                /* VIBEOS_FLK_SHARED or _EXCL */

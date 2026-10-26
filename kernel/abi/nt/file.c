@@ -90,7 +90,7 @@ static int nt_lock_refuses(vibeos_file_t *f, int write, uint64_t at, uint64_t le
     if (len == 0u || !f->mnt || vibeos_flk_count() == 0u || at + len - 1u < at) {
         return 0;
     }
-    return vibeos_flk_test(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f),
+    return vibeos_flk_test(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_NT(f),
                            write ? VIBEOS_FLK_EXCL : VIBEOS_FLK_SHARED, at, at + len - 1u, &held) == 1;
 }
 
@@ -1546,7 +1546,7 @@ static long nt_lock_file(uint64_t file, uint64_t event, uint64_t apc, uint64_t i
     }
     /* The process's id: the table bounds what one process holds by it, and
      * with 0 for all, every NT process shared one quarter (v7 review). */
-    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), nt_tgid(),
+    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_NT(f), nt_tgid(),
                        exclusive ? VIBEOS_FLK_EXCL : VIBEOS_FLK_SHARED, start, end, 0);
     vibeos_file_put(f);
     st = r == 0 ? VIBEOS_STATUS_SUCCESS
@@ -1579,14 +1579,15 @@ static long nt_unlock_file(uint64_t file, uint64_t iosb_u, uint64_t off_u, uint6
     }
     /* Is it ours? Asked as somebody else: our own lock is then in the way,
      * and only a lock that starts and ends where this one does is a lock
-     * Windows would give back. */
+     * Windows would give back - which the table keeps as taken, unjoined to
+     * its neighbours (VIBEOS_FLK_OWNER_NT; v7 review). */
     if (!f->mnt ||
         vibeos_flk_test(VIBEOS_FLK_RECORD, f->mnt, f->node, 0u, VIBEOS_FLK_EXCL, start, end, &held) != 1 ||
-        held.owner != VIBEOS_FLK_OWNER_FILE(f) || held.start != start || held.end != end) {
+        held.owner != VIBEOS_FLK_OWNER_NT(f) || held.start != start || held.end != end) {
         vibeos_file_put(f);
         return NT_STATUS(VIBEOS_STATUS_RANGE_NOT_LOCKED);
     }
-    (void)vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), 0u, VIBEOS_FLK_UNLOCK,
+    (void)vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_NT(f), 0u, VIBEOS_FLK_UNLOCK,
                          start, end, 0);
     vibeos_file_put(f);
     return nt_iosb_done(iosb_u, VIBEOS_STATUS_SUCCESS, 0u);

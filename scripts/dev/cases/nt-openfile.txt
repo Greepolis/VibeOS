@@ -241,16 +241,16 @@
 
 ### NtUnlockFile gives back what another handle locked (W4 step 7)
 --- old
-        held.owner != VIBEOS_FLK_OWNER_FILE(f) || held.start != start || held.end != end) {
+        held.owner != VIBEOS_FLK_OWNER_NT(f) || held.start != start || held.end != end) {
 +++ new
         held.start != start || held.end != end) {
 
 
 ### NtUnlockFile gives back part of a lock (W4 step 7)
 --- old
-        held.owner != VIBEOS_FLK_OWNER_FILE(f) || held.start != start || held.end != end) {
+        held.owner != VIBEOS_FLK_OWNER_NT(f) || held.start != start || held.end != end) {
 +++ new
-        held.owner != VIBEOS_FLK_OWNER_FILE(f)) {
+        held.owner != VIBEOS_FLK_OWNER_NT(f)) {
 
 ### a file service ignores what its handle was granted (v7 review)
 --- old
@@ -327,9 +327,9 @@
 
 ### every NT process's locks are counted as one process's (v7 review)
 --- old
-    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), nt_tgid(),
+    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_NT(f), nt_tgid(),
 +++ new
-    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), 0u * nt_tgid(),
+    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_NT(f), 0u * nt_tgid(),
 
 ### FILE_CREATE follows a dangling link (v7 review)
 --- old

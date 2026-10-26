@@ -254,6 +254,7 @@ void vibeos_file_put(vibeos_file_t *f) {
      * with it: that is the whole of their lifetime rule. */
     if (vibeos_flk_count() != 0u) {
         vibeos_flk_drop_owner(VIBEOS_FLK_OWNER_FILE(f));
+        vibeos_flk_drop_owner(VIBEOS_FLK_OWNER_NT(f));
     }
     if (g_on_release) {
         g_on_release(f);

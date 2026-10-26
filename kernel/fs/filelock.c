@@ -193,8 +193,12 @@ int vibeos_flk_set(uint32_t space, const void *fs, uint64_t node, uint64_t owner
         n->start = start;
         n->end = end;
         /* Join it to the owner's neighbours of the same type: a file locked a
-         * record at a time must not fill the table with touching pieces. */
+         * record at a time must not fill the table with touching pieces. Not
+         * a Windows handle's: those are given back as they were taken. */
         do {
+            if ((owner >> 62) == 3u) {
+                break;
+            }
             merged = 0;
             for (i = 0; i < VIBEOS_FLK_MAX; i++) {
                 flk_t *e = &g_flk[i];

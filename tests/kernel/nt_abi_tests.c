@@ -1136,6 +1136,14 @@ static void t_share_and_locks(void) {
                lock_file(0, a, 4, 4, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
                (off = 5, rw_file(1, b, 0, buf, 2, &off, &n)) == ST(VIBEOS_STATUS_SUCCESS),
            "only the holder unlocks, and only the range it locked; then the bytes are free");
+    /* v7 review: two touching locks of one handle stay two, so each is given
+     * back by its own range - the table had joined them into one. */
+    expect(lock_file(1, a, 100, 4, 1) == ST(VIBEOS_STATUS_SUCCESS) &&
+               lock_file(1, a, 104, 4, 1) == ST(VIBEOS_STATUS_SUCCESS) &&
+               lock_file(0, a, 100, 4, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (off = 105, rw_file(1, b, 0, buf, 1, &off, &n)) == ST(VIBEOS_STATUS_FILE_LOCK_CONFLICT) &&
+               lock_file(0, a, 104, 4, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "two touching locks are given back one at a time, each by its own range");
     expect(lock_file(1, a, 0, 8, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
                (off = 0, rw_file(0, b, 0, buf, 4, &off, &n)) == ST(VIBEOS_STATUS_SUCCESS) &&
                (off = 0, rw_file(1, b, 0, buf, 4, &off, &n)) == ST(VIBEOS_STATUS_FILE_LOCK_CONFLICT),
