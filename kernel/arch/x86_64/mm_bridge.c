@@ -450,9 +450,11 @@ static int hw_tlbq_quiescent(const hw_tlbq_entry_t *e) {
     return 1;
 }
 
-/* Release everything that has become safe. Called from the unmap path and from
- * the timer, so a quiet machine still drains. */
-void hw_tlbq_drain(void) {
+/* Release what has become safe, at most `batches` of thirty-two. The unmap
+ * path drains it all; the timer one batch, because it runs with interrupts
+ * off and each release poisons a page - sixteen batches in one tick held a
+ * core for 512 frees (v7 review); the rest goes on the next tick. */
+static void hw_tlbq_drain_n(uint32_t batches) {
     uint32_t i, start = 0;
     uint64_t ready[32];
     uint32_t n;
@@ -490,7 +492,15 @@ void hw_tlbq_drain(void) {
         for (i = 0; i < n; i++) {
             (void)vibeos_frame_put(ready[i]);
         }
-    } while (n == 32u && start < HW_TLBQ_SLOTS);
+    } while (n == 32u && start < HW_TLBQ_SLOTS && --batches != 0u);
+}
+
+void hw_tlbq_drain(void) {
+    hw_tlbq_drain_n(HW_TLBQ_SLOTS / 32u + 1u);
+}
+
+void hw_tlbq_drain_tick(void) {
+    hw_tlbq_drain_n(1u);
 }
 
 /* How many references to `phys` the quarantine holds - the vmspace audit's

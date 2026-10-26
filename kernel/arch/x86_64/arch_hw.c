@@ -822,8 +822,9 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
                  * slots, and doing it on four cores buys nothing - the frames
                  * become releasable when *other* cores advance, which they do
                  * whether or not anybody is looking. munmap drains too, so a
-                 * machine that is unmapping hard does not wait for a tick. */
-                hw_tlbq_drain();
+                 * machine that is unmapping hard does not wait for a tick.
+                 * One batch a tick: this runs with interrupts off. */
+                hw_tlbq_drain_tick();
             }
             /* Accounting is charged by *every* core, unlike the clock above.
              *
