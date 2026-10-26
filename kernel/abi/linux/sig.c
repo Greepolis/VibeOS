@@ -101,18 +101,30 @@ static int linux_live_user(int i) {
  * scheduler's lock. */
 static int linux_process_thread(int aimed, uint32_t sig) {
     uint32_t tgid = ks_id(aimed)->tgid;
-    int i;
+    int i, alive = -1;
 
-    if ((ks_id(aimed)->sig_blocked & (1ull << sig)) == 0u) {
+    /* A thread that has exited takes nothing: a main thread that called
+     * pthread_exit stays a zombie while the others run, and a signal raised
+     * on it was lost (M-129). Linux delivers to a live thread instead. */
+    if (vibeos_task_state((uint32_t)aimed) != VIBEOS_TASK_ZOMBIE &&
+        (ks_id(aimed)->sig_blocked & (1ull << sig)) == 0u) {
         return aimed;
     }
     for (i = 0; i < (int)ks_slots(); i++) {
         if (linux_live_user(i) && ks_id(i)->tgid == tgid &&
-            (ks_id(i)->sig_blocked & (1ull << sig)) == 0u) {
-            return i;
+            vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE) {
+            if ((ks_id(i)->sig_blocked & (1ull << sig)) == 0u) {
+                return i;
+            }
+            if (alive < 0) {
+                alive = i;
+            }
         }
     }
-    return aimed;
+    if (vibeos_task_state((uint32_t)aimed) != VIBEOS_TASK_ZOMBIE || alive < 0) {
+        return aimed;
+    }
+    return alive;   /* every live thread blocks it: it waits on one of them */
 }
 
 /* Whether slot i is the first member of its process in group `group`: a

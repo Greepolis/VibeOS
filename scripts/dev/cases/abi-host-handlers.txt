@@ -71,7 +71,8 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
 
 ### kill(pid) raises on the thread aimed at, blocked or not (#53)
 --- old
-    if ((ks_id(aimed)->sig_blocked & (1ull << sig)) == 0u) {
+    if (vibeos_task_state((uint32_t)aimed) != VIBEOS_TASK_ZOMBIE &&
+        (ks_id(aimed)->sig_blocked & (1ull << sig)) == 0u) {
         return aimed;
     }
 +++ new
@@ -100,3 +101,10 @@ static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_s
     if (target >= 0 && !linux_signal_permitted(target, (uint32_t)sig)) {
         r = -VIBEOS_EPERM;
     } else if (target < 0 || ks_id(target)->tgid != (uint32_t)target_tgid) {
+
+### a process signal is raised on a leader that has exited (M-129)
+--- old
+    if (vibeos_task_state((uint32_t)aimed) != VIBEOS_TASK_ZOMBIE &&
+        (ks_id(aimed)->sig_blocked & (1ull << sig)) == 0u) {
++++ new
+    if ((ks_id(aimed)->sig_blocked & (1ull << sig)) == 0u) {

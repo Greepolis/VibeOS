@@ -306,6 +306,14 @@ static void t_kill_threads(void) {
                (ks_id(th)->sig_pending & (1ull << 12)) != 0,
            "kill(pid) goes to a thread that does not block the signal");
     ks_id(th)->sig_pending = 0;
+    /* M-129: a leader that has exited - pthread_exit in main - is a zombie
+     * while its thread runs, and a signal raised on it was lost. */
+    ks_id(lead)->sig_blocked = 0;
+    (void)vibeos_task_transition((uint32_t)lead, VIBEOS_TASK_ZOMBIE, "test");
+    expect(SYS2(62, 40, 10) == 0 && (ks_id(lead)->sig_pending & (1ull << 10)) == 0 &&
+               (ks_id(th)->sig_pending & (1ull << 10)) != 0,
+           "kill(pid) of a process whose leader has exited goes to a live thread");
+    ks_id(th)->sig_pending = 0;
     expect(SYS1(105, 1000) == 0, "the sender gives up root");
     expect(SYS3(234, 20, 41, 0) == -VIBEOS_ESRCH && SYS3(234, 40, 41, 0) == -VIBEOS_EPERM,
            "tgkill: a thread outside the group named is ESRCH before it is EPERM");
