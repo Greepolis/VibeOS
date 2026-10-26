@@ -1,0 +1,39 @@
+# NT share modes in the file layer (kernel/fs/file.c, docs/abi/windows.md W4
+# step 7); caught by tests/kernel/nt_abi_tests.c on the host.
+#
+# Target source: kernel/fs/file.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/fs/file.c scripts/dev/cases/nt-share.txt build-gcc-Release
+
+### an NT open ignores the others' share modes (W4 step 7)
+--- old
+        if ((o->nt_access & ~share) != 0u || (access & ~(uint32_t)o->nt_share) != 0u) {
++++ new
+        if ((o->nt_access & ~share) != 0u && 0) {
+
+
+### an NT open ignores its own share mode (W4 step 7)
+--- old
+        if ((o->nt_access & ~share) != 0u || (access & ~(uint32_t)o->nt_share) != 0u) {
++++ new
+        if ((access & ~(uint32_t)o->nt_share) != 0u) {
+
+
+### a released description still claims its share (W4 step 7)
+--- old
+        if (o == f || !o->nt_shared || o->ops == 0 || __atomic_load_n(&o->refs, __ATOMIC_ACQUIRE) == 0u ||
++++ new
+        if (o == f || !o->nt_shared ||
+
+
+### an open for attributes takes part in sharing (W4 step 7)
+--- old
+    if (!f || access == 0u) {
+        return 0;
+    }
+    lock();
++++ new
+    if (!f) {
+        return 0;
+    }
+    lock();
+

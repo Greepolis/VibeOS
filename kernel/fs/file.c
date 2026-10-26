@@ -85,6 +85,32 @@ vibeos_file_t *vibeos_file_alloc(const vibeos_file_ops_t *ops, uint32_t flags) {
     return f;
 }
 
+int vibeos_file_share_claim(vibeos_file_t *f, uint32_t access, uint32_t share) {
+    uint32_t i;
+
+    if (!f || access == 0u) {
+        return 0;
+    }
+    lock();
+    for (i = 0; i < VIBEOS_FILE_MAX; i++) {
+        const vibeos_file_t *o = &g_files[i];
+
+        if (o == f || !o->nt_shared || o->ops == 0 || __atomic_load_n(&o->refs, __ATOMIC_ACQUIRE) == 0u ||
+            o->mnt != f->mnt || o->node != f->node) {
+            continue;
+        }
+        if ((o->nt_access & ~share) != 0u || (access & ~(uint32_t)o->nt_share) != 0u) {
+            unlock();
+            return -1;
+        }
+    }
+    f->nt_access = (uint8_t)access;
+    f->nt_share = (uint8_t)share;
+    f->nt_shared = 1;
+    unlock();
+    return 0;
+}
+
 void vibeos_file_get(vibeos_file_t *f) {
     if (f) {
         (void)__atomic_add_fetch(&f->refs, 1u, __ATOMIC_ACQ_REL);

@@ -581,10 +581,13 @@ static long open_file(uint64_t *h, uint32_t access, const char *nt_path) {
 }
 
 /* NtCreateFile: the handle, and what the status block's Information said. */
+/* The ShareAccess create_file passes: everything, unless a test says. */
+static uint32_t g_share = 7u;
+
 static long create_file(uint64_t *h, uint64_t *info, uint32_t access, const char *nt_path,
                         uint32_t disposition, uint32_t options) {
     uint64_t out = kf_ualloc(8), iosb = kf_ualloc(16);
-    uint64_t rest[7] = { 0, 0, 7u, disposition, options, 0, 0 };
+    uint64_t rest[7] = { 0, 0, g_share, disposition, options, 0, 0 };
     long r;
 
     kf_next_sp(stack_args(rest, 7));
@@ -949,6 +952,78 @@ static void t_names(void) {
         }
         expect(seen, "and its listing spells the name in UTF-16 too");
     }
+}
+
+/* NtLockFile (lock) or NtUnlockFile on [off, off + len) through `h`. */
+static long lock_file(int lock, uint64_t h, uint64_t off, uint64_t len, int exclusive) {
+    uint64_t iosb = kf_ualloc(16), o = kf_ualloc(8), l = kf_ualloc(8);
+
+    *(uint64_t *)kf_uptr(o) = off;
+    *(uint64_t *)kf_uptr(l) = len;
+    if (lock) {
+        uint64_t rest[6] = { iosb, o, l, 0, 1, (uint64_t)exclusive };
+
+        kf_next_sp(stack_args(rest, 6));
+        return nt(VIBEOS_NT_NR_NtLockFile, h, 0, 0, 0, 0);
+    } else {
+        uint64_t rest[1] = { 0 };
+
+        kf_next_sp(stack_args(rest, 1));
+        return nt(VIBEOS_NT_NR_NtUnlockFile, h, iosb, o, l, 0);
+    }
+}
+
+/* W4 step 7: share modes at open, and locks that refuse. */
+static void t_share_and_locks(void) {
+    const uint32_t r = VIBEOS_GENERIC_READ, rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE;
+    uint64_t a = 0, b = 0, c = 0, info = 0, n = 0, off = 0, buf = kf_ualloc(64);
+
+    fresh(49);
+    g_share = 1u;   /* FILE_SHARE_READ */
+    expect(create_file(&a, &info, rw, "\\??\\C:\\tmp\\sh.txt", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               rw_file(1, a, 0, buf, 16, 0, &n) == ST(VIBEOS_STATUS_SUCCESS),
+           "a writer that shares reading only");
+    expect(create_file(&b, &info, r, "\\??\\C:\\tmp\\sh.txt", 1, 0x40) == ST(VIBEOS_STATUS_SHARING_VIOLATION),
+           "a reader that does not share writing is refused: the writer writes");
+    g_share = 3u;
+    expect(create_file(&b, &info, r, "\\??\\C:\\tmp\\sh.txt", 1, 0x40) == ST(VIBEOS_STATUS_SUCCESS),
+           "a reader that shares writing is let in");
+    expect(create_file(&c, &info, rw, "\\??\\C:\\tmp\\sh.txt", 1, 0x40) == ST(VIBEOS_STATUS_SHARING_VIOLATION),
+           "a second writer is refused: the first shares reading only");
+    g_share = 7u;
+    expect(create_file(&c, &info, rw, "\\??\\C:\\tmp\\sh.txt", 5, 0x40) == ST(VIBEOS_STATUS_SHARING_VIOLATION) &&
+               (nt(VIBEOS_NT_NR_NtClose, b, 0, 0, 0, 0), g_share = 0u, create_file(&b, &info, 0x80u /* FILE_READ_ATTRIBUTES */,
+                                                               "\\??\\C:\\tmp\\sh.txt", 1, 0x40)) ==
+                   ST(VIBEOS_STATUS_SUCCESS) &&
+               file_info(0, a, buf, 24, 5, &n) == ST(VIBEOS_STATUS_SUCCESS) && *(uint64_t *)((uint8_t *)kf_uptr(buf) + 8) == 16u,
+           "a refused overwrite leaves the file as it was; an open for attributes takes no part");
+    g_share = 7u;
+    (void)nt(VIBEOS_NT_NR_NtClose, b, 0, 0, 0, 0);
+    expect(nt(VIBEOS_NT_NR_NtClose, a, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               create_file(&a, &info, rw, "\\??\\C:\\tmp\\sh.txt", 1, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               create_file(&b, &info, rw, "\\??\\C:\\tmp\\sh.txt", 1, 0x40) == ST(VIBEOS_STATUS_SUCCESS),
+           "the claim goes with the handle");
+    expect(lock_file(1, a, 4, 4, 1) == ST(VIBEOS_STATUS_SUCCESS) &&
+               lock_file(1, b, 6, 4, 0) == ST(VIBEOS_STATUS_LOCK_NOT_GRANTED),
+           "an exclusive lock refuses another handle's overlapping lock");
+    off = 5;
+    expect(rw_file(0, b, 0, buf, 2, &off, &n) == ST(VIBEOS_STATUS_FILE_LOCK_CONFLICT) &&
+               (off = 0, rw_file(0, b, 0, buf, 4, &off, &n)) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (off = 4, rw_file(0, a, 0, buf, 4, &off, &n)) == ST(VIBEOS_STATUS_SUCCESS),
+           "and is mandatory: another handle cannot read it, its own can, and around it is free");
+    expect(lock_file(0, b, 4, 4, 0) == ST(VIBEOS_STATUS_RANGE_NOT_LOCKED) &&
+               lock_file(0, a, 4, 2, 0) == ST(VIBEOS_STATUS_RANGE_NOT_LOCKED) &&
+               lock_file(0, a, 4, 4, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (off = 5, rw_file(1, b, 0, buf, 2, &off, &n)) == ST(VIBEOS_STATUS_SUCCESS),
+           "only the holder unlocks, and only the range it locked; then the bytes are free");
+    expect(lock_file(1, a, 0, 8, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (off = 0, rw_file(0, b, 0, buf, 4, &off, &n)) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (off = 0, rw_file(1, b, 0, buf, 4, &off, &n)) == ST(VIBEOS_STATUS_FILE_LOCK_CONFLICT),
+           "a shared lock lets others read and not write");
+    expect(nt(VIBEOS_NT_NR_NtClose, a, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (off = 0, rw_file(1, b, 0, buf, 4, &off, &n)) == ST(VIBEOS_STATUS_SUCCESS),
+           "and goes with its handle");
+    (void)nt(VIBEOS_NT_NR_NtClose, b, 0, 0, 0, 0);
 }
 
 /* A Linux call, from the NT tests: to make files with owners and modes, which
@@ -2068,6 +2143,7 @@ int test_nt_abi(void) {
     t_small_file_services();
     t_query_directory();
     t_names();
+    t_share_and_locks();
     t_create_file();
     t_sections();
     t_open_file_permissions();

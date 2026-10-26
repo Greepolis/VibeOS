@@ -8,6 +8,7 @@
 #include "vibeos/path.h"
 #include "vibeos/fileops.h"
 #include "vibeos/cred.h"
+#include "vibeos/filelock.h"
 
 vibeos_file_t *nt_file_get(uint64_t handle) {
     vibeos_procstate_t *ps;
@@ -78,6 +79,18 @@ uint32_t nt_status_of_errno(long err) {
  * starts and set as it completes; an APC is W5's, with threads that can be
  * alerted, and is refused rather than never called. A read at or past the end
  * is STATUS_END_OF_FILE with nothing moved. The status block is written last. */
+/* Does another handle's lock refuse this transfer (W4 step 7)? Windows' locks
+ * are mandatory: a write meets any lock but our own, a read an exclusive one. */
+static int nt_lock_refuses(vibeos_file_t *f, int write, uint64_t at, uint64_t len) {
+    vibeos_flk_info_t held;
+
+    if (len == 0u || !f->mnt || vibeos_flk_count() == 0u || at + len - 1u < at) {
+        return 0;
+    }
+    return vibeos_flk_test(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f),
+                           write ? VIBEOS_FLK_EXCL : VIBEOS_FLK_SHARED, at, at + len - 1u, &held) == 1;
+}
+
 static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64_t iosb_u,
                   uint64_t buf, uint64_t len, uint64_t offp) {
     vibeos_file_t *f;
@@ -85,6 +98,7 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
     uint64_t off = NT_OFF_CURRENT;
     long n;
     uint32_t st;
+    int refused = 0;
 
     if (apc != 0u) {
         return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
@@ -104,6 +118,9 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
         /* `len` is the row's NT_ARG32: 32 bits already, decided in one place. */
         if (off != NT_OFF_CURRENT && off != NT_OFF_END) {
             n = -VIBEOS_EINVAL;   /* a console or a pipe has no offsets */
+        } else if (nt_lock_refuses(f, write, f->pos, len)) {
+            n = 0;
+            refused = 1;
         } else if (write) {
             n = f->ops->write ? f->ops->write(f, buf, len) : -VIBEOS_EBADF;
         } else {
@@ -118,6 +135,9 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
         }
         if (off >= 0x8000000000000000ull) {
             n = -VIBEOS_EINVAL;
+        } else if (nt_lock_refuses(f, write, off, len)) {
+            n = 0;
+            refused = 1;
         } else {
             n = write ? f->ops->pwrite(f, buf, len, off) : f->ops->pread(f, buf, len, off);
             if (n >= 0) {
@@ -128,7 +148,8 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
         }
     }
     vibeos_file_put(f);
-    st = n < 0 ? nt_status_of_errno(n)
+    st = refused ? VIBEOS_STATUS_FILE_LOCK_CONFLICT
+       : n < 0 ? nt_status_of_errno(n)
        : (!write && n == 0 && len != 0u) ? VIBEOS_STATUS_END_OF_FILE : VIBEOS_STATUS_SUCCESS;
     iosb.status = st;
     iosb.information = n < 0 ? 0u : (uint64_t)n;
@@ -372,7 +393,7 @@ static int nt_parent_of(const vibeos_path_t *w, vibeos_fs_node_t *dir) {
  * the file as it was - an OVERWRITE refused for permission must not have
  * truncated anything. */
 static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uint64_t iosb_u,
-                             uint32_t disposition, uint32_t options) {
+                             uint32_t share, uint32_t disposition, uint32_t options) {
     nt_name_t name;
     uint32_t attributes = 0, st, access, flags, info, may;
     char path[VIBEOS_FILE_PATH];
@@ -383,8 +404,9 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
     long err = 0;
     int rc, isdir;
     uint64_t h;
+    int trunc;
 
-    if (disposition > NT_FILE_OVERWRITE_IF ||
+    if (disposition > NT_FILE_OVERWRITE_IF || (share & ~7u) != 0u ||
         ((options & NT_FILE_DIRECTORY_FILE) && (options & NT_FILE_NON_DIRECTORY_FILE))) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }
@@ -473,9 +495,23 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
         }
         info = NT_FILE_CREATED;
     }
-    f = vibeos_open_path(&w, flags, 0644u, &err);
+    /* The share check comes before the file is overwritten - a refused open
+     * changes nothing - so the truncation waits for it. */
+    trunc = (flags & VIBEOS_O_TRUNC) != 0u;
+    f = vibeos_open_path(&w, flags & ~VIBEOS_O_TRUNC, 0644u, &err);
     if (!f) {
         return NT_STATUS(nt_status_of_open(err));
+    }
+    if (vibeos_file_share_claim(f, ((access & (NT_FILE_READ_DATA | NT_FILE_EXECUTE)) ? VIBEOS_SHARE_READ : 0u) |
+                                       ((access & (NT_FILE_WRITE_DATA | NT_FILE_APPEND_DATA)) ? VIBEOS_SHARE_WRITE : 0u) |
+                                       ((access & VIBEOS_DELETE) ? VIBEOS_SHARE_DELETE : 0u),
+                                share) != 0) {
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_SHARING_VIOLATION);
+    }
+    if (trunc && (!f->ops->truncate || f->ops->truncate(f, 0u) != 0)) {
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
     if (options & NT_FILE_DELETE_ON_CLOSE) {
         f->unlink_on_release = 1;   /* the name goes with the last handle */
@@ -495,12 +531,11 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
 }
 
 /* NtOpenFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
- * ShareAccess, OpenOptions): NtCreateFile's FILE_OPEN. Share modes are W4
- * step 7's. */
+ * ShareAccess, OpenOptions): NtCreateFile's FILE_OPEN. */
 static long nt_open_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb_u,
                          uint64_t share, uint64_t options) {
-    (void)share;
-    return nt_file_open_or_create(out, (uint32_t)want, oa, iosb_u, NT_FILE_OPEN, (uint32_t)options);
+    return nt_file_open_or_create(out, (uint32_t)want, oa, iosb_u, (uint32_t)share, NT_FILE_OPEN,
+                                  (uint32_t)options);
 }
 
 /* NtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
@@ -508,12 +543,13 @@ static long nt_open_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb
  * CreateOptions, EaBuffer, EaLength). The allocation size is a hint and the
  * attributes ride on FAT's directory entry, which step 3 sets; extended
  * attributes are refused rather than dropped. */
-static long nt_create_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb_u,
+static long nt_create_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb_u, uint64_t share,
                            uint64_t disposition, uint64_t options, uint64_t ea, uint64_t ea_len) {
     if (ea != 0u && ea_len != 0u) {
         return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
     }
-    return nt_file_open_or_create(out, (uint32_t)want, oa, iosb_u, (uint32_t)disposition, (uint32_t)options);
+    return nt_file_open_or_create(out, (uint32_t)want, oa, iosb_u, (uint32_t)share, (uint32_t)disposition,
+                                  (uint32_t)options);
 }
 
 /* ---- a file's information (W4 step 3) ---------------------------------------------
@@ -1286,13 +1322,110 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
     return nt_iosb_done(iosb_u, st, used);
 }
 
+/* ---- byte-range locks (W4 step 7) ----------------------------------------------------
+ *
+ * Windows' locks belong to the handle's file object and are mandatory: a read
+ * or write through another handle that meets one is refused, not merely
+ * advised against. They live in the record-lock table under the description
+ * as owner - the OFD rule, which is Windows' - and go when it does. The Key
+ * argument, which lets one handle hold locks under several names, is not
+ * kept: every lock of a handle is the handle's. */
+
+static uint32_t nt_lock_range(uint64_t off_u, uint64_t len_u, uint64_t *start, uint64_t *end) {
+    uint64_t off, len;
+
+    if (vibeos_uaccess_copy(&off, (const void *)(uintptr_t)off_u, 8u) != 0 ||
+        vibeos_uaccess_copy(&len, (const void *)(uintptr_t)len_u, 8u) != 0) {
+        return VIBEOS_STATUS_ACCESS_VIOLATION;
+    }
+    if (len == 0u || off + len - 1u < off) {
+        return VIBEOS_STATUS_INVALID_PARAMETER;   /* nothing, or past the end of numbers */
+    }
+    *start = off;
+    *end = off + len - 1u;
+    return VIBEOS_STATUS_SUCCESS;
+}
+
+/* NtLockFile(File, Event, ApcRoutine, ApcContext, IoStatusBlock, ByteOffset,
+ * Length, Key, FailImmediately, ExclusiveLock). A lock that cannot be had
+ * now is LOCK_NOT_GRANTED whether or not the caller would wait: waiting is
+ * W5's, with the APCs it completes through. */
+static long nt_lock_file(uint64_t file, uint64_t event, uint64_t apc, uint64_t iosb_u, uint64_t off_u,
+                         uint64_t len_u, uint64_t exclusive) {
+    uint64_t start = 0, end = 0;
+    uint32_t st;
+    vibeos_file_t *f;
+    int r;
+
+    if (apc != 0u) {
+        return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
+    }
+    st = nt_lock_range(off_u, len_u, &start, &end);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    f = nt_file_get(file);
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    if (!f->mnt || f->isdir) {
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
+    if (event != 0u && (st = nt_io_event(event, 0)) != VIBEOS_STATUS_SUCCESS) {
+        vibeos_file_put(f);
+        return NT_STATUS(st);
+    }
+    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), 0u,
+                       exclusive ? VIBEOS_FLK_EXCL : VIBEOS_FLK_SHARED, start, end, 0);
+    vibeos_file_put(f);
+    st = r == 0 ? VIBEOS_STATUS_SUCCESS
+       : VIBEOS_STATUS_LOCK_NOT_GRANTED;   /* in the way, or no room: either way not granted */
+    if (event != 0u && st == VIBEOS_STATUS_SUCCESS) {
+        (void)nt_io_event(event, 1);
+    }
+    return nt_iosb_done(iosb_u, st, 0u);
+}
+
+/* NtUnlockFile(File, IoStatusBlock, ByteOffset, Length, Key): exactly a range
+ * this handle locked. */
+static long nt_unlock_file(uint64_t file, uint64_t iosb_u, uint64_t off_u, uint64_t len_u) {
+    uint64_t start = 0, end = 0;
+    vibeos_flk_info_t held;
+    uint32_t st;
+    vibeos_file_t *f;
+
+    st = nt_lock_range(off_u, len_u, &start, &end);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    f = nt_file_get(file);
+    if (!f) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    /* Is it ours? Asked as somebody else: our own lock is then in the way,
+     * and only a lock that starts and ends where this one does is a lock
+     * Windows would give back. */
+    if (!f->mnt ||
+        vibeos_flk_test(VIBEOS_FLK_RECORD, f->mnt, f->node, 0u, VIBEOS_FLK_EXCL, start, end, &held) != 1 ||
+        held.owner != VIBEOS_FLK_OWNER_FILE(f) || held.start != start || held.end != end) {
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_RANGE_NOT_LOCKED);
+    }
+    (void)vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), 0u, VIBEOS_FLK_UNLOCK,
+                         start, end, 0);
+    vibeos_file_put(f);
+    return nt_iosb_done(iosb_u, VIBEOS_STATUS_SUCCESS, 0u);
+}
+
 #define NT_FILE_SERVICES(X) \
     X(VIBEOS_NT_NR_NtOpenFile, NtOpenFile, OPEN, \
       PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
       nt_open_file(ARG(0), NT_ARG32(1), ARG(2), ARG(3), NT_ARG32(4), NT_ARG32(5))) \
     X(VIBEOS_NT_NR_NtCreateFile, NtCreateFile, OPEN, \
       PTRS(OUT(0, 8), OUT(3, sizeof(vibeos_nt_iosb_t))), \
-      nt_create_file(ARG(0), NT_ARG32(1), ARG(2), ARG(3), NT_ARG32(7), NT_ARG32(8), ARG(9), NT_ARG32(10))) \
+      nt_create_file(ARG(0), NT_ARG32(1), ARG(2), ARG(3), NT_ARG32(6), NT_ARG32(7), NT_ARG32(8), ARG(9), \
+                     NT_ARG32(10))) \
     X(VIBEOS_NT_NR_NtQueryInformationFile, NtQueryInformationFile, FSTAT, \
       PTRS(OUT(1, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(2, 3)), \
       nt_query_information_file(ARG(0), ARG(1), ARG(2), NT_ARG32(3), NT_ARG32(4))) \
@@ -1316,6 +1449,12 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
       PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6)), \
       nt_query_directory_file(ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), NT_ARG32(7), \
                               ARG(8) & 0xFFu, ARG(9), ARG(10) & 0xFFu)) \
+    X(VIBEOS_NT_NR_NtLockFile, NtLockFile, FCNTL, \
+      PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), IN(5, 8), IN(6, 8)), \
+      nt_lock_file(ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), ARG(6), ARG(9) & 0xFFu)) \
+    X(VIBEOS_NT_NR_NtUnlockFile, NtUnlockFile, FCNTL, \
+      PTRS(OUT(1, sizeof(vibeos_nt_iosb_t)), IN(2, 8), IN(3, 8)), \
+      nt_unlock_file(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(VIBEOS_NT_NR_NtReadFile, NtReadFile, READ, \
       PTRS(OUT(4, sizeof(vibeos_nt_iosb_t)), NT_OUT_BUF(5, 6), IN_OPT(7, 8)), \
       nt_rw(0, ARG(0), ARG(1), ARG(2), ARG(4), ARG(5), NT_ARG32(6), ARG(7))) \

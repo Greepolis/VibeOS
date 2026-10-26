@@ -209,7 +209,23 @@ struct vibeos_file {
      * handle, or after a restart (W4 step 5): kept by the description, as
      * Windows keeps it by the handle. Empty matches everything. */
     char nt_mask[64];
+    /* What an NT open of this description does to the file's data and lets
+     * others do (W4 step 7), each VIBEOS_SHARE_*; meaningful when nt_shared
+     * is set, which vibeos_file_share_claim decides. */
+    uint8_t nt_shared, nt_access, nt_share;
 };
+
+#define VIBEOS_SHARE_READ   1u
+#define VIBEOS_SHARE_WRITE  2u
+#define VIBEOS_SHARE_DELETE 4u
+
+/* Windows' share modes: `f`, an open of a file, means to read, write or
+ * delete it as `access` says and lets others do what `share` says. 0, and it
+ * is on record until released, when no other description of the same file
+ * does what `f` does not share or refuses what `f` does; -1 otherwise. Under
+ * this layer's lock, so two opens cannot both pass each other's check. An
+ * open that touches no data (`access` 0) takes part in nothing. */
+int vibeos_file_share_claim(vibeos_file_t *f, uint32_t access, uint32_t share);
 
 void vibeos_file_set_lock(void (*lock)(void), void (*unlock)(void));
 void vibeos_file_reset(void);   /* boot and tests: every description free */

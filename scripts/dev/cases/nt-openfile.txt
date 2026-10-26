@@ -209,3 +209,45 @@
             u[0] = (uint16_t)(0xD800u + ((c - 0x10000u) >> 10));
 +++ new
             u[0] = (uint16_t)c;
+
+
+### an overwrite comes before the share check (W4 step 7)
+--- old
+    f = vibeos_open_path(&w, flags & ~VIBEOS_O_TRUNC, 0644u, &err);
++++ new
+    f = vibeos_open_path(&w, flags, 0644u, &err);
+
+
+### an NT lock is advisory (W4 step 7)
+--- old
+    if (len == 0u || !f->mnt || vibeos_flk_count() == 0u || at + len - 1u < at) {
++++ new
+    if (1) {
+
+
+### an NT shared lock refuses readers (W4 step 7)
+--- old
+                           write ? VIBEOS_FLK_EXCL : VIBEOS_FLK_SHARED, at, at + len - 1u, &held) == 1;
++++ new
+                           VIBEOS_FLK_EXCL, at, at + len - 1u, &held) == 1;
+
+
+### NtLockFile takes every lock shared (W4 step 7)
+--- old
+                       exclusive ? VIBEOS_FLK_EXCL : VIBEOS_FLK_SHARED, start, end, 0);
++++ new
+                       VIBEOS_FLK_SHARED, start, end, 0);
+
+
+### NtUnlockFile gives back what another handle locked (W4 step 7)
+--- old
+        held.owner != VIBEOS_FLK_OWNER_FILE(f) || held.start != start || held.end != end) {
++++ new
+        held.start != start || held.end != end) {
+
+
+### NtUnlockFile gives back part of a lock (W4 step 7)
+--- old
+        held.owner != VIBEOS_FLK_OWNER_FILE(f) || held.start != start || held.end != end) {
++++ new
+        held.owner != VIBEOS_FLK_OWNER_FILE(f)) {
