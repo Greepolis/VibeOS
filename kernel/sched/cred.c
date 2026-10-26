@@ -56,6 +56,31 @@ int vibeos_cred_may(const vibeos_cred_t *c, int real, uint32_t mode, uint32_t ui
     return (bits & want) == want ? 0 : -VIBEOS_EACCES;
 }
 
+int vibeos_cred_may_add(const vibeos_cred_t *c, uint32_t dir_mode, uint32_t dir_uid, uint32_t dir_gid) {
+    return vibeos_cred_may(c, 0, dir_mode, dir_uid, dir_gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC);
+}
+
+int vibeos_cred_may_remove(const vibeos_cred_t *c, uint32_t dir_mode, uint32_t dir_uid, uint32_t dir_gid,
+                           uint32_t owner) {
+    if (c->fsuid == 0u) {
+        return 0;
+    }
+    if (vibeos_cred_may(c, 0, dir_mode, dir_uid, dir_gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC) != 0) {
+        return -VIBEOS_EACCES;
+    }
+    /* A sticky directory is one everybody may write and nobody may clear of
+     * other people's files. 01000 is S_ISVTX; this file knows modes, not the
+     * VFS's names for them. */
+    if ((dir_mode & 01000u) && c->fsuid != dir_uid && c->fsuid != owner) {
+        return -VIBEOS_EPERM;
+    }
+    return 0;
+}
+
+int vibeos_cred_may_own(const vibeos_cred_t *c, uint32_t owner) {
+    return c->fsuid == 0u || c->fsuid == owner ? 0 : -VIBEOS_EPERM;
+}
+
 /* ---- changing who one is ---------------------------------------------------------
  *
  * The rules are Linux's, for a kernel without capabilities. An unprivileged

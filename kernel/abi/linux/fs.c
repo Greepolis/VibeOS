@@ -719,7 +719,7 @@ long linux_may_add(const vibeos_path_t *w) {
     if (c.fsuid == 0u || linux_parent_of(w, &dir) != 0) {
         return 0;
     }
-    return vibeos_cred_may(&c, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC);
+    return vibeos_cred_may_add(&c, dir.mode, dir.uid, dir.gid);
 }
 
 long linux_may_remove(const vibeos_path_t *w) {
@@ -730,16 +730,7 @@ long linux_may_remove(const vibeos_path_t *w) {
     if (c.fsuid == 0u || linux_parent_of(w, &dir) != 0) {
         return 0;
     }
-    if (vibeos_cred_may(&c, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC) != 0) {
-        return -VIBEOS_EACCES;
-    }
-    /* A sticky directory - /tmp - is one everybody may write and nobody may
-     * clear of other people's files: a name there goes only for the file's
-     * owner or the directory's. */
-    if ((dir.mode & VIBEOS_S_ISVTX) && c.fsuid != dir.uid && c.fsuid != w->node.uid) {
-        return -VIBEOS_EPERM;
-    }
-    return 0;
+    return vibeos_cred_may_remove(&c, dir.mode, dir.uid, dir.gid, w->node.uid);
 }
 
 void linux_own_new(const vibeos_path_t *w) {

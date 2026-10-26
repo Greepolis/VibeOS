@@ -1147,6 +1147,55 @@ static void t_open_file_permissions(void) {
            "and FILE_EXECUTE asks for execute permission, which 0644 does not give");
 }
 
+/* The paths that change the filesystem ask who is asking (v7 review): DELETE,
+ * DELETE_ON_CLOSE, NtDeleteFile and a rename by the rule for taking a name
+ * from a directory, sticky bit included; FILE_WRITE_ATTRIBUTES by ownership or
+ * write permission; and a file made is its maker's. */
+static void t_write_permissions(void) {
+    const uint32_t del = VIBEOS_DELETE | 0x80u /* FILE_READ_ATTRIBUTES */;
+    uint64_t h = 0, info = 0, n = 0, buf = kf_ualloc(256), st = kf_ualloc(144);
+    uint8_t *b = (uint8_t *)kf_uptr(buf);
+    static const char to[] = "\\??\\C:\\tmp\\st\\roots";
+    uint32_t i;
+    int me = fresh(51);
+
+    expect(lsys(83 /* mkdir */, lstr("/tmp/st"), 0777, 0) == 0 &&
+               lsys(90 /* chmod */, lstr("/tmp/st"), 01777, 0) == 0 &&
+               lsys(85 /* creat */, lstr("/tmp/st/roots"), 0666, 0) >= 0 &&
+               lsys(85, lstr("/tmp/st/ro"), 0644, 0) >= 0,
+           "root makes a sticky directory and two of its own files in it");
+    ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 1000u;
+    ks_ps(me)->cred.egid = ks_ps(me)->cred.fsgid = 1000u;
+    expect(create_file(&h, &info, del, "\\??\\C:\\tmp\\st\\roots", 1, 0x40) == ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               create_file(&h, &info, del, "\\??\\C:\\tmp\\st\\roots", 1, 0x1040) ==
+                   ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               nt(VIBEOS_NT_NR_NtDeleteFile, oattr("\\??\\C:\\tmp\\st\\roots", VIBEOS_OBJ_CASE_INSENSITIVE),
+                  0, 0, 0, 0) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "in a sticky directory, another user's file is not deleted: not by DELETE, on close, or by name");
+    expect(create_file(&h, &info, 0x100u /* FILE_WRITE_ATTRIBUTES */, "\\??\\C:\\tmp\\st\\ro", 1, 0x40) ==
+               ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "nor are the times of a file that is neither its own nor writable");
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE | VIBEOS_DELETE,
+                       "\\??\\C:\\tmp\\st\\mine", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               lsys(4 /* stat */, lstr("/tmp/st/mine"), st, 0) == 0 &&
+               *(uint32_t *)((uint8_t *)kf_uptr(st) + 28) == 1000u,
+           "a file it makes is its own");
+    memset(b, 0, 256);
+    b[0] = 1;   /* ReplaceIfExists */
+    *(uint32_t *)(b + 16) = (uint32_t)(2u * strlen(to));
+    for (i = 0; to[i]; i++) {
+        b[20u + 2u * i] = (uint8_t)to[i];
+    }
+    expect(file_info(1, h, buf, 20u + 2u * (uint32_t)strlen(to), 10, &n) == ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               lsys(4, lstr("/tmp/st/roots"), st, 0) == 0 && *(uint32_t *)((uint8_t *)kf_uptr(st) + 28) == 0u,
+           "and a rename onto another user's file there replaces nothing");
+    b[0] = 1;
+    expect(file_info(1, h, buf, 1, 13, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               lsys(4, lstr("/tmp/st/mine"), st, 0) < 0,
+           "its own file it deletes");
+}
+
 static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
     uint64_t out = kf_ualloc(8);
     uint64_t rest[3] = { 0x02u /* PAGE_READONLY */, attributes, file };
@@ -2217,6 +2266,7 @@ int test_nt_abi(void) {
     t_names();
     t_share_and_locks();
     t_handle_rights();
+    t_write_permissions();
     t_create_file();
     t_sections();
     t_open_file_permissions();

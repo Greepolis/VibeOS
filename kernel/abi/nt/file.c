@@ -479,6 +479,24 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
         if (may != 0u && vibeos_cred_may(&who, 0, w.node.mode, w.node.uid, w.node.gid, may) != 0) {
             return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
         }
+        /* The rights that change the name or the file's own record are
+         * judged here, once, as the mask a handle carries is what every
+         * service asks later (v7 review): DELETE - and DELETE_ON_CLOSE,
+         * whose release unlinks with the kernel's authority - by the rule
+         * for taking a name from its directory, sticky bit included;
+         * FILE_WRITE_ATTRIBUTES by ownership, or permission to write. */
+        if (access & VIBEOS_DELETE) {
+            vibeos_fs_node_t dir;
+
+            if (who.fsuid != 0u && nt_parent_of(&w, &dir) == 0 &&
+                vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0) {
+                return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+            }
+        }
+        if ((access & 0x100u /* FILE_WRITE_ATTRIBUTES */) && vibeos_cred_may_own(&who, w.node.uid) != 0 &&
+            vibeos_cred_may(&who, 0, w.node.mode, w.node.uid, w.node.gid, VIBEOS_MAY_WRITE) != 0) {
+            return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+        }
     } else {
         /* A new name in its directory: write and search permission there,
          * which the walk's parent carries. */
@@ -520,7 +538,21 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
         return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
     if (options & NT_FILE_DELETE_ON_CLOSE) {
-        f->unlink_on_release = 1;   /* the name goes with the last handle */
+        f->unlink_on_release = 1;   /* the name goes with the last handle; DELETE was judged above */
+    }
+    /* A file made here is its maker's, as Linux's open makes it (v7 review:
+     * every one was root's). */
+    if (info == NT_FILE_CREATED && (who.fsuid != 0u || who.fsgid != 0u)) {
+        vibeos_fs_attr_t own;
+        vibeos_fsmount_t *m = 0;
+        const char *tail = 0;
+
+        own.valid = VIBEOS_ATTR_UID | VIBEOS_ATTR_GID;
+        own.uid = who.fsuid;
+        own.gid = who.fsgid;
+        if (vibeos_fs_resolve(f->path, &m, &tail) == 0) {
+            (void)vibeos_fs_setattr(m, *tail ? tail : "/", &own);
+        }
     }
     st = nt_handle_install(f, access, attributes, &h);
     if (st != VIBEOS_STATUS_SUCCESS) {
@@ -696,6 +728,38 @@ static uint32_t nt_name_info(uint8_t *b, uint32_t at, uint32_t cap, const vibeos
     return 4u + 2u * n;
 }
 
+/* What a handle must have been granted for each class, as Windows asks it:
+ * the attributes and times FILE_READ_ATTRIBUTES to read and
+ * FILE_WRITE_ATTRIBUTES to set, a rename and a disposition DELETE, the end of
+ * the file and its allocation FILE_WRITE_DATA, the rest nothing. */
+static uint32_t nt_query_needs(uint32_t cls) {
+    return cls == NT_FI_BASIC || cls == NT_FI_ALL || cls == 34u || cls == 35u ? 0x80u : 0u;
+}
+
+static uint32_t nt_set_needs(uint32_t cls) {
+    return cls == NT_FI_BASIC ? 0x100u
+         : cls == NT_FI_RENAME || cls == NT_FI_DISPOSITION ? VIBEOS_DELETE
+         : cls == NT_FI_ALLOCATION || cls == NT_FI_END_OF_FILE ? 0x2u : 0u;
+}
+
+/* May the caller take the name `path` away - delete it or move it from its
+ * directory - as the credentials' shared rule says (sticky bit included)? A
+ * status. The kernel's own walk: `path` is a description's, already the
+ * file's. */
+static uint32_t nt_may_remove_path(const char *path, const vibeos_cred_t *who) {
+    vibeos_path_t w;
+    vibeos_fs_node_t dir;
+
+    if (who->fsuid == 0u) {
+        return VIBEOS_STATUS_SUCCESS;
+    }
+    if (vibeos_path_walk("/", "/", path, 0u, &w) != 0 || !w.exists || nt_parent_of(&w, &dir) != 0) {
+        return VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    return vibeos_cred_may_remove(who, dir.mode, dir.uid, dir.gid, w.node.uid) == 0
+               ? VIBEOS_STATUS_SUCCESS : VIBEOS_STATUS_ACCESS_DENIED;
+}
+
 /* NtQueryInformationFile(File, IoStatusBlock, Information, Length, Class). */
 static long nt_query_information_file(uint64_t file, uint64_t iosb_u, uint64_t out, uint64_t len,
                                       uint64_t cls) {
@@ -717,9 +781,9 @@ static long nt_query_information_file(uint64_t file, uint64_t iosb_u, uint64_t o
     if (len < need) {
         return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
     }
-    f = nt_file_get(file, ((uint32_t)cls == 4u || (uint32_t)cls == 18u || (uint32_t)cls == 34u || (uint32_t)cls == 35u ? 0x80u : 0u), 0);
+    f = nt_file_get(file, nt_query_needs((uint32_t)cls), 0);
     if (!f) {
-        return NT_STATUS(nt_file_refusal(file, ((uint32_t)cls == 4u || (uint32_t)cls == 18u || (uint32_t)cls == 34u || (uint32_t)cls == 35u ? 0x80u : 0u)));
+        return NT_STATUS(nt_file_refusal(file, nt_query_needs((uint32_t)cls)));
     }
     for (i = 0; i < sizeof(b); i++) {
         b[i] = 0;
@@ -808,26 +872,40 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
     if (nt_copy_in(b, in, (uint32_t)len) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
-    f = nt_file_get(file, ((uint32_t)cls == 4u ? 0x100u : ((uint32_t)cls == 10u || (uint32_t)cls == 13u) ? VIBEOS_DELETE : ((uint32_t)cls == 19u || (uint32_t)cls == 20u) ? 0x2u : 0u), 0);
+    f = nt_file_get(file, nt_set_needs((uint32_t)cls), 0);
     if (!f) {
-        return NT_STATUS(nt_file_refusal(file, ((uint32_t)cls == 4u ? 0x100u : ((uint32_t)cls == 10u || (uint32_t)cls == 13u) ? VIBEOS_DELETE : ((uint32_t)cls == 19u || (uint32_t)cls == 20u) ? 0x2u : 0u)));
+        return NT_STATUS(nt_file_refusal(file, nt_set_needs((uint32_t)cls)));
     }
     switch ((uint32_t)cls) {
         case NT_FI_POSITION:
+            if (get64(b, 0) >= 0x8000000000000000ull) {
+                st = VIBEOS_STATUS_INVALID_PARAMETER;   /* a LARGE_INTEGER, signed */
+                break;
+            }
             vibeos_file_pos_take(f);
             f->pos = get64(b, 0);
             vibeos_file_pos_give(f);
             break;
         case NT_FI_END_OF_FILE:
-            st = !f->ops->truncate ? VIBEOS_STATUS_INVALID_PARAMETER
+            st = get64(b, 0) >= 0x8000000000000000ull ? VIBEOS_STATUS_INVALID_PARAMETER
+               : !f->ops->truncate ? VIBEOS_STATUS_INVALID_PARAMETER
                : f->ops->truncate(f, get64(b, 0)) == 0 ? VIBEOS_STATUS_SUCCESS
                : VIBEOS_STATUS_ACCESS_DENIED;
             break;
         case NT_FI_ALLOCATION:
             break;   /* a reservation hint: space is not reserved (#17) */
-        case NT_FI_DISPOSITION:
-            f->unlink_on_release = b[0] ? 1 : 0;   /* the name goes with the last handle */
+        case NT_FI_DISPOSITION: {
+            /* The name goes with the last handle - and the release unlinks
+             * with the kernel's authority, so the caller's is asked now. */
+            vibeos_cred_t who;
+
+            nt_cred(&who);
+            if (b[0] && (st = nt_may_remove_path(f->path, &who)) != VIBEOS_STATUS_SUCCESS) {
+                break;
+            }
+            f->unlink_on_release = b[0] ? 1 : 0;
             break;
+        }
         case NT_FI_BASIC: {
             /* Times that are neither 0 (unchanged) nor -1 (do not update),
              * as the access and write times setattr keeps. */
@@ -869,12 +947,33 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
                 break;
             }
             name.len = nl / 2u;
+            name.insensitive = 1;   /* a Win32 rename is asked without case */
             for (i = 0; i < name.len; i++) {
                 name.chars[i] = (uint16_t)(b[20u + 2u * i] | (uint16_t)b[21u + 2u * i] << 8);
             }
             st = nt_vfs_path(&name, to, sizeof(to));
             if (st != VIBEOS_STATUS_SUCCESS) {
                 break;
+            }
+            {
+                vibeos_cred_t who;
+                vibeos_path_t tw;
+                vibeos_fs_node_t dir;
+
+                nt_cred(&who);
+                if ((st = nt_may_remove_path(f->path, &who)) != VIBEOS_STATUS_SUCCESS) {
+                    break;
+                }
+                if (vibeos_path_walk_as("/", "/", to, vibeos_open_walk_flags(VIBEOS_O_CREAT), &who, &tw) != 0) {
+                    st = VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND;
+                    break;
+                }
+                if (who.fsuid != 0u && nt_parent_of(&tw, &dir) == 0 &&
+                    (vibeos_cred_may_add(&who, dir.mode, dir.uid, dir.gid) != 0 ||
+                     (tw.exists && vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, tw.node.uid) != 0))) {
+                    st = VIBEOS_STATUS_ACCESS_DENIED;
+                    break;
+                }
             }
             if (vibeos_fs_resolve(f->path, &m1, &t1) != 0 || vibeos_fs_resolve(to, &m2, &t2) != 0) {
                 st = VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND;
@@ -969,8 +1068,8 @@ static long nt_delete_file(uint64_t oa) {
     }
     nt_cred(&who);
     if (nt_parent_of(&w, &dir) == 0 &&
-        vibeos_cred_may(&who, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC) != 0) {
-        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+        vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);   /* the sticky bit too: /tmp */
     }
     r = w.node.is_dir ? vibeos_fs_rmdir(w.mnt, w.tail) : vibeos_fs_unlink(w.mnt, w.tail);
     if (r == -VIBEOS_ENOTEMPTY) {

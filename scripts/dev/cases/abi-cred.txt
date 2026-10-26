@@ -4,7 +4,7 @@
 #  1. an open does not ask whether the file may be read or written
 #  2. a new name is made in a directory the caller may not write
 #  3. a name is removed from one
-#  4. the sticky bit is ignored
+#  4. the sticky bit is ignored - in sched-cred.txt since the rule moved to cred.c
 #  5. a new file is root's whoever made it
 #  6. truncate does not ask
 #  7. chdir into a directory the caller may not search
@@ -24,7 +24,7 @@
 
 ### a new name is made in a directory the caller may not write
 --- old
-    return vibeos_cred_may(&c, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC);
+    return vibeos_cred_may_add(&c, dir.mode, dir.uid, dir.gid);
 }
 +++ new
     return 0;
@@ -32,17 +32,9 @@
 
 ### a name is removed from one
 --- old
-    if (vibeos_cred_may(&c, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC) != 0) {
-        return -VIBEOS_EACCES;
-    }
+    return vibeos_cred_may_remove(&c, dir.mode, dir.uid, dir.gid, w->node.uid);
 +++ new
-
-### the sticky bit is ignored
---- old
-    if ((dir.mode & VIBEOS_S_ISVTX) && c.fsuid != dir.uid && c.fsuid != w->node.uid) {
-        return -VIBEOS_EPERM;
-    }
-+++ new
+    return 0;
 
 ### a new file is root's whoever made it
 --- old

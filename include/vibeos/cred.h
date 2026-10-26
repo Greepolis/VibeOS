@@ -55,6 +55,19 @@ int vibeos_cred_in_group(const vibeos_cred_t *c, uint32_t gid, int real);
 int vibeos_cred_may(const vibeos_cred_t *c, int real, uint32_t mode, uint32_t uid, uint32_t gid,
                     uint32_t want);
 
+/* The questions a change to a directory asks, one place for every personality
+ * (v7 review: NT's rename, disposition and delete were written without them,
+ * the class M-105 had been). `dir_*` describe the directory, `owner` the file
+ * a name is taken from. 0, -EACCES (no write and search permission in the
+ * directory) or -EPERM (a sticky directory - /tmp - and a file that is
+ * neither the caller's nor the directory's). The superuser is never refused. */
+int vibeos_cred_may_add(const vibeos_cred_t *c, uint32_t dir_mode, uint32_t dir_uid, uint32_t dir_gid);
+int vibeos_cred_may_remove(const vibeos_cred_t *c, uint32_t dir_mode, uint32_t dir_uid, uint32_t dir_gid,
+                           uint32_t owner);
+/* May the caller change a file's times or attributes as its owner may? 0 for
+ * the owner or the superuser, else -EPERM. */
+int vibeos_cred_may_own(const vibeos_cred_t *c, uint32_t owner);
+
 /* The set calls. Each returns 0 or -EPERM, and changes nothing when refused.
  * VIBEOS_ID_KEEP leaves an id alone where the call has that meaning. */
 int vibeos_cred_setuid(vibeos_cred_t *c, uint32_t uid);

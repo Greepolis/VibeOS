@@ -91,3 +91,9 @@
     if (n > VIBEOS_NGROUPS) {
 +++ new
     if (n > VIBEOS_NGROUPS) {
+
+### the sticky bit is ignored (moved from abi-cred.txt; v7 review: NT asks the same question)
+--- old
+    if ((dir_mode & 01000u) && c->fsuid != dir_uid && c->fsuid != owner) {
++++ new
+    if (0) {

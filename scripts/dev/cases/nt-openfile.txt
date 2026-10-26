@@ -90,7 +90,7 @@
 
 ### FileDispositionInformation is ignored (W4 step 3)
 --- old
-            f->unlink_on_release = b[0] ? 1 : 0;   /* the name goes with the last handle */
+            f->unlink_on_release = b[0] ? 1 : 0;
 +++ new
             (void)0;
 
@@ -267,3 +267,39 @@
     if (!f->mnt || f->isdir) {
 +++ new
     if (!f->mnt || f->isdir) {
+
+### an NT open for DELETE asks nothing of the directory (v7 review)
+--- old
+            if (who.fsuid != 0u && nt_parent_of(&w, &dir) == 0 &&
+                vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0) {
+                return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
+            }
+        }
++++ new
+        }
+
+### FILE_WRITE_ATTRIBUTES asks no ownership (v7 review)
+--- old
+        if ((access & 0x100u /* FILE_WRITE_ATTRIBUTES */) && vibeos_cred_may_own(&who, w.node.uid) != 0 &&
++++ new
+        if (0 &&
+
+### NtDeleteFile ignores the sticky bit (v7 review)
+--- old
+        vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);   /* the sticky bit too: /tmp */
++++ new
+        vibeos_cred_may_add(&who, dir.mode, dir.uid, dir.gid) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);   /* the sticky bit too: /tmp */
+
+### a rename replaces what the caller may not remove (v7 review)
+--- old
+                     (tw.exists && vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, tw.node.uid) != 0))) {
++++ new
+                     0)) {
+
+### a file NT makes is root's whoever made it (v7 review)
+--- old
+    if (info == NT_FILE_CREATED && (who.fsuid != 0u || who.fsgid != 0u)) {
++++ new
+    if (0) {
