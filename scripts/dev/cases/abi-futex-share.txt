@@ -13,3 +13,9 @@
         if (mine + n > LINUX_FUTEX_PER_PROCESS) {
 +++ new
         if (0 && mine + n > LINUX_FUTEX_PER_PROCESS) {
+
+### a private futex is keyed by the process, not its address space (M-128)
+--- old
+    return ps && ps->mm ? (const void *)ps->mm : (const void *)ps;
++++ new
+    return (const void *)ps;

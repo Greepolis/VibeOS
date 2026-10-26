@@ -51,13 +51,13 @@ typedef struct {
      * every wake passing it by. */
     uint8_t used;
     uint64_t addr;     /* 0 once woken: no further wake should match */
-    /* Whose address. A futex word is named by a user virtual address, and a
-     * virtual address means nothing without its process: every Linux program
+    /* Whose address: its address space (M-128). A futex word is named by a user
+     * virtual address, and that means nothing without its address space: every Linux program
      * here links at 0x400000, and a forked child has its parent's layout
      * exactly. The table was keyed by address alone, so a wake in one process
      * ended a wait in another - THREADS_C5_FUTEX_XPROC, red first. Null for a
      * shared word, whose `addr` is then the frame's and is nobody's address. */
-    const vibeos_procstate_t *ps;
+    const void *ps;
     int task;
     /* Which tenancy of `task` enqueued. The slot index alone is an ABA: a
      * blocked waiter can be reaped and its slot handed to a new task, and a wake
@@ -125,7 +125,7 @@ static int futex_wake_entry(uint32_t e) {
 
 /* Under g_futex_lock: wake up to `count` sleepers on the word, whose bitset
  * shares a bit with `mask`. */
-static long futex_wake_locked(const vibeos_procstate_t *ps, uint64_t key, uint32_t count,
+static long futex_wake_locked(const void *ps, uint64_t key, uint32_t count,
                               uint32_t mask) {
     long woke = 0;
     uint32_t i;
@@ -144,7 +144,7 @@ static long futex_wake_locked(const vibeos_procstate_t *ps, uint64_t key, uint32
 /* Wake up to `count` waiters on `addr`. Returns how many were woken, which is
  * what the caller is told: a library uses it to decide whether it needs to
  * wake anybody else. */
-static long futex_wake_mask(const vibeos_procstate_t *ps, uint64_t addr, uint32_t count,
+static long futex_wake_mask(const void *ps, uint64_t addr, uint32_t count,
                             uint32_t mask) {
     long woke;
 
@@ -158,8 +158,16 @@ static long futex_wake_mask(const vibeos_procstate_t *ps, uint64_t addr, uint32_
     return woke;
 }
 
+/* What a private word belongs to: the address space, which two processes
+ * share under CLONE_VM without CLONE_THREAD - keyed by the process, the
+ * two never met on a private futex (M-128). A process state with no
+ * address space yet stands for itself. */
+static const void *futex_space(const vibeos_procstate_t *ps) {
+    return ps && ps->mm ? (const void *)ps->mm : (const void *)ps;
+}
+
 long linux_futex_wake(const vibeos_procstate_t *ps, uint64_t addr, uint32_t count) {
-    return futex_wake_mask(ps, addr, count, LINUX_FUTEX_BITSET_MATCH_ANY);
+    return futex_wake_mask(futex_space(ps), addr, count, LINUX_FUTEX_BITSET_MATCH_ANY);
 }
 
 /* Which word a futex names: its process and its address, or - for a word the
@@ -171,7 +179,7 @@ long linux_futex_wake(const vibeos_procstate_t *ps, uint64_t addr, uint32_t coun
  * so that its page is in: a frame that is not there has no identity yet.
  * Linux refuses a word that is not four-byte aligned with EINVAL, before
  * anything else. */
-static long linux_futex_key(uint64_t addr, int private_word, const vibeos_procstate_t **ps,
+static long linux_futex_key(uint64_t addr, int private_word, const void **ps,
                             uint64_t *key) {
     int me = ks_current();
     uint32_t word;
@@ -179,7 +187,7 @@ static long linux_futex_key(uint64_t addr, int private_word, const vibeos_procst
     if (addr & 3u) {
         return -VIBEOS_EINVAL;
     }
-    *ps = me >= 0 ? ks_ps(me) : 0;
+    *ps = me >= 0 ? futex_space(ks_ps(me)) : 0;
     *key = addr;
     if (me < 0 || private_word) {
         return 0;
@@ -204,7 +212,7 @@ static long linux_futex_key(uint64_t addr, int private_word, const vibeos_procst
 typedef struct {
     uint64_t addr;
     uint64_t key;
-    const vibeos_procstate_t *ps;
+    const void *ps;
     uint32_t expected;
 } futex_word_t;
 
@@ -421,7 +429,7 @@ static long futex_deadline(uint64_t utimeout, int absolute, uint64_t *deadline) 
  * moved with the woken in what it returns, for both forms. */
 static long futex_requeue(uint64_t a1, int priv1, uint64_t a2, int priv2, uint32_t nwake,
                           uint32_t nmove, int check, uint32_t expected) {
-    const vibeos_procstate_t *ps1, *ps2;
+    const void *ps1, *ps2;
     uint64_t k1, k2;
     long r, done;
     uint32_t i;
@@ -473,7 +481,7 @@ static long futex_wake_op(uint64_t a1, int priv, uint64_t a2, uint32_t nwake1, u
                           uint32_t encoded) {
     uint32_t op = (encoded >> 28) & 0xFu, cmp = (encoded >> 24) & 0xFu;
     int32_t oparg = (int32_t)(encoded << 8) >> 20, cmparg = (int32_t)(encoded << 20) >> 20;
-    const vibeos_procstate_t *ps1, *ps2;
+    const void *ps1, *ps2;
     uint64_t k1, k2;
     uint32_t old, want;
     long r, done;
@@ -560,7 +568,7 @@ static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val, uint64_t u
     int priv = (op & LINUX_FUTEX_PRIVATE_FLAG) != 0u;
     uint32_t cmd = (uint32_t)op & VIBEOS_FUTEX_OP_BITS;
     uint64_t deadline = 0;
-    const vibeos_procstate_t *kps;
+    const void *kps;
     uint64_t key;
     long r;
 
@@ -641,7 +649,7 @@ static long futex2_deadline(uint64_t utimeout, uint64_t clk, uint64_t *deadline)
 }
 
 static long linux_sys_futex_wake(uint64_t addr, uint64_t mask, uint64_t nr, uint64_t flags) {
-    const vibeos_procstate_t *ps;
+    const void *ps;
     uint64_t key;
     long r;
 
@@ -828,13 +836,13 @@ static int futex_owner_died(uint64_t addr, uint32_t tid, int pending) {
         }
         if (seen == old) {
             if (old & LINUX_FUTEX_WAITERS) {
-                const vibeos_procstate_t *ps;
+                const void *ps;
                 uint64_t key;
 
                 /* Shared or private: a robust mutex is often process-shared,
                  * and its waiters are in other processes. */
                 if (linux_futex_key(addr, 0, &ps, &key) == 0) {
-                    (void)linux_futex_wake(ps, key, 1u);
+                    (void)futex_wake_mask(ps, key, 1u, LINUX_FUTEX_BITSET_MATCH_ANY);
                 }
             }
             return 0;

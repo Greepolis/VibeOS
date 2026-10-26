@@ -4762,6 +4762,17 @@ static void t_clone_l6(void) {
         pm = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
         expect(pm > 0 && pm != cm, "and its own next mapping goes around it");
         expect(b1 == b0 + 8192 && SYS1(12, 0) == b1, "the break the child moved is the parent's");
+        {
+            /* M-128: a private futex is the address space's, not the
+             * process's - keyed by process, these two never met. */
+            kf_outcome_t out = KF_RETURNED;
+
+            kf_set_current(child);
+            (void)sys(202, word, 128 /* FUTEX_WAIT|PRIVATE */, 9, 0, 0, 0, &out);
+            kf_set_current(me);
+            expect(out == KF_BLOCKED && SYS3(202, word, 1 | 128 /* FUTEX_WAKE|PRIVATE */, 1) == 1,
+                   "a private futex wakes across processes that share one address space");
+        }
     }
 
     pid = sys(56, LINUX_CLONE_PARENT | 17u, 0, 0, 0, 0, 0, 0);
