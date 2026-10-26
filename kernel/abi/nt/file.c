@@ -1387,7 +1387,7 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
     for (;;) {
         vibeos_dirent_t de;
         vibeos_file_stat_t s;
-        uint32_t nl = 0, rec, k, at;
+        uint32_t nl = 0, rec, at;
         int got = f->ops->readdir(f, f->pos, &de);
 
         if (got == VIBEOS_READDIR_END) {
