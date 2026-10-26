@@ -146,9 +146,94 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
  * W2 knows one kind of NT path, the one a DOS path becomes: "\??\C:\dir\file".
  * Drive C: is the boot volume's root, provisionally, as /win is where our DLLs
  * live: the filesystem's hierarchy is the roadmap's next item and decides both.
- * Separators become '/', and the name is passed to the VFS as it is - FAT, where
- * the DLLs are, compares names without case, as Windows does; a case-sensitive
- * filesystem under C: is W4's question. */
+ * Separators become '/', and a name beyond ASCII becomes UTF-8 (W4 step 6).
+ *
+ * Asked without case (OBJ_CASE_INSENSITIVE, which is every Win32 open), each
+ * component that the filesystem does not find as written is looked for in its
+ * directory by folding: FAT compares without case for itself, tmpfs and ext2
+ * do not, and a program that wrote FOO.TXT expects to open foo.txt. Folding is
+ * ASCII's; a byte beyond it compares exactly. A component found nowhere is
+ * left as given, since it may be the one being created. */
+
+static int nt_fold_eq(const char *a, const char *b, uint32_t n) {
+    uint32_t i;
+
+    for (i = 0; i < n; i++) {
+        char x = a[i], y = b[i];
+
+        if (x >= 'a' && x <= 'z') {
+            x = (char)(x - 32);
+        }
+        if (y >= 'a' && y <= 'z') {
+            y = (char)(y - 32);
+        }
+        if (x != y || b[i] == 0) {
+            return 0;
+        }
+    }
+    return b[n] == 0;
+}
+
+static void nt_case_resolve(char *path) {
+    uint32_t start = 1, end;
+
+    while (path[start]) {
+        vibeos_path_t w;
+        char saved;
+
+        for (end = start; path[end] && path[end] != '/'; end++) {
+        }
+        saved = path[end];
+        path[end] = 0;
+        if (vibeos_path_walk("/", "/", path, 0u, &w) != 0 || !w.exists) {
+            vibeos_fsmount_t *m = 0;
+            const char *tail = 0;
+            char name[VIBEOS_NAME_MAX + 1u];
+            uint32_t i, k, found = 0;
+            uint64_t size;
+            int is_dir;
+
+            path[start - 1u] = 0;   /* the parent: "" is the root */
+            if (vibeos_fs_resolve(start == 1u ? "/" : path, &m, &tail) == 0) {
+                while (*tail == '/') {
+                    tail++;
+                }
+                for (i = 0; !found && vibeos_fs_list(m, tail, i, name, sizeof(name), &size, &is_dir) == 0; i++) {
+                    if (nt_fold_eq(path + start, name, end - start)) {
+                        for (k = 0; k < end - start; k++) {
+                            path[start + k] = name[k];
+                        }
+                        found = 1;
+                    }
+                }
+            }
+            /* A mount point need not be an entry of the filesystem under it. */
+            for (i = 0; !found && i < vibeos_fs_mount_count(); i++) {
+                const char *mp = vibeos_fs_mount_path(i);
+
+                for (k = 0; k + 1u < start && mp[k] == path[k]; k++) {
+                }
+                if (k + 1u == start && mp[k] == '/' && nt_fold_eq(path + start, mp + start, end - start)) {
+                    for (k = 0; k < end - start; k++) {
+                        path[start + k] = mp[start + k];
+                    }
+                    found = 1;
+                }
+            }
+            path[start - 1u] = '/';
+            if (!found) {
+                path[end] = saved;
+                return;
+            }
+        }
+        path[end] = saved;
+        if (!saved) {
+            return;
+        }
+        start = end + 1u;
+    }
+}
+
 uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap) {
     static const char prefix[] = "\\??\\";
     uint32_t i, o = 0;
@@ -168,19 +253,50 @@ uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap) {
         return VIBEOS_STATUS_OBJECT_NAME_INVALID;
     }
     for (i = 6; i < n->len; i++) {
-        uint16_t c = n->chars[i];
+        uint32_t c = n->chars[i];
+        uint8_t u[4];
+        uint32_t k, len;
 
-        if (c == 0u || c >= 0x80u) {
-            /* The VFS takes bytes, and W2's names are ASCII; UTF-8 for the rest
-             * is W4's, with the case rules. */
+        if (c >= 0xD800u && c < 0xDC00u && i + 1u < n->len &&
+            n->chars[i + 1u] >= 0xDC00u && n->chars[i + 1u] < 0xE000u) {
+            c = 0x10000u + ((c - 0xD800u) << 10) + (n->chars[i + 1u] - 0xDC00u);
+            i++;
+        } else if (c >= 0xD800u && c < 0xE000u) {
+            return VIBEOS_STATUS_OBJECT_NAME_INVALID;   /* half a pair */
+        }
+        if (c == 0u || c == '/') {
+            return VIBEOS_STATUS_OBJECT_NAME_INVALID;   /* '/' would split a name */
+        }
+        if (c < 0x80u) {
+            u[0] = c == '\\' ? (uint8_t)'/' : (uint8_t)c;
+            len = 1;
+        } else if (c < 0x800u) {
+            u[0] = (uint8_t)(0xC0u | (c >> 6));
+            u[1] = (uint8_t)(0x80u | (c & 0x3Fu));
+            len = 2;
+        } else if (c < 0x10000u) {
+            u[0] = (uint8_t)(0xE0u | (c >> 12));
+            u[1] = (uint8_t)(0x80u | ((c >> 6) & 0x3Fu));
+            u[2] = (uint8_t)(0x80u | (c & 0x3Fu));
+            len = 3;
+        } else {
+            u[0] = (uint8_t)(0xF0u | (c >> 18));
+            u[1] = (uint8_t)(0x80u | ((c >> 12) & 0x3Fu));
+            u[2] = (uint8_t)(0x80u | ((c >> 6) & 0x3Fu));
+            u[3] = (uint8_t)(0x80u | (c & 0x3Fu));
+            len = 4;
+        }
+        if (o + len + 1u > cap) {
             return VIBEOS_STATUS_OBJECT_NAME_INVALID;
         }
-        if (o + 2u > cap) {
-            return VIBEOS_STATUS_OBJECT_NAME_INVALID;
+        for (k = 0; k < len; k++) {
+            out[o++] = (char)u[k];
         }
-        out[o++] = c == '\\' ? '/' : (char)c;
     }
     out[o] = 0;
+    if (n->insensitive) {
+        nt_case_resolve(out);
+    }
     return VIBEOS_STATUS_SUCCESS;
 }
 
@@ -472,22 +588,70 @@ static void nt_standard(uint8_t *b, uint32_t at, const vibeos_file_stat_t *s, co
 /* FILE_NAME_INFORMATION at `at`: the length in bytes, then the name from the
  * volume's root in UTF-16 - "\\dir\\file" - as much as fits. The bytes it
  * needed, whole. */
-static uint32_t nt_name_info(uint8_t *b, uint32_t at, uint32_t cap, const vibeos_file_t *f) {
-    uint32_t n = 0, i, need;
+/* A VFS name as UTF-16 at b + at, as much as fits below `cap`, '/' as '\'
+ * (W4 step 6): the number of UTF-16 units the whole name takes. A byte that
+ * does not start a sequence UTF-8 allows is taken as itself, so a name some
+ * other system wrote in Latin-1 still comes back as something to open. */
+static uint32_t nt_utf16_put(const char *s, uint8_t *b, uint32_t at, uint32_t cap) {
+    const uint8_t *p = (const uint8_t *)s;
+    uint32_t units = 0;
 
-    while (f->path[n]) {
-        n++;
+    while (*p) {
+        uint32_t c = *p, more = 0, k;
+        uint16_t u[2];
+        uint32_t nu = 1;
+
+        if (c >= 0xF0u && c < 0xF5u) {
+            c &= 0x07u;
+            more = 3;
+        } else if (c >= 0xE0u && c < 0xF0u) {
+            c &= 0x0Fu;
+            more = 2;
+        } else if (c >= 0xC2u && c < 0xE0u) {
+            c &= 0x1Fu;
+            more = 1;
+        }
+        for (k = 1; k <= more; k++) {
+            if ((p[k] & 0xC0u) != 0x80u) {
+                break;
+            }
+        }
+        if (k <= more) {
+            c = *p;   /* not UTF-8 after all */
+            more = 0;
+        } else {
+            for (k = 1; k <= more; k++) {
+                c = (c << 6) | (p[k] & 0x3Fu);
+            }
+        }
+        p += 1u + more;
+        if (c == '/') {
+            c = '\\';
+        }
+        if (c >= 0x10000u) {
+            u[0] = (uint16_t)(0xD800u + ((c - 0x10000u) >> 10));
+            u[1] = (uint16_t)(0xDC00u + ((c - 0x10000u) & 0x3FFu));
+            nu = 2;
+        } else {
+            u[0] = (uint16_t)c;
+        }
+        for (k = 0; k < nu; k++, units++) {
+            if (at + 2u * units + 2u <= cap) {
+                b[at + 2u * units] = (uint8_t)u[k];
+                b[at + 2u * units + 1u] = (uint8_t)(u[k] >> 8);
+            }
+        }
     }
-    need = 4u + 2u * n;
+    return units;
+}
+
+static uint32_t nt_name_info(uint8_t *b, uint32_t at, uint32_t cap, const vibeos_file_t *f) {
+    uint32_t n = nt_utf16_put(f->path, b, at + 4u, cap);
+
     if (cap >= at + 4u) {
         put32(b, at, 2u * n);
     }
-    for (i = 0; i < n && at + 4u + 2u * i + 2u <= cap; i++) {
-        uint16_t c = (uint16_t)(uint8_t)(f->path[i] == '/' ? '\\' : f->path[i]);
-        b[at + 4u + 2u * i] = (uint8_t)c;
-        b[at + 5u + 2u * i] = (uint8_t)(c >> 8);
-    }
-    return need;
+    return 4u + 2u * n;
 }
 
 /* NtQueryInformationFile(File, IoStatusBlock, Information, Length, Class). */
@@ -974,7 +1138,7 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
     uint8_t b[4096];
     uint32_t name_at = nt_dir_name_at((uint32_t)cls), used = 0, last = 0, st, cap, entries = 0;
     vibeos_file_t *f;
-    int first;
+    int first, short_of = 0;
 
     if (apc != 0u) {
         return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);   /* W5's */
@@ -1036,20 +1200,18 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
             f->pos++;
             continue;
         }
-        while (de.name[nl]) {
-            nl++;
-        }
+        nl = nt_utf16_put(de.name, b, 0u, 0u);   /* its length in UTF-16 units */
         rec = name_at + 2u * nl;
         at = (used + 7u) & ~7u;
         if (at + rec > cap) {
-            if (entries == 0u) {
-                /* Not even one fits: as much of it as fits, and the warning;
-                 * the position stays, so the next call gets it whole. */
-                rec = cap - at;
-                st = VIBEOS_STATUS_BUFFER_OVERFLOW;
-                goto partial;
+            if (entries != 0u) {
+                break;
             }
-            break;
+            /* Not even one fits: as much of it as fits - its fixed part is
+             * always there, the length check saw to that - and the warning;
+             * the position stays, so the next call gets it whole. */
+            rec = cap - at;
+            short_of = 1;
         }
         for (k = at; k < at + rec; k++) {
             b[k] = 0;
@@ -1094,8 +1256,10 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
                 put64(b, at + 72u, s.ino);
             }
         }
-        for (k = 0; k < nl; k++) {
-            b[at + name_at + 2u * k] = (uint8_t)de.name[k];
+        (void)nt_utf16_put(de.name, b, at + name_at, at + rec);
+        if (short_of) {
+            used = at + rec;
+            break;
         }
         if (entries != 0u) {
             put32(b, last, at - last);   /* the previous entry's NextEntryOffset */
@@ -1108,12 +1272,9 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
             break;
         }
     }
-    st = entries != 0u ? VIBEOS_STATUS_SUCCESS
+    st = short_of ? VIBEOS_STATUS_BUFFER_OVERFLOW
+       : entries != 0u ? VIBEOS_STATUS_SUCCESS
        : first ? VIBEOS_STATUS_NO_SUCH_FILE : VIBEOS_STATUS_NO_MORE_FILES;
-    if (0) {
-partial:
-        used = cap;
-    }
     vibeos_file_pos_give(f);
     vibeos_file_put(f);
     if (used != 0u && vibeos_uaccess_copy((void *)(uintptr_t)out, b, used) != 0) {

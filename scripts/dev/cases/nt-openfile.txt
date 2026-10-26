@@ -153,11 +153,59 @@
 
 ### an entry too big for the buffer is skipped (W4 step 5)
 --- old
-                rec = cap - at;
-                st = VIBEOS_STATUS_BUFFER_OVERFLOW;
-                goto partial;
+            rec = cap - at;
+            short_of = 1;
 +++ new
-                rec = cap - at;
-                st = VIBEOS_STATUS_BUFFER_OVERFLOW;
-                f->pos++;
-                goto partial;
+            rec = cap - at;
+            short_of = 1;
+            f->pos++;
+
+### an NT name is not looked for without case (W4 step 6)
+--- old
+    if (n->insensitive) {
+        nt_case_resolve(out);
+    }
++++ new
+
+### a name folded without case keeps the case it was asked in (W4 step 6)
+--- old
+                    if (nt_fold_eq(path + start, name, end - start)) {
+                        for (k = 0; k < end - start; k++) {
+                            path[start + k] = name[k];
+                        }
++++ new
+                    if (nt_fold_eq(path + start, name, end - start)) {
+
+### a mount point is not found without case (W4 step 6)
+--- old
+                if (k + 1u == start && mp[k] == '/' && nt_fold_eq(path + start, mp + start, end - start)) {
++++ new
+                if (0) {
+
+### a surrogate pair is two characters (W4 step 6)
+--- old
+            c = 0x10000u + ((c - 0xD800u) << 10) + (n->chars[i + 1u] - 0xDC00u);
+            i++;
++++ new
+            c = 0xFFFDu;
+
+### half a surrogate pair is a name (W4 step 6)
+--- old
+            return VIBEOS_STATUS_OBJECT_NAME_INVALID;   /* half a pair */
++++ new
+            c = 0xFFFDu;
+
+### a name beyond ASCII goes back as its UTF-8 bytes (W4 step 6)
+--- old
+            for (k = 1; k <= more; k++) {
+                c = (c << 6) | (p[k] & 0x3Fu);
+            }
++++ new
+            c = *p;
+            more = 0;
+
+### a code point past the BMP is not split into a pair (W4 step 6)
+--- old
+            u[0] = (uint16_t)(0xD800u + ((c - 0x10000u) >> 10));
++++ new
+            u[0] = (uint16_t)c;

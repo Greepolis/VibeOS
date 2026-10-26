@@ -236,6 +236,10 @@ static void t_system(void) {
 /* ---- the object manager (W2) ---------------------------------------------------------- */
 
 /* OBJECT_ATTRIBUTES in user memory naming `ascii`, or with no name for null. */
+/* Set, oattr spells three characters beyond ASCII (W4 step 6): '#' is U+00E9,
+ * '%' is U+1F600 as its surrogate pair, '!' is half a pair alone. */
+static int g_oattr_wide;
+
 static uint64_t oattr(const char *ascii, uint32_t attributes) {
     uint64_t oa = kf_ualloc(VIBEOS_OA_SIZE);
     uint8_t *p = (uint8_t *)kf_uptr(oa);
@@ -250,6 +254,25 @@ static uint64_t oattr(const char *ascii, uint32_t attributes) {
 
         for (i = 0; i < n; i++) {
             w[i] = (uint8_t)ascii[i];
+        }
+        if (g_oattr_wide) {
+            uint32_t o = 0;
+
+            buf = kf_ualloc(4u * n + 2u);
+            w = (uint16_t *)kf_uptr(buf);
+            for (i = 0; i < n; i++) {
+                if (ascii[i] == '#') {
+                    w[o++] = 0x00E9u;
+                } else if (ascii[i] == '%') {
+                    w[o++] = 0xD83Du;
+                    w[o++] = 0xDE00u;
+                } else if (ascii[i] == '!') {
+                    w[o++] = 0xD800u;
+                } else {
+                    w[o++] = (uint8_t)ascii[i];
+                }
+            }
+            n = o;
         }
         *(uint16_t *)(u + VIBEOS_USTR_LENGTH) = (uint16_t)(2u * n);
         *(uint16_t *)(u + VIBEOS_USTR_MAXIMUM) = (uint16_t)(2u * n + 2u);
@@ -870,6 +893,62 @@ static void t_query_directory(void) {
     expect(query_dir(h, buf, 70, 1, 0, "a.txt", 1, &n) == ST(VIBEOS_STATUS_BUFFER_OVERFLOW) &&
                query_dir(h, buf, 512, 1, 0, 0, 0, &n) == ST(VIBEOS_STATUS_SUCCESS) && b[64] == 'a',
            "an entry that does not fit: the overflow, and the next call has it whole");
+}
+
+/* W4 step 6: a name found without case on a filesystem that keeps it, and
+ * names beyond ASCII there and back. */
+static void t_names(void) {
+    const uint32_t rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE;
+    uint64_t h = 0, h2 = 0, info = 0, n = 0, buf = kf_ualloc(512);
+    uint8_t *b = (uint8_t *)kf_uptr(buf);
+    const uint16_t *w = (const uint16_t *)(b + 4);
+
+    fresh(48);
+    expect(create_file(&h, &info, rw, "\\??\\C:\\tmp\\Mixed.TXT", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a file named with both cases, on tmpfs");
+    expect(create_file(&h, &info, rw, "\\??\\C:\\TMP\\mixed.txt", 1, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               file_info(0, h, buf, 64, 9, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               w[1] == 't' && w[5] == 'M' && w[11] == 'T',
+           "opened by another case, every component: it is the same file, named as it was made");
+    expect(create_file(&h2, &info, rw, "\\??\\C:\\tmp\\MIXED.txt", 2, 0x40) ==
+               ST(VIBEOS_STATUS_OBJECT_NAME_COLLISION),
+           "and FILE_CREATE under a third case collides with it");
+    (void)nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0);
+    g_oattr_wide = 1;
+    expect(create_file(&h, &info, rw, "\\??\\C:\\tmp\\#%.txt", 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+               file_info(0, h, buf, 64, 9, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)b == 2u * 12u && w[5] == 0x00E9u && w[6] == 0xD83Du && w[7] == 0xDE00u && w[8] == '.',
+           "a name beyond ASCII comes back as it was given, a surrogate pair included");
+    expect(create_file(&h2, &info, rw, "\\??\\C:\\tmp\\!.txt", 2, 0x40) == ST(VIBEOS_STATUS_OBJECT_NAME_INVALID),
+           "half a surrogate pair is not a name");
+    g_oattr_wide = 0;
+    expect(create_file(&h, &info, VIBEOS_GENERIC_READ, "\\??\\C:\\tmp", 1, 0x1) == ST(VIBEOS_STATUS_SUCCESS) &&
+               query_dir(h, buf, 512, 12, 1, "*.txt", 1, &n) == ST(VIBEOS_STATUS_SUCCESS),
+           "the directory lists");
+    {
+        int seen = 0;
+
+        (void)query_dir(h, buf, 512, 12, 0, "*", 1, &n);
+        for (;;) {
+            uint32_t at = 0;
+
+            for (;;) {
+                const uint16_t *nm = (const uint16_t *)(b + at + 12);
+                if (*(uint32_t *)(b + at + 8) == 14u && nm[0] == 0x00E9u && nm[1] == 0xD83Du && nm[2] == 0xDE00u) {
+                    seen = 1;
+                }
+                if (*(uint32_t *)(b + at) == 0u) {
+                    break;
+                }
+                at += *(uint32_t *)(b + at);
+            }
+            if (query_dir(h, buf, 512, 12, 0, 0, 0, &n) != ST(VIBEOS_STATUS_SUCCESS)) {
+                break;
+            }
+        }
+        expect(seen, "and its listing spells the name in UTF-16 too");
+    }
 }
 
 /* A Linux call, from the NT tests: to make files with owners and modes, which
@@ -1988,6 +2067,7 @@ int test_nt_abi(void) {
     t_file_information();
     t_small_file_services();
     t_query_directory();
+    t_names();
     t_create_file();
     t_sections();
     t_open_file_permissions();
