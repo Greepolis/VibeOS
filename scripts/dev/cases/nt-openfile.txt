@@ -117,9 +117,9 @@
 
 ### a directory mask matches with case (W4 step 5)
 --- old
-        if (*n == 0 || (*m != '?' && nt_fold(*m) != nt_fold(*n))) {
+        } else if (*m != 0 && (*m == '?' || nt_fold(*m) == nt_fold(*n))) {
 +++ new
-        if (*n == 0 || (*m != '?' && *m != *n)) {
+        } else if (*m != 0 && (*m == '?' || *m == *n)) {
 
 ### a directory listing forgets the mask after the first call (W4 step 5)
 --- old
@@ -303,3 +303,36 @@
     if (info == NT_FILE_CREATED && (who.fsuid != 0u || who.fsgid != 0u)) {
 +++ new
     if (0) {
+
+### a star in a directory mask never goes back (v7 review)
+--- old
+        } else if (star) {
+            m = star + 1;
+            n = ++resume;
+        } else {
++++ new
+        } else {
+
+# Red by a crash, not a FAIL line: unzeroed, the last entry's NextEntryOffset
+# is whatever the stack held, and the test's walk of the chain follows it.
+### the gaps between directory entries are not zeroed (v7 review)
+--- old
+    for (k0 = 0; k0 < cap; k0++) {
+        b[k0] = 0;
+    }
++++ new
+    for (k0 = 0; k0 < cap; k0 += 8u) {
+        b[k0] = 0;
+    }
+
+### every NT process's locks are counted as one process's (v7 review)
+--- old
+    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), nt_tgid(),
++++ new
+    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), 0u * nt_tgid(),
+
+### FILE_CREATE follows a dangling link (v7 review)
+--- old
+                                                    (disposition == NT_FILE_CREATE ? VIBEOS_O_EXCL : 0u)),
++++ new
+                                                    0u),

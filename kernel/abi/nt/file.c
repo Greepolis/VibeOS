@@ -436,7 +436,13 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);   /* Windows asks DELETE for it */
     }
     nt_cred(&who);
-    rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_CREAT), &who, &w);
+    /* FILE_CREATE makes the name itself or nothing: a symbolic link left at
+     * it is the name taken, not a way to make a file wherever it points - as
+     * O_CREAT|O_EXCL does not follow one (v7 review). */
+    rc = vibeos_path_walk_as("/", "/", path,
+                             vibeos_open_walk_flags(VIBEOS_O_CREAT |
+                                                    (disposition == NT_FILE_CREATE ? VIBEOS_O_EXCL : 0u)),
+                             &who, &w);
     if (rc != 0) {
         return NT_STATUS(nt_status_of_open(rc));
     }
@@ -1222,34 +1228,38 @@ static char nt_fold(char c) {
 }
 
 /* A mask with '*' (any run) and '?' (any one), without case, as Windows
- * matches names: "*" and "*.*" match everything, a dot included or not. */
+ * matches names: "*" and "*.*" match everything, a dot included or not.
+ *
+ * Without recursion: a star remembers where it was and how far into the name
+ * it has reached, and a mismatch goes back there one character further. That
+ * is linear in the mask times the name. The recursive version tried every
+ * split at every star - exponential in the stars, and a 63-character mask of
+ * them against a 255-character name held a core inside the kernel (v7
+ * review). */
 static int nt_mask_match(const char *m, const char *n) {
-    if (m[0] == 0) {
+    const char *star = 0, *resume = 0;
+
+    if (m[0] == 0 || (m[0] == '*' && m[1] == '.' && m[2] == '*' && m[3] == 0)) {
         return 1;
     }
-    if (m[0] == '*' && m[1] == '.' && m[2] == '*' && m[3] == 0) {
-        return 1;
-    }
-    while (*m) {
+    while (*n) {
         if (*m == '*') {
+            star = m++;
+            resume = n;
+        } else if (*m != 0 && (*m == '?' || nt_fold(*m) == nt_fold(*n))) {
             m++;
-            if (*m == 0) {
-                return 1;
-            }
-            for (; *n; n++) {
-                if (nt_mask_match(m, n)) {
-                    return 1;
-                }
-            }
+            n++;
+        } else if (star) {
+            m = star + 1;
+            n = ++resume;
+        } else {
             return 0;
         }
-        if (*n == 0 || (*m != '?' && nt_fold(*m) != nt_fold(*n))) {
-            return 0;
-        }
-        m++;
-        n++;
     }
-    return *n == 0;
+    while (*m == '*') {
+        m++;
+    }
+    return *m == 0;
 }
 
 /* Where each class puts the name, and how much is before it: Directory (1)
@@ -1277,7 +1287,7 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
                                     uint64_t out, uint64_t len, uint64_t cls, uint64_t single,
                                     uint64_t mask_u, uint64_t restart) {
     uint8_t b[4096];
-    uint32_t name_at = nt_dir_name_at((uint32_t)cls), used = 0, last = 0, st, cap, entries = 0;
+    uint32_t name_at = nt_dir_name_at((uint32_t)cls), used = 0, last = 0, st, cap, entries = 0, k0;
     vibeos_file_t *f;
     int first, short_of = 0;
 
@@ -1328,6 +1338,11 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
         f->nt_mask[0] = 0;
     }
     cap = len < sizeof(b) ? (uint32_t)len : (uint32_t)sizeof(b);
+    /* All of it, once: the gaps that align each entry to eight bytes are
+     * copied out with the entries, and were the kernel's stack (v7 review). */
+    for (k0 = 0; k0 < cap; k0++) {
+        b[k0] = 0;
+    }
     for (;;) {
         vibeos_dirent_t de;
         vibeos_file_stat_t s;
@@ -1353,9 +1368,6 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
              * the position stays, so the next call gets it whole. */
             rec = cap - at;
             short_of = 1;
-        }
-        for (k = at; k < at + rec; k++) {
-            b[k] = 0;
         }
         vibeos_file_stat_clear(&s);
         s.mode = de.mode;
@@ -1436,6 +1448,12 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
  * argument, which lets one handle hold locks under several names, is not
  * kept: every lock of a handle is the handle's. */
 
+static uint32_t nt_tgid(void) {
+    int me = ks_current();
+
+    return me >= 0 ? ks_id(me)->tgid : 0u;
+}
+
 static uint32_t nt_lock_range(uint64_t off_u, uint64_t len_u, uint64_t *start, uint64_t *end) {
     uint64_t off, len;
 
@@ -1485,7 +1503,9 @@ static long nt_lock_file(uint64_t file, uint64_t event, uint64_t apc, uint64_t i
         vibeos_file_put(f);
         return NT_STATUS(st);
     }
-    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), 0u,
+    /* The process's id: the table bounds what one process holds by it, and
+     * with 0 for all, every NT process shared one quarter (v7 review). */
+    r = vibeos_flk_set(VIBEOS_FLK_RECORD, f->mnt, f->node, VIBEOS_FLK_OWNER_FILE(f), nt_tgid(),
                        exclusive ? VIBEOS_FLK_EXCL : VIBEOS_FLK_SHARED, start, end, 0);
     vibeos_file_put(f);
     st = r == 0 ? VIBEOS_STATUS_SUCCESS

@@ -14,6 +14,7 @@
 #include "vibeos/linux_exports.h"
 #include "vibeos/nt_layout.h"
 #include "vibeos/ksvc.h"
+#include "vibeos/filelock.h"
 
 int test_nt_abi(void);
 
@@ -952,6 +953,36 @@ static void t_query_directory(void) {
     expect(query_dir(h, buf, 70, 1, 0, "a.txt", 1, &n) == ST(VIBEOS_STATUS_BUFFER_OVERFLOW) &&
                query_dir(h, buf, 512, 1, 0, 0, 0, &n) == ST(VIBEOS_STATUS_SUCCESS) && b[64] == 'a',
            "an entry that does not fit: the overflow, and the next call has it whole");
+    /* v7 review: the gaps that align entries are zero, not the kernel's stack. */
+    memset(b, 0xEE, 512);
+    expect(query_dir(h, buf, 512, 12, 0, "*.txt", 1, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)b == 24u && b[22] == 0u && b[23] == 0u,
+           "the bytes that align an entry are zero");
+    {
+        /* v7 review: a mask of stars against a long name is linear, not
+         * exponential - this one, recursive, would not have finished. */
+        char mask[64], name[220];
+        uint32_t i;
+        uint64_t f2 = 0;
+
+        for (i = 0; i < 31u; i++) {
+            mask[2u * i] = '*';
+            mask[2u * i + 1u] = 'a';
+        }
+        mask[62] = 'b';
+        mask[63] = 0;
+        memcpy(name, "\\??\\C:\\tmp\\ls\\", 14);
+        for (i = 14; i < 114u; i++) {   /* an NT path is at most 128 characters here */
+            name[i] = 'a';
+        }
+        name[114] = 0;
+        expect(create_file(&f2, &info, VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE, name, 2, 0x40) ==
+                       ST(VIBEOS_STATUS_SUCCESS) &&
+                   nt(VIBEOS_NT_NR_NtClose, f2, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   query_dir(h, buf, 512, 12, 0, mask, 1, &n) == ST(VIBEOS_STATUS_NO_SUCH_FILE) &&
+                   query_dir(h, buf, 512, 12, 1, "*a*a*a*a*", 1, &n) == ST(VIBEOS_STATUS_SUCCESS),
+               "thirty-one stars against a hundred letters end at once, and still match what they should");
+    }
 }
 
 /* W4 step 6: a name found without case on a filesystem that keeps it, and
@@ -1069,6 +1100,30 @@ static void t_share_and_locks(void) {
                        ST(VIBEOS_STATUS_SUCCESS) &&
                    lock_file(1, ra, 32, 4, 1) == ST(VIBEOS_STATUS_ACCESS_DENIED),
                "a handle that may neither read nor write locks nothing (v7 review)");
+        /* v7 review: locks are counted by process, so one NT process at its
+         * share leaves the table to another - with pid 0 for all, they had
+         * one share between them. */
+        {
+            uint32_t k;
+            long last = 0;
+            int me = ks_current(), other = kf_spawn(52, 52);
+            uint64_t ob = 0;
+
+            for (k = 0; k < VIBEOS_FLK_PER_PROCESS && last != ST(VIBEOS_STATUS_LOCK_NOT_GRANTED); k++) {
+                last = lock_file(1, a, 1000u + 2u * k, 1, 1);
+            }
+            expect(last == ST(VIBEOS_STATUS_LOCK_NOT_GRANTED), "one process reaches its share of the lock table");
+            kf_set_current(other);
+            expect(create_file(&ob, &info, VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE, "\\??\\C:\\tmp\\sh.txt", 1,
+                               0x40) == ST(VIBEOS_STATUS_SUCCESS) &&
+                       lock_file(1, ob, 5000, 1, 1) == ST(VIBEOS_STATUS_SUCCESS),
+                   "and another process still locks");
+            (void)nt(VIBEOS_NT_NR_NtClose, ob, 0, 0, 0, 0);
+            kf_set_current(me);
+            for (k = 0; k < VIBEOS_FLK_PER_PROCESS; k++) {
+                (void)lock_file(0, a, 1000u + 2u * k, 1, 0);
+            }
+        }
         (void)nt(VIBEOS_NT_NR_NtClose, ra, 0, 0, 0, 0);
     }
     off = 5;
@@ -1172,6 +1227,11 @@ static void t_write_permissions(void) {
                nt(VIBEOS_NT_NR_NtDeleteFile, oattr("\\??\\C:\\tmp\\st\\roots", VIBEOS_OBJ_CASE_INSENSITIVE),
                   0, 0, 0, 0) == ST(VIBEOS_STATUS_ACCESS_DENIED),
            "in a sticky directory, another user's file is not deleted: not by DELETE, on close, or by name");
+    expect(lsys(88 /* symlink */, lstr("/tmp/st/nowhere"), lstr("/tmp/st/dangling"), 0) == 0 &&
+               create_file(&h, &info, VIBEOS_GENERIC_WRITE, "\\??\\C:\\tmp\\st\\dangling", 2, 0x40) ==
+                   ST(VIBEOS_STATUS_OBJECT_NAME_COLLISION) &&
+               lsys(4, lstr("/tmp/st/nowhere"), st, 0) < 0,
+           "FILE_CREATE on a dangling link takes the name as taken, and makes nothing where it points");
     expect(create_file(&h, &info, 0x100u /* FILE_WRITE_ATTRIBUTES */, "\\??\\C:\\tmp\\st\\ro", 1, 0x40) ==
                ST(VIBEOS_STATUS_ACCESS_DENIED),
            "nor are the times of a file that is neither its own nor writable");
