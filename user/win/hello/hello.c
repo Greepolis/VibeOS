@@ -188,6 +188,41 @@ static const char *sec_check(void) {
     return 0;
 }
 
+/* A second thread (W5 step 1): it runs, on its own TEB, in this process's
+ * memory - it stores what it was given where the first thread reads it - and
+ * its handle is signalled when it returns. */
+static volatile uint64_t g_thread_saw;
+static volatile uint64_t g_thread_teb;
+
+static uint32_t thread_routine(void *param) {
+    g_thread_teb = vibeos_nt_teb();
+    g_thread_saw = (uint64_t)(uintptr_t)param;
+    return 42u;
+}
+
+static const char *thread_check(void) {
+    uint64_t th = 0;
+
+    if (NtCreateThreadEx(&th, 0x001FFFFFu, 0, VIBEOS_NT_CURRENT_PROCESS, (void *)thread_routine,
+                         (void *)(uintptr_t)0x5EEDu, 0, 0, 0, 0, 0) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL thread_create\n";
+    }
+    if (NtWaitForSingleObject(th, 0, 0) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL thread_wait\n";
+    }
+    if (g_thread_saw != 0x5EEDu) {
+        return "NT_HELLO_FAIL thread_ran\n";
+    }
+    if (g_thread_teb == 0u || g_thread_teb == vibeos_nt_teb() ||
+        vibeos_nt_rd64(g_thread_teb + VIBEOS_TEB_SELF) != g_thread_teb) {
+        return "NT_HELLO_FAIL thread_teb\n";
+    }
+    if (NtClose(th) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL thread_close\n";
+    }
+    return 0;
+}
+
 int nt_hello_start(void) {
     uint64_t teb = vibeos_nt_teb();
     uint64_t peb;
@@ -238,6 +273,9 @@ int nt_hello_start(void) {
         const char *why = vm_check();
         if (!why) {
             why = sec_check();
+        }
+        if (!why) {
+            why = thread_check();
         }
         if (why) {
             return fail(why);

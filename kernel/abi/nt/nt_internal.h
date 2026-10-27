@@ -109,6 +109,15 @@ typedef struct nt_ob {
             int32_t max;
         } sem;
         struct {
+            int slot;             /* the task, -1 until it is made             */
+            uint32_t seq;         /* and which tenancy of the slot it is       */
+            uint32_t tid;
+            uint32_t pid;
+            uint64_t teb;
+            uint32_t exit_code;   /* STILL_ACTIVE until it ends                */
+            uint32_t ended;       /* it ended through NtTerminateThread        */
+        } th;
+        struct {
             vibeos_file_t *file;  /* a reference: the image's file             */
             uint64_t image_size;  /* an image's span, a data section's size */
             uint32_t data;        /* a data section (W3), not an image        */
@@ -129,6 +138,9 @@ void nt_ob_lock(void);
 void nt_ob_unlock(void);
 void nt_ob_reset(void);
 nt_ob_t *nt_ob_of(const vibeos_file_t *f);
+/* Every live object of `ops`'s type, to `fn` - under the object lock, which the
+ * caller holds (W5: a thread's end told to its handles). */
+void nt_ob_each(const vibeos_file_ops_t *ops, void (*fn)(nt_ob_t *o, void *ctx), void *ctx);
 void nt_ob_release(vibeos_file_t *f);   /* a type's release */
 
 /* OBJECT_ATTRIBUTES from a program: the name and the attributes. A status. */
@@ -144,6 +156,11 @@ uint32_t nt_map_access(const vibeos_file_ops_t *ops, uint32_t want);
 uint32_t nt_map_access_with(const nt_type_t *t, uint32_t want);
 /* Reset (set = 0) or set an event handle for an I/O (sync.c). */
 uint32_t nt_io_event(uint64_t h, int set);
+/* Committed read-write memory of the calling process's, `size` bytes, placed
+ * by the kernel, and giving it back (memory.c): a thread's TEB and stack (W5). */
+uint32_t nt_alloc_rw(uint64_t size, uint64_t *base);
+void nt_free_alloc(uint64_t base, uint64_t size);
+extern const vibeos_file_ops_t g_nt_thread_ops;
 /* An NT path - "\??\C:\..." - as the VFS path it names. A status. */
 uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap);
 /* A handle for `f`, taking over the caller's reference (released on failure). */

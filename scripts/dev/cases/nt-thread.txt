@@ -1,0 +1,57 @@
+# NT threads (kernel/abi/nt/thread.c, docs/abi/windows.md W5), broken one rule
+# at a time; caught by tests/kernel/nt_abi_tests.c on the host.
+#
+# Target source: kernel/abi/nt/thread.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/thread.c scripts/dev/cases/nt-thread.txt build-gcc-Release
+
+### a new thread starts with the PEB's register set, as a first thread
+--- old
+    if (ks_task_start_win64(idx, entry, stack_top, 0u, start, param) != 0 || ks_gs_set(idx, teb) != 0) {
++++ new
+    if (ks_task_start_win64(idx, entry, stack_top, img->start_arg, start, param) != 0 || ks_gs_set(idx, teb) != 0) {
+
+### a new thread shares its creator's TEB
+--- old
+    if (ks_task_start_win64(idx, entry, stack_top, 0u, start, param) != 0 || ks_gs_set(idx, teb) != 0) {
++++ new
+    if (ks_task_start_win64(idx, entry, stack_top, 0u, start, param) != 0 || ks_gs_set(idx, ks_gs_get(me)) != 0) {
+
+### a thread's stack is not aligned as a function entry expects
+--- old
+    top = stack + reserve - 0x28u;
++++ new
+    top = stack + reserve - 0x20u;
+
+### a thread's TEB does not name its thread
+--- old
+        { VIBEOS_TEB_CLIENT_THREAD, tid },
++++ new
+        { VIBEOS_TEB_CLIENT_THREAD, pid },
+
+### a thread is not a thread of its creator's process
+--- old
+    child->tgid = parent->tgid;
++++ new
+    child->tgid = child->pid;
+
+### a thread's handle is signalled while it runs
+--- old
+    if (o->u.th.slot < 0) {
+        return 0;   /* made, not yet started */
+    }
++++ new
+    if (o->u.th.slot < 2) {
+        return 1;
+    }
+
+### the last thread's end leaves the process running
+--- old
+    if (threads_in_process(me) <= 1u) {
++++ new
+    if (0) {
+
+### a routine nobody can run is accepted
+--- old
+    if (start == 0u || !nt_user_ok(start, 1u, 0)) {
++++ new
+    if (start == 0u) {

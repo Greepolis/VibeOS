@@ -215,6 +215,12 @@ void ks_free_kstack(int slot);
 void ks_fork_regs(int child, int parent, const ks_regs_t *frame);
 void ks_thread_regs(int child, int parent, const ks_regs_t *frame,
                     uint64_t stack, uint64_t tls);
+/* Where a task made by ks_thread_regs begins instead of its creator's return:
+ * at `ip`, on `sp`, with three arguments in the registers the Windows x64
+ * convention passes the first three in (rcx, rdx, r8) - an NT thread starts in
+ * ntdll that way (docs/abi/windows.md W5). 0, or -1 for an `ip` that is not a
+ * user address, with nothing changed. */
+int ks_task_start_win64(int slot, uint64_t ip, uint64_t sp, uint64_t a0, uint64_t a1, uint64_t a2);
 
 /* execve's halves: the staging buffer and its reader, the loader, and the
  * switch to the new image once it is committed. */

@@ -531,6 +531,7 @@ void ks_fork_regs(int child, int parent, const ks_regs_t *frame) {
     c->ctx.rax = 0;               /* ... but fork() returns 0 in the child */
     c->fs_base = p->fs_base;      /* the copied image expects its TLS */
     c->gs_base = p->gs_base;      /* and its %gs                      */
+    c->abi = p->abi;              /* and speaks as the parent does    */
 }
 
 void ks_thread_regs(int child, int parent, const ks_regs_t *frame,
@@ -544,6 +545,10 @@ void ks_thread_regs(int child, int parent, const ks_regs_t *frame,
     c->proc = p->proc;
     c->cr3 = p->cr3;
     c->cr3_set_by = "clone_thread";
+    /* And the same program, so the same personality: the slot was bound to
+     * Linux when it was claimed, and an NT thread's first NtTerminateThread
+     * arrived as Linux's syscall 214 and came back ENOSYS (W5 step 1). */
+    c->abi = p->abi;
     c->ctx = *hw_regs_c(frame);
     c->ctx.rax = 0;            /* the child's return from clone() */
     c->ctx.rsp = stack;        /* on the stack the library gave it */
@@ -557,6 +562,23 @@ void ks_thread_regs(int child, int parent, const ks_regs_t *frame,
     /* Linux's clone sets only %fs; %gs is the creator's, as on Linux. An NT
      * thread gets its own TEB from the NT side (W5). */
     c->gs_base = p->gs_base;
+}
+
+int ks_task_start_win64(int slot, uint64_t ip, uint64_t sp, uint64_t a0, uint64_t a1, uint64_t a2) {
+    hw_task_t *c = &g_tasks[slot];
+
+    if (!hw_user_addr_ok(ip) || !hw_user_addr_ok(sp)) {
+        return -1;   /* iretq to a kernel or non-canonical rip faults in ring 0 */
+    }
+    c->ctx.rip = ip;
+    c->ctx.rsp = sp;
+    c->ctx.rcx = a0;
+    c->ctx.rdx = a1;
+    c->ctx.r8 = a2;
+    c->ctx.rax = 0;
+    /* A function entry: no direction flag, no single-step of the creator's. */
+    c->ctx.rflags &= ~((1ull << 10) | (1ull << 8));
+    return 0;
 }
 
 uint8_t *ks_exec_buffer(uint32_t *cap) {
@@ -775,7 +797,13 @@ int ks_gs_set(int slot, uint64_t base) {
         return -1;
     }
     g_tasks[slot].gs_base = base;
-    hw_wrmsr(MSR_KERNEL_GS_BASE, base);
+    /* The MSR is this core's, so only for the task running on it: setting a
+     * new NT thread's TEB wrote its creator's %gs, and both threads then read
+     * the child's TEB (W5 step 1). Another task's is loaded when it is
+     * switched to. */
+    if (slot == hw_this_cpu()->current_task) {
+        hw_wrmsr(MSR_KERNEL_GS_BASE, base);
+    }
     return 0;
 }
 

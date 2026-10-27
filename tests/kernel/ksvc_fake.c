@@ -43,6 +43,7 @@ typedef struct {
     vibeos_vmspace_t as;          /* its address space (docs/abi/ L3) */
     int has_as;
     uint64_t user_sp;   /* what ks_set_user_sp asked a new task to start on */
+    uint64_t start[5];  /* ks_task_start_win64's ip, sp and three arguments */
 } kf_task_t;
 
 #define KF_PROCS 16u
@@ -875,8 +876,11 @@ int ks_task_alloc_for_user(const char *what) {
 
 void ks_task_release(int slot) { (void)vibeos_task_transition((uint32_t)slot, VIBEOS_TASK_FREE, "kf_release"); }
 uint32_t ks_next_pid(void) { return g_next_pid_v++; }
-void ks_task_exit(uint64_t code) { g_exit_code_v = code; kf_escape(KF_EXITED); }
-void ks_task_exit_group(uint64_t code) { g_exit_code_v = code; kf_escape(KF_EXITED); }
+/* Which of the two ended it: a thread alone, or its whole process. */
+static int g_exit_group_v;
+int kf_exit_was_group(void) { return g_exit_group_v; }
+void ks_task_exit(uint64_t code) { g_exit_code_v = code; g_exit_group_v = 0; kf_escape(KF_EXITED); }
+void ks_task_exit_group(uint64_t code) { g_exit_code_v = code; g_exit_group_v = 1; kf_escape(KF_EXITED); }
 /* Counted, so a test can tell a process killed whole from a thread that
  * ended alone - which is all the fake can show of a group. */
 static uint32_t g_kill_group_sig;
@@ -1098,7 +1102,9 @@ int ks_user_ok(uint64_t base, uint64_t len, int write) {
     }
     return kf_in_user(base, len == 0u ? 1u : len);
 }
-int ks_user_addr_ok(uint64_t va) { return va == 0u ? 0 : kf_in_user(va, 1u); }
+/* An address a program may own: the arena, or the window the mapped memory
+ * lives in - as the machine accepts any user address, mapped or not. */
+int ks_user_addr_ok(uint64_t va) { return va == 0u ? 0 : kf_in_user(va, 1u) || kf_mm_va(va); }
 int ks_user_range_why(uint64_t va, uint64_t len, int write, uint32_t *why) {
     int ok = ks_user_ok(va, len, write);
     *why = ok ? 0u : 3u;
@@ -1349,6 +1355,20 @@ void ks_share_aspace(int child, int parent) {
 void ks_unshare_aspace(int slot) { g_t[slot].has_as = 0; }
 void ks_set_user_sp(int slot, uint64_t sp) { g_t[slot].user_sp = sp; }
 uint64_t kf_user_sp(int slot) { return g_t[slot].user_sp; }
+
+int ks_task_start_win64(int slot, uint64_t ip, uint64_t sp, uint64_t a0, uint64_t a1, uint64_t a2) {
+    if (!ks_user_addr_ok(ip) || !ks_user_addr_ok(sp)) {
+        return -1;
+    }
+    g_t[slot].start[0] = ip;
+    g_t[slot].start[1] = sp;
+    g_t[slot].start[2] = a0;
+    g_t[slot].start[3] = a1;
+    g_t[slot].start[4] = a2;
+    return 0;
+}
+
+const uint64_t *kf_task_start(int slot) { return g_t[slot].start; }
 /* Through the child's own tables, as the machine's does. */
 int ks_poke_u32(int slot, uint64_t va, uint32_t val) {
     int saved = g_cur, r;

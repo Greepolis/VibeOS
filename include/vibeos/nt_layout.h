@@ -173,9 +173,15 @@ typedef struct {
 #define VIBEOS_TEB_TLS_POINTER      0x058u   /* ThreadLocalStoragePointer    */
 #define VIBEOS_TEB_PEB              0x060u
 #define VIBEOS_TEB_LAST_ERROR       0x068u
+#define VIBEOS_TEB_DEALLOCATION_STACK 0x1478u /* the stack's reservation base */
 #define VIBEOS_TEB_TLS_SLOTS        0x1480u  /* TlsSlots[64]: TlsAlloc's   */
 #define VIBEOS_TEB_TLS_SLOT_COUNT   64u
 #define VIBEOS_TEB_SIZE             0x1838u  /* x64's TEB; we map two pages  */
+#define VIBEOS_TEB_PAGES            2u
+/* CONTEXT (x64): the two fields NtCreateThread reads - the start and its
+ * argument, which kernel32's old start put in rip and rcx. */
+#define VIBEOS_CONTEXT_RCX          0x080u
+#define VIBEOS_CONTEXT_RIP          0x0F8u
 
 /* ---- PEB ------------------------------------------------------------------------- */
 #define VIBEOS_PEB_BEING_DEBUGGED   0x002u

@@ -65,6 +65,10 @@ void kf_set_current(int slot);
 uint32_t kf_membarriers(int global);
 /* The user stack a new task was told to start on (clone's stack argument). */
 uint64_t kf_user_sp(int slot);
+/* Whether the last exit was ks_task_exit_group - a process - or a thread's. */
+int kf_exit_was_group(void);
+/* Where ks_task_start_win64 started `slot`: ip, sp, rcx, rdx, r8. */
+const uint64_t *kf_task_start(int slot);
 /* The signal the last whole-process kill carried, and forget it (0: none). */
 uint32_t kf_kill_group_signal(void);
 

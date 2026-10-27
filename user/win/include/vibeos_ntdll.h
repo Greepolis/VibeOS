@@ -38,6 +38,7 @@ typedef uint32_t NTSTATUS_T;
 #endif
 
 NT_IMPORT NTSTATUS_T NtTerminateProcess(uint64_t process, NTSTATUS_T status);
+NT_IMPORT NTSTATUS_T NtTerminateThread(uint64_t thread, NTSTATUS_T status);
 NT_IMPORT NTSTATUS_T NtWriteFile(uint64_t file, uint64_t event, void *apc, void *apc_ctx,
                                  vibeos_nt_iosb_t *iosb, const void *buf, uint32_t len,
                                  const int64_t *offset, const uint32_t *key);

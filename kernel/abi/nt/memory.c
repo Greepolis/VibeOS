@@ -319,6 +319,33 @@ static uint32_t nt_allocate(vibeos_procstate_t *ps, int me, uint64_t want, uint6
     return st;
 }
 
+uint32_t nt_alloc_rw(uint64_t size, uint64_t *base) {
+    const nt_place_t anywhere = { 0u, 0u, 0u };
+    int me = ks_current();
+    vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
+    uint64_t start = 0, end = 0;
+    uint32_t st;
+
+    if (!ps) {
+        return VIBEOS_STATUS_INVALID_HANDLE;
+    }
+    st = nt_allocate(ps, me, 0u, size, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                     VIBEOS_NT_PAGE_READWRITE, 0u, &anywhere, &start, &end);
+    *base = st == VIBEOS_STATUS_SUCCESS ? start : 0u;
+    return st;
+}
+
+void nt_free_alloc(uint64_t base, uint64_t size) {
+    int me = ks_current();
+    vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
+
+    if (ps && base != 0u) {
+        ks_mm_lock(ps);
+        (void)vibeos_umem_unmap(me, ps, base, base + ((size + 0xFFFu) & ~0xFFFull));
+        ks_mm_unlock(ps);
+    }
+}
+
 /* NtAllocateVirtualMemory(ProcessHandle, BaseAddress, ZeroBits, RegionSize,
  * AllocationType, Protect). No placeholders here: they are the Ex form's. */
 static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64_t zero_bits,

@@ -118,10 +118,12 @@ CHOKEPOINTS = {
         "(H-018) moved with the frame into ks_sigframe_pop, where it calls "
         "hw_user_addr_ok itself."),
     "hw_user_addr_ok": (
-        6,   # 6 -> 5 in A2: two handler calls became ks_user_addr_ok, and ksvc.c adds
+        8,   # 6 -> 5 in A2: two handler calls became ks_user_addr_ok, and ksvc.c adds
              # the wrapper's and the sigreturn frame's. 5 -> 6 in docs/abi/windows.md
              # W1: ks_gs_set refuses a %gs base that is not a user address, because
-             # the kernel's entry tells its own %gs from a program's by it
+             # the kernel's entry tells its own %gs from a program's by it. 6 -> 8 in
+             # W5 step 1: ks_task_start_win64 refuses an NT thread's start and stack
+             # that are not user addresses, as iretq to either faults in ring 0
         "address policy for the two user windows. VibeOS programs link at "
         "0x8000000000 and Linux ones at 0x400000, inside the kernel's identity "
         "map, so 'is this a user address' is not a range test anybody should "

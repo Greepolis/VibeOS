@@ -36,6 +36,16 @@ void nt_ob_reset(void) {
     }
 }
 
+void nt_ob_each(const vibeos_file_ops_t *ops, void (*fn)(nt_ob_t *o, void *ctx), void *ctx) {
+    uint32_t i;
+
+    for (i = 0; i < NT_OB_MAX; i++) {
+        if (g_ob[i].used && g_ob[i].file && g_ob[i].file->ops == ops) {
+            fn(&g_ob[i], ctx);
+        }
+    }
+}
+
 nt_ob_t *nt_ob_of(const vibeos_file_t *f) {
     if (!f || !f->ops || !f->ops->nt_type || f->nt_ob < 0 || f->nt_ob >= (int)NT_OB_MAX ||
         !g_ob[f->nt_ob].used) {

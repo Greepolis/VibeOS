@@ -474,11 +474,27 @@ NTSTATUS_T LdrGetProcedureAddress(void *module,
     return VIBEOS_STATUS_SUCCESS;
 }
 
-/* The entry the kernel starts the first thread at, with the PEB in rcx. */
-__attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb) {
-    uint64_t exe = vibeos_nt_rd64(peb + VIBEOS_PEB_IMAGE_BASE);
-    uint32_t entry_rva = pe_entry_rva(exe);
+/* The entry the kernel starts every thread at. The first with the PEB in rcx;
+ * every later one with rcx zero and its routine and parameter in rdx and r8
+ * (docs/abi/windows.md W5) - Windows' RtlUserThreadStart, at an address the
+ * kernel already knows, so it needs no export of ours. A routine's return is
+ * its thread's exit status. */
+__attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb, uint64_t start, uint64_t param) {
+    uint64_t exe;
+    uint32_t entry_rva;
     NTSTATUS_T st;
+
+    if (peb == 0u) {
+        uint32_t (*routine)(void *) = (uint32_t (*)(void *))(uintptr_t)start;
+
+        st = (NTSTATUS_T)routine((void *)(uintptr_t)param);
+        (void)NtTerminateThread(VIBEOS_NT_CURRENT_THREAD, st);
+        for (;;) {
+            /* NtTerminateThread of ourselves does not return. */
+        }
+    }
+    exe = vibeos_nt_rd64(peb + VIBEOS_PEB_IMAGE_BASE);
+    entry_rva = pe_entry_rva(exe);
 
     /* GetProcessHeap reads the PEB, inline in every program's own code. */
     *(volatile uint64_t *)(uintptr_t)(peb + VIBEOS_PEB_PROCESS_HEAP) =

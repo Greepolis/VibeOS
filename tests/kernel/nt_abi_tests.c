@@ -1333,6 +1333,75 @@ static void t_nt_chroot(void) {
     }
 }
 
+/* NtCreateThreadEx(handle, access, attributes, process, start, param, flags,
+ * zero bits, stack size, maximum stack, attribute list). */
+static long create_thread(uint64_t *h, uint64_t start, uint64_t param, uint64_t max_stack) {
+    uint64_t out = kf_ualloc(8);
+    uint64_t rest[7] = { start, param, 0, 0, 0, max_stack, 0 };
+    long r;
+
+    kf_next_sp(stack_args(rest, 7));
+    r = nt(VIBEOS_NT_NR_NtCreateThreadEx, out, 0x001FFFFFu, 0, VIBEOS_NT_CURRENT_PROCESS, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+/* W5 step 1: a thread is a task of the process, started at ntdll's entry with
+ * (0, routine, parameter), on a stack and with a TEB of its own; its handle is
+ * signalled when it ends; the last thread's end is the process's. */
+static void t_create_thread(void) {
+    uint64_t h = 0, routine = kf_ualloc(16), peb = kf_ualloc(64), ntdll_entry = kf_ualloc(16);
+    uint64_t teb, sp, v = 0;
+    const uint64_t *st = 0;
+    int me = fresh(55), child = -1;
+    uint32_t i;
+    kf_outcome_t how = KF_RETURNED;
+
+    ks_image(me)->entry = ntdll_entry;
+    ks_image(me)->start_arg = peb;
+    expect(create_thread(&h, routine, 0x1234u, 0) == ST(VIBEOS_STATUS_SUCCESS) && h != 0u,
+           "NtCreateThreadEx makes a thread and a handle to it");
+    for (i = 0; i < KF_SLOTS; i++) {
+        if ((int)i != me && kf_task_start((int)i)[0] == ntdll_entry) {
+            child = (int)i;
+        }
+    }
+    expect(child >= 0 && vibeos_task_state((uint32_t)child) == VIBEOS_TASK_READY &&
+               ks_id(child)->tgid == ks_id(me)->tgid && ks_id(child)->pid != ks_id(me)->pid &&
+               ks_id(child)->is_thread && ks_ps(child) == ks_ps(me),
+           "a ready task of the same process, with an id of its own");
+    if (child < 0) {
+        return;
+    }
+    st = kf_task_start(child);
+    sp = st[1];
+    expect(st[2] == 0u && st[3] == routine && st[4] == 0x1234u && (sp & 0xFu) == 8u,
+           "started at ntdll's entry with rcx zero, the routine and its parameter, as after a call");
+    teb = ks_gs_get(child);
+    expect(teb != 0u && teb != ks_gs_get(me), "with a TEB of its own as %gs");
+    expect(kf_peek(teb + VIBEOS_TEB_SELF, &v, 8) == 0 && v == teb &&
+               kf_peek(teb + VIBEOS_TEB_PEB, &v, 8) == 0 && v == peb &&
+               kf_peek(teb + VIBEOS_TEB_CLIENT_THREAD, &v, 8) == 0 && v == ks_id(child)->pid &&
+               kf_peek(teb + VIBEOS_TEB_STACK_BASE, &v, 8) == 0 && v > sp &&
+               kf_peek(teb + VIBEOS_TEB_STACK_LIMIT, &v, 8) == 0 && v < sp,
+           "the TEB names itself, the PEB, the thread, and the stack around its sp");
+    expect(wait1(h, 0) == ST(VIBEOS_STATUS_TIMEOUT), "a running thread's handle is not signalled");
+    kf_set_current(child);
+    (void)nt(VIBEOS_NT_NR_NtTerminateThread, VIBEOS_NT_CURRENT_THREAD, 77, 0, 0, &how);
+    expect(how == KF_EXITED && kf_exit_code() == 77u && !kf_exit_was_group(),
+           "NtTerminateThread ends the thread, not the process, with its status");
+    kf_set_current(me);
+    (void)vibeos_task_transition((uint32_t)child, VIBEOS_TASK_ZOMBIE, "test");
+    (void)vibeos_task_transition((uint32_t)child, VIBEOS_TASK_FREE, "test");
+    expect(wait1(h, 0) == ST(VIBEOS_STATUS_SUCCESS), "and its handle is signalled, after its slot has gone");
+    expect(create_thread(&h, 0x10u, 0, 0) == ST(VIBEOS_STATUS_ACCESS_VIOLATION),
+           "a routine that is nobody's memory is refused");
+    how = KF_RETURNED;
+    (void)nt(VIBEOS_NT_NR_NtTerminateThread, 0, 5, 0, 0, &how);
+    expect(how == KF_EXITED && kf_exit_code() == 5u && kf_exit_was_group(),
+           "the last thread's end is the process's, with its status");
+}
+
 static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
     uint64_t out = kf_ualloc(8);
     uint64_t rest[3] = { 0x02u /* PAGE_READONLY */, attributes, file };
@@ -2406,6 +2475,7 @@ int test_nt_abi(void) {
     t_write_permissions();
     t_delete_follows_file();
     t_nt_chroot();
+    t_create_thread();
     t_create_file();
     t_sections();
     t_open_file_permissions();
