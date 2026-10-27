@@ -604,3 +604,68 @@ at QueueUserAPC, which is W5's; `kernel32:file` at LocalAlloc. What W4 left
 open: NtLockFile does not wait (LOCK_NOT_GRANTED whether or not the caller
 would) and keeps no Key; names fold ASCII only; a DLL's GetModuleFileName is
 refused until the loader's list is asked. Seventeen services the registry still gives W4 are MISSING and move on: named pipes and mailslots, I/O completion ports, extended attributes, scatter/gather, device and filesystem controls, change notification, NtCancelSynchronousIoFile and NtSetVolumeInformationFile - none of them was on the oracle's path.
+
+
+## W5 (from 2026-10-27): threads, APCs, exceptions
+
+Measured by `ntdll:thread`, `kernel32:thread` and `ntdll:exception` (the last as
+far as its fault table goes: Wine itself stops there, see W0). Eighteen services
+are W5's in the registry; before it a Windows process had one thread, a fault
+in it ended the process, and every alertable wait was an ordinary one.
+
+**What W5 has to decide is how an NT thread sits on a task.** A Linux thread is
+already a task sharing its process's state, and that is what an NT thread
+becomes too - the same slot allocator, kernel stack and address space, through
+the same door clone uses. What differs is what the thread finds when it starts
+and what it leaves when it ends:
+
+- *start*: Windows starts every thread in ntdll (`RtlUserThreadStart`), with the
+  routine and its parameter in registers. Here the first thread already starts
+  at ntdll's entry with the PEB in rcx; a later one starts at the same entry
+  with rcx zero and the routine and parameter in rdx and r8, so the kernel
+  needs to know no export of ntdll. Each thread has its own TEB, in memory of
+  the process's own, and its own stack, both made by the kernel as Windows'
+  does.
+- *end*: a thread is an object. Its handle is waited on, signalled when it
+  ends, and asked for an exit code after the slot has gone to somebody else -
+  so the object keeps the code and names the thread by slot and tenancy, never
+  by slot alone.
+- *user-mode callbacks*: an APC and an exception both enter user mode at a
+  place in ntdll the kernel chose (`KiUserApcDispatcher`,
+  `KiUserExceptionDispatcher`) with a context to go back to through
+  `NtContinue`. The frame is the program's to change, as Linux's signal frame
+  is (L2), and what decides privilege is forced on the way back, never read.
+
+Order, each a commit with host tests and sabotage cases:
+
+1. **NtCreateThreadEx and NtCreateThread, NtTerminateThread.** A task in the
+   process, its TEB and stack, the thread object (waitable, with exit code and
+   client id), the start in ntdll, the process's last thread ending the
+   process; `CREATE_SUSPENDED` waits for step 3.
+2. **The thread's information.** NtOpenThread, NtQueryInformationThread and
+   NtSetInformationThread for the classes the tests ask (basic, times, TEB,
+   priority, affinity, hide-from-debugger as a no-op), NtGetNextThread,
+   NtGetCurrentProcessorNumber; thread ids that are thread ids.
+3. **Suspend and resume.** NtSuspendThread, NtResumeThread, NtAlertThread,
+   NtAlertResumeThread, `CREATE_SUSPENDED`; NtGetContextThread and
+   NtSetContextThread on a suspended thread.
+4. **APCs and alertable waits.** NtQueueApcThread, NtTestAlert, an alertable
+   NtDelayExecution and NtWaitFor* returning STATUS_USER_APC after the APCs
+   ran, through `KiUserApcDispatcher` and NtContinue.
+5. **Exceptions.** A fault in ring 3 becomes an EXCEPTION_RECORD and a CONTEXT
+   on the thread's stack and enters `KiUserExceptionDispatcher`; ntdll
+   dispatches through vectored handlers and the image's unwind tables
+   (`RtlLookupFunctionEntry`, `RtlVirtualUnwind`, `RtlUnwindEx`), and
+   NtRaiseException and NtContinue complete the loop. An exception nobody
+   handles ends the process with its code, as now.
+6. **Thread-local storage.** The image's TLS directory (`_tls_index`, the
+   template, the callbacks) for every thread, and the fiber-local slots.
+7. **Timers and keyed events**, which W2's tests stopped at: waitable timers
+   (NtCreateTimer, NtSetTimer, NtCancelTimer) and keyed events.
+8. **kernel32's thread API** over the services: CreateThread,
+   CreateRemoteThread on the current process, ExitThread, TerminateThread,
+   GetExitCodeThread, Suspend/ResumeThread, QueueUserAPC, SleepEx,
+   the Wait*Ex forms, GetThreadId, the TLS and FLS calls, critical sections
+   that wait instead of counting.
+9. **The oracle.** The three tests run at boot, and what they say recorded
+   here.
