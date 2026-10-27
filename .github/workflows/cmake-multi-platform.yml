@@ -17,7 +17,12 @@ concurrency:
 jobs:
   linux-build-test:
     name: Linux ${{ matrix.compiler }} / ${{ matrix.build_type }}
-    runs-on: ubuntu-latest
+    # Pinned, in every workflow, rather than ubuntu-latest: that label moves to
+    # Ubuntu 26 from 2026-10-19, and with it clang, gcc, QEMU, OVMF and the
+    # glibc the corpus copies from the host - every gate's toolchain at once,
+    # on whichever day GitHub's rollout reaches a job. Moving is a decision,
+    # made in its own commit with a run to compare against.
+    runs-on: ubuntu-24.04
     # Ten minutes is the slowest job's normal run. Without a bound a hung step
     # holds the run for GitHub's six hours, as one did (2026-10-07).
     timeout-minutes: 45

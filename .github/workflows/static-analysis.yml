@@ -32,7 +32,7 @@ permissions:
 jobs:
   clang-analyze:
     name: clang static analyzer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       security-events: write
@@ -67,7 +67,7 @@ jobs:
 
   semgrep:
     name: Semgrep
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       security-events: write

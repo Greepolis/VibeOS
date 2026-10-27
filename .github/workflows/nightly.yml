@@ -23,7 +23,7 @@ jobs:
   boot-repeatability:
     name: Boot Smoke x5 (flakiness gate)
     # module: arch core platform
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     # Only what the crash collector needs. Spelled out rather than inherited:
     # the default token permissions depend on a repository setting, and a
@@ -98,7 +98,7 @@ jobs:
   memory-soak:
     name: Memory + Swap Soak (long run)
     # module: mm
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -161,7 +161,7 @@ jobs:
   scheduler-torture:
     name: Scheduler Torture (priorities, classes, affinity)
     # module: sched
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -214,7 +214,7 @@ jobs:
   tmpfs-torture:
     name: tmpfs Torture (model + sanitizers)
     # module: fs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -272,7 +272,7 @@ jobs:
   storage-durability:
     name: On-disk Log Torture (model + sanitizers)
     # module: io
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -324,7 +324,7 @@ jobs:
   diagnostics-torture:
     name: Kernel Log and Crash Records Torture (model + sanitizers)
     # module: diag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -376,7 +376,7 @@ jobs:
   gui-torture:
     name: Graphical Shell Torture (model + ThreadSanitizer)
     # module: io
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -431,7 +431,7 @@ jobs:
   memory-manager:
     name: Memory Manager Torture (model + sanitizers)
     # module: mm
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     # The boot job answers "does the machine come up?". This answers the
     # question that job structurally cannot: is the memory manager's idea of
@@ -493,7 +493,7 @@ jobs:
   fuzz-protocols:
     name: Fuzz the Receive Path
     # module: net
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -535,7 +535,7 @@ jobs:
     name: Corpus (needs against docs/abi/corpus.md, answers against Linux)
     # Measures the corpus programs on Linux, not the kernel, so it declares no
     # kernel module: it covers the plan in docs/abi/, not a subsystem.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
