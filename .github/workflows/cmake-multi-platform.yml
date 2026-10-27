@@ -61,19 +61,36 @@ jobs:
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
             ctest --test-dir build-asan --output-on-failure
 
+      # The packages below are 164 MB, fetched from Azure's Ubuntu mirror on
+      # every run. On 2026-10-26 it served them at tens of KB/s - 35 MB of
+      # mingw in over two minutes - and two jobs ran out of the step's fifteen
+      # minutes with nothing wrong in the code. The .debs are kept between runs
+      # instead, keyed by the list, so a slow mirror costs the first run only.
+      - name: Restore Downloaded Packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-24.04-${{ hashFiles('.github/workflows/cmake-multi-platform.yml') }}
+          restore-keys: apt-${{ runner.os }}-24.04-
+
       - name: Install Dependencies
         # A mirror that stops answering held the clang Debug job here for six
         # hours, until GitHub cancelled the whole run (2026-10-07). It takes
         # under two minutes when it works.
         timeout-minutes: 15
         run: |
-          sudo apt-get update
+          # A stalled connection is dropped and retried rather than waited on.
+          APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives"
+          mkdir -p "$HOME/apt-archives/partial"
+          sudo apt-get $APT update
           # musl-tools builds the unmodified static Linux binary the boot gate
           # runs. Without it that check silently does not happen, which is the
           # kind of gap that turns a gate into decoration.
           # ntfs-3g, exfatprogs and mtools build the NTFS, exFAT and long-name FAT images the boot
           # mounts and the gate asserts; without them both report "no image".
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get $APT install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          # The cache action runs as the runner user; apt left these root's.
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives"
 
       - name: Configure
         run: >
