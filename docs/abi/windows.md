@@ -669,3 +669,38 @@ Order, each a commit with host tests and sabotage cases:
    that wait instead of counting.
 9. **The oracle.** The three tests run at boot, and what they say recorded
    here.
+
+**Done 2026-10-28** (`check.sh build` green with 0 warnings, 6/6 boots after
+each step). Commits: step 1 `5b1c0e8`, steps 2, 3 and 7 `bae55a4`, step 8
+`e1c546a`, step 4 `6b3539a`, step 5 `778c0a0`, step 6 `ef8960a`. ntdll's
+exception runtime (`user/win/ntdll/except.c`) was written by the project's
+author, adapted from Wine 9.0 under the LGPL 2.1.
+
+What is left open, each said where it applies:
+
+- NtGetContextThread and NtSetContextThread work on the current thread only;
+  another thread's saved registers are not reachable through `ksvc.h` yet.
+- A waitable timer's APC routine is refused with STATUS_NOT_IMPLEMENTED.
+- Only the program's own TLS directory is honoured, not a DLL's; FLS
+  callbacks run at FlsFree and not at a thread's end.
+- Single-stepping (the trap flag) is not delivered as an exception.
+- M-124, the AHCI wedge after RECLAIM_SWAP under host load, came back once,
+  as 0/6 on a busy host and 6/6 for the same binary on a quiet one.
+
+### What the oracle says at the end of W5
+
+`scripts/dev/winetest-run.sh build-gcc-Release ntdll:thread kernel32:thread
+ntdll:exception ntdll:sync kernel32:sync ntdll:om` (2026-10-28):
+
+| Test | Wine on Linux | VibeOS | Where it ends |
+|---|---|---|---|
+| `ntdll:thread` | 23 tests, 0 failures | no failure printed | `RtlCreateProcessParametersEx` (a child process: W6) |
+| `kernel32:thread` | 907 tests, 0 failures | 3 failures | `CreateProcessA` (W6); NtQueryInformationThread classes 0, 1 and 12 on another process's thread answer ACCESS_DENIED |
+| `ntdll:exception` | rc=5, no summary on Wine either | 2 failures before the end | single-stepping: the trap flag is neither cleared nor delivered |
+| `ntdll:sync` | 250 tests, 0 failures | 5 failures, no summary | keyed events waited on by a second thread time out |
+| `kernel32:sync` | 354,502 tests, 0 failures | 4 failures | `SignalObjectAndWait` |
+| `ntdll:om` | 7,347 tests, 0 failures | at least 20 failures | `CreateNamedPipeA`: named pipes and object directories |
+
+Every test that stopped in W2 at a thread, a timer or a keyed event now runs
+past it. What stops them is W6's processes, named pipes and object directories,
+and the failures above, which are the work list.

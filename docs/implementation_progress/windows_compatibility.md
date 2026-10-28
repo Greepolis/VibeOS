@@ -98,6 +98,12 @@ writable by NtProtectVirtualMemory (8b45ad2, H-033's class).
 
 ## Where the oracle stands
 
+At the end of W5 (2026-10-28): `ntdll:thread` prints no failure and stops at
+RtlCreateProcessParametersEx, `kernel32:thread` at CreateProcessA - both W6's;
+`ntdll:exception` fails two single-step checks; `ntdll:sync`, `kernel32:sync`
+and `ntdll:om` now run past threads, timers and keyed events. The table is in
+[../abi/windows.md](../abi/windows.md), "What the oracle says at the end of W5".
+
 At the end of W4 (2026-10-26): `ntdll:directory` runs to its end, 2707 checks
 and 70 failures against Wine's 4328 and none - the difference is the checks it
 skips or cannot reach. `ntdll:file` stops at QueueUserAPC (W5: APCs);
@@ -117,8 +123,11 @@ below 0x30000000, where the arena has nothing), and it stops in
 
 ## Next checkpoint
 
-- W5: threads, APCs and timers - what `ntdll:file` and the sync tests stop
-  at. Left from W4: `kernel32:file` past LocalAlloc, `ntdll:directory`'s 70
+- W6: processes - what `ntdll:thread` and `kernel32:thread` stop at. Left
+  from W5: another thread's context, timer APC routines, a DLL's static TLS,
+  FLS callbacks at a thread's end, single-stepping, keyed events across
+  threads (`ntdll:sync`), SignalObjectAndWait, named pipes and object
+  directories (`ntdll:om`). Left from W4: `kernel32:file` past LocalAlloc, `ntdll:directory`'s 70
   failures, NtLockFile's wait and Key. Left from W3: a low arena below four
   gigabytes for ZeroBits and address requirements, write watches,
   RtlCreateUserStack.
