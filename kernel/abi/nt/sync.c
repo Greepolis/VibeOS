@@ -490,7 +490,7 @@ static int signaled_now(nt_ob_t *o, uint32_t tid, uint32_t pulses_at_start) {
            o->u.ev.pulses != pulses_at_start;
 }
 
-long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u) {
+long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64_t timeout_u) {
     vibeos_file_t *f[VIBEOS_NT_MAX_WAIT_OBJECTS];
     nt_ob_t *o[VIBEOS_NT_MAX_WAIT_OBJECTS];
     uint32_t pulses[VIBEOS_NT_MAX_WAIT_OBJECTS];
@@ -581,6 +581,12 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u) {
             break;
         }
         nt_ob_unlock();
+        /* An alertable wait ends for an APC or the alert, after the objects
+         * were asked and before the time: Windows' order. */
+        if (alertable && (st = nt_alertable_end(me)) != 0u) {
+            result = NT_STATUS(st);
+            break;
+        }
         if (!forever && ks_ticks() >= deadline) {
             result = NT_STATUS(VIBEOS_STATUS_TIMEOUT);
             break;
@@ -594,7 +600,8 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u) {
         }
         ks_wait_tick();
     }
-    if (result == NT_STATUS(VIBEOS_STATUS_TIMEOUT) || result == NT_STATUS(VIBEOS_STATUS_USER_APC)) {
+    if (result == NT_STATUS(VIBEOS_STATUS_TIMEOUT) || result == NT_STATUS(VIBEOS_STATUS_USER_APC) ||
+        result == NT_STATUS(VIBEOS_STATUS_ALERTED)) {
         nt_ob_lock();
         for (i = 0; i < n; i++) {
             o[i]->waiters--;
@@ -617,12 +624,16 @@ static long nt_delay_execution(uint64_t alertable, uint64_t interval_u) {
     uint64_t deadline;
     int me = ks_current();
 
-    (void)alertable;
     if (nt_copy_in(&t, interval_u, sizeof(t)) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     deadline = wait_deadline(t, &forever, 0);
     do {
+        uint32_t why;
+
+        if (alertable && me >= 0 && (why = nt_alertable_end(me)) != 0u) {
+            return NT_STATUS(why);
+        }
         if (nt_interrupted(me)) {
             return NT_STATUS(VIBEOS_STATUS_USER_APC);
         }
@@ -631,11 +642,9 @@ static long nt_delay_execution(uint64_t alertable, uint64_t interval_u) {
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
 }
 
-/* NtWaitForSingleObject(Handle, Alertable, Timeout). Alertable waits wait the
- * same: there are no APCs until W5. */
+/* NtWaitForSingleObject(Handle, Alertable, Timeout). */
 static long nt_wait_single(uint64_t h, uint64_t alertable, uint64_t timeout) {
-    (void)alertable;
-    return nt_wait(1u, &h, 0, timeout);
+    return nt_wait(1u, &h, 0, (int)(alertable & 0xFFu), timeout);
 }
 
 /* NtWaitForMultipleObjects(Count, Handles, WaitType, Alertable, Timeout):
@@ -645,7 +654,6 @@ static long nt_wait_multiple(uint64_t count, uint64_t handles_u, uint64_t type,
     uint64_t handles[VIBEOS_NT_MAX_WAIT_OBJECTS];
     uint32_t n = (uint32_t)count;
 
-    (void)alertable;
     if (n == 0u || n > VIBEOS_NT_MAX_WAIT_OBJECTS) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER_1);
     }
@@ -657,7 +665,7 @@ static long nt_wait_multiple(uint64_t count, uint64_t handles_u, uint64_t type,
         nt_copy_in(handles, handles_u, (uint64_t)n * 8u) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
-    return nt_wait(n, handles, (uint32_t)type == 0u, timeout);
+    return nt_wait(n, handles, (uint32_t)type == 0u, (int)(alertable & 0xFFu), timeout);
 }
 
 /* ---- timers (W5 step 7) ------------------------------------------------------------------
@@ -936,7 +944,7 @@ static int keyed_slot(nt_ob_t *o, uint64_t key, int make) {
 
 /* Wait (release = 0) for a release of `key`, or release (1) to a waiter on
  * it, until the deadline. A status. */
-static long keyed_meet(uint64_t h, uint64_t key, int release, uint64_t timeout_u) {
+static long keyed_meet(uint64_t h, uint64_t key, int release, int alertable, uint64_t timeout_u) {
     vibeos_file_t *f = 0;
     nt_ob_t *o;
     int64_t t = 0;
@@ -1001,7 +1009,7 @@ static long keyed_meet(uint64_t h, uint64_t key, int release, uint64_t timeout_u
             result = NT_STATUS(VIBEOS_STATUS_TIMEOUT);
             break;
         }
-        if (nt_interrupted(me)) {
+        if ((alertable && nt_alertable_end(me) != 0u) || nt_interrupted(me)) {
             nt_ob_lock();
             if (release) {
                 o->u.ke.released[slot]--;
@@ -1022,12 +1030,12 @@ static long keyed_meet(uint64_t h, uint64_t key, int release, uint64_t timeout_u
 
 /* NtWaitForKeyedEvent / NtReleaseKeyedEvent(KeyedEventHandle, Key, Alertable,
  * Timeout). */
-static long nt_wait_keyed(uint64_t h, uint64_t key, uint64_t timeout_u) {
-    return keyed_meet(h, key, 0, timeout_u);
+static long nt_wait_keyed(uint64_t h, uint64_t key, uint64_t alertable, uint64_t timeout_u) {
+    return keyed_meet(h, key, 0, (int)(alertable & 0xFFu), timeout_u);
 }
 
-static long nt_release_keyed(uint64_t h, uint64_t key, uint64_t timeout_u) {
-    return keyed_meet(h, key, 1, timeout_u);
+static long nt_release_keyed(uint64_t h, uint64_t key, uint64_t alertable, uint64_t timeout_u) {
+    return keyed_meet(h, key, 1, (int)(alertable & 0xFFu), timeout_u);
 }
 
 #define NT_SYNC_SERVICES(X) \
@@ -1064,12 +1072,12 @@ static long nt_release_keyed(uint64_t h, uint64_t key, uint64_t timeout_u) {
       PTRS(NT_OUT_BUF(2, 3), OUT_OPT(4, 4)), \
       nt_query_semaphore(ARG(0), NT_ARG32(1), ARG(2), NT_ARG32(3), ARG(4))) \
     X(VIBEOS_NT_NR_NtDelayExecution, NtDelayExecution, NANOSLEEP, PTRS(IN(1, 8)), \
-      nt_delay_execution(ARG(0), ARG(1))) \
+      nt_apc_after(FRAME, nt_delay_execution(ARG(0) & 0xFFu, ARG(1)))) \
     X(VIBEOS_NT_NR_NtWaitForSingleObject, NtWaitForSingleObject, FUTEX, PTRS(IN_OPT(2, 8)), \
-      nt_wait_single(ARG(0), ARG(1), ARG(2))) \
+      nt_apc_after(FRAME, nt_wait_single(ARG(0), ARG(1), ARG(2)))) \
     X(VIBEOS_NT_NR_NtWaitForMultipleObjects, NtWaitForMultipleObjects, FUTEX, \
       PTRS(IN_OPT(4, 8)), \
-      nt_wait_multiple(NT_ARG32(0), ARG(1), NT_ARG32(2), ARG(3), ARG(4))) \
+      nt_apc_after(FRAME, nt_wait_multiple(NT_ARG32(0), ARG(1), NT_ARG32(2), ARG(3), ARG(4)))) \
     X(VIBEOS_NT_NR_NtCreateTimer, NtCreateTimer, EVENTFD, PTRS(OUT(0, 8)), \
       nt_create_timer(ARG(0), NT_ARG32(1), ARG(2), NT_ARG32(3))) \
     X(VIBEOS_NT_NR_NtOpenTimer, NtOpenTimer, EVENTFD, PTRS(OUT(0, 8)), \
@@ -1090,8 +1098,8 @@ static long nt_release_keyed(uint64_t h, uint64_t key, uint64_t timeout_u) {
     X(VIBEOS_NT_NR_NtOpenKeyedEvent, NtOpenKeyedEvent, FUTEX, PTRS(OUT(0, 8)), \
       nt_open_keyed_event(ARG(0), NT_ARG32(1), ARG(2))) \
     X(VIBEOS_NT_NR_NtWaitForKeyedEvent, NtWaitForKeyedEvent, FUTEX, PTRS(IN_OPT(3, 8)), \
-      nt_wait_keyed(ARG(0), ARG(1), ARG(3))) \
+      nt_apc_after(FRAME, nt_wait_keyed(ARG(0), ARG(1), ARG(2), ARG(3)))) \
     X(VIBEOS_NT_NR_NtReleaseKeyedEvent, NtReleaseKeyedEvent, FUTEX, PTRS(IN_OPT(3, 8)), \
-      nt_release_keyed(ARG(0), ARG(1), ARG(3)))
+      nt_apc_after(FRAME, nt_release_keyed(ARG(0), ARG(1), ARG(2), ARG(3))))
 
 NT_DEFINE_SERVICES(sync, NT_SYNC_SERVICES)

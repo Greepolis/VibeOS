@@ -212,7 +212,16 @@ long nt_create_common(const vibeos_file_ops_t *ops, uint64_t handle_u, uint32_t 
                       void (*init)(nt_ob_t *o, const void *ctx), const void *ctx);
 /* Wait for `n` handles - all, or any - until the timeout (a user pointer to an
  * NT time, 0 for none). An NTSTATUS. */
-long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u);
+long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64_t timeout_u);
+/* APCs (apc.c, W5 step 4): is one queued for `slot`; how an alertable wait
+ * ends - USER_APC for a queued APC, ALERTED for the alert, 0 for neither; and
+ * the delivery a service's result asks for - USER_APC with an APC queued
+ * sends the frame into ntdll for it. */
+int nt_apc_pending(int slot);
+uint32_t nt_alertable_end(int me);
+long nt_apc_after(ks_regs_t *frame, long result);
+/* The thread a handle names, granted `need`: its slot and tenancy (thread.c). */
+uint32_t nt_thread_target(uint64_t h, uint32_t need, int *slot, uint32_t *seq);
 extern const vibeos_file_ops_t g_nt_event_ops;
 
 #endif

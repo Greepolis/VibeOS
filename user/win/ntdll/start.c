@@ -484,6 +484,20 @@ __attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb, uint64_t st
     uint32_t entry_rva;
     NTSTATUS_T st;
 
+    if (peb == 1u) {
+        /* An APC (W5 step 4): the context to go back to in rdx, the routine
+         * and its three arguments in r8. NtContinue resumes the context - or
+         * runs the next APC first. */
+        const uint64_t *rec = (const uint64_t *)(uintptr_t)param;
+        void (*routine)(uint64_t, uint64_t, uint64_t) =
+            (void (*)(uint64_t, uint64_t, uint64_t))(uintptr_t)rec[0];
+
+        routine(rec[1], rec[2], rec[3]);
+        (void)NtContinue((void *)(uintptr_t)start, 1);
+        for (;;) {
+            /* NtContinue does not return. */
+        }
+    }
     if (peb == 0u) {
         uint32_t (*routine)(void *) = (uint32_t (*)(void *))(uintptr_t)start;
 

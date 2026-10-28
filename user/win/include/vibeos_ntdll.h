@@ -44,6 +44,9 @@ NT_IMPORT NTSTATUS_T NtQueryInformationThread(uint64_t thread, uint32_t cls, voi
                                               uint32_t *ret);
 NT_IMPORT NTSTATUS_T NtSetInformationThread(uint64_t thread, uint32_t cls, const void *buf, uint32_t len);
 NT_IMPORT NTSTATUS_T NtSuspendThread(uint64_t thread, uint32_t *prev);
+NT_IMPORT NTSTATUS_T NtQueueApcThread(uint64_t thread, void *routine, uint64_t a1, uint64_t a2, uint64_t a3);
+NT_IMPORT NTSTATUS_T NtTestAlert(void);
+NT_IMPORT NTSTATUS_T NtContinue(void *context, uint8_t test_alert);
 NT_IMPORT NTSTATUS_T NtResumeThread(uint64_t thread, uint32_t *prev);
 NT_IMPORT NTSTATUS_T NtOpenThread(uint64_t *thread, uint32_t access, void *attributes, const uint64_t *cid);
 NT_IMPORT NTSTATUS_T NtGetContextThread(uint64_t thread, void *ctx);

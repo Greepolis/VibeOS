@@ -1592,6 +1592,80 @@ static void t_timers(void) {
     }
 }
 
+/* W5 step 4: an APC queued for a thread runs when it next waits alertably:
+ * the wait ends STATUS_USER_APC and the thread enters ntdll with rcx 1, the
+ * context to go back to in rdx and the APC in r8; NtContinue goes back. */
+static void t_apcs(void) {
+    uint64_t routine = kf_ualloc(16), interval = kf_ualloc(8), stack = kf_ualloc(16384);
+    uint64_t top = (stack + 16384u) & ~0xFull, ctx, rec, v = 0, entry = kf_ualloc(16);
+    const struct ks_regs *f;
+    int me = fresh(59);
+    long r;
+
+    ks_image(me)->entry = entry;
+    *(int64_t *)kf_uptr(interval) = -100000;
+    {
+        uint64_t rest[1] = { 33 };
+
+        kf_next_sp(stack_args(rest, 1));
+        expect(nt(VIBEOS_NT_NR_NtQueueApcThread, VIBEOS_NT_CURRENT_THREAD, routine, 11, 22, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS),
+               "NtQueueApcThread queues a call for the calling thread");
+    }
+    kf_next_sp(top);
+    expect(nt(VIBEOS_NT_NR_NtDelayExecution, 0, interval, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a wait that is not alertable runs no APC");
+    kf_next_sp(top);
+    r = nt(VIBEOS_NT_NR_NtDelayExecution, 1, interval, 0, 0, 0);
+    f = kf_last_frame();
+    ctx = f->arg2;          /* rdx */
+    rec = f->other[0];      /* r8  */
+    expect(r == ST(VIBEOS_STATUS_USER_APC) && f->ip == entry && f->rcx == 1u && ctx < top && rec < ctx &&
+               (f->sp & 0xFu) == 8u,
+           "an alertable wait ends USER_APC, into ntdll's entry with the APC's mark");
+    expect(kf_peek(rec, &v, 8) == 0 && v == routine && kf_peek(rec + 8, &v, 8) == 0 && v == 11u &&
+               kf_peek(rec + 24, &v, 8) == 0 && v == 33u,
+           "the APC's record: the routine and its three arguments");
+    expect(kf_peek(ctx + 0x78, &v, 8) == 0 && v == 0xC0u && kf_peek(ctx + 0x98, &v, 8) == 0 && v == top,
+           "and the context to go back to: rax USER_APC, the stack it waited on");
+    kf_next_sp(f->sp);
+    expect(nt(VIBEOS_NT_NR_NtContinue, ctx, 0, 0, 0, 0) == ST(VIBEOS_STATUS_USER_APC) &&
+               kf_last_frame()->sp == top && kf_last_frame()->rcx != 1u,
+           "NtContinue goes back to the context, rax and stack and all");
+    expect(nt(VIBEOS_NT_NR_NtTestAlert, 0, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "NtTestAlert with nothing queued");
+    ks_id(me)->nt_alerted = 1;
+    kf_next_sp(top);
+    expect(nt(VIBEOS_NT_NR_NtDelayExecution, 1, interval, 0, 0, 0) == ST(VIBEOS_STATUS_ALERTED) &&
+               ks_id(me)->nt_alerted == 0u,
+           "an alerted thread's alertable wait ends ALERTED, and takes the alert");
+    {
+        uint64_t rest[1] = { 0 };
+        uint32_t i;
+
+        for (i = 0; i < 16u; i++) {
+            kf_next_sp(stack_args(rest, 1));
+            (void)nt(VIBEOS_NT_NR_NtQueueApcThread, VIBEOS_NT_CURRENT_THREAD, routine, i, 0, 0);
+        }
+        kf_next_sp(stack_args(rest, 1));
+        expect(nt(VIBEOS_NT_NR_NtQueueApcThread, VIBEOS_NT_CURRENT_THREAD, routine, 99, 0, 0) ==
+                   ST(VIBEOS_STATUS_NO_MEMORY),
+               "a thread holds sixteen APCs and no more");
+        kf_next_sp(top);
+        expect(nt(VIBEOS_NT_NR_NtTestAlert, 0, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   kf_last_frame()->rcx == 1u && kf_peek(kf_last_frame()->other[0] + 8, &v, 8) == 0 && v == 0u,
+               "NtTestAlert delivers the oldest");
+    }
+    {
+        uint64_t rest[1] = { 0 };
+
+        kf_next_sp(stack_args(rest, 1));
+        expect(nt(VIBEOS_NT_NR_NtQueueApcThread, VIBEOS_NT_CURRENT_THREAD, 0x10, 0, 0, 0) ==
+                   ST(VIBEOS_STATUS_INVALID_PARAMETER),
+               "a routine that is nobody's memory is refused");
+    }
+}
+
 static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
     uint64_t out = kf_ualloc(8);
     uint64_t rest[3] = { 0x02u /* PAGE_READONLY */, attributes, file };
@@ -2668,6 +2742,7 @@ int test_nt_abi(void) {
     t_create_thread();
     t_thread_info();
     t_timers();
+    t_apcs();
     t_create_file();
     t_sections();
     t_open_file_permissions();

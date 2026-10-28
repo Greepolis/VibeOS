@@ -42,7 +42,9 @@ typedef enum {
  * them (fork, execve, the signal frame). */
 struct ks_regs {
     uint64_t ip, sp, ret, arg0, arg1, arg2, flags;
-    uint64_t other[10];   /* r8-r15, rbp, rbx, rcx: carried, never looked at */
+    uint64_t other[10];   /* r8-r15, rbp, rbx: carried, never looked at */
+    uint64_t rcx;         /* the first argument of the Windows convention: what
+                           * an NT entry into ntdll is marked by (W5 step 4) */
 };
 
 /* The fake's vector registers: what ks_fpu_save writes out and ks_fpu_restore

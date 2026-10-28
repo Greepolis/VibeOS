@@ -111,6 +111,7 @@ OpenThread
 OpenWaitableTimerA
 OpenWaitableTimerW
 PulseEvent
+QueueUserAPC
 ReadFile
 ReleaseMutex
 ReleaseSemaphore

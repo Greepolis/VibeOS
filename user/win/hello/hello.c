@@ -200,6 +200,12 @@ static uint32_t thread_routine(void *param) {
     return 42u;
 }
 
+static volatile uint64_t g_apc_args;
+
+static void apc_routine(uint64_t a, uint64_t b, uint64_t c) {
+    g_apc_args = a * 100u + b * 10u + c;
+}
+
 static const char *thread_check(void) {
     uint64_t th = 0;
 
@@ -240,6 +246,24 @@ static const char *thread_check(void) {
             return "NT_HELLO_FAIL thread_resume\n";
         }
         (void)NtClose(th);
+    }
+    /* W5 step 4: an APC queued for oneself runs in the next alertable wait,
+     * which then returns STATUS_USER_APC - through ntdll and NtContinue, back
+     * here with every register this function keeps. */
+    {
+        int64_t wait10 = -100000;
+        volatile uint64_t keep = 0x1234567890ABCDEFull;
+
+        g_apc_args = 0;
+        if (NtQueueApcThread(VIBEOS_NT_CURRENT_THREAD, (void *)apc_routine, 3, 5, 7) != VIBEOS_STATUS_SUCCESS) {
+            return "NT_HELLO_FAIL apc_queue\n";
+        }
+        if (NtDelayExecution(1, &wait10) != VIBEOS_STATUS_USER_APC) {
+            return "NT_HELLO_FAIL apc_wait\n";
+        }
+        if (g_apc_args != 3u * 100u + 5u * 10u + 7u || keep != 0x1234567890ABCDEFull) {
+            return "NT_HELLO_FAIL apc_ran\n";
+        }
     }
     /* W5 step 7: a synchronization timer fires once, for one waiter. */
     {

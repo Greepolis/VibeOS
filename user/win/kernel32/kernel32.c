@@ -1872,6 +1872,15 @@ uint64_t OpenThread(uint32_t access, BOOL32 inherit, uint32_t tid) {
     return failed(st) ? (uint64_t)fail(st) : h;
 }
 
+/* QueueUserAPC(Routine, Thread, Data): the routine is called with Data in rcx,
+ * which is the first of the three arguments NtQueueApcThread passes. Nonzero
+ * on success, as Windows answers. */
+uint32_t QueueUserAPC(void *routine, uint64_t thread, uint64_t data) {
+    NTSTATUS_T st = NtQueueApcThread(thread, routine, data, 0, 0);
+
+    return failed(st) ? (uint32_t)fail(st) : 1u;
+}
+
 BOOL32 SwitchToThread(void) {
     return NtYieldExecution() == VIBEOS_STATUS_SUCCESS;
 }

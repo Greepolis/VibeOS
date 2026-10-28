@@ -1,0 +1,72 @@
+# NT user APCs (kernel/abi/nt/apc.c, docs/abi/windows.md W5 step 4), broken
+# one rule at a time; caught by tests/kernel/nt_abi_tests.c on the host.
+#
+# Target source: kernel/abi/nt/apc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/apc.c scripts/dev/cases/nt-apc.txt build-gcc-Release
+
+### an alertable wait does not see a queued APC
+--- old
+    if (nt_apc_pending(me)) {
+        return VIBEOS_STATUS_USER_APC;
+    }
++++ new
+
+### the APC entry is not marked as one
+--- old
+    r.rcx = NT_APC_ENTRY_MARK;
++++ new
+    r.rcx = 0u;
+
+### the context to go back to is not the one the wait returns with
+--- old
+    r.rax = ret;
+    nt_context_from_regs(&r, ctx, NT_CONTEXT_FULL);
++++ new
+    nt_context_from_regs(&r, ctx, NT_CONTEXT_FULL);
+
+### the APC's stack is not aligned as a call leaves it
+--- old
+    sp -= 8u;
+    rec[0] = a->routine;
++++ new
+    rec[0] = a->routine;
+
+### NtContinue leaves the frame as it was
+--- old
+    nt_context_to_regs(ctx, &r, flags);
+    if (ks_regs_set(frame, &r) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
+    if (test_alert && apc_take(&a)) {
++++ new
+    if (test_alert && apc_take(&a)) {
+
+### the alert is never taken
+--- old
+    if (__atomic_exchange_n(&ks_id(me)->nt_alerted, 0u, __ATOMIC_ACQ_REL)) {
+        return VIBEOS_STATUS_ALERTED;
+    }
+    return 0;
++++ new
+    if (ks_id(me)->nt_alerted) {
+        return VIBEOS_STATUS_ALERTED;
+    }
+    return 0;
+
+### a thread's queue has no bound
+--- old
+    if (at < 0 || mine >= NT_APC_PER_THREAD) {
++++ new
+    if (at < 0) {
+
+### the newest APC is delivered first
+--- old
+    for (i = 0; i < NT_APC_MAX && !found; i++) {
++++ new
+    for (i = NT_APC_MAX; i-- > 0u && !found;) {
+
+### a routine nobody can run is queued
+--- old
+    if (routine == 0u || !nt_user_ok(routine, 1u, 0)) {
++++ new
+    if (routine == 0u) {

@@ -417,6 +417,21 @@ static void thread_unview(thread_view_t *v) {
     }
 }
 
+uint32_t nt_thread_target(uint64_t h, uint32_t need, int *slot, uint32_t *seq) {
+    thread_view_t v;
+    uint32_t st = thread_view(h, need, &v);
+
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return st;
+    }
+    st = !v.ended && v.slot >= 0 && ks_seq(v.slot) == v.seq ? VIBEOS_STATUS_SUCCESS
+                                                             : VIBEOS_STATUS_THREAD_IS_TERMINATING;
+    *slot = v.slot;
+    *seq = v.seq;
+    thread_unview(&v);
+    return st;
+}
+
 /* Is the view's thread still the task its slot holds? */
 static int thread_live(const thread_view_t *v) {
     return !v->ended && v->slot >= 0 && ks_seq(v->slot) == v->seq;

@@ -1511,6 +1511,7 @@ void ks_regs_get(const ks_regs_t *frame, vibeos_uregs_t *out) {
     out->r12 = frame->other[4]; out->r13 = frame->other[5];
     out->r14 = frame->other[6]; out->r15 = frame->other[7];
     out->rbp = frame->other[8]; out->rbx = frame->other[9];
+    out->rcx = frame->rcx;
     out->cs = 0x33;
     out->ss = 0x2b;
 }
@@ -1533,6 +1534,7 @@ int ks_regs_set(ks_regs_t *frame, const vibeos_uregs_t *in) {
     frame->other[4] = in->r12; frame->other[5] = in->r13;
     frame->other[6] = in->r14; frame->other[7] = in->r15;
     frame->other[8] = in->rbp; frame->other[9] = in->rbx;
+    frame->rcx = in->rcx;
     return 0;
 }
 unsigned char g_kf_fpu[512];
