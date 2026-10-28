@@ -777,6 +777,50 @@ BOOL32 TlsSetValue(uint32_t i, void *v) {
     return 1;
 }
 
+/* ---- fiber-local storage (W5 step 6) --------------------------------------------------------
+ * With no fibers, a fiber's slots are its thread's: FlsAlloc's index names a
+ * TLS slot of this DLL's, and the callback runs for the calling thread's value
+ * when the index is freed. A thread's own end does not run the callbacks yet,
+ * which leaks what they would free and nothing else. */
+
+static void (*g_fls_callback[VIBEOS_TEB_TLS_SLOT_COUNT])(void *);
+
+uint32_t FlsAlloc(void (*callback)(void *)) {
+    uint32_t i = TlsAlloc();
+
+    if (i != 0xFFFFFFFFu) {
+        g_fls_callback[i] = callback;
+    }
+    return i;
+}
+
+BOOL32 FlsFree(uint32_t i) {
+    void *v;
+
+    if (i >= VIBEOS_TEB_TLS_SLOT_COUNT || !(g_tls_used & (1ull << i))) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    v = (void *)(uintptr_t)*tls_slot(i);
+    if (v && g_fls_callback[i]) {
+        g_fls_callback[i](v);
+    }
+    g_fls_callback[i] = 0;
+    return TlsFree(i);
+}
+
+void *FlsGetValue(uint32_t i) {
+    return TlsGetValue(i);
+}
+
+BOOL32 FlsSetValue(uint32_t i, void *v) {
+    if (i >= VIBEOS_TEB_TLS_SLOT_COUNT || !(g_tls_used & (1ull << i))) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return TlsSetValue(i, v);
+}
+
 /* ---- the environment ------------------------------------------------------------------------ */
 
 /* The value's length in characters if it fitted, without the terminator; the

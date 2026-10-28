@@ -1,0 +1,12 @@
+# The image's thread-local storage (user/win/ntdll/start.c, docs/abi/windows.md
+# W5 step 6), broken; caught at boot by hello.exe's tls_check, which the gate
+# reads as nt_program_did_not_run.
+#
+# Target source: user/win/ntdll/start.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py user/win/ntdll/start.c scripts/dev/cases/nt-tls-boot.txt build-gcc-Release
+
+### a new thread gets no block of its own
+--- old
+        st = tls_attach(2u);
++++ new
+        st = VIBEOS_STATUS_SUCCESS;

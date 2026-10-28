@@ -493,6 +493,88 @@ NTSTATUS_T LdrGetProcedureAddress(void *module,
 
 int vibeos_rtl_dispatch_exception(void *record, void *context);   /* except.c */
 
+/* ---- the image's thread-local storage (W5 step 6) ---------------------------------------
+ * The program's TLS directory: a template copied into a block of its own for
+ * every thread, reached through the TEB's ThreadLocalStoragePointer at the
+ * index the loader writes to _tls_index, and callbacks run as each thread
+ * starts and ends. The program is the only module with one: a DLL's static TLS
+ * would need an index of its own, which Windows gives only since Vista's
+ * loader rewrite, and nothing here has needed it. */
+
+#define TLS_DIR_RAW_START 0u
+#define TLS_DIR_RAW_END 8u
+#define TLS_DIR_INDEX 16u
+#define TLS_DIR_CALLBACKS 24u
+#define TLS_DIR_ZERO_FILL 32u
+
+static uint64_t g_tls_exe;   /* the image whose directory it is, 0 if none */
+
+static void tls_callbacks(uint32_t reason) {
+    uint32_t rva = pe_dir(g_tls_exe, 9u, 0);
+    uint64_t at;
+
+    if (!g_tls_exe || !rva) {
+        return;
+    }
+    at = vibeos_nt_rd64(g_tls_exe + rva + TLS_DIR_CALLBACKS);
+    for (; at && vibeos_nt_rd64(at); at += 8u) {
+        void (*cb)(uint64_t, uint32_t, void *) =
+            (void (*)(uint64_t, uint32_t, void *))(uintptr_t)vibeos_nt_rd64(at);
+        cb(g_tls_exe, reason, 0);
+    }
+}
+
+/* This thread's block and the one-entry array that points at it, then the
+ * callbacks with `reason` (1 for the process, 2 for a thread). A status. */
+static NTSTATUS_T tls_attach(uint32_t reason) {
+    uint32_t rva = g_tls_exe ? pe_dir(g_tls_exe, 9u, 0) : 0u;
+    uint64_t dir, start, end, zero, *array;
+    uint8_t *block;
+    uint64_t i;
+
+    if (!rva) {
+        return VIBEOS_STATUS_SUCCESS;
+    }
+    dir = g_tls_exe + rva;
+    start = vibeos_nt_rd64(dir + TLS_DIR_RAW_START);
+    end = vibeos_nt_rd64(dir + TLS_DIR_RAW_END);
+    zero = rd32(dir + TLS_DIR_ZERO_FILL);
+    if (end < start) {
+        return VIBEOS_STATUS_INVALID_IMAGE_FORMAT;
+    }
+    array = (uint64_t *)RtlAllocateHeap(vibeos_rtl_process_heap(), 0, 8u);
+    block = (uint8_t *)RtlAllocateHeap(vibeos_rtl_process_heap(), 0, (size_t)(end - start + zero + 1u));
+    if (!array || !block) {
+        return VIBEOS_STATUS_NO_MEMORY;
+    }
+    for (i = 0; i < end - start; i++) {
+        block[i] = *(const volatile uint8_t *)(uintptr_t)(start + i);
+    }
+    for (; i < end - start + zero; i++) {
+        block[i] = 0;
+    }
+    array[0] = (uint64_t)(uintptr_t)block;
+    *(volatile uint32_t *)(uintptr_t)vibeos_nt_rd64(dir + TLS_DIR_INDEX) = 0u;
+    *(volatile uint64_t *)(uintptr_t)(vibeos_nt_teb() + VIBEOS_TEB_TLS_POINTER) = (uint64_t)(uintptr_t)array;
+    tls_callbacks(reason);
+    return VIBEOS_STATUS_SUCCESS;
+}
+
+/* A thread's end, by its routine's return: the callbacks with DLL_THREAD_DETACH,
+ * then its block. A thread that calls NtTerminateThread itself skips both, as
+ * TerminateThread does on Windows. */
+static void tls_detach(void) {
+    uint64_t *array = (uint64_t *)(uintptr_t)vibeos_nt_rd64(vibeos_nt_teb() + VIBEOS_TEB_TLS_POINTER);
+
+    if (!array) {
+        return;
+    }
+    tls_callbacks(3u);
+    (void)RtlFreeHeap(vibeos_rtl_process_heap(), 0, (void *)(uintptr_t)array[0]);
+    (void)RtlFreeHeap(vibeos_rtl_process_heap(), 0, array);
+    *(volatile uint64_t *)(uintptr_t)(vibeos_nt_teb() + VIBEOS_TEB_TLS_POINTER) = 0u;
+}
+
 /* The entry the kernel starts every thread at. The first with the PEB in rcx;
  * every later one with rcx zero and its routine and parameter in rdx and r8
  * (docs/abi/windows.md W5) - Windows' RtlUserThreadStart, at an address the
@@ -532,7 +614,12 @@ __attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb, uint64_t st
     if (peb == 0u) {
         uint32_t (*routine)(void *) = (uint32_t (*)(void *))(uintptr_t)start;
 
+        st = tls_attach(2u);
+        if (st != VIBEOS_STATUS_SUCCESS) {
+            (void)NtTerminateThread(VIBEOS_NT_CURRENT_THREAD, st);
+        }
         st = (NTSTATUS_T)routine((void *)(uintptr_t)param);
+        tls_detach();
         (void)NtTerminateThread(VIBEOS_NT_CURRENT_THREAD, st);
         for (;;) {
             /* NtTerminateThread of ourselves does not return. */
@@ -549,8 +636,11 @@ __attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb, uint64_t st
      * exceptions happen, and its unwind tables are found through this list. */
     add_module("<exe>", exe);
     resolve_imports(exe);
+    g_tls_exe = exe;
     if (entry_rva == 0u) {
         st = VIBEOS_STATUS_INVALID_IMAGE_FORMAT;
+    } else if ((st = tls_attach(1u)) != VIBEOS_STATUS_SUCCESS) {
+        /* No block, no program: its first thread-local access would fault. */
     } else {
         int (*entry)(void) = (int (*)(void))(uintptr_t)(exe + entry_rva);
         st = (NTSTATUS_T)entry();

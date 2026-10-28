@@ -253,6 +253,74 @@ static void apc_routine(uint64_t a, uint64_t b, uint64_t c) {
     g_apc_args = a * 100u + b * 10u + c;
 }
 
+/* W5 step 6: the image's TLS. No C runtime is linked to supply _tls_used, so
+ * the directory is written here; ld points the TLS data directory at the
+ * symbol of that name. The template holds 0x7150; each thread's copy is its own. */
+__attribute__((section(".tls$AAA"))) volatile uint64_t g_tls_var = 0x7150u;
+__attribute__((section(".tls$ZZZ"))) uint8_t g_tls_end;
+uint32_t _tls_index = 0xFFFFFFFFu;
+static volatile uint32_t g_tls_process_attached, g_tls_attaches;   /* threads' */
+
+static void tls_callback(uint64_t base, uint32_t reason, void *unused) {
+    (void)base;
+    (void)unused;
+    if (reason == 1u) {
+        g_tls_process_attached = 1;
+    } else if (reason == 2u) {
+        g_tls_attaches++;
+    }
+}
+
+static void (*const g_tls_callbacks[2])(uint64_t, uint32_t, void *) = { tls_callback, 0 };
+const struct {
+    uint64_t start, end, index, callbacks;
+    uint32_t zero, flags;
+} _tls_used = {
+    (uint64_t)(uintptr_t)&g_tls_var, (uint64_t)(uintptr_t)&g_tls_end,
+    (uint64_t)(uintptr_t)&_tls_index, (uint64_t)(uintptr_t)g_tls_callbacks, 0, 0,
+};
+
+static volatile uint64_t *tls_var_here(void) {
+    uint64_t *array = (uint64_t *)(uintptr_t)vibeos_nt_rd64(vibeos_nt_teb() + VIBEOS_TEB_TLS_POINTER);
+    return (volatile uint64_t *)(uintptr_t)(array[_tls_index] +
+                                            ((uint64_t)(uintptr_t)&g_tls_var - _tls_used.start));
+}
+
+static volatile uint64_t g_tls_thread_saw;
+
+static uint32_t tls_routine(void *unused) {
+    (void)unused;
+    g_tls_thread_saw = *tls_var_here();
+    *tls_var_here() = 2;
+    return 0;
+}
+
+static const char *tls_check(void) {
+    uint64_t th = 0;
+    uint32_t before = g_tls_attaches;
+
+    if (_tls_index != 0u) {
+        return "NT_HELLO_FAIL tls_index\n";
+    }
+    if (!g_tls_process_attached) {
+        return "NT_HELLO_FAIL tls_callback\n";
+    }
+    if (*tls_var_here() != 0x7150u) {
+        return "NT_HELLO_FAIL tls_template\n";
+    }
+    *tls_var_here() = 1;
+    if (NtCreateThreadEx(&th, 0x001FFFFFu, 0, VIBEOS_NT_CURRENT_PROCESS, (void *)tls_routine, 0, 0, 0, 0,
+                         0, 0) != VIBEOS_STATUS_SUCCESS ||
+        NtWaitForSingleObject(th, 0, 0) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL tls_thread_create\n";
+    }
+    (void)NtClose(th);
+    if (g_tls_thread_saw != 0x7150u || *tls_var_here() != 1u || g_tls_attaches != before + 1u) {
+        return "NT_HELLO_FAIL tls_thread\n";
+    }
+    return 0;
+}
+
 static const char *thread_check(void) {
     uint64_t th = 0;
 
@@ -386,6 +454,9 @@ int nt_hello_start(void) {
         }
         if (!why) {
             why = exception_check();
+        }
+        if (!why) {
+            why = tls_check();
         }
         if (why) {
             return fail(why);

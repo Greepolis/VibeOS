@@ -35,6 +35,10 @@ FindFirstFileA
 FindFirstFileW
 FindNextFileA
 FindNextFileW
+FlsAlloc
+FlsFree
+FlsGetValue
+FlsSetValue
 FlushFileBuffers
 FreeLibrary
 GetCurrentDirectoryA
