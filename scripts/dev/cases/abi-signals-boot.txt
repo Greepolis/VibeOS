@@ -11,14 +11,19 @@
 #     identity map is there. Expect signal_l2_checks_failed: SEGV_ACCERR where
 #     Linux says SEGV_MAPERR.
 #
+#  4. a Windows program's fault never reaches ntdll's dispatcher. Observed
+#     deliberate_ring3_faults=3_expected=2 and unexpected_cpu_fault: hello.exe
+#     is killed by the access violation its vectored handler was to take, and
+#     the gate counts it as a fault nobody planned.
+#
 # Target source: kernel/arch/x86_64/task_life.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/abi-signals-boot.txt
 
 ### a fault never reaches the program's handler
 --- old
-    if (!linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
+    } else if (!linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
 +++ new
-    if (1 || !linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
+    } else if (1 || !linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
 
 ### SIGCHLD is never raised
 --- old
@@ -33,3 +38,9 @@
         }
 +++ new
         (void)e;
+
+### a Windows program's fault never reaches ntdll's dispatcher (W5 step 5)
+--- old
+        if (!vibeos_nt_fault((struct ks_regs *)frame, &why)) {
++++ new
+        if (1 || !vibeos_nt_fault((struct ks_regs *)frame, &why)) {

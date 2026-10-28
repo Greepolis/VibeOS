@@ -98,4 +98,12 @@ extern volatile uint64_t g_nt_unimplemented;
 extern volatile uint64_t g_nt_refused;
 extern volatile uint64_t g_nt_last_nr;
 
+/* A fault in ring 3 of an NT task (docs/abi/windows.md W5 step 5): the
+ * exception's record and context on the thread's stack and the thread sent
+ * into ntdll's dispatcher. 1 if it was, 0 if the stack would not take it -
+ * the caller then ends the process. */
+struct ks_regs;
+struct vibeos_siginfo;
+int vibeos_nt_fault(struct ks_regs *frame, const struct vibeos_siginfo *why);
+
 #endif

@@ -1666,6 +1666,40 @@ static void t_apcs(void) {
     }
 }
 
+/* W5 step 5: NtRaiseException, first chance - the record and context on the
+ * stack and the thread into ntdll's entry with rcx 2 - and second chance, the
+ * process's end with the exception's code. */
+static void t_raise_exception(void) {
+    uint64_t rec = kf_ualloc(0x98), ctx = kf_ualloc(0x4D0), stack = kf_ualloc(16384);
+    uint64_t top = (stack + 16384u) & ~0xFull, entry = kf_ualloc(16), v = 0;
+    const struct ks_regs *f;
+    int me = fresh(60);
+    kf_outcome_t how = KF_RETURNED;
+
+    ks_image(me)->entry = entry;
+    memset(kf_uptr(rec), 0, 0x98);
+    memset(kf_uptr(ctx), 0, 0x4D0);
+    *(uint32_t *)kf_uptr(rec) = 0xE0000042u;
+    *(uint64_t *)((uint8_t *)kf_uptr(ctx) + 0x98) = top;   /* the context's Rsp */
+    kf_next_sp(top);
+    expect(nt(VIBEOS_NT_NR_NtRaiseException, rec, ctx, 1, 0, 0) == ST(VIBEOS_STATUS_SUCCESS), "a first chance");
+    f = kf_last_frame();
+    expect(f->ip == entry && f->rcx == 2u && f->arg2 < top && f->other[0] < f->arg2 && (f->sp & 0xFu) == 8u,
+           "into ntdll's entry with rcx 2, the context in rdx and the record below it in r8");
+    expect(kf_peek(f->other[0], &v, 4) == 0 && (uint32_t)v == 0xE0000042u &&
+               kf_peek(f->arg2 + 0x98, &v, 8) == 0 && v == top,
+           "the record and context are the ones raised");
+    *(uint32_t *)((uint8_t *)kf_uptr(rec) + 0x18) = 16;
+    kf_next_sp(top);
+    expect(nt(VIBEOS_NT_NR_NtRaiseException, rec, ctx, 1, 0, 0) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "more than fifteen parameters is no record");
+    *(uint32_t *)((uint8_t *)kf_uptr(rec) + 0x18) = 0;
+    kf_next_sp(top);
+    (void)nt(VIBEOS_NT_NR_NtRaiseException, rec, ctx, 0, 0, &how);
+    expect(how == KF_EXITED && kf_exit_was_group() && kf_exit_code() == 0xE0000042u,
+           "a second chance ends the process with the exception's code");
+}
+
 static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
     uint64_t out = kf_ualloc(8);
     uint64_t rest[3] = { 0x02u /* PAGE_READONLY */, attributes, file };
@@ -2743,6 +2777,7 @@ int test_nt_abi(void) {
     t_thread_info();
     t_timers();
     t_apcs();
+    t_raise_exception();
     t_create_file();
     t_sections();
     t_open_file_permissions();

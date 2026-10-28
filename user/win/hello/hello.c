@@ -202,6 +202,53 @@ static uint32_t thread_routine(void *param) {
 
 static volatile uint64_t g_apc_args;
 
+/* W5 step 5: a vectored handler. An access violation at address 0 is taken by
+ * stepping over the seven-byte load that made it; a software exception with
+ * our own code is continued where it was raised. */
+static volatile uint64_t g_fault_addr = 1;
+static volatile uint32_t g_raised;
+
+static int32_t vectored(void *pointers) {
+    uint8_t *rec = (uint8_t *)(uintptr_t)((uint64_t *)pointers)[0];
+    uint8_t *ctx = (uint8_t *)(uintptr_t)((uint64_t *)pointers)[1];
+    uint32_t code = *(uint32_t *)rec;
+
+    if (code == VIBEOS_STATUS_ACCESS_VIOLATION) {
+        g_fault_addr = *(uint64_t *)(rec + 0x28);   /* ExceptionInformation[1] */
+        *(uint64_t *)(ctx + 0xF8) += 7u;            /* Rip past movl 0x0, %eax */
+        return -1;                                  /* EXCEPTION_CONTINUE_EXECUTION */
+    }
+    if (code == 0xE0000042u) {
+        g_raised++;
+        return -1;
+    }
+    return 0;                                       /* EXCEPTION_CONTINUE_SEARCH */
+}
+
+static const char *exception_check(void) {
+    void *h = RtlAddVectoredExceptionHandler(1, (void *)vectored);
+    uint64_t rec[19] = { 0xE0000042u };
+    uint32_t seen;
+
+    if (!h) {
+        return "NT_HELLO_FAIL exc_add\n";
+    }
+    /* A load from address 0, encoded so its length is known: 8b 04 25 00 00 00 00. */
+    __asm__ __volatile__(".byte 0x8b, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00" ::: "rax", "memory");
+    if (g_fault_addr != 0u) {
+        return "NT_HELLO_FAIL exc_fault\n";
+    }
+    RtlRaiseException(rec);
+    seen = g_raised;
+    if (seen != 1u) {
+        return "NT_HELLO_FAIL exc_raise\n";
+    }
+    if (RtlRemoveVectoredExceptionHandler(h) == 0u) {
+        return "NT_HELLO_FAIL exc_remove\n";
+    }
+    return 0;
+}
+
 static void apc_routine(uint64_t a, uint64_t b, uint64_t c) {
     g_apc_args = a * 100u + b * 10u + c;
 }
@@ -336,6 +383,9 @@ int nt_hello_start(void) {
         }
         if (!why) {
             why = thread_check();
+        }
+        if (!why) {
+            why = exception_check();
         }
         if (why) {
             return fail(why);

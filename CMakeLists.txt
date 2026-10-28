@@ -924,11 +924,13 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
                     -o "${VIBEOS_WIN_DIR}/ntdll.dll"
                     "${VIBEOS_WIN_SRC}/ntdll/stubs.S" "${VIBEOS_WIN_SRC}/ntdll/start.c"
+                    "${VIBEOS_WIN_SRC}/ntdll/except.c"
                     ${VIBEOS_NTRTL_CORE} "${VIBEOS_NTRTL_DIR}/platform_win.c"
                     "${VIBEOS_NTRTL_DIR}/mem.c"
                     -e vibeos_nt_process_start -Wl,--image-base=0x8002000000
                     -Wl,--out-implib=${VIBEOS_WIN_DIR}/libntdll.a
             DEPENDS "${VIBEOS_WIN_SRC}/ntdll/stubs.S" "${VIBEOS_WIN_SRC}/ntdll/start.c"
+                    "${VIBEOS_WIN_SRC}/ntdll/except.c"
                     "${VIBEOS_WIN_SRC}/ntdll/layout_check.c"
                     ${VIBEOS_NTRTL_CORE} "${VIBEOS_NTRTL_DIR}/platform_win.c"
                     "${VIBEOS_NTRTL_DIR}/mem.c" "${VIBEOS_NTRTL_DIR}/layout_check.c"

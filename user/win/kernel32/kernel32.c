@@ -2368,3 +2368,33 @@ int32_t _hwrite(int32_t h, const char *buf, int32_t len) {
 int32_t _llseek(int32_t h, int32_t offset, int32_t origin) {
     return (int32_t)SetFilePointer((uint64_t)(uint32_t)h, offset, 0, (uint32_t)origin);
 }
+
+/* ---- exceptions (W5 step 5): kernel32's names for ntdll's runtime ------------------ */
+
+void *AddVectoredExceptionHandler(uint32_t first, void *handler) {
+    return RtlAddVectoredExceptionHandler(first, handler);
+}
+
+uint32_t RemoveVectoredExceptionHandler(void *handle) {
+    return RtlRemoveVectoredExceptionHandler(handle);
+}
+
+/* RaiseException(Code, Flags, NumberOfArguments, Arguments): a record built
+ * here, at most fifteen arguments, as Windows truncates. */
+void RaiseException(uint32_t code, uint32_t flags, uint32_t nargs, const uint64_t *args) {
+    uint64_t rec[19];
+    uint32_t i;
+
+    for (i = 0; i < 19u; i++) {
+        rec[i] = 0;
+    }
+    rec[0] = (uint64_t)code | (uint64_t)(flags & 1u) << 32;   /* ExceptionCode, ExceptionFlags */
+    if (nargs > 15u) {
+        nargs = 15u;
+    }
+    rec[3] = nargs;                                          /* NumberParameters */
+    for (i = 0; args && i < nargs; i++) {
+        rec[4u + i] = args[i];
+    }
+    RtlRaiseException(rec);
+}

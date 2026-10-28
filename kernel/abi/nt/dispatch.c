@@ -30,6 +30,8 @@ extern const vibeos_row_t nt_thread_rows[];
 extern const uint32_t nt_thread_row_count;
 extern const vibeos_row_t nt_apc_rows[];
 extern const uint32_t nt_apc_row_count;
+extern const vibeos_row_t nt_except_rows[];
+extern const uint32_t nt_except_row_count;
 
 static const struct {
     const vibeos_row_t *rows;
@@ -44,6 +46,7 @@ static const struct {
     { nt_memory_rows, &nt_memory_row_count },
     { nt_thread_rows, &nt_thread_row_count },
     { nt_apc_rows, &nt_apc_row_count },
+    { nt_except_rows, &nt_except_row_count },
 };
 
 int nt_user_ok(uint64_t base, uint64_t len, int write) {

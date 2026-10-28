@@ -3,6 +3,7 @@
 ; ntdll's named stubs and says which when it calls it.
 LIBRARY kernel32.dll
 EXPORTS
+AddVectoredExceptionHandler
 CancelWaitableTimer
 CloseHandle
 CompareFileTime
@@ -112,11 +113,13 @@ OpenWaitableTimerA
 OpenWaitableTimerW
 PulseEvent
 QueueUserAPC
+RaiseException
 ReadFile
 ReleaseMutex
 ReleaseSemaphore
 RemoveDirectoryA
 RemoveDirectoryW
+RemoveVectoredExceptionHandler
 ResetEvent
 ResumeThread
 SetEndOfFile

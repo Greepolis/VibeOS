@@ -1,0 +1,39 @@
+# NT exceptions, the kernel's half (kernel/abi/nt/except.c, docs/abi/windows.md
+# W5 step 5), broken one rule at a time; caught by tests/kernel/nt_abi_tests.c on
+# the host. The fault path is gated at boot by abi-signals-boot.txt's case 4.
+#
+# Target source: kernel/abi/nt/except.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/except.c scripts/dev/cases/nt-except.txt build-gcc-Release
+
+### the exception entry is not marked as one
+--- old
+    r.rcx = NT_EXCEPTION_ENTRY_MARK;
++++ new
+    r.rcx = 0u;
+
+### the record and context change places
+--- old
+    r.rdx = ctx_at;
+    r.r8 = rec_at;
++++ new
+    r.rdx = rec_at;
+    r.r8 = ctx_at;
+
+### the dispatcher's stack is not aligned as a call leaves it
+--- old
+    sp = ((rec_at - 0x28u) & ~0xFull) - 8u;
++++ new
+    sp = (rec_at - 0x28u) & ~0xFull;
+
+### a second chance is dispatched again
+--- old
+    if (!first) {
+        ks_task_exit_group((uint64_t)get32(rec, 0x00u));   /* nobody took it */
+    }
++++ new
+
+### a record of any length is taken
+--- old
+    if (get32(rec, 0x18u) > 15u) {
++++ new
+    if (0) {

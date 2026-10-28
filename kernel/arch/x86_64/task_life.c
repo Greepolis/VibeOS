@@ -8,6 +8,7 @@
 #include "arch_hw_internal.h"
 #include "vibeos/crash.h"
 #include "vibeos/pe.h"
+#include "vibeos/abi_nt.h"
 
 #define VIBEOS_HW_KERNEL_DS 0x10u
 
@@ -2295,7 +2296,13 @@ int hw_fault_to_handler(vibeos_x86_64_isr_frame_t *frame, uint64_t fault_address
             why.fault_err &= ~1ull;
         }
     }
-    if (!linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
+    /* The personality the program speaks decides what a fault is to it: a
+     * Linux program's signal, a Windows program's exception (W5 step 5). */
+    if (g_tasks[g_current_task].abi == vibeos_abi_nt()) {
+        if (!vibeos_nt_fault((struct ks_regs *)frame, &why)) {
+            return 0;
+        }
+    } else if (!linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
         return 0;
     }
     /* One line, so that a log reader can tell a fault the program took from

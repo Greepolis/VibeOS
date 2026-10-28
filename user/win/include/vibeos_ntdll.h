@@ -47,6 +47,15 @@ NT_IMPORT NTSTATUS_T NtSuspendThread(uint64_t thread, uint32_t *prev);
 NT_IMPORT NTSTATUS_T NtQueueApcThread(uint64_t thread, void *routine, uint64_t a1, uint64_t a2, uint64_t a3);
 NT_IMPORT NTSTATUS_T NtTestAlert(void);
 NT_IMPORT NTSTATUS_T NtContinue(void *context, uint8_t test_alert);
+NT_IMPORT NTSTATUS_T NtRaiseException(void *record, void *context, uint8_t first_chance);
+/* The exception runtime (user/win/ntdll/except.c, W5 step 5), by Windows' names,
+ * for those who import it: except.c declares them with Windows' own types. */
+#ifndef VIBEOS_BUILDING_NTDLL
+RTL_API void *RtlAddVectoredExceptionHandler(uint32_t first, void *handler);
+RTL_API uint32_t RtlRemoveVectoredExceptionHandler(void *handle);
+RTL_API void RtlRaiseException(void *record);
+RTL_API void RtlCaptureContext(void *context);
+#endif
 NT_IMPORT NTSTATUS_T NtResumeThread(uint64_t thread, uint32_t *prev);
 NT_IMPORT NTSTATUS_T NtOpenThread(uint64_t *thread, uint32_t access, void *attributes, const uint64_t *cid);
 NT_IMPORT NTSTATUS_T NtGetContextThread(uint64_t thread, void *ctx);

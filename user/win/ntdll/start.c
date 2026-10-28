@@ -212,6 +212,23 @@ static void add_module(const char *name, uint64_t base) {
     g_mods++;
 }
 
+/* The base of the loaded module whose image holds `pc`, or 0: where the
+ * exception dispatcher looks for that code's unwind tables (W5 step 5). */
+uint64_t vibeos_ntdll_module_of(uint64_t pc) {
+    uint32_t i;
+
+    for (i = 0; i < g_mods; i++) {
+        uint64_t base = g_mod[i].base;
+        uint32_t pe = rd32(base + 0x3Cu);
+        uint32_t size = rd32(base + pe + 24u + 56u);   /* OptionalHeader.SizeOfImage */
+
+        if (pc >= base && pc - base < size) {
+            return base;
+        }
+    }
+    return 0;
+}
+
 static uint64_t find_module(const char *name) {
     uint32_t i;
     for (i = 0; i < g_mods; i++) {
@@ -474,6 +491,8 @@ NTSTATUS_T LdrGetProcedureAddress(void *module,
     return VIBEOS_STATUS_SUCCESS;
 }
 
+int vibeos_rtl_dispatch_exception(void *record, void *context);   /* except.c */
+
 /* The entry the kernel starts every thread at. The first with the PEB in rcx;
  * every later one with rcx zero and its routine and parameter in rdx and r8
  * (docs/abi/windows.md W5) - Windows' RtlUserThreadStart, at an address the
@@ -484,6 +503,18 @@ __attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb, uint64_t st
     uint32_t entry_rva;
     NTSTATUS_T st;
 
+    if (peb == 2u) {
+        /* An exception (W5 step 5): the context it happened in, in rdx, and its
+         * record in r8 (except.c). Taken, the context is resumed; nobody
+         * taking it is the second chance, which ends the process. */
+        if (vibeos_rtl_dispatch_exception((void *)(uintptr_t)param, (void *)(uintptr_t)start)) {
+            (void)NtContinue((void *)(uintptr_t)start, 0);
+        }
+        (void)NtRaiseException((void *)(uintptr_t)param, (void *)(uintptr_t)start, 0);
+        for (;;) {
+            /* Neither returns. */
+        }
+    }
     if (peb == 1u) {
         /* An APC (W5 step 4): the context to go back to in rdx, the routine
          * and its three arguments in r8. NtContinue resumes the context - or
@@ -514,6 +545,9 @@ __attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb, uint64_t st
     *(volatile uint64_t *)(uintptr_t)(peb + VIBEOS_PEB_PROCESS_HEAP) =
         (uint64_t)(uintptr_t)vibeos_rtl_process_heap();
     add_module("ntdll.dll", (uint64_t)(uintptr_t)__ImageBase);
+    /* The program too, under a name no DLL has: its code is where most
+     * exceptions happen, and its unwind tables are found through this list. */
+    add_module("<exe>", exe);
     resolve_imports(exe);
     if (entry_rva == 0u) {
         st = VIBEOS_STATUS_INVALID_IMAGE_FORMAT;
