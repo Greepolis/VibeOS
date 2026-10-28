@@ -112,6 +112,13 @@ typedef struct vibeos_task {
 
     /* The tick it was created on, for /proc's start time. */
     uint64_t start_tick;
+
+    /* An NT thread's suspend count (docs/abi/windows.md W5 step 3): while it is
+     * above zero the thread does not run - not yet started, if it was created
+     * suspended, or stopped by the machinery SIGSTOP uses otherwise. And its
+     * alert, which an alertable wait takes (step 4). */
+    uint32_t nt_suspend;
+    uint8_t nt_alerted;
 } vibeos_task_t;
 
 #define VIBEOS_EXIT_SIG_NONE 0xFFu

@@ -39,6 +39,24 @@ typedef uint32_t NTSTATUS_T;
 
 NT_IMPORT NTSTATUS_T NtTerminateProcess(uint64_t process, NTSTATUS_T status);
 NT_IMPORT NTSTATUS_T NtTerminateThread(uint64_t thread, NTSTATUS_T status);
+/* Threads, timers and keyed events (W5). */
+NT_IMPORT NTSTATUS_T NtQueryInformationThread(uint64_t thread, uint32_t cls, void *buf, uint32_t len,
+                                              uint32_t *ret);
+NT_IMPORT NTSTATUS_T NtSetInformationThread(uint64_t thread, uint32_t cls, const void *buf, uint32_t len);
+NT_IMPORT NTSTATUS_T NtSuspendThread(uint64_t thread, uint32_t *prev);
+NT_IMPORT NTSTATUS_T NtResumeThread(uint64_t thread, uint32_t *prev);
+NT_IMPORT NTSTATUS_T NtOpenThread(uint64_t *thread, uint32_t access, void *attributes, const uint64_t *cid);
+NT_IMPORT NTSTATUS_T NtGetContextThread(uint64_t thread, void *ctx);
+NT_IMPORT NTSTATUS_T NtSetContextThread(uint64_t thread, const void *ctx);
+NT_IMPORT NTSTATUS_T NtCreateTimer(uint64_t *timer, uint32_t access, void *attributes, uint32_t type);
+NT_IMPORT NTSTATUS_T NtOpenTimer(uint64_t *timer, uint32_t access, void *attributes);
+NT_IMPORT NTSTATUS_T NtSetTimer(uint64_t timer, const int64_t *due, void *apc, void *ctx, uint8_t resume,
+                                int32_t period, uint8_t *prev);
+NT_IMPORT NTSTATUS_T NtCancelTimer(uint64_t timer, uint8_t *cur);
+NT_IMPORT NTSTATUS_T NtWaitForKeyedEvent(uint64_t handle, const void *key, uint8_t alertable,
+                                         const int64_t *timeout);
+NT_IMPORT NTSTATUS_T NtReleaseKeyedEvent(uint64_t handle, const void *key, uint8_t alertable,
+                                         const int64_t *timeout);
 NT_IMPORT NTSTATUS_T NtWriteFile(uint64_t file, uint64_t event, void *apc, void *apc_ctx,
                                  vibeos_nt_iosb_t *iosb, const void *buf, uint32_t len,
                                  const int64_t *offset, const uint32_t *key);

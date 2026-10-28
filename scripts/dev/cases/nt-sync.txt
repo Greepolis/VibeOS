@@ -31,8 +31,16 @@
 ### a timeout never ends the wait
 --- old
         if (!forever && ks_ticks() >= deadline) {
+            result = NT_STATUS(VIBEOS_STATUS_TIMEOUT);
+            break;
+        }
+        /* A signal that needs acting on ends the wait - a kill must be able
 +++ new
         if (!forever && ks_ticks() >= deadline + 100000u) {
+            result = NT_STATUS(VIBEOS_STATUS_TIMEOUT);
+            break;
+        }
+        /* A signal that needs acting on ends the wait - a kill must be able
 
 ### naming one object twice in wait-all is accepted
 --- old
@@ -63,3 +71,43 @@
     } while (ks_ticks() < deadline);
 +++ new
     } while (0 && ks_ticks() < deadline);
+
+### a synchronization timer stays signalled for the next waiter (W5 step 7)
+--- old
+    if (o->u.tm.kind == 1u) {
+        o->u.tm.state = 0;   /* a synchronization timer: one waiter takes it */
+    }
++++ new
+    (void)o;
+
+### a timer is signalled before it is due (W5 step 7)
+--- old
+    if (o->u.tm.armed && now >= o->u.tm.due) {
++++ new
+    if (o->u.tm.armed) {
+
+### NtCancelTimer reports the state as unsignalled (W5 step 7)
+--- old
+    cur = o->u.tm.state;
+    o->u.tm.armed = 0;
++++ new
+    cur = 0;
+    o->u.tm.armed = 0;
+
+### a keyed event takes an odd key (W5 step 7)
+--- old
+    if (key & 1u) {
++++ new
+    if (0) {
+
+### a keyed wait ends without a release (W5 step 7)
+--- old
+        } else if (o->u.ke.released[slot] != 0u) {
++++ new
+        } else if (1) {
+
+### a suspension ends a thread's wait with STATUS_USER_APC (W5 step 3)
+--- old
+           (__atomic_load_n(&ks_id(me)->sig_pending, __ATOMIC_ACQUIRE) & ~quiet) != 0u;
++++ new
+           1;

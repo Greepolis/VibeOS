@@ -55,3 +55,72 @@
     if (start == 0u || !nt_user_ok(start, 1u, 0)) {
 +++ new
     if (start == 0u) {
+
+### a thread made suspended starts at once (W5 step 3)
+--- old
+        if (!suspended) {
+            (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
++++ new
+        if (1) {
+            (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
+
+### the suspend count is not counted (W5 step 3)
+--- old
+        ks_id(v.slot)->nt_suspend = prev + 1u;
++++ new
+        ks_id(v.slot)->nt_suspend = 1u;
+
+### the first resume starts a thread suspended twice (W5 step 3)
+--- old
+        if (*prev == 1u) {
+            start = vibeos_task_state((uint32_t)v->slot) == VIBEOS_TASK_SETUP;
++++ new
+        if (*prev >= 1u) {
+            start = vibeos_task_state((uint32_t)v->slot) == VIBEOS_TASK_SETUP;
+
+### NtAlertThread alerts nothing (W5 step 3)
+--- old
+    if (thread_live(&v)) {
+        __atomic_store_n(&ks_id(v.slot)->nt_alerted, 1u, __ATOMIC_RELEASE);
+    }
+    thread_unview(&v);
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
++++ new
+    thread_unview(&v);
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+
+### a thread's basic information names its process as its thread (W5 step 2)
+--- old
+            put64_(b, 16, v.pid);
++++ new
+            put64_(b, 16, v.tid);
+
+### a thread hidden from a debugger says it is not (W5 step 2)
+--- old
+            b[0] = (uint8_t)(v.hidden != 0);
++++ new
+            b[0] = 0;
+
+### NtOpenThread opens a thread of another process (W5 step 2)
+--- old
+        if (ks_id(slot)->tgid != ks_id(me)->tgid || !ks_id(slot)->is_user || s == VIBEOS_TASK_ZOMBIE ||
++++ new
+        if (!ks_id(slot)->is_user || s == VIBEOS_TASK_ZOMBIE ||
+
+### NtGetNextThread starts again from the first every time (W5 step 2)
+--- old
+        start = v.slot < 0 ? 0u : (uint32_t)v.slot + 1u;
++++ new
+        start = 0u;
+
+### another thread's end tells its handles nothing (W5 step 3)
+--- old
+        e.code = status;
++++ new
+        e.code = 0x103u;
+
+### another thread's end kills its whole process (W5 step 3)
+--- old
+        ks_id(v.slot)->exec_killed = 1;
++++ new
+        ks_id(v.slot)->exec_killed = 0;

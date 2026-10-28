@@ -220,6 +220,42 @@ static const char *thread_check(void) {
     if (NtClose(th) != VIBEOS_STATUS_SUCCESS) {
         return "NT_HELLO_FAIL thread_close\n";
     }
+    /* W5 step 3: made suspended, it does not run until it is resumed. */
+    {
+        int64_t wait20 = -200000;   /* 20 ms */
+        uint32_t prev = 7;
+
+        g_thread_saw = 0;
+        if (NtCreateThreadEx(&th, 0x001FFFFFu, 0, VIBEOS_NT_CURRENT_PROCESS, (void *)thread_routine,
+                             (void *)(uintptr_t)0xC0DEu, 1u /* CREATE_SUSPENDED */, 0, 0, 0, 0) !=
+            VIBEOS_STATUS_SUCCESS) {
+            return "NT_HELLO_FAIL thread_suspended_create\n";
+        }
+        (void)NtDelayExecution(0, &wait20);
+        if (g_thread_saw != 0u) {
+            return "NT_HELLO_FAIL thread_ran_suspended\n";
+        }
+        if (NtResumeThread(th, &prev) != VIBEOS_STATUS_SUCCESS || prev != 1u ||
+            NtWaitForSingleObject(th, 0, 0) != VIBEOS_STATUS_SUCCESS || g_thread_saw != 0xC0DEu) {
+            return "NT_HELLO_FAIL thread_resume\n";
+        }
+        (void)NtClose(th);
+    }
+    /* W5 step 7: a synchronization timer fires once, for one waiter. */
+    {
+        uint64_t tm = 0;
+        int64_t due = -100000, none = 0;   /* 10 ms; and no wait at all */
+
+        if (NtCreateTimer(&tm, 0x001F0003u, 0, 1u) != VIBEOS_STATUS_SUCCESS ||
+            NtSetTimer(tm, &due, 0, 0, 0, 0, 0) != VIBEOS_STATUS_SUCCESS) {
+            return "NT_HELLO_FAIL timer_set\n";
+        }
+        if (NtWaitForSingleObject(tm, 0, 0) != VIBEOS_STATUS_SUCCESS ||
+            NtWaitForSingleObject(tm, 0, &none) != VIBEOS_STATUS_TIMEOUT) {
+            return "NT_HELLO_FAIL timer_fire\n";
+        }
+        (void)NtClose(tm);
+    }
     return 0;
 }
 

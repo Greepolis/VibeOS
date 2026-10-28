@@ -70,6 +70,10 @@ uint32_t nt_status_of_errno(long err);
 
 struct nt_ob;
 
+/* The keys a keyed event tracks at once: a key with a waiter or a release
+ * pending holds a slot (W5 step 7). */
+#define NT_KEYED_SLOTS 16u
+
 /* An NT object type: a description type's operations carry one. */
 typedef struct vibeos_nt_type {
     const char *name;            /* "Event", as NtQueryObject names it        */
@@ -109,6 +113,18 @@ typedef struct nt_ob {
             int32_t max;
         } sem;
         struct {
+            uint32_t kind;        /* NotificationTimer 0, SynchronizationTimer 1 */
+            uint32_t armed;
+            uint32_t state;
+            uint64_t due;         /* in ticks                                  */
+            uint64_t period;      /* in ticks; 0 for a one-shot timer          */
+        } tm;
+        struct {
+            uint64_t key[NT_KEYED_SLOTS];
+            uint32_t waiting[NT_KEYED_SLOTS];
+            uint32_t released[NT_KEYED_SLOTS];
+        } ke;
+        struct {
             int slot;             /* the task, -1 until it is made             */
             uint32_t seq;         /* and which tenancy of the slot it is       */
             uint32_t tid;
@@ -116,6 +132,8 @@ typedef struct nt_ob {
             uint64_t teb;
             uint32_t exit_code;   /* STILL_ACTIVE until it ends                */
             uint32_t ended;       /* it ended through NtTerminateThread        */
+            uint64_t start;       /* the routine it was made with              */
+            uint32_t hidden;      /* THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER     */
         } th;
         struct {
             vibeos_file_t *file;  /* a reference: the image's file             */
@@ -161,6 +179,12 @@ uint32_t nt_io_event(uint64_t h, int set);
 uint32_t nt_alloc_rw(uint64_t size, uint64_t *base);
 void nt_free_alloc(uint64_t base, uint64_t size);
 extern const vibeos_file_ops_t g_nt_thread_ops;
+/* A CONTEXT's integer and control registers, to and from the machine's
+ * (thread.c): NtGetContextThread, NtContinue, the APC and exception frames. */
+void nt_context_from_regs(const vibeos_uregs_t *r, uint8_t *ctx, uint32_t flags);
+void nt_context_to_regs(const uint8_t *ctx, vibeos_uregs_t *r, uint32_t flags);
+/* Ticks since boot as a FILETIME: 100 ns since 1601, on the clock NtQuerySystemTime uses. */
+uint64_t nt_ticks_to_filetime(uint64_t ticks);
 /* An NT path - "\??\C:\..." - as the VFS path it names. A status. */
 uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap);
 /* A handle for `f`, taking over the caller's reference (released on failure). */

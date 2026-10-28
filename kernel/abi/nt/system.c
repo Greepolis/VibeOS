@@ -16,6 +16,10 @@ static uint64_t nt_now_100ns(void) {
     return ks_ticks() * (VIBEOS_NT_PERF_FREQUENCY / (uint64_t)ks_hz());
 }
 
+uint64_t nt_ticks_to_filetime(uint64_t ticks) {
+    return VIBEOS_NT_EPOCH_DELTA + ticks * (VIBEOS_NT_PERF_FREQUENCY / (uint64_t)ks_hz());
+}
+
 static long nt_put64(uint64_t uptr, uint64_t v) {
     return nt_copy_out(uptr, &v, sizeof(v)) == 0
                ? NT_STATUS(VIBEOS_STATUS_SUCCESS)

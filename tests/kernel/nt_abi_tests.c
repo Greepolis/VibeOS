@@ -184,27 +184,27 @@ static void t_process(void) {
     const uint64_t zero = 0;
 
     ks_image(me)->start_arg = 0x8003FF0000ull;
-    kf_next_sp(stack_args(&zero, 1));
+    kf_next_sp(stack_args_(&zero, 1));
     expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, VIBEOS_NT_CURRENT_PROCESS,
               0xFFFFFFFF00000000ull | VIBEOS_NT_PROCESS_BASIC_INFORMATION, buf,
               0xABCD000000000030ull, 0) == ST(VIBEOS_STATUS_SUCCESS),
            "ProcessBasicInformation for oneself, with garbage in the 32-bit arguments' upper halves");
     expect(pbi->peb == 0x8003FF0000ull && pbi->unique_process_id == 33u,
            "the PEB the image was started with, and the process id");
-    kf_next_sp(stack_args(&got, 1));
+    kf_next_sp(stack_args_(&got, 1));
     expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, VIBEOS_NT_CURRENT_PROCESS, 0, buf, 48, 0) ==
                ST(VIBEOS_STATUS_SUCCESS) && *(uint32_t *)kf_uptr(got) == 48u,
            "the fifth argument, from the stack: the length written");
-    kf_next_sp(stack_args(&zero, 1));
+    kf_next_sp(stack_args_(&zero, 1));
     expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, VIBEOS_NT_CURRENT_PROCESS, 0, buf, 8, 0) ==
                ST(VIBEOS_STATUS_INFO_LENGTH_MISMATCH), "a short buffer is a length mismatch");
-    kf_next_sp(stack_args(&zero, 1));
+    kf_next_sp(stack_args_(&zero, 1));
     expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, VIBEOS_NT_CURRENT_PROCESS, 7, buf, 48, 0) ==
                ST(VIBEOS_STATUS_INVALID_INFO_CLASS), "a class W1 does not answer");
-    kf_next_sp(stack_args(&zero, 1));
+    kf_next_sp(stack_args_(&zero, 1));
     expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, 4, 0, buf, 48, 0) ==
                ST(VIBEOS_STATUS_INVALID_HANDLE), "another process's handle does not exist yet");
-    kf_next_sp(stack_args(&zero, 1));
+    kf_next_sp(stack_args_(&zero, 1));
     expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, VIBEOS_NT_CURRENT_PROCESS, 0, 0x10, 48, 0) ==
                ST(VIBEOS_STATUS_ACCESS_VIOLATION), "a buffer that is nobody's memory");
     expect(nt(VIBEOS_NT_NR_NtTerminateProcess, 4, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
@@ -297,7 +297,7 @@ static long create_event(uint64_t *h, uint32_t access, uint64_t oa, uint32_t typ
     uint64_t out = kf_ualloc(8), arg = (uint64_t)(initial ? 1u : 0u) | 0xAB00u;
     long r;
 
-    kf_next_sp(stack_args(&arg, 1));
+    kf_next_sp(stack_args_(&arg, 1));
     r = nt(VIBEOS_NT_NR_NtCreateEvent, out, 0xFFFFFFFF00000000ull | access, oa,
            0xFFFFFFFF00000000ull | type, 0);
     *h = *(uint64_t *)kf_uptr(out);
@@ -306,7 +306,7 @@ static long create_event(uint64_t *h, uint32_t access, uint64_t oa, uint32_t typ
 
 static int32_t event_state(uint64_t h) {
     uint64_t buf = kf_ualloc(8);
-    kf_next_sp(stack_args(&g_zero5, 1));
+    kf_next_sp(stack_args_(&g_zero5, 1));
     if (nt(VIBEOS_NT_NR_NtQueryEvent, h, 0, buf, 8, 0) != ST(VIBEOS_STATUS_SUCCESS)) {
         return -99;
     }
@@ -325,7 +325,7 @@ static long waitn(const uint64_t *hs, uint32_t n, int all, int64_t timeout) {
 
     memcpy(kf_uptr(arr), hs, 8u * n);
     *(int64_t *)kf_uptr(t) = timeout;
-    kf_next_sp(stack_args(&tptr, 1));
+    kf_next_sp(stack_args_(&tptr, 1));
     return nt(VIBEOS_NT_NR_NtWaitForMultipleObjects, n, arr, all ? 0 : 1, 0, 0);
 }
 
@@ -386,7 +386,7 @@ static int32_t mutant_count(uint64_t h, int *owned) {
     uint64_t buf = kf_ualloc(8);
     const vibeos_nt_mutant_basic_t *m = (const vibeos_nt_mutant_basic_t *)kf_uptr(buf);
 
-    kf_next_sp(stack_args(&g_zero5, 1));
+    kf_next_sp(stack_args_(&g_zero5, 1));
     if (nt(VIBEOS_NT_NR_NtQueryMutant, h, 0, buf, 8, 0) != ST(VIBEOS_STATUS_SUCCESS)) {
         return -99;
     }
@@ -441,7 +441,7 @@ static long create_semaphore(uint64_t *h, int32_t initial, int32_t maximum) {
     uint64_t out = kf_ualloc(8), arg = 0xFFFFFFFF00000000ull | (uint32_t)maximum;
     long r;
 
-    kf_next_sp(stack_args(&arg, 1));
+    kf_next_sp(stack_args_(&arg, 1));
     r = nt(VIBEOS_NT_NR_NtCreateSemaphore, out, VIBEOS_SEMAPHORE_ALL_ACCESS, 0,
            0xFFFFFFFF00000000ull | (uint32_t)initial, 0);
     *h = *(uint64_t *)kf_uptr(out);
@@ -451,7 +451,7 @@ static long create_semaphore(uint64_t *h, int32_t initial, int32_t maximum) {
 static int32_t semaphore_count(uint64_t h) {
     uint64_t buf = kf_ualloc(8);
 
-    kf_next_sp(stack_args(&g_zero5, 1));
+    kf_next_sp(stack_args_(&g_zero5, 1));
     if (nt(VIBEOS_NT_NR_NtQuerySemaphore, h, 0, buf, 8, 0) != ST(VIBEOS_STATUS_SUCCESS)) {
         return -99;
     }
@@ -1400,6 +1400,196 @@ static void t_create_thread(void) {
     (void)nt(VIBEOS_NT_NR_NtTerminateThread, 0, 5, 0, 0, &how);
     expect(how == KF_EXITED && kf_exit_code() == 5u && kf_exit_was_group(),
            "the last thread's end is the process's, with its status");
+}
+
+static long create_thread_flags(uint64_t *h, uint64_t start, uint64_t flags) {
+    uint64_t out = kf_ualloc(8);
+    uint64_t rest[7] = { start, 0, flags, 0, 0, 0, 0 };
+    long r;
+
+    kf_next_sp(stack_args(rest, 7));
+    r = nt(VIBEOS_NT_NR_NtCreateThreadEx, out, 0x001FFFFFu, 0, VIBEOS_NT_CURRENT_PROCESS, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+/* NtQueryInformationThread(h, class, buf, len, no return length): the fifth
+ * argument is the stack's. */
+static long qthread(uint64_t h, uint32_t cls, uint64_t buf, uint32_t len) {
+    uint64_t rest[1] = { 0 };
+
+    kf_next_sp(stack_args(rest, 1));
+    return nt(VIBEOS_NT_NR_NtQueryInformationThread, h, cls, buf, len, 0);
+}
+
+/* The slot of the thread `h` names, through its basic information. */
+static int thread_slot(uint64_t h) {
+    uint64_t buf = kf_ualloc(48);
+    uint32_t i;
+
+    if (qthread(h, 0, buf, 48) != ST(VIBEOS_STATUS_SUCCESS)) {
+        return -1;
+    }
+    for (i = 0; i < KF_SLOTS; i++) {
+        if (vibeos_task_state(i) != VIBEOS_TASK_FREE && ks_id((int)i)->pid == ((uint64_t *)kf_uptr(buf))[3]) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* W5 steps 2 and 3: what a thread says of itself, the ways to name one, and
+ * suspend, resume and alert. */
+static void t_thread_info(void) {
+    uint64_t h = 0, h2 = 0, buf = kf_ualloc(64), prev = kf_ualloc(4), cid = kf_ualloc(16);
+    uint64_t routine = kf_ualloc(16), out = kf_ualloc(8);
+    const uint8_t *b = (const uint8_t *)kf_uptr(buf);
+    int me = fresh(56), child;
+    kf_outcome_t how = KF_RETURNED;
+
+    ks_image(me)->entry = kf_ualloc(16);
+    ks_image(me)->start_arg = kf_ualloc(64);
+    expect(create_thread_flags(&h, routine, 0x1u | 0x4u /* suspended, hidden */) == ST(VIBEOS_STATUS_SUCCESS),
+           "a thread made suspended and hidden from a debugger");
+    child = thread_slot(h);
+    expect(child >= 0 && vibeos_task_state((uint32_t)child) == VIBEOS_TASK_SETUP,
+           "a suspended thread is made and not started");
+    expect(qthread(h, 0, buf, 48) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(const uint32_t *)b == 0x103u && *(const uint64_t *)(b + 8) == ks_gs_get(child) &&
+               *(const uint64_t *)(b + 16) == ks_id(me)->tgid,
+           "ThreadBasicInformation: still active, its TEB, its process");
+    memset((void *)b, 0xCC, 8);
+    expect(qthread(h, 17, buf, 1) == ST(VIBEOS_STATUS_SUCCESS) &&
+               b[0] == 1u,
+           "ThreadHideFromDebugger says it was hidden");
+    expect(qthread(h, 0, buf, 40) == ST(VIBEOS_STATUS_INFO_LENGTH_MISMATCH) &&
+               qthread(h, 99, buf, 8) == ST(VIBEOS_STATUS_INVALID_INFO_CLASS),
+           "a length short of the class, a class not answered");
+    expect(nt(VIBEOS_NT_NR_NtSuspendThread, h, prev, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)kf_uptr(prev) == 1u,
+           "a second suspension: the count was one");
+    expect(nt(VIBEOS_NT_NR_NtResumeThread, h, prev, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)kf_uptr(prev) == 2u && vibeos_task_state((uint32_t)child) == VIBEOS_TASK_SETUP,
+           "one resume takes it back to one, and it is not started");
+    expect(nt(VIBEOS_NT_NR_NtResumeThread, h, prev, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)kf_uptr(prev) == 1u && vibeos_task_state((uint32_t)child) == VIBEOS_TASK_READY,
+           "the last resume starts it");
+    expect(nt(VIBEOS_NT_NR_NtResumeThread, h, prev, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)kf_uptr(prev) == 0u,
+           "a resume of a running thread changes nothing and says zero");
+    expect(nt(VIBEOS_NT_NR_NtAlertThread, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) && ks_id(child)->nt_alerted,
+           "NtAlertThread alerts it");
+    ((uint64_t *)kf_uptr(cid))[0] = 0;
+    ((uint64_t *)kf_uptr(cid))[1] = ks_id(child)->pid;
+    expect(nt(VIBEOS_NT_NR_NtOpenThread, out, 0x001FFFFFu, 0, cid, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               thread_slot(*(uint64_t *)kf_uptr(out)) == child,
+           "NtOpenThread finds it by its id");
+    ((uint64_t *)kf_uptr(cid))[1] = 99999u;
+    expect(nt(VIBEOS_NT_NR_NtOpenThread, out, 0x001FFFFFu, 0, cid, 0) == ST(VIBEOS_STATUS_INVALID_CID),
+           "and an id nobody has is no thread");
+    {
+        int other = kf_spawn(58, 58);
+
+        ((uint64_t *)kf_uptr(cid))[1] = ks_id(other)->pid;
+        expect(nt(VIBEOS_NT_NR_NtOpenThread, out, 0x001FFFFFu, 0, cid, 0) == ST(VIBEOS_STATUS_INVALID_CID),
+               "nor is another process's thread, by its id alone (W6 opens those)");
+    }
+    {
+        /* A suspension sends the stop SIGSTOP is; a thread waiting when it
+         * comes keeps waiting, rather than ending its wait STATUS_USER_APC. */
+        uint64_t ev = 0;
+
+        (void)create_event(&ev, VIBEOS_EVENT_ALL_ACCESS, 0, VIBEOS_NT_NOTIFICATION_EVENT, 0);
+        ks_id(me)->sig_pending |= 1ull << VIBEOS_SIGSTOP;
+        expect(wait1(ev, -200000) == ST(VIBEOS_STATUS_TIMEOUT),
+               "a pending stop does not end a wait: it waits out its time");
+        ks_id(me)->sig_pending = 0;
+    }
+    {
+        uint64_t rest[2] = { 0, out };
+
+        kf_next_sp(stack_args(rest, 2));
+        expect(nt(VIBEOS_NT_NR_NtGetNextThread, VIBEOS_NT_CURRENT_PROCESS, 0, 0x001FFFFFu, 0, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS) && thread_slot(*(uint64_t *)kf_uptr(out)) >= 0,
+               "NtGetNextThread walks the process's threads");
+        h2 = *(uint64_t *)kf_uptr(out);
+        kf_next_sp(stack_args(rest, 2));
+        (void)nt(VIBEOS_NT_NR_NtGetNextThread, VIBEOS_NT_CURRENT_PROCESS, h2, 0x001FFFFFu, 0, 0);
+        h2 = *(uint64_t *)kf_uptr(out);
+        kf_next_sp(stack_args(rest, 2));
+        expect(nt(VIBEOS_NT_NR_NtGetNextThread, VIBEOS_NT_CURRENT_PROCESS, h2, 0x001FFFFFu, 0, 0) ==
+                   ST(VIBEOS_STATUS_NO_MORE_ENTRIES),
+               "two threads, and then no more");
+    }
+    expect(nt(VIBEOS_NT_NR_NtTerminateThread, h, 9, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               ks_id(child)->exec_killed && (ks_id(child)->sig_pending & (1ull << VIBEOS_SIGKILL)) != 0u,
+           "NtTerminateThread of another thread kills that thread alone");
+    expect(qthread(h, 0, buf, 48) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(const uint32_t *)b == 9u,
+           "and its handle reports the status it was given");
+    (void)how;
+}
+
+/* W5 step 7: waitable timers and keyed events. */
+static void t_timers(void) {
+    uint64_t h = 0, out = kf_ualloc(8), due = kf_ualloc(8), cur = kf_ualloc(4), buf = kf_ualloc(16);
+
+    fresh(57);
+    expect(nt(VIBEOS_NT_NR_NtCreateTimer, out, 0x001F0003u, 0, 1 /* synchronization */, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS),
+           "a synchronization timer");
+    h = *(uint64_t *)kf_uptr(out);
+    expect(wait1(h, 0) == ST(VIBEOS_STATUS_TIMEOUT), "not signalled before it is set");
+    *(int64_t *)kf_uptr(due) = -500000;   /* 50 ms from now */
+    {
+        uint64_t rest[3] = { 0, 0, cur };
+
+        kf_next_sp(stack_args(rest, 3));
+        expect(nt(VIBEOS_NT_NR_NtSetTimer, h, due, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "set fifty milliseconds out");
+    }
+    expect(wait1(h, 0) == ST(VIBEOS_STATUS_TIMEOUT), "not yet due");
+    expect(wait1(h, -10000000) == ST(VIBEOS_STATUS_SUCCESS), "a wait sees it fire");
+    expect(wait1(h, 0) == ST(VIBEOS_STATUS_TIMEOUT), "and the waiter took it: a synchronization timer");
+    {
+        uint64_t rest[1] = { 0 };
+
+        kf_next_sp(stack_args(rest, 1));
+        expect(nt(VIBEOS_NT_NR_NtQueryTimer, h, 0, buf, 12, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   ((uint8_t *)kf_uptr(buf))[8] == 0u,
+               "NtQueryTimer: not signalled now");
+    }
+    expect(nt(VIBEOS_NT_NR_NtCreateTimer, out, 0x001F0003u, 0, 0 /* notification */, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS),
+           "a notification timer");
+    h = *(uint64_t *)kf_uptr(out);
+    *(int64_t *)kf_uptr(due) = -1;
+    {
+        uint64_t rest[3] = { 0, 0, 0 };
+
+        kf_next_sp(stack_args(rest, 3));
+        (void)nt(VIBEOS_NT_NR_NtSetTimer, h, due, 0, 0, 0);
+    }
+    expect(wait1(h, -10000000) == ST(VIBEOS_STATUS_SUCCESS) && wait1(h, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a notification timer stays signalled for every waiter");
+    expect(nt(VIBEOS_NT_NR_NtCancelTimer, h, cur, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               ((uint8_t *)kf_uptr(cur))[0] == 1u,
+           "a cancel says it was signalled");
+    {
+        uint64_t t = kf_ualloc(8);
+
+        *(int64_t *)kf_uptr(t) = -100000;
+        expect(nt(VIBEOS_NT_NR_NtCreateKeyedEvent, out, 0x000F0003u, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "a keyed event");
+        h = *(uint64_t *)kf_uptr(out);
+        expect(nt(VIBEOS_NT_NR_NtWaitForKeyedEvent, h, 0x1000, 0, t, 0) == ST(VIBEOS_STATUS_TIMEOUT) &&
+                   nt(VIBEOS_NT_NR_NtReleaseKeyedEvent, h, 0x1000, 0, t, 0) == ST(VIBEOS_STATUS_TIMEOUT),
+               "a wait with no release, and a release with no waiter, each time out");
+        expect(nt(VIBEOS_NT_NR_NtWaitForKeyedEvent, h, 0x1001, 0, t, 0) == ST(VIBEOS_STATUS_INVALID_PARAMETER_1),
+               "an odd key is refused");
+        expect(nt(VIBEOS_NT_NR_NtReleaseKeyedEvent, 0, 0x2000, 0, t, 0) == ST(VIBEOS_STATUS_TIMEOUT),
+               "handle 0 is the process's keyed event");
+    }
 }
 
 static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
@@ -2476,6 +2666,8 @@ int test_nt_abi(void) {
     t_delete_follows_file();
     t_nt_chroot();
     t_create_thread();
+    t_thread_info();
+    t_timers();
     t_create_file();
     t_sections();
     t_open_file_permissions();
