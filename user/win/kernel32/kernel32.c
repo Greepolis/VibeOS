@@ -476,6 +476,8 @@ uint64_t CreateFileA(const char *name, uint32_t access, uint32_t share, const vo
     return CreateFileW(w, access, share, sa, disposition, flags, template_file);
 }
 
+uint32_t GetThreadId(uint64_t h);   /* below, with the thread calls; CreateThread reports it */
+
 uint64_t CreateThread(const void *sa, size_t stack, void *start, void *param, uint32_t flags,
                       uint32_t *tid) {
     named_t n;
@@ -490,7 +492,7 @@ uint64_t CreateThread(const void *sa, size_t stack, void *start, void *param, ui
         return (uint64_t)fail(st);
     }
     if (tid) {
-        *tid = 0;   /* the thread's id comes with W5's NtQueryInformationThread */
+        *tid = GetThreadId(h);
     }
     return h;
 }
@@ -1701,9 +1703,12 @@ uint32_t GetFileType(uint64_t h) {
     return dev[0] == 7u ? 1u /* FILE_TYPE_DISK */ : 2u;
 }
 
-/* A critical section, while a process has one thread (threads are W5's): the
- * owner and the recursion count kept where Windows keeps them, so a program
- * that reads them finds what it expects. */
+/* A critical section, as Windows lays it out - LockCount at 8 (-1 free, else
+ * the number of threads that want it, less one), RecursionCount at 12, the
+ * owner's id at 16 - and as Windows waits on it: a thread that finds it held
+ * sleeps on the process's keyed event under the section's address, and the
+ * leaving owner releases one sleeper there (W5 step 8). Until then it only
+ * counted, which was right while a process had one thread. */
 void InitializeCriticalSection(void *cs) {
     uint8_t *p = (uint8_t *)cs;
     uint32_t i;
@@ -1711,33 +1716,281 @@ void InitializeCriticalSection(void *cs) {
     for (i = 0; i < 40u; i++) {
         p[i] = 0;
     }
-    *(int32_t *)(p + 8) = -1;   /* LockCount: free */
+    *(volatile int32_t *)(p + 8) = -1;
+}
+
+BOOL32 InitializeCriticalSectionAndSpinCount(void *cs, uint32_t spin) {
+    InitializeCriticalSection(cs);
+    *(uint64_t *)((uint8_t *)cs + 32) = spin;
+    return 1;
+}
+
+BOOL32 InitializeCriticalSectionEx(void *cs, uint32_t spin, uint32_t flags) {
+    (void)flags;
+    return InitializeCriticalSectionAndSpinCount(cs, spin);
 }
 
 void EnterCriticalSection(void *cs) {
     uint8_t *p = (uint8_t *)cs;
+    volatile int32_t *lock = (volatile int32_t *)(p + 8);
+    volatile uint64_t *owner = (volatile uint64_t *)(p + 16);
+    uint64_t me = GetCurrentThreadId();
 
-    (*(int32_t *)(p + 8))++;
-    (*(int32_t *)(p + 12))++;
-    *(uint64_t *)(p + 16) = 1u;
+    if (*owner == me) {
+        __atomic_add_fetch(lock, 1, __ATOMIC_ACQ_REL);
+        (*(int32_t *)(p + 12))++;
+        return;
+    }
+    if (__atomic_add_fetch(lock, 1, __ATOMIC_ACQ_REL) != 0) {
+        /* Held: the owner's leave releases one of us under this address. */
+        (void)NtWaitForKeyedEvent(0, cs, 0, 0);
+    }
+    *owner = me;
+    *(int32_t *)(p + 12) = 1;
 }
 
 BOOL32 TryEnterCriticalSection(void *cs) {
-    EnterCriticalSection(cs);
+    uint8_t *p = (uint8_t *)cs;
+    volatile int32_t *lock = (volatile int32_t *)(p + 8);
+    uint64_t me = GetCurrentThreadId();
+    int32_t free_ = -1;
+
+    if (*(volatile uint64_t *)(p + 16) == me) {
+        __atomic_add_fetch(lock, 1, __ATOMIC_ACQ_REL);
+        (*(int32_t *)(p + 12))++;
+        return 1;
+    }
+    if (!__atomic_compare_exchange_n(lock, &free_, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return 0;
+    }
+    *(volatile uint64_t *)(p + 16) = me;
+    *(int32_t *)(p + 12) = 1;
     return 1;
 }
 
 void LeaveCriticalSection(void *cs) {
     uint8_t *p = (uint8_t *)cs;
+    volatile int32_t *lock = (volatile int32_t *)(p + 8);
 
-    (*(int32_t *)(p + 8))--;
-    if (--(*(int32_t *)(p + 12)) == 0) {
-        *(uint64_t *)(p + 16) = 0u;
+    if (--(*(int32_t *)(p + 12)) != 0) {
+        __atomic_sub_fetch(lock, 1, __ATOMIC_ACQ_REL);   /* still ours, one level less */
+        return;
+    }
+    *(volatile uint64_t *)(p + 16) = 0u;
+    if (__atomic_sub_fetch(lock, 1, __ATOMIC_ACQ_REL) >= 0) {
+        (void)NtReleaseKeyedEvent(0, cs, 0, 0);   /* somebody wanted it: hand it on */
     }
 }
 
 void DeleteCriticalSection(void *cs) {
     (void)cs;
+}
+
+/* ---- threads (W5 step 8) ---------------------------------------------------------------- */
+
+/* THREAD_BASIC_INFORMATION: ExitStatus at 0, TebBaseAddress at 8, ClientId
+ * (process, thread) at 16, AffinityMask at 32, Priority at 40. */
+static int thread_basic(uint64_t h, uint8_t *b) {
+    NTSTATUS_T st = NtQueryInformationThread(h, 0u, b, 48u, 0);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+uint32_t GetThreadId(uint64_t h) {
+    uint8_t b[48];
+
+    return thread_basic(h, b) ? (uint32_t)*(uint64_t *)(b + 24) : 0u;
+}
+
+uint32_t GetProcessIdOfThread(uint64_t h) {
+    uint8_t b[48];
+
+    return thread_basic(h, b) ? (uint32_t)*(uint64_t *)(b + 16) : 0u;
+}
+
+BOOL32 GetExitCodeThread(uint64_t h, uint32_t *code) {
+    uint8_t b[48];
+
+    if (!thread_basic(h, b)) {
+        return 0;
+    }
+    *code = *(uint32_t *)b;
+    return 1;
+}
+
+__attribute__((noreturn)) void ExitThread(uint32_t code) {
+    (void)NtTerminateThread(VIBEOS_NT_CURRENT_THREAD, code);
+    for (;;) {
+        /* NtTerminateThread of ourselves does not return. */
+    }
+}
+
+BOOL32 TerminateThread(uint64_t h, uint32_t code) {
+    NTSTATUS_T st = NtTerminateThread(h, code);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+uint32_t SuspendThread(uint64_t h) {
+    uint32_t prev = 0;
+    NTSTATUS_T st = NtSuspendThread(h, &prev);
+
+    if (failed(st)) {
+        fail(st);
+        return 0xFFFFFFFFu;
+    }
+    return prev;
+}
+
+uint32_t ResumeThread(uint64_t h) {
+    uint32_t prev = 0;
+    NTSTATUS_T st = NtResumeThread(h, &prev);
+
+    if (failed(st)) {
+        fail(st);
+        return 0xFFFFFFFFu;
+    }
+    return prev;
+}
+
+uint64_t CreateRemoteThread(uint64_t process, const void *sa, size_t stack, void *start, void *param,
+                            uint32_t flags, uint32_t *tid) {
+    if (process != VIBEOS_NT_CURRENT_PROCESS) {
+        set_error(ERROR_INVALID_HANDLE);   /* another process's threads: W6 */
+        return 0;
+    }
+    return CreateThread(sa, stack, start, param, flags, tid);
+}
+
+uint64_t OpenThread(uint32_t access, BOOL32 inherit, uint32_t tid) {
+    named_t n;
+    uint64_t h = 0, cid[2] = { 0, tid };
+    NTSTATUS_T st;
+
+    (void)attributes_w(&n, 0, inherit, 0);
+    st = NtOpenThread(&h, access, n.oa, cid);
+    return failed(st) ? (uint64_t)fail(st) : h;
+}
+
+BOOL32 SwitchToThread(void) {
+    return NtYieldExecution() == VIBEOS_STATUS_SUCCESS;
+}
+
+/* Priorities are kept by the handle's thread as Windows reports them back; the
+ * scheduler's classes are Linux's, and W5 does not map one onto the other. */
+BOOL32 SetThreadPriority(uint64_t h, int32_t prio) {
+    NTSTATUS_T st = NtSetInformationThread(h, 3u /* ThreadBasePriority */, &prio, 4u);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+int32_t GetThreadPriority(uint64_t h) {
+    uint8_t b[48];
+
+    return thread_basic(h, b) ? 0 : 0x7FFFFFFF;   /* THREAD_PRIORITY_NORMAL, or the error value */
+}
+
+uint64_t SetThreadAffinityMask(uint64_t h, uint64_t mask) {
+    uint8_t b[48];
+    NTSTATUS_T st;
+
+    if (!thread_basic(h, b)) {
+        return 0;
+    }
+    st = NtSetInformationThread(h, 4u /* ThreadAffinityMask */, &mask, 8u);
+    return failed(st) ? (uint64_t)fail(st) : *(uint64_t *)(b + 32);
+}
+
+BOOL32 GetThreadTimes(uint64_t h, int64_t *created, int64_t *exited, int64_t *kernel, int64_t *user) {
+    int64_t t[4];
+    NTSTATUS_T st = NtQueryInformationThread(h, 1u, t, sizeof(t), 0);
+
+    if (failed(st)) {
+        return fail(st);
+    }
+    *created = t[0];
+    *exited = t[1];
+    *kernel = t[2];
+    *user = t[3];
+    return 1;
+}
+
+void GetCurrentThreadStackLimits(uint64_t *low, uint64_t *high) {
+    *low = vibeos_nt_rd64(vibeos_nt_teb() + VIBEOS_TEB_DEALLOCATION_STACK);
+    *high = vibeos_nt_rd64(vibeos_nt_teb() + VIBEOS_TEB_STACK_BASE);
+}
+
+BOOL32 GetThreadContext(uint64_t h, void *ctx) {
+    NTSTATUS_T st = NtGetContextThread(h, ctx);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 SetThreadContext(uint64_t h, const void *ctx) {
+    NTSTATUS_T st = NtSetContextThread(h, ctx);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+/* ---- waitable timers (W5 step 7) -------------------------------------------------------- */
+
+uint64_t CreateWaitableTimerW(const void *sa, BOOL32 manual, const uint16_t *name) {
+    named_t n;
+    uint64_t h = 0;
+    NTSTATUS_T st;
+    void *oa = attributes_w(&n, name, inherits(sa), 1);
+
+    if (!oa) {
+        return 0;
+    }
+    st = NtCreateTimer(&h, 0x001F0003u, oa, manual ? 0u : 1u);
+    return created(st, &h);
+}
+
+uint64_t CreateWaitableTimerA(const void *sa, BOOL32 manual, const char *name) {
+    named_t n;
+    uint16_t w[NAME_CHARS];
+
+    if (name && !attributes_a(&n, w, name, 0, 0)) {
+        return 0;
+    }
+    return CreateWaitableTimerW(sa, manual, name ? w : 0);
+}
+
+uint64_t OpenWaitableTimerW(uint32_t access, BOOL32 inherit, const uint16_t *name) {
+    named_t n;
+    uint64_t h = 0;
+    void *oa = attributes_w(&n, name, inherit, 0);
+
+    if (!oa) {
+        return 0;
+    }
+    return opened(NtOpenTimer(&h, access, oa), &h);
+}
+
+uint64_t OpenWaitableTimerA(uint32_t access, BOOL32 inherit, const char *name) {
+    uint16_t w[NAME_CHARS];
+
+    if (!name || widen(name, w, NAME_CHARS) < 0) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return OpenWaitableTimerW(access, inherit, w);
+}
+
+BOOL32 SetWaitableTimer(uint64_t h, const int64_t *due, int32_t period, void *apc, void *arg,
+                        BOOL32 resume) {
+    NTSTATUS_T st;
+
+    (void)arg;
+    st = NtSetTimer(h, due, apc, arg, (uint8_t)(resume != 0), period, 0);
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 CancelWaitableTimer(uint64_t h) {
+    NTSTATUS_T st = NtCancelTimer(h, 0);
+
+    return failed(st) ? fail(st) : 1;
 }
 
 /* GetTempFileName: <path>\<prefix, three characters><hex>.tmp. With `unique`

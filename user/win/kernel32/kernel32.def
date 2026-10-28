@@ -3,6 +3,7 @@
 ; ntdll's named stubs and says which when it calls it.
 LIBRARY kernel32.dll
 EXPORTS
+CancelWaitableTimer
 CloseHandle
 CompareFileTime
 CreateDirectoryA
@@ -15,15 +16,19 @@ CreateFileMappingW
 CreateFileW
 CreateMutexA
 CreateMutexW
+CreateRemoteThread
 CreateSemaphoreA
 CreateSemaphoreW
 CreateThread
+CreateWaitableTimerA
+CreateWaitableTimerW
 DeleteCriticalSection
 DeleteFileA
 DeleteFileW
 DuplicateHandle
 EnterCriticalSection
 ExitProcess
+ExitThread
 FindClose
 FindFirstFileA
 FindFirstFileW
@@ -37,9 +42,11 @@ GetCurrentProcess
 GetCurrentProcessId
 GetCurrentThread
 GetCurrentThreadId
+GetCurrentThreadStackLimits
 GetEnvironmentVariableA
 GetEnvironmentVariableW
 GetErrorMode
+GetExitCodeThread
 GetFileAttributesA
 GetFileAttributesExA
 GetFileAttributesExW
@@ -59,6 +66,7 @@ GetModuleHandleW
 GetNativeSystemInfo
 GetProcAddress
 GetProcessHeap
+GetProcessIdOfThread
 GetStdHandle
 GetSystemDirectoryA
 GetSystemDirectoryW
@@ -68,6 +76,10 @@ GetTempFileNameA
 GetTempFileNameW
 GetTempPathA
 GetTempPathW
+GetThreadContext
+GetThreadId
+GetThreadPriority
+GetThreadTimes
 GetTickCount
 GetTickCount64
 GetWindowsDirectoryA
@@ -78,6 +90,8 @@ HeapReAlloc
 HeapSize
 HeapValidate
 InitializeCriticalSection
+InitializeCriticalSectionAndSpinCount
+InitializeCriticalSectionEx
 IsBadStringPtrA
 IsBadStringPtrW
 LeaveCriticalSection
@@ -93,6 +107,9 @@ OpenFileMappingA
 OpenFileMappingW
 OpenMutexA
 OpenMutexW
+OpenThread
+OpenWaitableTimerA
+OpenWaitableTimerW
 PulseEvent
 ReadFile
 ReleaseMutex
@@ -100,6 +117,7 @@ ReleaseSemaphore
 RemoveDirectoryA
 RemoveDirectoryW
 ResetEvent
+ResumeThread
 SetEndOfFile
 SetErrorMode
 SetEvent
@@ -109,9 +127,16 @@ SetFilePointer
 SetFilePointerEx
 SetFileTime
 SetLastError
+SetThreadAffinityMask
+SetThreadContext
+SetThreadPriority
 SetUnhandledExceptionFilter
+SetWaitableTimer
 Sleep
 SleepEx
+SuspendThread
+SwitchToThread
+TerminateThread
 TlsAlloc
 TlsFree
 TlsGetValue
