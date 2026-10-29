@@ -752,7 +752,7 @@ kernel32:process ntdll:exception` (2026-10-29):
 | Test | Wine on Linux | VibeOS | Where it ends |
 |---|---|---|---|
 | `ntdll:thread` | 23 tests, 0 failures | **20 tests, 3 failures, to its end** | - (two NOT_IMPLEMENTED, one INVALID_HANDLE from creating a thread in another process) |
-| `kernel32:thread` | 907 tests, 0 failures | 16 failures, no summary | CreateRemoteThread and DuplicateHandle (error 6) |
+| `kernel32:thread` | 907 tests, 0 failures | 15 failures, no summary | CreateRemoteThread and DuplicateHandle (error 6) |
 | `kernel32:process` | 2,564 tests, 44 failures | 4 failures, no summary | `Beep` |
 | `ntdll:exception` | rc=5, no summary on Wine either | 2 failures | single-stepping |
 
