@@ -2442,3 +2442,142 @@ void RaiseException(uint32_t code, uint32_t flags, uint32_t nargs, const uint64_
     }
     RtlRaiseException(rec);
 }
+
+/* ---- processes (W6) ---------------------------------------------------------------------
+ * CreateProcess over NtCreateUserProcess. The image is the application name or
+ * the command line's first token, ".exe" added when it has no extension; the
+ * standard handles and every other handle are inherited whatever the flag
+ * says, and CREATE_SUSPENDED is refused by the kernel. */
+
+typedef struct {
+    uint64_t process, thread;
+    uint32_t pid, tid;
+} process_information_t;
+
+static uint32_t process_basic(uint64_t h, uint8_t *b) {
+    return NtQueryInformationProcess(h, 0, b, 48, 0);
+}
+
+BOOL32 CreateProcessW(const uint16_t *app, uint16_t *cmd, void *pattr, void *tattr, BOOL32 inherit,
+                      uint32_t flags, void *env, const uint16_t *curdir, void *startup,
+                      process_information_t *pi) {
+    uint16_t image[260];
+    vibeos_ustring_t img, line, nt, *dir = 0, cd;
+    void *params = 0;
+    uint64_t ph = 0, th = 0;
+    uint8_t b[48];
+    uint32_t n = 0, i = 0, dot = 0;
+    NTSTATUS_T st;
+
+    (void)pattr;
+    (void)tattr;
+    (void)inherit;
+    (void)startup;
+    if (app) {
+        while (app[n] && n + 5u < 260u) {
+            image[n] = app[n];
+            n++;
+        }
+    } else if (cmd) {
+        int quoted = cmd[0] == '"';
+
+        for (i = quoted ? 1u : 0u; cmd[i] && n + 5u < 260u; i++) {
+            if (quoted ? cmd[i] == '"' : (cmd[i] == ' ' || cmd[i] == '\t')) {
+                break;
+            }
+            image[n++] = cmd[i];
+        }
+    }
+    if (n == 0u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        if (image[i] == '.') {
+            dot = 1;
+        } else if (image[i] == '\\' || image[i] == '/') {
+            dot = 0;
+        }
+    }
+    if (!dot) {
+        image[n++] = '.';
+        image[n++] = 'e';
+        image[n++] = 'x';
+        image[n++] = 'e';
+    }
+    image[n] = 0;
+    if (!RtlDosPathNameToNtPathName_U(image, &nt, 0, 0)) {
+        set_error(ERROR_PATH_NOT_FOUND);
+        return 0;
+    }
+    RtlInitUnicodeString(&img, nt.Buffer);
+    RtlInitUnicodeString(&line, cmd ? cmd : image);
+    if (curdir) {
+        RtlInitUnicodeString(&cd, curdir);
+        dir = &cd;
+    }
+    st = RtlCreateProcessParametersEx(&params, &img, 0, dir, &line, env, 0, 0, 0, 0, 1);
+    if (!failed(st)) {
+        st = NtCreateUserProcess(&ph, &th, 0x001FFFFFu, 0x001FFFFFu, 0, 0, 0,
+                                 (flags & 4u) ? 1u : 0u /* CREATE_SUSPENDED */, params, 0, 0);
+        RtlDestroyProcessParameters(params);
+    }
+    RtlFreeUnicodeString(&nt);
+    if (failed(st)) {
+        return fail(st);
+    }
+    pi->process = ph;
+    pi->thread = th;
+    pi->pid = !failed(process_basic(ph, b)) ? (uint32_t)*(uint64_t *)(b + 32) : 0u;
+    pi->tid = GetThreadId(th);
+    return 1;
+}
+
+BOOL32 CreateProcessA(const char *app, char *cmd, void *pattr, void *tattr, BOOL32 inherit,
+                      uint32_t flags, void *env, const char *curdir, void *startup,
+                      process_information_t *pi) {
+    static uint16_t wapp[260], wcmd[2048], wdir[260];
+
+    if ((app && widen(app, wapp, 260) < 0) || (cmd && widen(cmd, wcmd, 2048) < 0) ||
+        (curdir && widen(curdir, wdir, 260) < 0)) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return CreateProcessW(app ? wapp : 0, cmd ? wcmd : 0, pattr, tattr, inherit, flags, env,
+                          curdir ? wdir : 0, startup, pi);
+}
+
+BOOL32 GetExitCodeProcess(uint64_t h, uint32_t *code) {
+    uint8_t b[48];
+    NTSTATUS_T st = process_basic(h, b);
+
+    if (failed(st)) {
+        return fail(st);
+    }
+    *code = *(uint32_t *)b;
+    return 1;
+}
+
+uint32_t GetProcessId(uint64_t h) {
+    uint8_t b[48];
+
+    return failed(process_basic(h, b)) ? 0u : (uint32_t)*(uint64_t *)(b + 32);
+}
+
+uint64_t OpenProcess(uint32_t access, BOOL32 inherit, uint32_t pid) {
+    uint64_t h = 0, cid[2] = { pid, 0 };
+    NTSTATUS_T st = NtOpenProcess(&h, access, 0, cid);
+
+    (void)inherit;
+    if (failed(st)) {
+        (void)fail(st);
+        return 0;
+    }
+    return h;
+}
+
+BOOL32 TerminateProcess(uint64_t h, uint32_t code) {
+    NTSTATUS_T st = NtTerminateProcess(h, code);
+
+    return failed(st) ? fail(st) : 1;
+}

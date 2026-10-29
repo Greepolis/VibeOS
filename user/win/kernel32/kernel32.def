@@ -17,6 +17,8 @@ CreateFileMappingW
 CreateFileW
 CreateMutexA
 CreateMutexW
+CreateProcessA
+CreateProcessW
 CreateRemoteThread
 CreateSemaphoreA
 CreateSemaphoreW
@@ -51,6 +53,7 @@ GetCurrentThreadStackLimits
 GetEnvironmentVariableA
 GetEnvironmentVariableW
 GetErrorMode
+GetExitCodeProcess
 GetExitCodeThread
 GetFileAttributesA
 GetFileAttributesExA
@@ -71,6 +74,7 @@ GetModuleHandleW
 GetNativeSystemInfo
 GetProcAddress
 GetProcessHeap
+GetProcessId
 GetProcessIdOfThread
 GetStdHandle
 GetSystemDirectoryA
@@ -112,6 +116,7 @@ OpenFileMappingA
 OpenFileMappingW
 OpenMutexA
 OpenMutexW
+OpenProcess
 OpenThread
 OpenWaitableTimerA
 OpenWaitableTimerW
@@ -144,6 +149,7 @@ Sleep
 SleepEx
 SuspendThread
 SwitchToThread
+TerminateProcess
 TerminateThread
 TlsAlloc
 TlsFree
