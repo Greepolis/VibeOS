@@ -704,3 +704,55 @@ ntdll:exception ntdll:sync kernel32:sync ntdll:om` (2026-10-28):
 Every test that stopped in W2 at a thread, a timer or a keyed event now runs
 past it. What stops them is W6's processes, named pipes and object directories,
 and the failures above, which are the work list.
+
+## W6 (2026-10-29): processes
+
+Done in one pass, at the user's request for speed; what it leaves is listed
+below rather than planned in steps.
+
+- **NtCreateUserProcess** (`kernel/abi/nt/process.c`, `1028049`). A new
+  process is a fork of its creator whose child execs the image, because that
+  is what the kernel underneath makes. The child does not return into its
+  parent's code: `vibeos_linux_fork_win64` sets its start - ntdll's entry,
+  rcx 3, the address of a block the parent wrote - before it is made ready.
+  ntdll hands the block back to NtCreateUserProcess, which recognises it (a
+  magic word, and the parent's pid matching the caller's parent) and execs
+  the path with the command line split as a C runtime splits it and the
+  environment converted. A first version made the child re-issue the call by
+  rewinding the frame; the fork then wrote zero into rax and the child issued
+  service 0 instead.
+- **Process handles**: waitable, reporting the exit code's whole 32 bits
+  (read from the zombie, not from the wait status, which keeps a byte);
+  NtTerminateProcess and NtQueryInformationProcess take one; NtOpenProcess by
+  client id. The last handle reaps an ended child: a Windows parent never
+  waits, and an unreaped child holds its slot until the parent ends.
+- **RtlCreateProcessParametersEx** and its family (`user/win/ntdll/rtl/process.c`,
+  `6d11a65`), and kernel32's CreateProcessA/W, GetExitCodeProcess,
+  GetProcessId, OpenProcess, TerminateProcess (`4302613`).
+- hello.exe runs itself with "child" and reads back 42; the boot case
+  `nt-process-boot.txt` goes red when the zombie's code is lost.
+
+Open:
+
+- Every handle is inherited, whatever bInheritHandles and the handle's own
+  flag say; the standard handles are the creator's, STARTUPINFO is ignored.
+- A suspended first thread (CREATE_SUSPENDED) is refused with
+  STATUS_NOT_IMPLEMENTED.
+- An image that cannot run is not refused to the parent: the child ends with
+  the status the parent would have been given.
+- CreateRemoteThread, DuplicateHandle into another process and another
+  process's memory are not there; NtQueryInformationProcess answers only
+  ProcessBasicInformation.
+
+### What the oracle says at the end of W6
+
+`scripts/dev/winetest-run.sh build-gcc-Release ntdll:thread kernel32:thread
+kernel32:process ntdll:exception` (2026-10-29):
+
+| Test | Wine on Linux | VibeOS | Where it ends |
+|---|---|---|---|
+| `ntdll:thread` | 23 tests, 0 failures | **20 tests, 3 failures, to its end** | - (two NOT_IMPLEMENTED, one INVALID_HANDLE from creating a thread in another process) |
+| `kernel32:thread` | 907 tests, 0 failures | 16 failures, no summary | CreateRemoteThread and DuplicateHandle (error 6) |
+| `kernel32:process` | 2,564 tests, 44 failures | 4 failures, no summary | `Beep` |
+| `ntdll:exception` | rc=5, no summary on Wine either | 2 failures | single-stepping |
+

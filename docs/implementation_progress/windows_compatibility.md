@@ -98,6 +98,11 @@ writable by NtProtectVirtualMemory (8b45ad2, H-033's class).
 
 ## Where the oracle stands
 
+At the end of W6 (2026-10-29): `ntdll:thread` runs to its end, 20 tests and 3
+failures; `kernel32:thread` stops at CreateRemoteThread and DuplicateHandle
+into another process, `kernel32:process` at Beep. See "What the oracle says
+at the end of W6" in [../abi/windows.md](../abi/windows.md).
+
 At the end of W5 (2026-10-28): `ntdll:thread` prints no failure and stops at
 RtlCreateProcessParametersEx, `kernel32:thread` at CreateProcessA - both W6's;
 `ntdll:exception` fails two single-step checks; `ntdll:sync`, `kernel32:sync`
@@ -123,8 +128,8 @@ below 0x30000000, where the arena has nothing), and it stops in
 
 ## Next checkpoint
 
-- W6: processes - what `ntdll:thread` and `kernel32:thread` stop at. Left
-  from W5: another thread's context, timer APC routines, a DLL's static TLS,
+- After W6: CreateRemoteThread, DuplicateHandle across processes, handle
+  inheritance as asked, CREATE_SUSPENDED, STARTUPINFO. Left from W5: another thread's context, timer APC routines, a DLL's static TLS,
   FLS callbacks at a thread's end, single-stepping, keyed events across
   threads (`ntdll:sync`), SignalObjectAndWait, named pipes and object
   directories (`ntdll:om`). Left from W4: `kernel32:file` past LocalAlloc, `ntdll:directory`'s 70
