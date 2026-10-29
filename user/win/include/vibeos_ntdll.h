@@ -38,6 +38,11 @@ typedef uint32_t NTSTATUS_T;
 #endif
 
 NT_IMPORT NTSTATUS_T NtTerminateProcess(uint64_t process, NTSTATUS_T status);
+NT_IMPORT NTSTATUS_T NtCreateUserProcess(uint64_t *process, uint64_t *thread, uint32_t paccess,
+                                         uint32_t taccess, void *poa, void *toa, uint32_t pflags,
+                                         uint32_t tflags, void *params, void *create_info,
+                                         void *attributes);
+NT_IMPORT NTSTATUS_T NtOpenProcess(uint64_t *process, uint32_t access, void *oa, void *cid);
 NT_IMPORT NTSTATUS_T NtTerminateThread(uint64_t thread, NTSTATUS_T status);
 /* Threads, timers and keyed events (W5). */
 NT_IMPORT NTSTATUS_T NtQueryInformationThread(uint64_t thread, uint32_t cls, void *buf, uint32_t len,
@@ -234,6 +239,26 @@ RTL_API vibeos_boolean_t RtlDosPathNameToNtPathName_U(const vibeos_wchar_t *dos_
                                                       vibeos_ustring_t *nt_name,
                                                       vibeos_wchar_t **file_part,
                                                       vibeos_rtl_relative_name_u_t *relative);
+/* Process parameters (rtl/process.c, W6). */
+RTL_API NTSTATUS_T RtlCreateProcessParametersEx(void **result, const vibeos_ustring_t *image,
+                                                const vibeos_ustring_t *dllpath,
+                                                const vibeos_ustring_t *curdir,
+                                                const vibeos_ustring_t *cmdline, void *env,
+                                                const vibeos_ustring_t *title,
+                                                const vibeos_ustring_t *desktop,
+                                                const vibeos_ustring_t *shell,
+                                                const vibeos_ustring_t *runtime, uint32_t flags);
+RTL_API NTSTATUS_T RtlCreateProcessParameters(void **result, const vibeos_ustring_t *image,
+                                              const vibeos_ustring_t *dllpath,
+                                              const vibeos_ustring_t *curdir,
+                                              const vibeos_ustring_t *cmdline, void *env,
+                                              const vibeos_ustring_t *title,
+                                              const vibeos_ustring_t *desktop,
+                                              const vibeos_ustring_t *shell,
+                                              const vibeos_ustring_t *runtime);
+RTL_API void RtlDestroyProcessParameters(void *params);
+RTL_API void *RtlNormalizeProcessParams(void *params);
+RTL_API void *RtlDeNormalizeProcessParams(void *params);
 RTL_API uint32_t DbgPrint(const char *format, ...);
 RTL_API uint32_t DbgPrintEx(uint32_t component, uint32_t level, const char *format, ...);
 RTL_API uint32_t vDbgPrintEx(uint32_t component, uint32_t level, const char *format, va_list args);

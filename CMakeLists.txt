@@ -167,7 +167,8 @@ set(VIBEOS_NTRTL_CORE
     ${VIBEOS_NTRTL_DIR}/heap.c ${VIBEOS_NTRTL_DIR}/string.c ${VIBEOS_NTRTL_DIR}/unicode.c
     ${VIBEOS_NTRTL_DIR}/misc.c ${VIBEOS_NTRTL_DIR}/critsec.c ${VIBEOS_NTRTL_DIR}/ip.c
     ${VIBEOS_NTRTL_DIR}/handle.c ${VIBEOS_NTRTL_DIR}/image.c ${VIBEOS_NTRTL_DIR}/env.c
-    ${VIBEOS_NTRTL_DIR}/path.c ${VIBEOS_NTRTL_DIR}/printf.c ${VIBEOS_NTRTL_DIR}/dbgprint.c)
+    ${VIBEOS_NTRTL_DIR}/path.c ${VIBEOS_NTRTL_DIR}/printf.c ${VIBEOS_NTRTL_DIR}/dbgprint.c
+    ${VIBEOS_NTRTL_DIR}/process.c)
 
 if(VIBEOS_BUILD_TESTS)
     enable_testing()
