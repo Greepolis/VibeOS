@@ -105,6 +105,27 @@ static void thread_mark(nt_ob_t *o, void *ctx) {
     }
 }
 
+typedef struct {
+    int slot;
+} thread_of_slot_t;
+
+static void thread_init_slot(nt_ob_t *o, const void *ctx) {
+    int slot = ((const thread_of_slot_t *)ctx)->slot;
+
+    thread_init(o, 0);
+    o->u.th.slot = slot;
+    o->u.th.seq = ks_seq(slot);
+    o->u.th.tid = ks_id(slot)->pid;
+    o->u.th.pid = ks_id(slot)->tgid;
+}
+
+uint32_t nt_thread_handle_for(int slot, uint32_t want, uint64_t out) {
+    thread_of_slot_t c;
+
+    c.slot = slot;
+    return (uint32_t)nt_create_common(&g_nt_thread_ops, out, want, 0, 0, thread_init_slot, &c);
+}
+
 /* Every thread object naming the calling thread is told how it ended. */
 static void thread_record_exit(uint32_t code) {
     thread_exit_t e;

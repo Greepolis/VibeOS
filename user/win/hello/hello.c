@@ -398,6 +398,60 @@ static const char *thread_check(void) {
     return 0;
 }
 
+/* W6: a process of its own. hello.exe runs itself with the argument "child",
+ * which ends at once with 42; the parent waits on the process handle and
+ * reads the code, the whole 32 bits a Windows parent is owed. */
+static int is_child(uint64_t peb) {
+    uint64_t pp = vibeos_nt_rd64(peb + VIBEOS_PEB_PROCESS_PARAMS);
+    uint16_t len = *(volatile uint16_t *)(uintptr_t)(pp + VIBEOS_RUPP_COMMAND_LINE);
+    const uint16_t *s = (const uint16_t *)(uintptr_t)vibeos_nt_rd64(pp + VIBEOS_RUPP_COMMAND_LINE + 8u);
+    static const char want[] = " child";
+    uint32_t n = len / 2u, i;
+
+    if (!s || n < 6u) {
+        return 0;
+    }
+    for (i = 0; i < 6u; i++) {
+        if (s[n - 6u + i] != (uint16_t)want[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static const char *process_check(void) {
+    static const uint16_t image[] = { '\\', '?', '?', '\\', 'C', ':', '\\', 'w', 'i', 'n', '\\', 'h', 'e', 'l',
+                                      'l', 'o', '.', 'e', 'x', 'e', 0 };
+    static const uint16_t cmd[] = { 'h', 'e', 'l', 'l', 'o', ' ', 'c', 'h', 'i', 'l', 'd', 0 };
+    vibeos_ustring_t img, line;
+    vibeos_nt_process_basic_t pbi;
+    void *params = 0;
+    uint64_t ph = 0, th = 0;
+
+    RtlInitUnicodeString(&img, image);
+    RtlInitUnicodeString(&line, cmd);
+    if (RtlCreateProcessParametersEx(&params, &img, 0, 0, &line, 0, 0, 0, 0, 0, 1) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL process_params\n";
+    }
+    if (NtCreateUserProcess(&ph, &th, 0x001FFFFFu, 0x001FFFFFu, 0, 0, 0, 0, params, 0, 0) !=
+        VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL process_create\n";
+    }
+    RtlDestroyProcessParameters(params);
+    if (NtWaitForSingleObject(ph, 0, 0) != VIBEOS_STATUS_SUCCESS ||
+        NtWaitForSingleObject(th, 0, 0) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL process_wait\n";
+    }
+    if (NtQueryInformationProcess(ph, VIBEOS_NT_PROCESS_BASIC_INFORMATION, &pbi, sizeof(pbi), 0) !=
+            VIBEOS_STATUS_SUCCESS ||
+        pbi.exit_status != 42u || pbi.unique_process_id == 0u) {
+        return "NT_HELLO_FAIL process_exit_code\n";
+    }
+    (void)NtClose(th);
+    (void)NtClose(ph);
+    return 0;
+}
+
 int nt_hello_start(void) {
     uint64_t teb = vibeos_nt_teb();
     uint64_t peb;
@@ -417,6 +471,9 @@ int nt_hello_start(void) {
     peb = vibeos_nt_rd64(teb + VIBEOS_TEB_PEB);
     if (peb == 0u || vibeos_nt_rd64(peb + VIBEOS_PEB_PROCESS_PARAMS) == 0u) {
         return fail("NT_HELLO_FAIL peb\n");
+    }
+    if (is_child(peb)) {
+        (void)NtTerminateProcess(VIBEOS_NT_CURRENT_PROCESS, 42u);
     }
     if (NtQueryInformationProcess(VIBEOS_NT_CURRENT_PROCESS, VIBEOS_NT_PROCESS_BASIC_INFORMATION,
                                   &pbi, sizeof(pbi), &got) != VIBEOS_STATUS_SUCCESS ||
@@ -457,6 +514,9 @@ int nt_hello_start(void) {
         }
         if (!why) {
             why = tls_check();
+        }
+        if (!why) {
+            why = process_check();
         }
         if (why) {
             return fail(why);

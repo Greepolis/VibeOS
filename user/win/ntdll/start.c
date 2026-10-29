@@ -585,6 +585,19 @@ __attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb, uint64_t st
     uint32_t entry_rva;
     NTSTATUS_T st;
 
+    if (peb == 3u) {
+        /* A new process's child, before its image (W6): the block its parent
+         * left, in rdx, handed back to NtCreateUserProcess, which execs it
+         * (kernel/abi/nt/process.c). It returns only if the exec failed, and
+         * then the process has already ended. */
+        uint64_t block = start;
+
+        (void)NtCreateUserProcess(&block, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        (void)NtTerminateProcess(VIBEOS_NT_CURRENT_PROCESS, VIBEOS_STATUS_INVALID_IMAGE_FORMAT);
+        for (;;) {
+            /* Neither returns. */
+        }
+    }
     if (peb == 2u) {
         /* An exception (W5 step 5): the context it happened in, in rdx, and its
          * record in r8 (except.c). Taken, the context is resumed; nobody

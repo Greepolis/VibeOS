@@ -136,6 +136,13 @@ typedef struct nt_ob {
             uint32_t hidden;      /* THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER     */
         } th;
         struct {
+            int slot;             /* the process's first task                  */
+            uint32_t seq;         /* and which tenancy of the slot it is       */
+            uint32_t pid;
+            uint32_t exit_code;   /* STILL_ACTIVE until it is seen to end      */
+            uint32_t ended;
+        } pr;
+        struct {
             vibeos_file_t *file;  /* a reference: the image's file             */
             uint64_t image_size;  /* an image's span, a data section's size */
             uint32_t data;        /* a data section (W3), not an image        */
@@ -179,6 +186,8 @@ uint32_t nt_io_event(uint64_t h, int set);
 uint32_t nt_alloc_rw(uint64_t size, uint64_t *base);
 void nt_free_alloc(uint64_t base, uint64_t size);
 extern const vibeos_file_ops_t g_nt_thread_ops;
+/* A handle in *out for the thread in `slot` - a new process's first (W6). */
+uint32_t nt_thread_handle_for(int slot, uint32_t want, uint64_t out);
 /* A CONTEXT's integer and control registers, to and from the machine's
  * (thread.c): NtGetContextThread, NtContinue, the APC and exception frames. */
 void nt_context_from_regs(const vibeos_uregs_t *r, uint8_t *ctx, uint32_t flags);

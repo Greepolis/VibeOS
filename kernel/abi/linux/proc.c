@@ -52,9 +52,9 @@ static void linux_fork_unwind_aspace(int idx, int shared) {
  * here until the child execs or ends; CLONE_PARENT gives the child the
  * caller's parent; the tid words are written where they ask. `stack` and `tls`
  * are the child's when nonzero (or SETTLS). */
-static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
-                          uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls,
-                          uint64_t pidfd_at) {
+static long linux_fork_core(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
+                            uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls,
+                            uint64_t pidfd_at, const uint64_t *win64) {
     int share = (flags & LINUX_CLONE_VM) != 0u;
     vibeos_task_t *parent, *child;
     vibeos_procstate_t *pps, *cps;
@@ -195,6 +195,11 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
     if (stack != 0u) {
         ks_set_user_sp(idx, stack);
     }
+    /* A child that starts somewhere else than its parent's return (W6's
+     * NtCreateUserProcess): set before it is made ready, or it may run first. */
+    if (win64) {
+        (void)ks_task_start_win64(idx, win64[0], win64[1], win64[2], win64[3], win64[4]);
+    }
     if (flags & LINUX_CLONE_SETTLS) {
         ks_tls_set(idx, tls);
     }
@@ -328,6 +333,12 @@ static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t fl
         }
         return pid;
     }
+}
+
+static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
+                          uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls,
+                          uint64_t pidfd_at) {
+    return linux_fork_core(frame, exit_sig, flags, stack, ptid, ctid, tls, pidfd_at, 0);
 }
 
 /* What fork, vfork and the plain forms of clone were before L6. */
@@ -1502,6 +1513,26 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
 /* prctl(): the process name is the operation programs actually use, and it is
  * stored rather than acknowledged - it costs sixteen bytes and makes the
  * scheduler's log say which program a pid is. */
+/* ---- for the NT personality (docs/abi/windows.md W6) ------------------------------- */
+
+long vibeos_linux_fork_win64(const ks_regs_t *frame, uint64_t ip, uint64_t sp, uint64_t a0,
+                             uint64_t a1, uint64_t a2) {
+    const uint64_t w[5] = { ip, sp, a0, a1, a2 };
+
+    return linux_fork_core(frame, VIBEOS_SIGCHLD, 0, 0, 0, 0, 0, 0, w);
+}
+
+long vibeos_linux_execve(ks_regs_t *frame, uint64_t path, uint64_t argv, uint64_t envp) {
+    return linux_sys_execve(frame, (uint64_t)(uint32_t)LINUX_AT_FDCWD, path, argv, envp, 0);
+}
+
+/* A child that has ended, reaped if it has; one that has not is left. */
+void vibeos_linux_reap(uint32_t pid) {
+    linux_waited_t w;
+
+    (void)linux_wait_child(LINUX_P_PID, pid, LINUX_WNOHANG, 1, &w);
+}
+
 static long linux_sys_prctl(uint64_t op, uint64_t arg) {
     vibeos_task_t *t;
 

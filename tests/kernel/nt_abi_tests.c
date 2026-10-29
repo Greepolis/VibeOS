@@ -202,13 +202,13 @@ static void t_process(void) {
     expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, VIBEOS_NT_CURRENT_PROCESS, 7, buf, 48, 0) ==
                ST(VIBEOS_STATUS_INVALID_INFO_CLASS), "a class W1 does not answer");
     kf_next_sp(stack_args_(&zero, 1));
-    expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, 4, 0, buf, 48, 0) ==
-               ST(VIBEOS_STATUS_INVALID_HANDLE), "another process's handle does not exist yet");
+    expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, 0x7FFC, 0, buf, 48, 0) ==
+               ST(VIBEOS_STATUS_INVALID_HANDLE), "a process handle that names nothing");
     kf_next_sp(stack_args_(&zero, 1));
     expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, VIBEOS_NT_CURRENT_PROCESS, 0, 0x10, 48, 0) ==
                ST(VIBEOS_STATUS_ACCESS_VIOLATION), "a buffer that is nobody's memory");
-    expect(nt(VIBEOS_NT_NR_NtTerminateProcess, 4, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
-           "terminating another process needs a handle W1 cannot give");
+    expect(nt(VIBEOS_NT_NR_NtTerminateProcess, 0x7FFC, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
+           "terminating through a handle that names nothing");
     (void)nt(VIBEOS_NT_NR_NtTerminateProcess, VIBEOS_NT_CURRENT_PROCESS,
              0xFFFFFFFF00000103ull, 0, 0, &how);
     expect(how == KF_EXITED && kf_exit_code() == 0x103u,

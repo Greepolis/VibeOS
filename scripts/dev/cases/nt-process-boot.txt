@@ -1,0 +1,12 @@
+# NT processes (kernel/abi/nt/process.c, docs/abi/windows.md W6), broken;
+# caught at boot by hello.exe's process_check, which the gate reads as
+# nt_program_did_not_run.
+#
+# Target source: kernel/abi/nt/process.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/process.c scripts/dev/cases/nt-process-boot.txt build-gcc-Release
+
+### a zombie's code is not the one it exited with
+--- old
+        o->u.pr.exit_code = t->exit_signal ? 1u : (uint32_t)t->exit_code;
++++ new
+        o->u.pr.exit_code = 0u;
