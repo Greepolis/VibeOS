@@ -402,6 +402,24 @@ static const nt_type_t g_file_type = {
 
 /* The directory a walk's last component is in, as Linux's openat asks it of
  * the same walk. */
+uint32_t nt_image_present(const char *path) {
+    char root[VIBEOS_PATH_MAX];
+    vibeos_cred_t who;
+    vibeos_path_t w;
+    int rc;
+
+    nt_cred(&who);
+    nt_root(root, sizeof(root));
+    rc = vibeos_path_walk_as(root, root, path, 0u, &who, &w);
+    if (rc != 0) {
+        return nt_status_of_open(rc);
+    }
+    if (!w.exists) {
+        return VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    return w.node.is_dir ? VIBEOS_STATUS_FILE_IS_A_DIRECTORY : VIBEOS_STATUS_SUCCESS;
+}
+
 static int nt_parent_of(const vibeos_path_t *w, vibeos_fs_node_t *dir) {
     char parent[VIBEOS_PATH_MAX];
     vibeos_path_t pw;

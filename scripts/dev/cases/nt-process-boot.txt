@@ -10,3 +10,18 @@
         o->u.pr.exit_code = t->exit_signal ? 1u : (uint32_t)t->exit_code;
 +++ new
         o->u.pr.exit_code = 0u;
+
+### a suspended first thread is not stopped
+--- old
+        (void)ks_signal_send(slot, VIBEOS_SIGSTOP, 0);
+    }
+    r = nt_create_common
++++ new
+    }
+    r = nt_create_common
+
+### an image that is not there is left to the child
+--- old
+    st = nt_image_present(path);
++++ new
+    st = VIBEOS_STATUS_SUCCESS;

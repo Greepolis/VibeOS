@@ -24,6 +24,11 @@
 #define NT_SPAWN_ARGS 64u
 #define NT_SPAWN_ENVS 128u
 #define NT_SPAWN_ENTRY_MARK 3u   /* rcx at ntdll's entry: a new process's child */
+#define NT_SPAWN_HDR 9u          /* magic, ppid, path, argv, envp, flags, three handles */
+#define NT_SPAWN_VEC (8u * NT_SPAWN_HDR)
+#define NT_SPAWN_INHERIT 1u
+#define NT_PROCESS_CREATE_FLAGS_INHERIT_HANDLES 0x0004u
+#define NT_THREAD_CREATE_SUSPENDED 0x0001u
 
 static int nt_is_self(uint64_t h) {
     return h == VIBEOS_NT_CURRENT_PROCESS;
@@ -150,6 +155,42 @@ static void process_unview(process_view_t *v) {
     if (v->f) {
         vibeos_file_put(v->f);
     }
+}
+
+uint32_t nt_process_ps_get(uint64_t h, uint32_t need, vibeos_procstate_t **out) {
+    process_view_t v;
+    vibeos_procstate_t *ps = 0;
+    uint32_t st = process_view(h, need, &v);
+
+    *out = 0;
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return st;
+    }
+    /* Under the scheduler's lock the slot cannot change tenant, and a state
+     * with references left cannot be freed: one more, unless it has none. */
+    ks_irq_off();
+    ks_lock(ks_sched_lock(), __func__);
+    if (!v.ended && ks_seq(v.slot) == v.seq) {
+        ps = ks_ps(v.slot);
+        if (ps) {
+            uint32_t r = __atomic_load_n(&ps->refs, __ATOMIC_ACQUIRE);
+
+            while (r != 0u && !__atomic_compare_exchange_n(&ps->refs, &r, r + 1u, 0, __ATOMIC_ACQ_REL,
+                                                           __ATOMIC_ACQUIRE)) {
+            }
+            if (r == 0u) {
+                ps = 0;
+            }
+        }
+    }
+    ks_unlock(ks_sched_lock());
+    ks_irq_on();
+    process_unview(&v);
+    if (!ps) {
+        return VIBEOS_STATUS_PROCESS_IS_TERMINATING;
+    }
+    *out = ps;
+    return VIBEOS_STATUS_SUCCESS;
 }
 
 /* NtTerminateProcess(ProcessHandle, ExitStatus). Oneself: the whole process
@@ -297,8 +338,54 @@ static uint32_t spawn_split(spawn_blk_t *k, uint32_t from, uint32_t *args, uint3
 /* The child's half: the block its parent left at *ProcessHandle, if this is a
  * child of the call - its parent's pid at the block's second word - and the
  * exec. 1 if it was (and the exec failed), 0 if this call is a parent's. */
+/* The child's table before its exec: the standard handles the parent named
+ * moved onto descriptors 0, 1 and 2, where the exec's PEB says they are; and,
+ * unless the parent asked for its handles to be inherited, every other
+ * descriptor marked to close at the exec. A handle made with OBJ_INHERIT is
+ * kept only when the parent asked: Windows needs both. */
+static void spawn_table(const uint64_t *hdr) {
+    vibeos_procstate_t *ps = ks_ps(ks_current());
+    vibeos_file_t *put[3] = { 0, 0, 0 };
+    uint32_t i;
+    int top;
+
+    if (!ps) {
+        return;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    for (i = 0; i < 3u; i++) {
+        uint64_t h = hdr[6u + i];
+        vibeos_file_t *f;
+
+        if (h == 0u || (h & 3u) != 0u || h / 4u - 1u == i) {
+            continue;   /* none, or already where it belongs */
+        }
+        f = vibeos_fdtable_get(&ps->files, h / 4u - 1u);
+        if (f) {
+            vibeos_file_get(f);
+            if (vibeos_fdtable_install_at(&ps->files, i, f, 0u, &put[i]) != 0) {
+                vibeos_file_put(f);
+            }
+        }
+    }
+    top = vibeos_fdtable_highest(&ps->files);
+    for (i = 0; (int)i <= top; i++) {
+        if (i < 3u) {
+            (void)vibeos_fdtable_set_flags(&ps->files, i, 0u);   /* the standard handles cross */
+        } else if (!(hdr[5] & NT_SPAWN_INHERIT) && vibeos_fdtable_get(&ps->files, i)) {
+            (void)vibeos_fdtable_set_flags(&ps->files, i, VIBEOS_FD_CLOEXEC);
+        }
+    }
+    ks_unlock(&ps->files_lock);
+    for (i = 0; i < 3u; i++) {
+        if (put[i]) {
+            vibeos_file_put(put[i]);   /* outside the lock: a release does I/O */
+        }
+    }
+}
+
 static int spawn_child(ks_regs_t *frame, uint64_t handle_u, long *result) {
-    uint64_t base = 0, hdr[5];
+    uint64_t base = 0, hdr[NT_SPAWN_HDR];
     int me = ks_current();
 
     if (nt_copy_in(&base, handle_u, 8u) != 0 || base == 0u || (base & 0xFFFu) != 0u ||
@@ -308,6 +395,7 @@ static int spawn_child(ks_regs_t *frame, uint64_t handle_u, long *result) {
     }
     hdr[0] = 0;   /* used: a later call of this process's own is a parent's */
     (void)nt_copy_out(base, hdr, 8u);
+    spawn_table(hdr);
     *result = vibeos_linux_execve(frame, hdr[2], hdr[3], hdr[4]);
     /* The parent has its handle already; a child whose image cannot run ends
      * with the status the parent would have been refused with. Run, the
@@ -322,17 +410,20 @@ static int spawn_child(ks_regs_t *frame, uint64_t handle_u, long *result) {
  * ThreadDesiredAccess, ProcessObjectAttributes, ThreadObjectAttributes,
  * ProcessFlags, ThreadFlags, ProcessParameters, CreateInfo, AttributeList).
  * The image named by the parameters' ImagePathName, its arguments from their
- * CommandLine and its environment from theirs; the standard handles are the
- * creator's, inherited with every other handle. A suspended first thread
- * (THREAD_CREATE_FLAGS_CREATE_SUSPENDED) is not offered yet. */
+ * CommandLine and its environment from theirs, its standard handles from
+ * theirs; the creator's other handles cross only with
+ * PROCESS_CREATE_FLAGS_INHERIT_HANDLES, and then those made inheritable. An
+ * image that is not there is refused here, before anything is made. A
+ * suspended first thread is stopped as NtSuspendThread stops one, before it
+ * reaches the image, and NtResumeThread lets it go. */
 static long nt_create_user_process(ks_regs_t *frame, uint64_t ph, uint64_t th, uint32_t paccess,
-                                   uint32_t taccess, uint32_t tflags, uint64_t params) {
+                                   uint32_t taccess, uint32_t pflags, uint32_t tflags, uint64_t params) {
     static uint8_t g_blk[NT_SPAWN_BYTES];   /* under g_spawn_lock */
     static vibeos_lock_t g_spawn_lock;
     spawn_blk_t k;
     nt_name_t name;
     char path[VIBEOS_PATH_MAX];
-    uint64_t buf, base = 0, vec[NT_SPAWN_ARGS + NT_SPAWN_ENVS + 2u], hdr[5], env = 0, h = 0;
+    uint64_t buf, base = 0, vec[NT_SPAWN_ARGS + NT_SPAWN_ENVS + 2u], hdr[NT_SPAWN_HDR], env = 0, h = 0;
     uint32_t chars, flags = 0, args[NT_SPAWN_ARGS], envs = 0, nargs, i, st;
     long cmd, r, pid;
     int normalised, slot = -1;
@@ -341,8 +432,8 @@ static long nt_create_user_process(ks_regs_t *frame, uint64_t ph, uint64_t th, u
     if (spawn_child(frame, ph, &r)) {
         return r;   /* the exec result: the new image is entered */
     }
-    if (params == 0u || (tflags & 1u) || !self || !self->entry) {
-        return NT_STATUS(params ? VIBEOS_STATUS_NOT_IMPLEMENTED : VIBEOS_STATUS_INVALID_PARAMETER);
+    if (params == 0u || !self || !self->entry) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }
     if (nt_copy_in(&flags, params + VIBEOS_RUPP_FLAGS, 4u) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
@@ -377,12 +468,21 @@ static long nt_create_user_process(ks_regs_t *frame, uint64_t ph, uint64_t th, u
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
+    st = nt_image_present(path);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
     (void)nt_copy_in(&env, params + VIBEOS_RUPP_ENVIRONMENT, 8u);
+    for (i = 0; i < 3u; i++) {
+        hdr[6u + i] = 0;
+        (void)nt_copy_in(&hdr[6u + i], params + VIBEOS_RUPP_STD_INPUT + 8u * i, 8u);
+    }
+    hdr[5] = (pflags & NT_PROCESS_CREATE_FLAGS_INHERIT_HANDLES) ? NT_SPAWN_INHERIT : 0u;
 
     ks_lock_preemptible(&g_spawn_lock);
     k.b = g_blk;
     k.cap = sizeof(g_blk);
-    k.at = 8u * (5u + NT_SPAWN_ARGS + NT_SPAWN_ENVS + 2u);   /* header and vectors first */
+    k.at = NT_SPAWN_VEC + 8u * (NT_SPAWN_ARGS + NT_SPAWN_ENVS + 2u);   /* header and vectors first */
     for (i = 0; path[i] && k.at + 1u < k.cap; i++) {
         k.b[k.at++] = (uint8_t)path[i];
     }
@@ -425,8 +525,8 @@ static long nt_create_user_process(ks_regs_t *frame, uint64_t ph, uint64_t th, u
     hdr[0] = NT_SPAWN_MAGIC;
     hdr[1] = ks_id(ks_current())->tgid;
     hdr[2] += base;
-    hdr[3] = base + 40u;                                  /* argv */
-    hdr[4] = base + 40u + 8u * (NT_SPAWN_ARGS + 1u);      /* envp */
+    hdr[3] = base + NT_SPAWN_VEC;                              /* argv */
+    hdr[4] = base + NT_SPAWN_VEC + 8u * (NT_SPAWN_ARGS + 1u);  /* envp */
     for (i = 0; i < NT_SPAWN_ARGS + 1u; i++) {
         vec[i] = i < nargs ? base + args[i] : 0u;
     }
@@ -434,11 +534,11 @@ static long nt_create_user_process(ks_regs_t *frame, uint64_t ph, uint64_t th, u
         vec[NT_SPAWN_ARGS + 1u + i] += base;
     }
     vec[NT_SPAWN_ARGS + 1u + envs] = 0;
-    for (i = 0; i < 5u; i++) {
+    for (i = 0; i < NT_SPAWN_HDR; i++) {
         *(uint64_t *)(void *)&k.b[8u * i] = hdr[i];
     }
     for (i = 0; i < NT_SPAWN_ARGS + NT_SPAWN_ENVS + 2u; i++) {
-        *(uint64_t *)(void *)&k.b[40u + 8u * i] = (i <= NT_SPAWN_ARGS + envs + 1u) ? vec[i] : 0u;
+        *(uint64_t *)(void *)&k.b[NT_SPAWN_VEC + 8u * i] = (i <= NT_SPAWN_ARGS + envs + 1u) ? vec[i] : 0u;
     }
     if (nt_copy_out(base, k.b, k.at) != 0) {
         ks_unlock_preemptible(&g_spawn_lock);
@@ -463,6 +563,13 @@ static long nt_create_user_process(ks_regs_t *frame, uint64_t ph, uint64_t th, u
     (void)nt_copy_out(ph, &h, 8u);
     if (slot < 0) {
         return NT_STATUS(VIBEOS_STATUS_PROCESS_IS_TERMINATING);
+    }
+    if (tflags & NT_THREAD_CREATE_SUSPENDED) {
+        /* Stopped at its next return to ring 3, which is ntdll's entry and
+         * before the exec: the count NtResumeThread reads, and the stop it
+         * undoes. */
+        ks_id(slot)->nt_suspend = 1u;
+        (void)ks_signal_send(slot, VIBEOS_SIGSTOP, 0);
     }
     r = nt_create_common(&g_nt_process_ops, ph, paccess ? paccess : NT_PROCESS_ALL_ACCESS, 0, 0,
                          process_init, &slot);
@@ -533,6 +640,7 @@ static long nt_query_information_process(uint64_t process, uint64_t cls, uint64_
     X(VIBEOS_NT_NR_NtOpenProcess, NtOpenProcess, IDENTITY_GET, PTRS(OUT(0, 8)), \
       nt_open_process(ARG(0), NT_ARG32(1), ARG(3))) \
     X(VIBEOS_NT_NR_NtCreateUserProcess, NtCreateUserProcess, EXEC, PTRS(OUT(0, 8)), \
-      nt_create_user_process(FRAME, ARG(0), ARG(1), NT_ARG32(2), NT_ARG32(3), NT_ARG32(7), ARG(8)))
+      nt_create_user_process(FRAME, ARG(0), ARG(1), NT_ARG32(2), NT_ARG32(3), NT_ARG32(6), NT_ARG32(7), \
+                             ARG(8)))
 
 NT_DEFINE_SERVICES(process, NT_PROCESS_SERVICES)

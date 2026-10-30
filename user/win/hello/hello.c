@@ -437,7 +437,6 @@ static const char *process_check(void) {
         VIBEOS_STATUS_SUCCESS) {
         return "NT_HELLO_FAIL process_create\n";
     }
-    RtlDestroyProcessParameters(params);
     if (NtWaitForSingleObject(ph, 0, 0) != VIBEOS_STATUS_SUCCESS ||
         NtWaitForSingleObject(th, 0, 0) != VIBEOS_STATUS_SUCCESS) {
         return "NT_HELLO_FAIL process_wait\n";
@@ -449,6 +448,55 @@ static const char *process_check(void) {
     }
     (void)NtClose(th);
     (void)NtClose(ph);
+    /* Suspended, it has not ended a second later - long enough, under TCG, for
+     * a child that was not stopped to have run and exited; resumed, it ends
+     * with 42. */
+    {
+        int64_t wait1s = -10000000;
+        uint32_t prev = 0;
+
+        if (NtCreateUserProcess(&ph, &th, 0x001FFFFFu, 0x001FFFFFu, 0, 0, 0, 1u /* suspended */, params,
+                                0, 0) != VIBEOS_STATUS_SUCCESS) {
+            return "NT_HELLO_FAIL process_suspended_create\n";
+        }
+        if (NtWaitForSingleObject(ph, 0, &wait1s) != VIBEOS_STATUS_TIMEOUT) {
+            return "NT_HELLO_FAIL process_ran_suspended\n";
+        }
+        /* A handle given to the child, numbered in the child's table. */
+        {
+            uint64_t given = 0;
+
+            if (NtDuplicateObject(VIBEOS_NT_CURRENT_PROCESS, th, ph, &given, 0, 0,
+                                  2u /* DUPLICATE_SAME_ACCESS */) != VIBEOS_STATUS_SUCCESS ||
+                given == 0u) {
+                return "NT_HELLO_FAIL process_duplicate_into\n";
+            }
+        }
+        if (NtResumeThread(th, &prev) != VIBEOS_STATUS_SUCCESS || prev != 1u ||
+            NtWaitForSingleObject(ph, 0, 0) != VIBEOS_STATUS_SUCCESS ||
+            NtQueryInformationProcess(ph, VIBEOS_NT_PROCESS_BASIC_INFORMATION, &pbi, sizeof(pbi), 0) !=
+                VIBEOS_STATUS_SUCCESS ||
+            pbi.exit_status != 42u) {
+            return "NT_HELLO_FAIL process_resume\n";
+        }
+        (void)NtClose(th);
+        (void)NtClose(ph);
+    }
+    /* An image that is not there is the parent's refusal, not the child's end. */
+    {
+        static const uint16_t none[] = { '\\', '?', '?', '\\', 'C', ':', '\\', 'n', 'o', 'n', 'e', '.', 'e',
+                                         'x', 'e', 0 };
+        void *p2 = 0;
+
+        RtlInitUnicodeString(&img, none);
+        if (RtlCreateProcessParametersEx(&p2, &img, 0, 0, &line, 0, 0, 0, 0, 0, 1) != VIBEOS_STATUS_SUCCESS ||
+            NtCreateUserProcess(&ph, &th, 0x001FFFFFu, 0x001FFFFFu, 0, 0, 0, 0, p2, 0, 0) !=
+                VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND) {
+            return "NT_HELLO_FAIL process_missing_image\n";
+        }
+        RtlDestroyProcessParameters(p2);
+    }
+    RtlDestroyProcessParameters(params);
     return 0;
 }
 

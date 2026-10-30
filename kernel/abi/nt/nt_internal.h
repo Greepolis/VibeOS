@@ -194,6 +194,13 @@ void nt_context_from_regs(const vibeos_uregs_t *r, uint8_t *ctx, uint32_t flags)
 void nt_context_to_regs(const uint8_t *ctx, vibeos_uregs_t *r, uint32_t flags);
 /* Ticks since boot as a FILETIME: 100 ns since 1601, on the clock NtQuerySystemTime uses. */
 uint64_t nt_ticks_to_filetime(uint64_t ticks);
+/* Is there a file to run at `path`, a VFS path, for the calling process?
+ * A status: NtCreateUserProcess refuses before it makes anything (W6). */
+uint32_t nt_image_present(const char *path);
+/* The process state a process handle names, with a reference the caller gives
+ * back with ks_procstate_put - pinned, so a process that ends meanwhile leaves
+ * the structure where it is (W6: a handle duplicated into it). A status. */
+uint32_t nt_process_ps_get(uint64_t h, uint32_t need, vibeos_procstate_t **out);
 /* An NT path - "\??\C:\..." - as the VFS path it names. A status. */
 uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap);
 /* A handle for `f`, taking over the caller's reference (released on failure). */

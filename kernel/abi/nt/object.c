@@ -423,19 +423,60 @@ static long nt_close(uint64_t h) {
 /* NtDuplicateObject(SourceProcess, SourceHandle, TargetProcess, TargetHandle,
  * DesiredAccess, HandleAttributes, Options), within the calling process: the
  * other processes a handle can be duplicated into are W6's. */
+/* A handle for `f` in another process's table, taking over the caller's
+ * reference. The table is still in use or it is refused: one closed by its
+ * process's last thread would keep the reference for ever. A status. */
+static uint32_t nt_handle_install_in(vibeos_procstate_t *ps, vibeos_file_t *f, uint32_t access,
+                                     uint32_t attributes, uint64_t *handle) {
+    int fd = -1;
+
+    *handle = 0;
+    ks_lock(&ps->files_lock, __func__);
+    if (__atomic_load_n(&ps->files_users, __ATOMIC_ACQUIRE) != 0u) {
+        fd = vibeos_fdtable_install(&ps->files, f,
+                                    (attributes & VIBEOS_OBJ_INHERIT) ? 0u : VIBEOS_FD_CLOEXEC, 0);
+        if (fd >= 0) {
+            (void)vibeos_fdtable_set_access(&ps->files, (uint64_t)fd, access);
+        }
+    }
+    ks_unlock(&ps->files_lock);
+    if (fd < 0) {
+        vibeos_file_put(f);
+        return VIBEOS_STATUS_INSUFFICIENT_RESOURCES;
+    }
+    *handle = ((uint64_t)fd + 1u) * 4u;
+    return VIBEOS_STATUS_SUCCESS;
+}
+
+/* NtDuplicateObject: from this process, into it or into another one a
+ * process handle names with PROCESS_DUP_HANDLE (W6). The source is always the
+ * caller's: taking a handle out of another process is not offered. */
 static long nt_duplicate_object(uint64_t src_proc, uint64_t src, uint64_t dst_proc,
                                 uint64_t dst_u, uint64_t want, uint64_t attributes,
                                 uint64_t options) {
     vibeos_file_t *f;
+    vibeos_procstate_t *other = 0;
     uint32_t granted = 0, st;
     uint64_t h = 0;
 
-    if (src_proc != VIBEOS_NT_CURRENT_PROCESS ||
-        (dst_proc != VIBEOS_NT_CURRENT_PROCESS && dst_u != 0u)) {
+    if (src_proc != VIBEOS_NT_CURRENT_PROCESS) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    if (dst_proc != VIBEOS_NT_CURRENT_PROCESS && dst_u != 0u) {
+        st = nt_process_ps_get(dst_proc, 0x0040u /* PROCESS_DUP_HANDLE */, &other);
+        if (st != VIBEOS_STATUS_SUCCESS) {
+            return NT_STATUS(st);
+        }
+        if (other == ks_ps(ks_current())) {
+            ks_procstate_put(other);   /* a handle to oneself: the same table */
+            other = 0;
+        }
     }
     st = nt_handle_ref(src, 0, 0, &f, &granted);
     if (st != VIBEOS_STATUS_SUCCESS) {
+        if (other) {
+            ks_procstate_put(other);
+        }
         return NT_STATUS(st);
     }
     if (dst_u != 0u) {
@@ -443,16 +484,22 @@ static long nt_duplicate_object(uint64_t src_proc, uint64_t src, uint64_t dst_pr
                               ? granted : nt_map_access(f->ops, (uint32_t)want);
 
         vibeos_file_get(f);   /* the new handle's own */
-        st = nt_handle_install(f, access, (uint32_t)attributes, &h);
+        st = other ? nt_handle_install_in(other, f, access, (uint32_t)attributes, &h)
+                   : nt_handle_install(f, access, (uint32_t)attributes, &h);
         if (st == VIBEOS_STATUS_SUCCESS &&
             nt_copy_out(dst_u, &h, sizeof(h)) != 0) {
-            (void)nt_close_handle(h);
+            if (!other) {
+                (void)nt_close_handle(h);   /* in another process it is that process's now */
+            }
             st = VIBEOS_STATUS_ACCESS_VIOLATION;
         }
     } else {
         st = VIBEOS_STATUS_SUCCESS;   /* nowhere to put it: only the close below */
     }
     vibeos_file_put(f);
+    if (other) {
+        ks_procstate_put(other);
+    }
     if (st == VIBEOS_STATUS_SUCCESS && (options & VIBEOS_DUPLICATE_CLOSE_SOURCE)) {
         (void)nt_close_handle(src);
     }
