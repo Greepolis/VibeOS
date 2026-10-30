@@ -277,8 +277,8 @@ static long src_cmdline(uint32_t pid, char *buf, uint32_t cap) {
 
     ks_lock(ks_sched_lock(), __func__);
     s = src_owner(pid);
-    if (s >= 0 && vibeos_task_state((uint32_t)s) != VIBEOS_TASK_ZOMBIE) {
-        img = ks_image(s);
+    img = s >= 0 ? ks_image(s) : 0;
+    if (img && vibeos_task_state((uint32_t)s) != VIBEOS_TASK_ZOMBIE) {
         n = img->cmdline_len < (uint32_t)sizeof(img->cmdline) ? img->cmdline_len
                                                                : (uint32_t)sizeof(img->cmdline);
         n = n < cap ? n : cap;

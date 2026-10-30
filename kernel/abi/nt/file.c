@@ -299,7 +299,7 @@ static void nt_case_resolve(char *path) {
 
 uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap) {
     static const char prefix[] = "\\??\\";
-    uint32_t i, o = 0;
+    uint32_t i, o = 0, units = 1;
 
     if (n->len < 7u) {
         return VIBEOS_STATUS_OBJECT_NAME_INVALID;
@@ -315,15 +315,16 @@ uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap) {
     if (n->chars[6] != '\\') {
         return VIBEOS_STATUS_OBJECT_NAME_INVALID;
     }
-    for (i = 6; i < n->len; i++) {
+    for (i = 6; i < n->len; i += units) {
         uint32_t c = n->chars[i];
         uint8_t u[4];
         uint32_t k, len;
 
+        units = 1;
         if (c >= 0xD800u && c < 0xDC00u && i + 1u < n->len &&
             n->chars[i + 1u] >= 0xDC00u && n->chars[i + 1u] < 0xE000u) {
             c = 0x10000u + ((c - 0xD800u) << 10) + (n->chars[i + 1u] - 0xDC00u);
-            i++;
+            units = 2;   /* a surrogate pair is one character */
         } else if (c >= 0xD800u && c < 0xE000u) {
             return VIBEOS_STATUS_OBJECT_NAME_INVALID;   /* half a pair */
         }

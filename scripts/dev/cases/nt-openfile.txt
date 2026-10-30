@@ -185,7 +185,7 @@
 ### a surrogate pair is two characters (W4 step 6)
 --- old
             c = 0x10000u + ((c - 0xD800u) << 10) + (n->chars[i + 1u] - 0xDC00u);
-            i++;
+            units = 2;   /* a surrogate pair is one character */
 +++ new
             c = 0xFFFDu;
 

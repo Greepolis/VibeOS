@@ -867,7 +867,7 @@ static void dir_names(const uint8_t *b, char *out) {
  * one opened to read writes nothing and sets no times, one that may only
  * traverse a directory lists nothing. */
 static void t_handle_rights(void) {
-    uint64_t h = 0, d = 0, info = 0, n = 0, buf = kf_ualloc(512), iosb = kf_ualloc(16);
+    uint64_t h = 0, d = 0, info = 0, n = 0, buf = kf_ualloc(512);
     uint8_t *b = (uint8_t *)kf_uptr(buf);
 
     fresh(50);
