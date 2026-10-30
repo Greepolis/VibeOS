@@ -732,17 +732,34 @@ below rather than planned in steps.
 - hello.exe runs itself with "child" and reads back 42; the boot case
   `nt-process-boot.txt` goes red when the zombie's code is lost.
 
-Open:
+Closed in a second pass (2026-10-30):
 
-- Every handle is inherited, whatever bInheritHandles and the handle's own
-  flag say; the standard handles are the creator's, STARTUPINFO is ignored.
-- A suspended first thread (CREATE_SUSPENDED) is refused with
-  STATUS_NOT_IMPLEMENTED.
-- An image that cannot run is not refused to the parent: the child ends with
-  the status the parent would have been given.
-- CreateRemoteThread, DuplicateHandle into another process and another
-  process's memory are not there; NtQueryInformationProcess answers only
-  ProcessBasicInformation.
+- **Inheritance as asked.** A handle crosses only with
+  PROCESS_CREATE_FLAGS_INHERIT_HANDLES (bInheritHandles) *and* OBJ_INHERIT
+  on the handle, as on Windows: the child marks everything else to close at
+  its exec. The standard handles always cross.
+- **The standard handles** are the parameters' - STARTF_USESTDHANDLES's three
+  from kernel32 - moved onto descriptors 0, 1 and 2 before the exec.
+- **CREATE_SUSPENDED**: the child is stopped as NtSuspendThread stops a thread,
+  before it reaches the image, with a suspend count of one; NtResumeThread on
+  the thread handle lets it go. hello.exe's check waits a second: 20 ms did
+  not tell a stopped child from a slow one under TCG, and its sabotage went
+  NOT RED until it was a second.
+- **An image that is not there** is the parent's STATUS_OBJECT_NAME_NOT_FOUND,
+  before anything is made.
+- **NtDuplicateObject into another process** with PROCESS_DUP_HANDLE: the
+  target's process state is pinned by a reference taken under the
+  scheduler's lock, and its table refused once its last thread has closed it.
+
+Still open, and why:
+
+- **CreateRemoteThread into another process** needs a TEB and a stack made in
+  *that* address space and a task joined to it; every memory call the NT layer
+  has works on the caller's. It belongs with reading and writing another
+  process's memory (NtRead/WriteVirtualMemory), which is the same missing
+  piece, and with them in W7.
+- Taking a handle *out of* another process, and NtQueryInformationProcess
+  classes past ProcessBasicInformation.
 
 ### What the oracle says at the end of W6
 

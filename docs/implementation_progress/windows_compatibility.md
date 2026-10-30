@@ -128,8 +128,8 @@ below 0x30000000, where the arena has nothing), and it stops in
 
 ## Next checkpoint
 
-- After W6: CreateRemoteThread, DuplicateHandle across processes, handle
-  inheritance as asked, CREATE_SUSPENDED, STARTUPINFO. Left from W5: another thread's context, timer APC routines, a DLL's static TLS,
+- W7: CreateRemoteThread and another process's memory (NtRead/WriteVirtualMemory),
+  the one piece W6 left - everything else it listed was closed 2026-10-30. Left from W5: another thread's context, timer APC routines, a DLL's static TLS,
   FLS callbacks at a thread's end, single-stepping, keyed events across
   threads (`ntdll:sync`), SignalObjectAndWait, named pipes and object
   directories (`ntdll:om`). Left from W4: `kernel32:file` past LocalAlloc, `ntdll:directory`'s 70
