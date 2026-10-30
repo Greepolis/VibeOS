@@ -773,3 +773,30 @@ kernel32:process ntdll:exception` (2026-10-29):
 | `kernel32:process` | 2,564 tests, 44 failures | 4 failures, no summary | `Beep` |
 | `ntdll:exception` | rc=5, no summary on Wine either | 2 failures | single-stepping |
 
+
+## W7 (from 2026-10-30): kernel32 and the console
+
+What W6 moved here first, then what the rest of kernel32's tests stop at, in
+the order they stop. The plan for steps 3 onward is the oracle's: each is
+"run the tests, fix the first thing that stops one", so their contents are
+written when they are measured, not guessed now.
+
+1. **Another process's memory.** NtReadVirtualMemory and NtWriteVirtualMemory,
+   and NtAllocate/Free/Protect/QueryVirtualMemory on a process handle rather
+   than only the pseudo-handle for oneself; kernel32's ReadProcessMemory,
+   WriteProcessMemory, VirtualProtectEx and VirtualQueryEx over them. Every NT
+   memory helper works on the caller's address space today; what is missing is
+   a copy that walks *another* task's page tables, making a page the region
+   promises as the fault would, and an access check per right
+   (PROCESS_VM_READ, _WRITE, _OPERATION, QUERY_INFORMATION).
+2. **A thread in another process.** NtCreateThreadEx and CreateRemoteThread
+   with a process handle: a TEB and a stack made in *that* address space with
+   step 1's calls, and a task joined to that process rather than the caller's.
+   Measured by `ntdll:thread`'s INVALID_HANDLE and `kernel32:thread`'s
+   CreateRemoteThread failures.
+3. **The rest of kernel32's tests, run once** - every test the oracle lists
+   that no earlier step measured - and the table of where each stops, which
+   is the work list for the steps after it.
+4. **What stops them**, a step per cause in the order the table gives: the
+   console (`kernel32:console`, and `Beep`, where `kernel32:process` ends
+   at the end of W6), and each "unimplemented: KERNEL32.dll.X".
