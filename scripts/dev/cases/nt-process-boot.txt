@@ -13,12 +13,9 @@
 
 ### a suspended first thread is not stopped
 --- old
-        (void)ks_signal_send(slot, VIBEOS_SIGSTOP, 0);
-    }
-    r = nt_create_common
+                                  NT_SPAWN_ENTRY_MARK, base, 0, (tflags & NT_THREAD_CREATE_SUSPENDED) != 0u);
 +++ new
-    }
-    r = nt_create_common
+                                  NT_SPAWN_ENTRY_MARK, base, 0, 0);
 
 ### an image that is not there is left to the child
 --- old

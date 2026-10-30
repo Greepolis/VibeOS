@@ -549,7 +549,7 @@ static long nt_create_user_process(ks_regs_t *frame, uint64_t ph, uint64_t th, u
     /* The child starts in ntdll, on a stack below the parent's own - its copy
      * of it, which nothing else in the child will use again. */
     pid = vibeos_linux_fork_win64(frame, self->entry, ((ks_regs_sp(frame) - 4096u) & ~0xFull) - 8u,
-                                  NT_SPAWN_ENTRY_MARK, base, 0);
+                                  NT_SPAWN_ENTRY_MARK, base, 0, (tflags & NT_THREAD_CREATE_SUSPENDED) != 0u);
     nt_free_alloc(base, NT_SPAWN_BYTES);
     if (pid < 0) {
         (void)nt_copy_out(ph, &h, 8u);
@@ -565,11 +565,11 @@ static long nt_create_user_process(ks_regs_t *frame, uint64_t ph, uint64_t th, u
         return NT_STATUS(VIBEOS_STATUS_PROCESS_IS_TERMINATING);
     }
     if (tflags & NT_THREAD_CREATE_SUSPENDED) {
-        /* Stopped at its next return to ring 3, which is ntdll's entry and
-         * before the exec: the count NtResumeThread reads, and the stop it
-         * undoes. */
+        /* The fork left it stopped before it could run - sent here, after it
+         * was ready, a fast child reached its end first. This is the count
+         * NtResumeThread reads, set before this call returns, so no resume
+         * can come first. */
         ks_id(slot)->nt_suspend = 1u;
-        (void)ks_signal_send(slot, VIBEOS_SIGSTOP, 0);
     }
     r = nt_create_common(&g_nt_process_ops, ph, paccess ? paccess : NT_PROCESS_ALL_ACCESS, 0, 0,
                          process_init, &slot);

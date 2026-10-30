@@ -316,6 +316,12 @@ static long linux_fork_core(const ks_regs_t *frame, uint32_t exit_sig, uint64_t 
         long pid = (long)child->pid;
         uint32_t seq = ks_seq(idx);
 
+        /* Asked to start stopped (W6's CREATE_SUSPENDED): pending before it is
+         * ready, or a fast child ran to its end first - clang Debug's CI boot.
+         * Not earlier: the child's pending set is cleared above. */
+        if (win64 && win64[5]) {
+            (void)ks_signal_send(idx, VIBEOS_SIGSTOP, 0);
+        }
         (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
         ks_mark_ready(idx, "fork");
         /* CLONE_VFORK: this thread waits until the child has exec'd or ended,
@@ -1516,8 +1522,8 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
 /* ---- for the NT personality (docs/abi/windows.md W6) ------------------------------- */
 
 long vibeos_linux_fork_win64(const ks_regs_t *frame, uint64_t ip, uint64_t sp, uint64_t a0,
-                             uint64_t a1, uint64_t a2) {
-    const uint64_t w[5] = { ip, sp, a0, a1, a2 };
+                             uint64_t a1, uint64_t a2, int stopped) {
+    const uint64_t w[6] = { ip, sp, a0, a1, a2, (uint64_t)(stopped != 0) };
 
     return linux_fork_core(frame, VIBEOS_SIGCHLD, 0, 0, 0, 0, 0, 0, w);
 }

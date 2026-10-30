@@ -154,12 +154,13 @@ typedef struct {
  * windows.md W6): NtCreateUserProcess is a fork whose child execs, because
  * that is what the kernel underneath knows how to make. A fork of the caller
  * whose child starts at `ip` on `sp` with three arguments in rcx, rdx and r8
- * (ks_task_start_win64) - the child's pid, or a negative errno; an execve with
+ * (ks_task_start_win64), stopped by SIGSTOP before it can run if `stopped` -
+ * the child's pid, or a negative errno; an execve with
  * the strings and vectors in the calling task's memory; and the reap of a
  * child that has ended, which a Windows parent never asks for. */
 struct ks_regs;
 long vibeos_linux_fork_win64(const struct ks_regs *frame, uint64_t ip, uint64_t sp, uint64_t a0,
-                             uint64_t a1, uint64_t a2);
+                             uint64_t a1, uint64_t a2, int stopped);
 long vibeos_linux_execve(struct ks_regs *frame, uint64_t path, uint64_t argv, uint64_t envp);
 void vibeos_linux_reap(uint32_t pid);
 
