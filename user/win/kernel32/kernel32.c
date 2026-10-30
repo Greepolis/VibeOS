@@ -2445,9 +2445,9 @@ void RaiseException(uint32_t code, uint32_t flags, uint32_t nargs, const uint64_
 
 /* ---- processes (W6) ---------------------------------------------------------------------
  * CreateProcess over NtCreateUserProcess. The image is the application name or
- * the command line's first token, ".exe" added when it has no extension; the
- * standard handles and every other handle are inherited whatever the flag
- * says, and CREATE_SUSPENDED is refused by the kernel. */
+ * the command line's first token, ".exe" added when it has no extension;
+ * bInheritHandles, STARTF_USESTDHANDLES's three handles and CREATE_SUSPENDED
+ * go to the kernel as Windows' own kernel32 passes them. */
 
 typedef struct {
     uint64_t process, thread;
@@ -2471,8 +2471,6 @@ BOOL32 CreateProcessW(const uint16_t *app, uint16_t *cmd, void *pattr, void *tat
 
     (void)pattr;
     (void)tattr;
-    (void)inherit;
-    (void)startup;
     if (app) {
         while (app[n] && n + 5u < 260u) {
             image[n] = app[n];
@@ -2517,8 +2515,18 @@ BOOL32 CreateProcessW(const uint16_t *app, uint16_t *cmd, void *pattr, void *tat
         dir = &cd;
     }
     st = RtlCreateProcessParametersEx(&params, &img, 0, dir, &line, env, 0, 0, 0, 0, 1);
+    if (!failed(st) && startup && (*(uint32_t *)((uint8_t *)startup + 0x3C) & 0x100u)) {
+        /* STARTF_USESTDHANDLES: hStdInput, hStdOutput, hStdError at 0x50. */
+        uint32_t k;
+
+        for (k = 0; k < 3u; k++) {
+            *(uint64_t *)((uint8_t *)params + VIBEOS_RUPP_STD_INPUT + 8u * k) =
+                *(uint64_t *)((uint8_t *)startup + 0x50 + 8u * k);
+        }
+    }
     if (!failed(st)) {
-        st = NtCreateUserProcess(&ph, &th, 0x001FFFFFu, 0x001FFFFFu, 0, 0, 0,
+        st = NtCreateUserProcess(&ph, &th, 0x001FFFFFu, 0x001FFFFFu, 0, 0,
+                                 inherit ? 0x4u : 0u /* PROCESS_CREATE_FLAGS_INHERIT_HANDLES */,
                                  (flags & 4u) ? 1u : 0u /* CREATE_SUSPENDED */, params, 0, 0);
         RtlDestroyProcessParameters(params);
     }
