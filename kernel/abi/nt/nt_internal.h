@@ -201,6 +201,10 @@ uint32_t nt_image_present(const char *path);
  * back with ks_procstate_put - pinned, so a process that ends meanwhile leaves
  * the structure where it is (W6: a handle duplicated into it). A status. */
 uint32_t nt_process_ps_get(uint64_t h, uint32_t need, vibeos_procstate_t **out);
+/* The same, and the slot and tenancy of a task of that process: what an
+ * address space is pinned by (ks_aspace_pin, W7 step 1). */
+uint32_t nt_process_ps_slot_get(uint64_t h, uint32_t need, vibeos_procstate_t **out, int *slot,
+                                uint32_t *seq);
 /* An NT path - "\??\C:\..." - as the VFS path it names. A status. */
 uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap);
 /* A handle for `f`, taking over the caller's reference (released on failure). */

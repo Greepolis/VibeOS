@@ -986,6 +986,50 @@ uint64_t VirtualQuery(const void *addr, void *info, uint64_t len) {
     return VirtualQueryEx(VIBEOS_NT_CURRENT_PROCESS, addr, info, len);
 }
 
+/* ---- another process's memory (W7 step 1) ------------------------------------------------
+ * NtRead/WriteVirtualMemory with Win32's shape. A partial copy is a failure
+ * here, though its status is only a warning: the count says how far it got. */
+
+BOOL32 ReadProcessMemory(uint64_t process, const void *addr, void *buf, uint64_t size,
+                         uint64_t *done) {
+    NTSTATUS_T st = NtReadVirtualMemory(process, (uint64_t)(uintptr_t)addr, buf, size, done);
+
+    return st != 0 ? fail(st) : 1;
+}
+
+/* Windows writes into code a debugger patches: a page that is not writable is
+ * made so for the write and given its protection back, as Wine's kernelbase
+ * does - only the range's first region is asked about, as there. */
+BOOL32 WriteProcessMemory(uint64_t process, void *addr, const void *buf, uint64_t size,
+                          uint64_t *done) {
+    vibeos_nt_memory_basic_t mbi;
+    uint32_t old = 0, prot;
+    NTSTATUS_T st;
+    int changed = 0;
+
+    if (!VirtualQueryEx(process, addr, &mbi, sizeof(mbi))) {
+        return 0;
+    }
+    prot = mbi.protect & 0xFFu;
+    if (prot == VIBEOS_NT_PAGE_READONLY || prot == VIBEOS_NT_PAGE_EXECUTE ||
+        prot == VIBEOS_NT_PAGE_EXECUTE_READ) {
+        uint32_t want = prot == VIBEOS_NT_PAGE_READONLY ? VIBEOS_NT_PAGE_READWRITE
+                                                        : VIBEOS_NT_PAGE_EXECUTE_READWRITE;
+
+        if (!VirtualProtectEx(process, addr, size, want, &old)) {
+            return 0;
+        }
+        changed = 1;
+    }
+    st = NtWriteVirtualMemory(process, (uint64_t)(uintptr_t)addr, buf, size, done);
+    if (changed) {
+        uint32_t ignored;
+
+        (void)VirtualProtectEx(process, addr, size, old, &ignored);
+    }
+    return st != 0 ? fail(st) : 1;
+}
+
 /* ---- file mappings (W3 step 5) ---------------------------------------------------------
  * A file mapping is a section; a view of one is NtMapViewOfSection's. The
  * protection a mapping is created with carries its SEC_* flags in the high

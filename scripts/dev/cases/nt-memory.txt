@@ -50,7 +50,7 @@
 
 ### a commit leaves the pages already made as they were
 --- old
-            vibeos_umem_protect_pages(me, start, end, prot);   /* the pages already made */
+            vibeos_umem_protect_vm(v, start, end, prot);   /* the pages already made */
 +++ new
             (void)prot;
 
@@ -84,10 +84,10 @@
 ### a decommit leaves the pages mapped
 --- old
             for (va = start; va < end; va += 4096ull) {
-                (void)vibeos_vmspace_unmap(&v, va);
+                (void)vibeos_vmspace_unmap(&m->v, va);
 +++ new
             for (va = start; va < end; va += 4096ull) {
-                (void)v;
+                (void)m;
 
 ### a decommit leaves the range committed
 --- old
@@ -112,7 +112,7 @@
 ### a protection change leaves the pages as they were
 --- old
         if (st == VIBEOS_STATUS_SUCCESS) {
-            vibeos_umem_protect_pages(me, start, end, prot);
+            vibeos_umem_protect_vm(&m->v, start, end, prot);
         }
 +++ new
 
@@ -225,7 +225,7 @@
 ### a preserved range keeps its pages
 --- old
     for (va = start; va < end; va += 4096ull) {
-        (void)vibeos_vmspace_unmap(&v, va);
+        (void)vibeos_vmspace_unmap(v, va);
 +++ new
     for (va = start; va < end; va += 4096ull) {
         (void)v;

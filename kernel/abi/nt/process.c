@@ -158,6 +158,14 @@ static void process_unview(process_view_t *v) {
 }
 
 uint32_t nt_process_ps_get(uint64_t h, uint32_t need, vibeos_procstate_t **out) {
+    int slot;
+    uint32_t seq;
+
+    return nt_process_ps_slot_get(h, need, out, &slot, &seq);
+}
+
+uint32_t nt_process_ps_slot_get(uint64_t h, uint32_t need, vibeos_procstate_t **out, int *slot,
+                                uint32_t *seq) {
     process_view_t v;
     vibeos_procstate_t *ps = 0;
     uint32_t st = process_view(h, need, &v);
@@ -190,6 +198,8 @@ uint32_t nt_process_ps_get(uint64_t h, uint32_t need, vibeos_procstate_t **out) 
         return VIBEOS_STATUS_PROCESS_IS_TERMINATING;
     }
     *out = ps;
+    *slot = v.slot;
+    *seq = v.seq;
     return VIBEOS_STATUS_SUCCESS;
 }
 

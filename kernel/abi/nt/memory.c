@@ -23,7 +23,11 @@
  * MEM_TOP_DOWN places as any other request does. ZeroBits is honoured by
  * refusing what the arena cannot place under it, which is everything: the arena
  * is above four gigabytes. MEM_WRITE_WATCH and MEM_LARGE_PAGES are
- * STATUS_NOT_SUPPORTED. Another process's handle is W6's. */
+ * STATUS_NOT_SUPPORTED.
+ *
+ * Another process's memory (W7 step 1): every call takes a process handle
+ * with the right Windows asks for, and holds that process's address space
+ * for the call (nt_mm_get). NtRead/WriteVirtualMemory copy across. */
 
 #include "nt_internal.h"
 #include "vibeos/umem.h"
@@ -99,15 +103,66 @@ static uint32_t nt_protect_of(const vibeos_vma_t *r) {
     return (r->prot & VIBEOS_PROT_WRITE) ? VIBEOS_NT_PAGE_READWRITE : VIBEOS_NT_PAGE_READONLY;
 }
 
-/* The caller, as a process with memory, or null - and only for the
- * pseudo-handle for itself: a handle to another process is W6's. */
-static vibeos_procstate_t *nt_mm_self(uint64_t process, int *me) {
-    *me = ks_current();
-    if (process != VIBEOS_NT_CURRENT_PROCESS || *me < 0 || !ks_id(*me)->is_user) {
-        return 0;
+/* The process a memory call is about, held for the call: its state, and its
+ * address space - pinned, when it is another's, so an exit or an exec there
+ * cannot free the tables under the call (W7 step 1). The handle must grant
+ * `need`; the pseudo-handle for oneself grants everything. */
+typedef struct {
+    vibeos_procstate_t *ps;
+    vibeos_vmspace_t v;
+    int pin;   /* -1: the caller's own, nothing held */
+} nt_mm_t;
+
+#define NT_MM_NONE { 0, { 0, 0 }, -1 }
+
+#define NT_PROCESS_VM_OPERATION    0x0008u
+#define NT_PROCESS_VM_READ         0x0010u
+#define NT_PROCESS_VM_WRITE        0x0020u
+#define NT_PROCESS_QUERY_INFO      0x0400u
+
+static uint32_t nt_mm_get(uint64_t process, uint32_t need, nt_mm_t *m) {
+    const int me = ks_current();
+    uint32_t st, seq;
+    int slot;
+
+    if (me < 0 || !ks_id(me)->is_user) {
+        return VIBEOS_STATUS_INVALID_HANDLE;
     }
-    return ks_ps(*me);
+    if (process == VIBEOS_NT_CURRENT_PROCESS) {
+        m->ps = ks_ps(me);
+        m->v = ks_vm(me);
+        return m->ps ? VIBEOS_STATUS_SUCCESS : VIBEOS_STATUS_INVALID_HANDLE;
+    }
+    st = nt_process_ps_slot_get(process, need, &m->ps, &slot, &seq);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return st;
+    }
+    m->pin = ks_aspace_pin(slot, seq, &m->v);
+    if (m->pin < 0) {
+        ks_procstate_put(m->ps);
+        m->ps = 0;
+        return VIBEOS_STATUS_PROCESS_IS_TERMINATING;
+    }
+    return VIBEOS_STATUS_SUCCESS;
 }
+
+static void nt_mm_put(nt_mm_t *m) {
+    if (m->pin >= 0) {
+        ks_aspace_unpin(m->pin);
+        ks_procstate_put(m->ps);
+        m->pin = -1;
+    }
+}
+
+/* Inside a handler that was given `m` and `process`. */
+#define NT_MM_GET(need)                                  \
+    do {                                                 \
+        uint32_t mm_st_ = nt_mm_get(process, (need), m); \
+        if (mm_st_ != VIBEOS_STATUS_SUCCESS) {           \
+            return NT_STATUS(mm_st_);                    \
+        }                                                \
+        ps = m->ps;                                      \
+    } while (0)
 
 static int nt_get64(uint64_t uptr, uint64_t *v) {
     return nt_copy_in(v, uptr, sizeof(*v));
@@ -175,7 +230,7 @@ typedef struct {
  * MEM_RESERVE_PLACEHOLDER reserves a placeholder, and MEM_RESERVE |
  * MEM_REPLACE_PLACEHOLDER makes an allocation of one, in place and whole: the
  * address is its base, the size its size. */
-static uint32_t nt_allocate(vibeos_procstate_t *ps, int me, uint64_t want, uint64_t size,
+static uint32_t nt_allocate(vibeos_procstate_t *ps, vibeos_vmspace_t *v, uint64_t want, uint64_t size,
                             uint32_t type, uint32_t protect, uint64_t zero_bits,
                             const nt_place_t *at, uint64_t *start_out, uint64_t *end_out) {
     vibeos_prot_t prot;
@@ -310,7 +365,7 @@ static uint32_t nt_allocate(vibeos_procstate_t *ps, int me, uint64_t want, uint6
                                      protect, VIBEOS_VMA_DEMAND) != 0) {
             st = VIBEOS_STATUS_NO_MEMORY;
         } else {
-            vibeos_umem_protect_pages(me, start, end, prot);   /* the pages already made */
+            vibeos_umem_protect_vm(v, start, end, prot);   /* the pages already made */
         }
     }
     ks_mm_unlock(ps);
@@ -323,13 +378,15 @@ uint32_t nt_alloc_rw(uint64_t size, uint64_t *base) {
     const nt_place_t anywhere = { 0u, 0u, 0u };
     int me = ks_current();
     vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
+    vibeos_vmspace_t v;
     uint64_t start = 0, end = 0;
     uint32_t st;
 
     if (!ps) {
         return VIBEOS_STATUS_INVALID_HANDLE;
     }
-    st = nt_allocate(ps, me, 0u, size, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+    v = ks_vm(me);
+    st = nt_allocate(ps, &v, 0u, size, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
                      VIBEOS_NT_PAGE_READWRITE, 0u, &anywhere, &start, &end);
     *base = st == VIBEOS_STATUS_SUCCESS ? start : 0u;
     return st;
@@ -348,7 +405,7 @@ void nt_free_alloc(uint64_t base, uint64_t size) {
 
 /* NtAllocateVirtualMemory(ProcessHandle, BaseAddress, ZeroBits, RegionSize,
  * AllocationType, Protect). No placeholders here: they are the Ex form's. */
-static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64_t zero_bits,
+static long nt_allocate_virtual_memory_in(nt_mm_t *m, uint64_t process, uint64_t base_u, uint64_t zero_bits,
                                        uint64_t size_u, uint64_t type, uint64_t protect) {
     const uint32_t known = VIBEOS_NT_MEM_COMMIT | VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_RESET |
                            VIBEOS_NT_MEM_TOP_DOWN | VIBEOS_NT_MEM_WRITE_WATCH |
@@ -357,18 +414,15 @@ static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64
     vibeos_procstate_t *ps;
     uint64_t want = 0, size = 0, start, end;
     uint32_t st;
-    int me;
 
-    if (!(ps = nt_mm_self(process, &me))) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
-    }
+    NT_MM_GET(NT_PROCESS_VM_OPERATION);
     if (nt_get64(base_u, &want) != 0 || nt_get64(size_u, &size) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     if ((type & ~known) != 0u) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }
-    st = nt_allocate(ps, me, want, size, (uint32_t)type, (uint32_t)protect, zero_bits, &anywhere,
+    st = nt_allocate(ps, &m->v, want, size, (uint32_t)type, (uint32_t)protect, zero_bits, &anywhere,
                      &start, &end);
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
@@ -456,7 +510,7 @@ static uint32_t nt_ext_params(uint64_t params_u, uint64_t count, nt_place_t *at,
  * Gaps, named: an address requirement below the arena - which starts above
  * four gigabytes - cannot be met and is STATUS_NO_MEMORY, as ZeroBits is. An
  * ARM64EC attribute is refused, as on a machine that is not ARM64. */
-static long nt_allocate_virtual_memory_ex(uint64_t process, uint64_t base_u, uint64_t size_u,
+static long nt_allocate_virtual_memory_ex_in(nt_mm_t *m, uint64_t process, uint64_t base_u, uint64_t size_u,
                                           uint64_t type, uint64_t protect, uint64_t params_u,
                                           uint64_t count) {
     const uint32_t known = VIBEOS_NT_MEM_COMMIT | VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_RESET |
@@ -466,7 +520,6 @@ static long nt_allocate_virtual_memory_ex(uint64_t process, uint64_t base_u, uin
     vibeos_procstate_t *ps;
     uint64_t want = 0, size = 0, start, end;
     uint32_t st, attributes = 0;
-    int me;
 
     if ((st = nt_ext_params(params_u, count, &at, &attributes)) != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
@@ -481,10 +534,8 @@ static long nt_allocate_virtual_memory_ex(uint64_t process, uint64_t base_u, uin
         (attributes & VIBEOS_NT_MEM_EXT_EC_CODE)) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }
-    if (!(ps = nt_mm_self(process, &me))) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
-    }
-    st = nt_allocate(ps, me, want, size, (uint32_t)type, (uint32_t)protect, 0u, &at, &start,
+    NT_MM_GET(NT_PROCESS_VM_OPERATION);
+    st = nt_allocate(ps, &m->v, want, size, (uint32_t)type, (uint32_t)protect, 0u, &at, &start,
                      &end);
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
@@ -499,9 +550,9 @@ static long nt_allocate_virtual_memory_ex(uint64_t process, uint64_t base_u, uin
  * What is left keeps the allocation's protection; a part above the range is an
  * allocation of its own from then on, based at its first page, as Wine splits a
  * view - a part below keeps the base it had. */
-static uint32_t nt_release(int me, vibeos_procstate_t *ps, uint64_t start, uint64_t end,
+static uint32_t nt_release(vibeos_vmspace_t *v, vibeos_procstate_t *ps, uint64_t start, uint64_t end,
                            uint64_t alloc_end, uint32_t alloc_prot) {
-    if (vibeos_umem_unmap(me, ps, start, end) != 0) {
+    if (vibeos_umem_unmap_vm(v, ps, start, end) != 0) {
         return VIBEOS_STATUS_NO_MEMORY;
     }
     /* The unmap cut a region at `end`, and the allocation's end was a
@@ -517,9 +568,8 @@ static uint32_t nt_release(int me, vibeos_procstate_t *ps, uint64_t start, uint6
 /* Make [start, end) of a placeholder's allocation a free placeholder of its
  * own: reserved, no access, based at `start`; what is above it is split off as
  * a release splits it. The region list first, then the pages, as decommit. */
-static uint32_t nt_preserve(int me, vibeos_procstate_t *ps, uint64_t start, uint64_t end,
-                            uint64_t alloc_end, uint32_t alloc_prot) {
-    vibeos_vmspace_t v = ks_vm(me);
+static uint32_t nt_preserve(vibeos_vmspace_t *v, vibeos_procstate_t *ps, uint64_t start,
+                            uint64_t end, uint64_t alloc_end, uint32_t alloc_prot) {
     uint64_t va;
 
     if (vibeos_vma_change_alloc(&ps->mm->vmas, start, end - start,
@@ -534,7 +584,7 @@ static uint32_t nt_preserve(int me, vibeos_procstate_t *ps, uint64_t start, uint
         return VIBEOS_STATUS_NO_MEMORY;
     }
     for (va = start; va < end; va += 4096ull) {
-        (void)vibeos_vmspace_unmap(&v, va);
+        (void)vibeos_vmspace_unmap(v, va);
     }
     ks_tlb_drain();
     return VIBEOS_STATUS_SUCCESS;
@@ -573,17 +623,15 @@ static uint32_t nt_coalesce(vibeos_procstate_t *ps, uint64_t start, uint64_t end
  * allocation leaves a free placeholder where it was; MEM_COALESCE_PLACEHOLDERS
  * joins free placeholders side by side into one. The region list first, then
  * the pages, as munmap orders it. */
-static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t size_u,
+static long nt_free_virtual_memory_in(nt_mm_t *m, uint64_t process, uint64_t base_u, uint64_t size_u,
                                    uint64_t type) {
     vibeos_procstate_t *ps;
     const vibeos_vma_t *r;
     uint64_t want = 0, size = 0, start, end = 0, ab, alloc_end;
     uint32_t st = VIBEOS_STATUS_SUCCESS;
-    int me, reserved;
+    int reserved;
 
-    if (!(ps = nt_mm_self(process, &me))) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
-    }
+    NT_MM_GET(NT_PROCESS_VM_OPERATION);
     if (nt_get64(base_u, &want) != 0 || nt_get64(size_u, &size) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
@@ -629,10 +677,10 @@ static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t s
                 /* Not a placeholder's, or one already, whole. */
                 st = VIBEOS_STATUS_CONFLICTING_ADDRESSES;
             } else {
-                st = nt_preserve(me, ps, start, end, alloc_end, ap);
+                st = nt_preserve(&m->v, ps, start, end, alloc_end, ap);
             }
         } else if (type == VIBEOS_NT_MEM_RELEASE) {
-            st = nt_release(me, ps, start, end, alloc_end, ap);
+            st = nt_release(&m->v, ps, start, end, alloc_end, ap);
         } else if (!nt_in_alloc(ps, start, end, ab, &reserved)) {
             st = VIBEOS_STATUS_UNABLE_TO_FREE_VM;
         } else if (vibeos_vma_change(&ps->mm->vmas, start, end - start,
@@ -640,14 +688,13 @@ static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t s
                                      VIBEOS_PROT_NONE, 0u, VIBEOS_VMA_RESERVED) != 0) {
             st = VIBEOS_STATUS_NO_MEMORY;
         } else {
-            vibeos_vmspace_t v = ks_vm(me);
             uint64_t va;
 
             /* Through the address-space layer, which gives a frame back only
              * when nobody else holds it, and parks it until every core has
              * let go of its translation (see vibeos_umem_unmap). */
             for (va = start; va < end; va += 4096ull) {
-                (void)vibeos_vmspace_unmap(&v, va);
+                (void)vibeos_vmspace_unmap(&m->v, va);
             }
             ks_tlb_drain();
         }
@@ -670,18 +717,16 @@ static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t s
  * the loader's mappings, which an image's IAT is made writable in - and the old
  * protection is the first page's. The list decides, all or nothing, and the
  * pages that exist are made to agree. */
-static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_t size_u,
+static long nt_protect_virtual_memory_in(nt_mm_t *m, uint64_t process, uint64_t base_u, uint64_t size_u,
                                       uint64_t protect, uint64_t old_u) {
     vibeos_procstate_t *ps;
     vibeos_prot_t prot;
     const vibeos_vma_t *r;
     uint64_t want = 0, size = 0, start, end;
     uint32_t st = VIBEOS_STATUS_SUCCESS, old = 0;
-    int me, reserved;
+    int reserved;
 
-    if (!(ps = nt_mm_self(process, &me))) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
-    }
+    NT_MM_GET(NT_PROCESS_VM_OPERATION);
     if (nt_get64(base_u, &want) != 0 || nt_get64(size_u, &size) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
@@ -727,7 +772,7 @@ static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_
             st = VIBEOS_STATUS_NO_MEMORY;
         }
         if (st == VIBEOS_STATUS_SUCCESS) {
-            vibeos_umem_protect_pages(me, start, end, prot);
+            vibeos_umem_protect_vm(&m->v, start, end, prot);
         }
     }
     ks_mm_unlock(ps);
@@ -747,7 +792,7 @@ static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_
  * The run of pages from the one asked about that share everything the
  * structure says - the allocation, the state, the protection. Free memory runs
  * to the next region, or to the end of the user window. */
-static long nt_query_virtual_memory(uint64_t process, uint64_t va, uint64_t cls, uint64_t buf,
+static long nt_query_virtual_memory_in(nt_mm_t *m, uint64_t process, uint64_t va, uint64_t cls, uint64_t buf,
                                     uint64_t len, uint64_t ret_len) {
     vibeos_nt_memory_basic_t mbi;
     vibeos_procstate_t *ps;
@@ -755,11 +800,8 @@ static long nt_query_virtual_memory(uint64_t process, uint64_t va, uint64_t cls,
     const uint64_t page = va & ~0xFFFull;
     uint64_t got = sizeof(mbi);
     uint32_t i;
-    int me;
 
-    if (!(ps = nt_mm_self(process, &me))) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
-    }
+    NT_MM_GET(NT_PROCESS_QUERY_INFO);
     if ((uint32_t)cls != VIBEOS_NT_MEMORY_BASIC_INFORMATION) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
     }
@@ -814,6 +856,136 @@ static long nt_query_virtual_memory(uint64_t process, uint64_t va, uint64_t cls,
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
 }
 
+/* Can the page at `va` of the held process be read - or written - by a copy
+ * from outside it? Committed, accessible as asked, and made if the region
+ * promises it and nobody has touched it yet, as the fault would. Under the mm
+ * lock. A view's untouched page, or one in swap, is not reached: the fault
+ * that would bring it is the owner's, and the copy reports a partial one. */
+static int nt_vm_reach(nt_mm_t *m, uint64_t va, int write) {
+    const vibeos_vma_t *r = vibeos_vma_find(&m->ps->mm->vmas, va);
+    const uint64_t *e;
+
+    if (!r || r->state != VIBEOS_VMA_DEMAND || !(r->prot & VIBEOS_PROT_READ) ||
+        (write && !(r->prot & VIBEOS_PROT_WRITE))) {
+        return -1;
+    }
+    e = vibeos_vmspace_entry(&m->v, va & ~0xFFFull);
+    if ((!e || *e == 0u) && r->backing == VIBEOS_BACKING_ANON) {
+        return ks_vm_map_anon(&m->v, va & ~0xFFFull, r->prot);
+    }
+    return 0;
+}
+
+/* NtReadVirtualMemory and NtWriteVirtualMemory(ProcessHandle, BaseAddress,
+ * Buffer, BufferSize, NumberOfBytes). Through a bounce buffer, a page at a
+ * time, so neither side's mm lock is held while the other's memory is touched:
+ * a store into the caller's buffer can fault into a path that takes the
+ * caller's. What was moved before a page that could not be is reported, with
+ * STATUS_PARTIAL_COPY, as Windows does. */
+static long nt_rw_virtual_memory_in(nt_mm_t *m, uint64_t process, uint64_t base, uint64_t buf,
+                                    uint64_t size, uint64_t done_u, int write) {
+    uint8_t bounce[512];
+    vibeos_procstate_t *ps;
+    uint64_t done = 0;
+    uint32_t st = VIBEOS_STATUS_SUCCESS;
+
+    NT_MM_GET(write ? NT_PROCESS_VM_WRITE : NT_PROCESS_VM_READ);
+    if (size > ~0ull - base || base + size > ks_user_top()) {
+        st = VIBEOS_STATUS_ACCESS_VIOLATION;
+    }
+    while (st == VIBEOS_STATUS_SUCCESS && done < size) {
+        const uint64_t va = base + done;
+        uint64_t chunk = size - done;
+        int ok;
+
+        if (chunk > sizeof(bounce)) {
+            chunk = sizeof(bounce);
+        }
+        if (chunk > 4096u - (va & 0xFFFull)) {
+            chunk = 4096u - (va & 0xFFFull);
+        }
+        if (write && nt_copy_in(bounce, buf + done, chunk) != 0) {
+            st = VIBEOS_STATUS_ACCESS_VIOLATION;
+            break;
+        }
+        ks_mm_lock(ps);
+        ok = nt_vm_reach(m, va, write) == 0 &&
+             ks_vm_copy(&m->v, va, bounce, (uint32_t)chunk, write) == 0;
+        ks_mm_unlock(ps);
+        if (!ok) {
+            st = VIBEOS_STATUS_PARTIAL_COPY;
+            break;
+        }
+        if (!write && nt_copy_out(buf + done, bounce, chunk) != 0) {
+            st = VIBEOS_STATUS_ACCESS_VIOLATION;
+            break;
+        }
+        done += chunk;
+    }
+    if (done_u != 0u && nt_put64(done_u, done) != 0 && st == VIBEOS_STATUS_SUCCESS) {
+        st = VIBEOS_STATUS_ACCESS_VIOLATION;
+    }
+    return NT_STATUS(st);
+}
+
+/* Each handler with the process it named let go of afterwards, whichever way
+ * it returned. */
+static long nt_allocate_virtual_memory(uint64_t process, uint64_t base_u, uint64_t zero_bits,
+                                       uint64_t size_u, uint64_t type, uint64_t protect) {
+    nt_mm_t m = NT_MM_NONE;
+    long r = nt_allocate_virtual_memory_in(&m, process, base_u, zero_bits, size_u, type, protect);
+
+    nt_mm_put(&m);
+    return r;
+}
+
+static long nt_allocate_virtual_memory_ex(uint64_t process, uint64_t base_u, uint64_t size_u,
+                                          uint64_t type, uint64_t protect, uint64_t params_u,
+                                          uint64_t count) {
+    nt_mm_t m = NT_MM_NONE;
+    long r = nt_allocate_virtual_memory_ex_in(&m, process, base_u, size_u, type, protect,
+                                              params_u, count);
+
+    nt_mm_put(&m);
+    return r;
+}
+
+static long nt_free_virtual_memory(uint64_t process, uint64_t base_u, uint64_t size_u,
+                                   uint64_t type) {
+    nt_mm_t m = NT_MM_NONE;
+    long r = nt_free_virtual_memory_in(&m, process, base_u, size_u, type);
+
+    nt_mm_put(&m);
+    return r;
+}
+
+static long nt_protect_virtual_memory(uint64_t process, uint64_t base_u, uint64_t size_u,
+                                      uint64_t protect, uint64_t old_u) {
+    nt_mm_t m = NT_MM_NONE;
+    long r = nt_protect_virtual_memory_in(&m, process, base_u, size_u, protect, old_u);
+
+    nt_mm_put(&m);
+    return r;
+}
+
+static long nt_query_virtual_memory(uint64_t process, uint64_t va, uint64_t cls, uint64_t buf,
+                                    uint64_t len, uint64_t ret_len) {
+    nt_mm_t m = NT_MM_NONE;
+    long r = nt_query_virtual_memory_in(&m, process, va, cls, buf, len, ret_len);
+
+    nt_mm_put(&m);
+    return r;
+}
+
+static long nt_rw_virtual_memory(uint64_t process, uint64_t base, uint64_t buf, uint64_t size,
+                                 uint64_t done_u, int write) {
+    nt_mm_t m = NT_MM_NONE;
+    long r = nt_rw_virtual_memory_in(&m, process, base, buf, size, done_u, write);
+
+    nt_mm_put(&m);
+    return r;
+}
+
 #define NT_MEMORY_SERVICES(X) \
     X(VIBEOS_NT_NR_NtAllocateVirtualMemory, NtAllocateVirtualMemory, MAP, \
       PTRS(OUT(1, 8), OUT(3, 8)), \
@@ -830,6 +1002,12 @@ static long nt_query_virtual_memory(uint64_t process, uint64_t va, uint64_t cls,
       nt_protect_virtual_memory(ARG(0), ARG(1), ARG(2), NT_ARG32(3), ARG(4))) \
     X(VIBEOS_NT_NR_NtQueryVirtualMemory, NtQueryVirtualMemory, MINCORE, \
       PTRS(OUT(3, sizeof(vibeos_nt_memory_basic_t)), OUT_OPT(5, 8)), \
-      nt_query_virtual_memory(ARG(0), ARG(1), NT_ARG32(2), ARG(3), ARG(4), ARG(5)))
+      nt_query_virtual_memory(ARG(0), ARG(1), NT_ARG32(2), ARG(3), ARG(4), ARG(5))) \
+    X(VIBEOS_NT_NR_NtReadVirtualMemory, NtReadVirtualMemory, MINCORE, \
+      PTRS(OUT_BUF(2, 3), OUT_OPT(4, 8)), \
+      nt_rw_virtual_memory(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), 0)) \
+    X(VIBEOS_NT_NR_NtWriteVirtualMemory, NtWriteVirtualMemory, MINCORE, \
+      PTRS(IN_BUF(2, 3), OUT_OPT(4, 8)), \
+      nt_rw_virtual_memory(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), 1))
 
 NT_DEFINE_SERVICES(memory, NT_MEMORY_SERVICES)

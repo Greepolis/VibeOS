@@ -472,6 +472,39 @@ static const char *process_check(void) {
                 return "NT_HELLO_FAIL process_duplicate_into\n";
             }
         }
+        /* W7 step 1: memory allocated in the child, written across a page
+         * boundary and read back - through the child's page tables, which
+         * the kernel walks from outside it. */
+        {
+            static uint8_t out[0x1000], back[0x1000];
+            uint64_t base = 0, size = 0x2000, moved = 0;
+            uint32_t i;
+
+            for (i = 0; i < sizeof(out); i++) {
+                out[i] = (uint8_t)(i * 13u + 5u);
+            }
+            if (NtAllocateVirtualMemory(ph, &base, 0, &size, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                                        VIBEOS_NT_PAGE_READWRITE) != VIBEOS_STATUS_SUCCESS) {
+                return "NT_HELLO_FAIL remote_memory_alloc\n";
+            }
+            if (NtWriteVirtualMemory(ph, base + 0xF80u, out, sizeof(out), &moved) != VIBEOS_STATUS_SUCCESS ||
+                moved != sizeof(out)) {
+                return "NT_HELLO_FAIL remote_memory_write\n";
+            }
+            if (NtReadVirtualMemory(ph, base + 0xF80u, back, sizeof(back), &moved) != VIBEOS_STATUS_SUCCESS ||
+                moved != sizeof(back)) {
+                return "NT_HELLO_FAIL remote_memory_read\n";
+            }
+            for (i = 0; i < sizeof(out); i++) {
+                if (back[i] != out[i]) {
+                    return "NT_HELLO_FAIL remote_memory_bytes\n";
+                }
+            }
+            if (NtReadVirtualMemory(ph, base + 0x1F80u, back, 0x100u, &moved) != VIBEOS_STATUS_PARTIAL_COPY ||
+                moved != 0x80u) {
+                return "NT_HELLO_FAIL remote_memory_partial\n";
+            }
+        }
         if (NtResumeThread(th, &prev) != VIBEOS_STATUS_SUCCESS || prev != 1u ||
             NtWaitForSingleObject(ph, 0, 0) != VIBEOS_STATUS_SUCCESS ||
             NtQueryInformationProcess(ph, VIBEOS_NT_PROCESS_BASIC_INFORMATION, &pbi, sizeof(pbi), 0) !=

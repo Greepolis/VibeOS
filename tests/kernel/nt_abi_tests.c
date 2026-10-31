@@ -1958,6 +1958,119 @@ static long vquery(uint64_t va, uint32_t cls, uint64_t len, vibeos_nt_memory_bas
     return r;
 }
 
+extern int g_kf_aspace_pins;
+
+/* NtRead/WriteVirtualMemory and NtWriteVirtualMemory(ProcessHandle, BaseAddress, Buffer, Size,
+ * NumberOfBytes): `buf` is the caller's, `n` how many it says were moved. */
+static long vm_rw(uint32_t nr, uint64_t h, uint64_t va, uint64_t buf, uint64_t size, uint64_t *n) {
+    uint64_t got = kf_ualloc(8);
+    uint64_t rest[1] = { got };
+    long r;
+
+    *(uint64_t *)kf_uptr(got) = 0xA5A5u;
+    kf_next_sp(stack_args(rest, 1));
+    r = nt(nr, h, va, buf, size, 0);
+    *n = *(uint64_t *)kf_uptr(got);
+    return r;
+}
+
+/* Another process's memory (docs/abi/windows.md W7 step 1): allocated,
+ * written, read, protected and asked about through a process handle, each
+ * with the right Windows asks for, and the other process sees what was
+ * written in its own address space. */
+static void t_remote_memory(void) {
+    const uint32_t ops = 0x0008u | 0x0010u | 0x0020u | 0x0400u;   /* VM_OPERATION, _READ, _WRITE, QUERY */
+    uint64_t cid = kf_ualloc(16), out = kf_ualloc(8), b = kf_ualloc(8), s = kf_ualloc(8);
+    uint64_t buf = kf_ualloc(0x1800), h, ro, base, n = 0, rest[3];
+    uint8_t *p = (uint8_t *)kf_uptr(buf), y = 0;
+    vibeos_nt_memory_basic_t mbi;
+    uint32_t i;
+    int me = fresh(60), other = kf_spawn(61, 61);
+
+    ((uint64_t *)kf_uptr(cid))[0] = 61u;
+    ((uint64_t *)kf_uptr(cid))[1] = 0u;
+    expect(nt(VIBEOS_NT_NR_NtOpenProcess, out, ops, 0, cid, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a handle to another process with the memory rights");
+    h = *(uint64_t *)kf_uptr(out);
+    expect(nt(VIBEOS_NT_NR_NtOpenProcess, out, 0x0010u, 0, cid, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "and one that may only read");
+    ro = *(uint64_t *)kf_uptr(out);
+
+    *(uint64_t *)kf_uptr(b) = 0;
+    *(uint64_t *)kf_uptr(s) = 0x3000;
+    rest[0] = VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT;
+    rest[1] = VIBEOS_NT_PAGE_READWRITE;
+    kf_next_sp(stack_args(rest, 2));
+    expect(nt(VIBEOS_NT_NR_NtAllocateVirtualMemory, h, b, 0, s, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "NtAllocateVirtualMemory in the other process");
+    base = *(uint64_t *)kf_uptr(b);
+    expect(vibeos_vma_find(&ks_ps(other)->mm->vmas, base) != 0 &&
+               vibeos_vma_find(&ks_ps(me)->mm->vmas, base) == 0,
+           "the allocation is the other's, not the caller's");
+
+    for (i = 0; i < 0x1800u; i++) {
+        p[i] = (uint8_t)(i * 7u + 1u);
+    }
+    expect(vm_rw(VIBEOS_NT_NR_NtWriteVirtualMemory, h, base + 0x800u, buf, 0x1800u, &n) ==
+               ST(VIBEOS_STATUS_SUCCESS) && n == 0x1800u,
+           "NtWriteVirtualMemory across a page boundary, into pages nobody had touched");
+    kf_set_current(other);
+    expect(kf_peek(base + 0x800u + 0x1234u, &y, 1) == 0 && y == (uint8_t)(0x1234u * 7u + 1u),
+           "the other process reads what was written, in its own address space");
+    y = 0xEE;
+    expect(kf_poke(base + 0x10u, &y, 1) == 0, "and stores a byte of its own");
+    kf_set_current(me);
+    memset(p, 0, 0x1800u);
+    expect(vm_rw(VIBEOS_NT_NR_NtReadVirtualMemory, ro, base, buf, 0x1800u, &n) ==
+               ST(VIBEOS_STATUS_SUCCESS) && n == 0x1800u && p[0x10] == 0xEE &&
+               p[0x800 + 3] == (uint8_t)(3u * 7u + 1u),
+           "NtReadVirtualMemory with a handle that may only read");
+    expect(vm_rw(VIBEOS_NT_NR_NtWriteVirtualMemory, ro, base, buf, 16u, &n) ==
+               ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "and NtWriteVirtualMemory through it is ACCESS_DENIED");
+
+    {
+        uint64_t old = kf_ualloc(4), q = kf_ualloc(8), qs = kf_ualloc(8);
+
+        *(uint64_t *)kf_uptr(q) = base + 0x2000u;
+        *(uint64_t *)kf_uptr(qs) = 0x1000u;
+        rest[0] = old;
+        kf_next_sp(stack_args(rest, 1));
+        expect(nt(VIBEOS_NT_NR_NtProtectVirtualMemory, h, q, qs, VIBEOS_NT_PAGE_READONLY, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS) && *(uint32_t *)kf_uptr(old) == VIBEOS_NT_PAGE_READWRITE,
+               "NtProtectVirtualMemory in the other process");
+    }
+    expect(vm_rw(VIBEOS_NT_NR_NtWriteVirtualMemory, h, base + 0x1F00u, buf, 0x200u, &n) ==
+               ST(VIBEOS_STATUS_PARTIAL_COPY) && n == 0x100u,
+           "a write into its read-only page is a partial copy, the bytes before it counted");
+    expect(vm_rw(VIBEOS_NT_NR_NtReadVirtualMemory, h, base + 0x2F00u, buf, 0x200u, &n) ==
+               ST(VIBEOS_STATUS_PARTIAL_COPY) && n == 0x100u,
+           "a read past the allocation is a partial copy too");
+    {
+        uint64_t mb = kf_ualloc(64), got = kf_ualloc(8);
+        uint64_t qr[2] = { sizeof(mbi), got };
+
+        kf_next_sp(stack_args(qr, 2));
+        expect(nt(VIBEOS_NT_NR_NtQueryVirtualMemory, h, base + 0x2000u, 0, mb, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS),
+               "NtQueryVirtualMemory in the other process");
+        memcpy(&mbi, kf_uptr(mb), sizeof(mbi));
+        expect(mbi.allocation_base == base && mbi.protect == VIBEOS_NT_PAGE_READONLY &&
+                   mbi.state == VIBEOS_NT_MEM_COMMIT,
+               "and it describes the other's allocation, as it was changed");
+        kf_next_sp(stack_args(qr, 2));
+        expect(nt(VIBEOS_NT_NR_NtQueryVirtualMemory, ro, base, 0, mb, 0) ==
+                   ST(VIBEOS_STATUS_ACCESS_DENIED),
+               "but not through a handle without PROCESS_QUERY_INFORMATION");
+    }
+    *(uint64_t *)kf_uptr(b) = base;
+    *(uint64_t *)kf_uptr(s) = 0;
+    expect(nt(VIBEOS_NT_NR_NtFreeVirtualMemory, h, b, s, VIBEOS_NT_MEM_RELEASE, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) && vibeos_vma_find(&ks_ps(other)->mm->vmas, base) == 0,
+           "NtFreeVirtualMemory releases it there");
+    expect(g_kf_aspace_pins == 0, "and every address space held for a call was let go");
+}
+
 static void t_virtual_memory(void) {
     vibeos_nt_memory_basic_t m;
     uint64_t a, as, b, bs, c, cs, x, xs;
@@ -2073,8 +2186,8 @@ static void t_virtual_memory(void) {
     x = 0;
     xs = 0x1000u;
     expect(nt(VIBEOS_NT_NR_NtFreeVirtualMemory, 4, kf_ualloc(8), kf_ualloc(8),
-              VIBEOS_NT_MEM_RELEASE, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
-           "another process is W6's");
+              VIBEOS_NT_MEM_RELEASE, 0) == ST(VIBEOS_STATUS_OBJECT_TYPE_MISMATCH),
+           "a handle that is not a process's (the console's) is refused for its type");
 
     /* Protection: of committed pages, the old one the first page's. */
     expect(vprotect(b + 0x2800u, 0x100u, VIBEOS_NT_PAGE_READWRITE, &old) ==
@@ -2783,6 +2896,7 @@ int test_nt_abi(void) {
     t_open_file_permissions();
     t_object_share();
     t_virtual_memory();
+    t_remote_memory();
     t_placeholders();
     t_data_sections();
     return g_fail ? -1 : 0;

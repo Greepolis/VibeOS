@@ -124,6 +124,7 @@ PulseEvent
 QueueUserAPC
 RaiseException
 ReadFile
+ReadProcessMemory
 ReleaseMutex
 ReleaseSemaphore
 RemoveDirectoryA
@@ -170,6 +171,7 @@ WaitForMultipleObjectsEx
 WaitForSingleObject
 WaitForSingleObjectEx
 WriteFile
+WriteProcessMemory
 _hread
 _hwrite
 _lclose

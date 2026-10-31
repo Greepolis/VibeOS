@@ -1,0 +1,46 @@
+# Another process's memory (docs/abi/windows.md W7 step 1), proved by
+# t_remote_memory in tests/kernel/nt_abi_tests.c on the fake kernel's page
+# tables: two processes, each with its own.
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/abi/nt/memory.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/memory.c scripts/dev/cases/nt-remote-memory.txt
+
+### a process handle is taken for the caller itself
+--- old
+    if (process == VIBEOS_NT_CURRENT_PROCESS) {
+        m->ps = ks_ps(me);
++++ new
+    if (process == VIBEOS_NT_CURRENT_PROCESS || 1) {
+        m->ps = ks_ps(me);
+
+### the handle's rights are not asked
+--- old
+    st = nt_process_ps_slot_get(process, need, &m->ps, &slot, &seq);
++++ new
+    st = nt_process_ps_slot_get(process, 0u, &m->ps, &slot, &seq);
+
+### an address space held for a call is never let go
+--- old
+        ks_aspace_unpin(m->pin);
++++ new
+        (void)m->pin;
+
+### an untouched committed page is not made for the copy
+--- old
+        return ks_vm_map_anon(&m->v, va & ~0xFFFull, r->prot);
++++ new
+        return -1;
+
+### a partial copy reports nothing moved
+--- old
+    if (done_u != 0u && nt_put64(done_u, done) != 0 && st == VIBEOS_STATUS_SUCCESS) {
++++ new
+    if (done_u != 0u && nt_put64(done_u, 0u) != 0 && st == VIBEOS_STATUS_SUCCESS) {
+
+### a write needs only the right to read
+--- old
+    NT_MM_GET(write ? NT_PROCESS_VM_WRITE : NT_PROCESS_VM_READ);
++++ new
+    NT_MM_GET(NT_PROCESS_VM_READ);
