@@ -944,3 +944,6 @@ every kernel32 test. The work list for step 4, grouped by what each needs:
   contexts, fibers, toolhelp.
 - **kernel32:thread's access violation** after its TLS tests, and
   **kernel32:virtual's** address space spent by `test_VirtualProtect`.
+
+Open points from every step are kept as rows (WO-NNN) in
+[../implementation_progress/windows_open_items.md](../implementation_progress/windows_open_items.md).

@@ -141,6 +141,11 @@ check (write watches) and the address-requirements test ten (allocations
 below 0x30000000, where the arena has nothing), and it stops in
 `test_NtMapViewOfSection` at kernel32's SetFilePointer (W4).
 
+## Open items
+
+Every open point of the NT personality is a row of
+[windows_open_items.md](windows_open_items.md), with an ID that does not change.
+
 ## Next checkpoint
 
 - W7 (from 2026-10-30): steps 1 and 2 (another process's memory, a thread in another process) done 2026-10-31; step 3 (every kernel32 test run once, the table of where each stops) the same day; next the functions that table names (step 4).
