@@ -843,3 +843,42 @@ now reaches `test_VirtualAllocEx` and fails it before any remote call - the
 test's own VirtualAllocEx on itself answers ERROR_NOT_ENOUGH_MEMORY after
 `test_VirtualProtect`'s failures, so the address space is spent before it
 starts. That is step 3's to read.
+
+### Done: a thread in another process (step 2, 2026-10-31)
+
+- **NtCreateThreadEx with a process handle**, asking PROCESS_CREATE_THREAD.
+  The TEB and the stack are made in the target's memory through step 1's
+  calls (`nt_mm_alloc_rw`, `nt_mm_write`), the thread starts at the target's
+  ntdll entry with the target's PEB, and it joins the target through a task of
+  it whose tenancy is asked again under the scheduler's lock as the registers
+  are taken (`ks_thread_regs_of`): a process that ended meanwhile gets no
+  thread. A thread made from outside starts with no signal blocked.
+- **An orphaned pin is not freed while a task holds the tables**: a thread
+  made into a process while it was pinned holds them from then on, and its
+  exit frees them.
+- The caller's own threads go the same way now - one path, the pseudo-handle
+  being a process like any other.
+- kernel32's CreateRemoteThread is CreateThread's body; CreateThread calls it
+  with the current process.
+- NtQueryInformationThread answers ThreadBasicInformation, ThreadTimes,
+  ThreadAmILastThread and ThreadIsTerminated with
+  THREAD_QUERY_LIMITED_INFORMATION, as Windows does (`kernel32:thread`'s
+  test_thread_info). It had been read as "another process's thread" at the
+  end of W5; it was the right, not the process.
+- The fake kernel's threads share their creator's tables, as the machine's
+  do; they did not, and a thread made elsewhere could not be seen running
+  there.
+- `t_remote_thread`, six sabotage cases (`nt-remote-thread.txt`), all red;
+  hello.exe starts a child that sleeps and ends it with 77 from a thread it
+  makes there, and `nt-remote-thread-boot.txt` goes red when the thread joins
+  the caller instead.
+
+Still open: a thread made in a *suspended* child runs in the forked copy that
+the child's exec replaces (step 1's note). Nothing in the oracle asks for it.
+
+What the oracle says after step 2 (2026-10-31, `ntdll:thread kernel32:thread
+kernel32:process`): `kernel32:thread` prints no failure at all - the
+CreateRemoteThread and thread-information failures are gone - but still ends
+without a summary: the test process dies of an access violation after the TLS
+tests. `ntdll:thread`'s three failures are NtCreateUserProcess's create-info
+and attribute list (W6's, not this step's); `kernel32:process` stops at Beep.

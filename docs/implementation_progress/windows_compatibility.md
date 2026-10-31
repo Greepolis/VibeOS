@@ -98,6 +98,10 @@ writable by NtProtectVirtualMemory (8b45ad2, H-033's class).
 
 ## Where the oracle stands
 
+After W7 step 2 (2026-10-31): `kernel32:thread` prints no failure but ends
+without a summary (an access violation after its TLS tests); CreateRemoteThread
+works on the machine (hello.exe).
+
 After W7 step 1 (2026-10-31): another process's memory works on the machine
 (hello.exe) and in the host tests; `kernel32:thread` stops at CreateRemoteThread,
 `kernel32:process` at Beep, and `kernel32:virtual` reaches `test_VirtualAllocEx`
@@ -134,7 +138,7 @@ below 0x30000000, where the arena has nothing), and it stops in
 
 ## Next checkpoint
 
-- W7 (from 2026-10-30): step 1, another process's memory, done 2026-10-31; next CreateRemoteThread (step 2), then the rest of kernel32's tests.
+- W7 (from 2026-10-30): steps 1 and 2 (another process's memory, a thread in another process) done 2026-10-31; next the rest of kernel32's tests (step 3).
   Left from W5: another thread's context, timer APC routines, a DLL's static TLS,
   FLS callbacks at a thread's end, single-stepping, keyed events across
   threads (`ntdll:sync`), SignalObjectAndWait, named pipes and object
