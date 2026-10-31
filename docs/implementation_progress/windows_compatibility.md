@@ -98,6 +98,12 @@ writable by NtProtectVirtualMemory (8b45ad2, H-033's class).
 
 ## Where the oracle stands
 
+After W7 step 1 (2026-10-31): another process's memory works on the machine
+(hello.exe) and in the host tests; `kernel32:thread` stops at CreateRemoteThread,
+`kernel32:process` at Beep, and `kernel32:virtual` reaches `test_VirtualAllocEx`
+with its address space already spent by `test_VirtualProtect`. See "Done:
+another process's memory" in [../abi/windows.md](../abi/windows.md).
+
 At the end of W6 (2026-10-29): `ntdll:thread` runs to its end, 20 tests and 3
 failures; `kernel32:thread` stops at CreateRemoteThread and DuplicateHandle
 into another process, `kernel32:process` at Beep. See "What the oracle says
@@ -128,8 +134,8 @@ below 0x30000000, where the arena has nothing), and it stops in
 
 ## Next checkpoint
 
-- W7: CreateRemoteThread and another process's memory (NtRead/WriteVirtualMemory),
-  the one piece W6 left - everything else it listed was closed 2026-10-30. Left from W5: another thread's context, timer APC routines, a DLL's static TLS,
+- W7 (from 2026-10-30): step 1, another process's memory, done 2026-10-31; next CreateRemoteThread (step 2), then the rest of kernel32's tests.
+  Left from W5: another thread's context, timer APC routines, a DLL's static TLS,
   FLS callbacks at a thread's end, single-stepping, keyed events across
   threads (`ntdll:sync`), SignalObjectAndWait, named pipes and object
   directories (`ntdll:om`). Left from W4: `kernel32:file` past LocalAlloc, `ntdll:directory`'s 70

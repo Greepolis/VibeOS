@@ -800,3 +800,46 @@ written when they are measured, not guessed now.
 4. **What stops them**, a step per cause in the order the table gives: the
    console (`kernel32:console`, and `Beep`, where `kernel32:process` ends
    at the end of W6), and each "unimplemented: KERNEL32.dll.X".
+
+### Done: another process's memory (step 1, 2026-10-31)
+
+- **Holding another address space.** Exit and exec free page tables only
+  when nobody else holds them, and both ask in one place under the
+  scheduler's lock (`hw_aspace_shared_by_other`). A pin there is one more
+  holder: `ks_aspace_pin` checks the slot's tenancy under that lock, and an
+  exit or exec meanwhile leaves the tables to the pin, whose last release
+  frees them. Exit now frees from a copy with the task's pointer cleared under
+  the lock, or a pin taken just after its decision would have read tables on
+  their way to the allocator.
+- **The copy** (`ks_vm_copy`) walks the other process's tables a page at a
+  time; a store breaks copy-on-write as the fault would, and a committed page
+  nobody has touched is made first (`ks_vm_map_anon`). Through a 512-byte
+  bounce buffer, so neither process's mm lock is held while the other's
+  memory is touched.
+- **NtReadVirtualMemory, NtWriteVirtualMemory**, and
+  NtAllocate/Free/Protect/QueryVirtualMemory on a process handle, each asking
+  the right Windows asks (VM_READ, VM_WRITE, VM_OPERATION,
+  QUERY_INFORMATION). A copy that stops at a page it cannot reach reports
+  STATUS_PARTIAL_COPY and how far it got. kernel32's ReadProcessMemory and
+  WriteProcessMemory, which makes a read-only page writable for the write and
+  gives its protection back, as Wine's kernelbase does.
+- `t_remote_memory` on the fake kernel, six sabotage cases
+  (`nt-remote-memory.txt`), all red; hello.exe writes into a suspended child
+  across a page boundary and reads it back, and `nt-remote-memory-boot.txt`
+  goes red when the store goes nowhere.
+
+Not reached, and named: a page of a view nobody has touched, and a page in
+swap - the fault that would bring either is the owner's, and the copy reports
+a partial one. And a suspended child has not yet exec'd its image (W6's fork
+then exec), so memory written into it before it is resumed is the forked
+copy's and goes with the exec - which step 2 has to settle before a thread
+can be created in a suspended process and survive.
+
+What the oracle says after step 1 (2026-10-31, `ntdll:thread kernel32:thread
+kernel32:process kernel32:virtual`): `ntdll:thread` and `kernel32:process` as
+at the end of W6; `kernel32:thread`'s failures are CreateRemoteThread (step 2)
+and NtQueryInformationThread on another process's thread; `kernel32:virtual`
+now reaches `test_VirtualAllocEx` and fails it before any remote call - the
+test's own VirtualAllocEx on itself answers ERROR_NOT_ENOUGH_MEMORY after
+`test_VirtualProtect`'s failures, so the address space is spent before it
+starts. That is step 3's to read.
