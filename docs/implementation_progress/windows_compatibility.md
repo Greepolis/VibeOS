@@ -98,6 +98,11 @@ writable by NtProtectVirtualMemory (8b45ad2, H-033's class).
 
 ## Where the oracle stands
 
+After W7 step 3 (2026-10-31): every kernel32 test has been run; two hang
+(`environ`, `module`), three skip themselves, `generated` is as Wine, and the
+rest stop at a named missing function - the table is "Step 3" in
+[../abi/windows.md](../abi/windows.md).
+
 After W7 step 2 (2026-10-31): `kernel32:thread` prints no failure but ends
 without a summary (an access violation after its TLS tests); CreateRemoteThread
 works on the machine (hello.exe).
@@ -138,7 +143,7 @@ below 0x30000000, where the arena has nothing), and it stops in
 
 ## Next checkpoint
 
-- W7 (from 2026-10-30): steps 1 and 2 (another process's memory, a thread in another process) done 2026-10-31; next the rest of kernel32's tests (step 3).
+- W7 (from 2026-10-30): steps 1 and 2 (another process's memory, a thread in another process) done 2026-10-31; step 3 (every kernel32 test run once, the table of where each stops) the same day; next the functions that table names (step 4).
   Left from W5: another thread's context, timer APC routines, a DLL's static TLS,
   FLS callbacks at a thread's end, single-stepping, keyed events across
   threads (`ntdll:sync`), SignalObjectAndWait, named pipes and object

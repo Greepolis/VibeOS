@@ -882,3 +882,65 @@ CreateRemoteThread and thread-information failures are gone - but still ends
 without a summary: the test process dies of an access violation after the TLS
 tests. `ntdll:thread`'s three failures are NtCreateUserProcess's create-info
 and attribute list (W6's, not this step's); `kernel32:process` stops at Beep.
+
+### Step 3: the rest of kernel32's tests, run once (2026-10-31)
+
+Three boots of `scripts/dev/winetest-run.sh build-gcc-Release kernel32:<test>
+...`, because two tests hang and each took the rest of its boot with it. Every
+other test ends at once, at the first function nobody has written:
+
+| Test | Wine on Linux | VibeOS | Where it ends |
+|---|---|---|---|
+| `kernel32:actctx` | 3,195 tests | 0 tests, 1 skipped | skips itself: activation contexts are absent |
+| `kernel32:atom` | 1,049,715 tests | stops | `user32.dll.GetDesktopWindow` |
+| `kernel32:change` | 333 tests | stops | `FindFirstChangeNotificationA` |
+| `kernel32:codepage` | 394,761 tests | stops | `WideCharToMultiByte` |
+| `kernel32:comm` | 10,922 tests | stops | `GetDefaultCommConfigA` |
+| `kernel32:console` | 4 tests, 1 failure | stops | `advapi32.dll.RegOpenKeyExA` |
+| `kernel32:debugger` | 1,272 tests | stops | `advapi32.dll.RegCreateKeyExA` |
+| `kernel32:directory` | 104 tests | stops | `SetCurrentDirectoryA` |
+| `kernel32:drive` | 130 tests | stops | `GetLogicalDrives` |
+| `kernel32:environ` | 130 tests | **hangs**, nothing printed | - |
+| `kernel32:fiber` | 32,951 tests | 0 tests, 1 skipped | skips itself: no fiber API |
+| `kernel32:format_msg` | 1,551 tests | stops | `FormatMessageA` |
+| `kernel32:generated` | 0 tests | **as Wine** | - |
+| `kernel32:heap` | 272,701 tests | stops | `GetProcessHeaps` |
+| `kernel32:loader` | 17,345 tests, 48 failures | stops | `GetShortPathNameA` |
+| `kernel32:locale` | 2,306,199 tests | stops | `EnumTimeFormatsA` |
+| `kernel32:mailslot` | 90 tests | stops | `GetMailslotInfo` |
+| `kernel32:module` | 639 tests | **hangs**, nothing printed | - |
+| `kernel32:path` | 202,604 tests | stops | `SetCurrentDirectoryA` |
+| `kernel32:pipe` | 38,466 tests | stops | `CreateNamedPipeA` |
+| `kernel32:power` | 5 tests | stops | `GetSystemPowerStatus` |
+| `kernel32:profile` | 578 tests | stops | `GetPrivateProfileIntA` |
+| `kernel32:resource` | 485 tests | stops | `BeginUpdateResourceA` |
+| `kernel32:time` | 2,344 tests | stops | `SystemTimeToFileTime` |
+| `kernel32:timer` | 4 tests, 1 skipped | stops | `FileTimeToSystemTime` |
+| `kernel32:toolhelp` | 104 tests | 0 tests, 1 skipped | skips itself: no toolhelp snapshot |
+| `kernel32:version` | 146 tests | stops | `GetVersionExA` |
+| `kernel32:volume` | 398 tests | stops | `QueryDosDeviceA` |
+| `kernel32:file` | 563,523 tests | stops | `LocalAlloc` (as at the end of W4) |
+| `kernel32:sync` | 354,502 tests | stops | `SignalObjectAndWait` (the end of W5's four failures) |
+
+With step 2's three (`thread` dies after its TLS tests, `process` at `Beep`,
+`virtual` with its address space spent before `test_VirtualAllocEx`), that is
+every kernel32 test. The work list for step 4, grouped by what each needs:
+
+- **Small, self-contained kernel32 functions**, one test each:
+  `SystemTimeToFileTime`/`FileTimeToSystemTime` (time, timer),
+  `GetVersionExA` (version), `GetSystemPowerStatus` (power), `Beep`
+  (process), `SetCurrentDirectoryA` (directory, path), `GetLogicalDrives`
+  (drive), `QueryDosDeviceA` (volume), `LocalAlloc` (file),
+  `GetProcessHeaps` (heap), `GetShortPathNameA` (loader),
+  `FormatMessageA` (format_msg), `WideCharToMultiByte` (codepage),
+  `EnumTimeFormatsA` (locale), `SignalObjectAndWait` (sync).
+- **The two hangs**, `environ` and `module`: read before anything is
+  written - a test that hangs with no output is the kind this project
+  learns most from.
+- **Needs another DLL or subsystem**, outside W7 unless a test makes it
+  cheap: advapi32's registry (console, debugger - the REG step),
+  user32 (atom), change notifications, serial ports (comm), mailslots and
+  named pipes (mailslot, pipe), profiles, resource updating, activation
+  contexts, fibers, toolhelp.
+- **kernel32:thread's access violation** after its TLS tests, and
+  **kernel32:virtual's** address space spent by `test_VirtualProtect`.
