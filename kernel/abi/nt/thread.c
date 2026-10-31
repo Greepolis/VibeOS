@@ -26,6 +26,7 @@
 #define NT_THREAD_SKIP_LOADER_INIT  0x0020u   /* here yet, nor is there a     */
 #define NT_THREAD_BYPASS_SECURITY   0x0040u   /* loader to keep it from       */
 #define NT_THREAD_QUERY_INFORMATION 0x0040u
+#define NT_THREAD_QUERY_LIMITED     0x0800u
 #define NT_THREAD_SET_INFORMATION   0x0020u
 #define NT_THREAD_SUSPEND_RESUME    0x0002u
 #define NT_THREAD_GET_CONTEXT       0x0008u
@@ -601,7 +602,18 @@ static long nt_query_information_thread(uint64_t h, uint64_t cls, uint64_t out, 
     if ((uint32_t)len != need) {
         return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
     }
-    st = thread_view(h, NT_THREAD_QUERY_INFORMATION, &v);
+    /* The classes Windows answers with THREAD_QUERY_LIMITED_INFORMATION, which
+     * QUERY_INFORMATION implies; the rest need the full right
+     * (kernel32:thread's test_thread_info opens with the limited one). */
+    if (cls == NT_TI_BASIC || cls == NT_TI_TIMES || cls == NT_TI_LAST_THREAD ||
+        cls == NT_TI_IS_TERMINATED) {
+        st = thread_view(h, NT_THREAD_QUERY_LIMITED, &v);
+        if (st == VIBEOS_STATUS_ACCESS_DENIED) {
+            st = thread_view(h, NT_THREAD_QUERY_INFORMATION, &v);
+        }
+    } else {
+        st = thread_view(h, NT_THREAD_QUERY_INFORMATION, &v);
+    }
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
