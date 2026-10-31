@@ -401,11 +401,10 @@ static const char *thread_check(void) {
 /* W6: a process of its own. hello.exe runs itself with the argument "child",
  * which ends at once with 42; the parent waits on the process handle and
  * reads the code, the whole 32 bits a Windows parent is owed. */
-static int is_child(uint64_t peb) {
+static int is_child_as(uint64_t peb, const char *want) {
     uint64_t pp = vibeos_nt_rd64(peb + VIBEOS_PEB_PROCESS_PARAMS);
     uint16_t len = *(volatile uint16_t *)(uintptr_t)(pp + VIBEOS_RUPP_COMMAND_LINE);
     const uint16_t *s = (const uint16_t *)(uintptr_t)vibeos_nt_rd64(pp + VIBEOS_RUPP_COMMAND_LINE + 8u);
-    static const char want[] = " child";
     uint32_t n = len / 2u, i;
 
     if (!s || n < 6u) {
@@ -417,6 +416,53 @@ static int is_child(uint64_t peb) {
         }
     }
     return 1;
+}
+
+static int is_child(uint64_t peb) {
+    return is_child_as(peb, " child");
+}
+
+/* W7 step 2: run in the child by a thread its parent made there. It ends the
+ * child with the code it was given, which only a thread in that process can. */
+static uint32_t remote_routine(void *code) {
+    (void)NtTerminateProcess(VIBEOS_NT_CURRENT_PROCESS, (uint32_t)(uintptr_t)code);
+    return 0;
+}
+
+/* A child that sleeps until something ends it - a thread its parent makes in
+ * it, if W7 step 2 works - and otherwise ends with 42 after twenty seconds. */
+static const char *remote_thread_check(void) {
+    static const uint16_t image[] = { '\\', '?', '?', '\\', 'C', ':', '\\', 'w', 'i', 'n', '\\', 'h', 'e', 'l',
+                                      'l', 'o', '.', 'e', 'x', 'e', 0 };
+    static const uint16_t cmd[] = { 'h', 'e', 'l', 'l', 'o', ' ', 's', 'l', 'e', 'e', 'p', 0 };
+    vibeos_ustring_t img, line;
+    vibeos_nt_process_basic_t pbi;
+    void *params = 0;
+    uint64_t ph = 0, th = 0, rth = 0;
+    int64_t settle = -2000000;   /* 200 ms: the child past its loader */
+
+    RtlInitUnicodeString(&img, image);
+    RtlInitUnicodeString(&line, cmd);
+    if (RtlCreateProcessParametersEx(&params, &img, 0, 0, &line, 0, 0, 0, 0, 0, 1) != VIBEOS_STATUS_SUCCESS ||
+        NtCreateUserProcess(&ph, &th, 0x001FFFFFu, 0x001FFFFFu, 0, 0, 0, 0, params, 0, 0) !=
+            VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL remote_thread_child\n";
+    }
+    (void)NtDelayExecution(0, &settle);
+    if (NtCreateThreadEx(&rth, 0x001FFFFFu, 0, ph, (void *)remote_routine, (void *)(uintptr_t)77u, 0, 0, 0,
+                         0, 0) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL remote_thread_create\n";
+    }
+    if (NtWaitForSingleObject(ph, 0, 0) != VIBEOS_STATUS_SUCCESS ||
+        NtQueryInformationProcess(ph, VIBEOS_NT_PROCESS_BASIC_INFORMATION, &pbi, sizeof(pbi), 0) !=
+            VIBEOS_STATUS_SUCCESS ||
+        pbi.exit_status != 77u) {
+        return "NT_HELLO_FAIL remote_thread_ran\n";
+    }
+    (void)NtClose(rth);
+    (void)NtClose(th);
+    (void)NtClose(ph);
+    return 0;
 }
 
 static const char *process_check(void) {
@@ -556,6 +602,12 @@ int nt_hello_start(void) {
     if (is_child(peb)) {
         (void)NtTerminateProcess(VIBEOS_NT_CURRENT_PROCESS, 42u);
     }
+    if (is_child_as(peb, " sleep")) {
+        int64_t long_wait = -200000000;   /* twenty seconds */
+
+        (void)NtDelayExecution(0, &long_wait);
+        (void)NtTerminateProcess(VIBEOS_NT_CURRENT_PROCESS, 42u);
+    }
     if (NtQueryInformationProcess(VIBEOS_NT_CURRENT_PROCESS, VIBEOS_NT_PROCESS_BASIC_INFORMATION,
                                   &pbi, sizeof(pbi), &got) != VIBEOS_STATUS_SUCCESS ||
         got != sizeof(pbi) || pbi.peb != peb || pbi.unique_process_id == 0u) {
@@ -598,6 +650,9 @@ int nt_hello_start(void) {
         }
         if (!why) {
             why = process_check();
+        }
+        if (!why) {
+            why = remote_thread_check();
         }
         if (why) {
             return fail(why);

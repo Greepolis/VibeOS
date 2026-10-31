@@ -18,6 +18,7 @@
 #define NT_THREAD_ALL_ACCESS        0x001FFFFFu
 #define NT_THREAD_TERMINATE         0x0001u
 #define NT_THREAD_CREATE_SUSPENDED  0x0001u   /* NtCreateThreadEx's flag   */
+#define NT_PROCESS_CREATE_THREAD    0x0002u   /* a thread made in it       */
 #define NT_THREAD_STACK_DEFAULT     (1024u * 1024u)   /* Windows' default reserve */
 #define NT_STILL_ACTIVE             0x00000103u       /* STATUS_PENDING         */
 #define NT_THREAD_HIDE_FROM_DEBUGGER 0x0004u
@@ -159,8 +160,8 @@ static uint32_t threads_in_process(int me) {
 
 /* The TEB the new thread finds through %gs: the fields the first thread's
  * carries (vibeos_nt_build_blocks), its own stack and ids. A status. */
-static uint32_t thread_teb(uint64_t teb, uint64_t peb, uint64_t stack_lo, uint64_t stack_hi,
-                           uint32_t pid, uint32_t tid) {
+static uint32_t thread_teb(nt_mm_t *m, uint64_t teb, uint64_t peb, uint64_t stack_lo,
+                           uint64_t stack_hi, uint32_t pid, uint32_t tid) {
     struct {
         uint64_t at;
         uint64_t v;
@@ -176,7 +177,7 @@ static uint32_t thread_teb(uint64_t teb, uint64_t peb, uint64_t stack_lo, uint64
     uint32_t i;
 
     for (i = 0; i < sizeof(f) / sizeof(f[0]); i++) {
-        if (nt_copy_out(teb + f[i].at, &f[i].v, 8u) != 0) {
+        if (nt_mm_write(m, teb + f[i].at, &f[i].v, 8u) != VIBEOS_STATUS_SUCCESS) {
             return VIBEOS_STATUS_NO_MEMORY;
         }
     }
@@ -197,16 +198,21 @@ static void thread_unwind(int idx, int with_ps) {
     (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
 }
 
-/* The thread proper: a task in this process, started at ntdll's entry with
- * (0, start, param), on `stack_top`, with `teb` as its %gs. Its slot and tenancy
- * in *slot and *seq, its id in *tid. A status. */
-static uint32_t thread_spawn(ks_regs_t *frame, uint64_t start, uint64_t param, uint64_t stack_top,
-                             uint64_t teb, int suspended, int *slot, uint32_t *seq, uint32_t *tid) {
+/* The thread proper: a task in the process `m` holds - the caller's, or
+ * another (W7 step 2) - started at that process's ntdll entry with (0, start,
+ * param), on `stack_top`, with `teb` as its %gs. It joins the process through
+ * a task of it, whose tenancy is asked again as the registers are taken
+ * (ks_thread_regs_of): a process that ended meanwhile gets no thread. Its slot
+ * and tenancy in *slot and *seq, its id in *tid. A status. */
+static uint32_t thread_spawn(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint64_t param,
+                             uint64_t stack_top, uint64_t teb, int suspended, int *slot,
+                             uint32_t *seq, uint32_t *tid) {
     int me = ks_current(), idx;
-    vibeos_procstate_t *ps = ks_ps(me);
-    vibeos_task_t *child, *parent = ks_id(me);
-    const vibeos_image_t *img = ks_image(me);
+    vibeos_procstate_t *ps = m->ps;
+    vibeos_task_t *child, *parent = ks_id(m->slot);
+    const vibeos_image_t *img = ks_image(m->slot);
     uint64_t entry = img ? img->entry : 0u;   /* ntdll's: where every thread starts */
+    const uint64_t peb = img ? img->start_arg : 0u;
 
     if (!ps || entry == 0u) {
         return VIBEOS_STATUS_INVALID_PARAMETER;
@@ -222,7 +228,10 @@ static uint32_t thread_spawn(ks_regs_t *frame, uint64_t start, uint64_t param, u
     ks_set_ps(idx, ps);
     (void)__atomic_add_fetch(&ps->refs, 1u, __ATOMIC_ACQ_REL);
     (void)__atomic_add_fetch(&ps->files_users, 1u, __ATOMIC_ACQ_REL);
-    ks_thread_regs(idx, me, frame, stack_top, 0u);
+    if (ks_thread_regs_of(idx, m->slot, m->seq, frame, stack_top) != 0) {
+        thread_unwind(idx, 1);
+        return VIBEOS_STATUS_PROCESS_IS_TERMINATING;
+    }
     if (ks_task_start_win64(idx, entry, stack_top, 0u, start, param) != 0 || ks_gs_set(idx, teb) != 0) {
         thread_unwind(idx, 1);
         return VIBEOS_STATUS_INVALID_PARAMETER;
@@ -241,14 +250,16 @@ static uint32_t thread_spawn(ks_regs_t *frame, uint64_t start, uint64_t param, u
     child->clear_child_tid = 0;
     child->robust_head = 0;
     child->sig_pending = 0;
-    child->sig_blocked = parent->sig_blocked;
+    /* The creator's mask, when it is a thread of the same process; a thread
+     * made from outside starts with nothing blocked, as Windows has no mask. */
+    child->sig_blocked = m->slot == me ? parent->sig_blocked : 0u;
     child->sig_saved_valid = 0;
     child->sas_sp = 0;
     child->sas_size = 0;
     child->sas_flags = 0;
     child->start_tick = ks_ticks();
     child->nt_suspend = suspended ? 1u : 0u;   /* SETUP until a resume takes it to zero */
-    if (thread_teb(teb, img->start_arg /* the PEB */, 0u, 0u, parent->tgid, child->pid) !=
+    if (thread_teb(m, teb, peb, 0u, 0u, parent->tgid, child->pid) !=
         VIBEOS_STATUS_SUCCESS) {
         thread_unwind(idx, 1);
         return VIBEOS_STATUS_NO_MEMORY;
@@ -269,45 +280,54 @@ static long thread_create(ks_regs_t *frame, uint64_t out, uint32_t want, uint64_
     nt_ob_t *o;
     uint64_t h = 0, teb = 0, stack = 0, top;
     uint32_t st, seq = 0, tid = 0;
-    int idx = -1, me = ks_current();
+    nt_mm_t m = NT_MM_NONE;
+    uint32_t pid;
+    int idx = -1;
     long r;
 
-    if (process != VIBEOS_NT_CURRENT_PROCESS) {
-        return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);   /* another process's: W6 */
-    }
-    if (start == 0u || !nt_user_ok(start, 1u, 0)) {
+    /* The routine is the target's to have mapped; only the caller's own
+     * address is judged here, another process's is the thread's to fault on. */
+    if (start == 0u || (process == VIBEOS_NT_CURRENT_PROCESS ? !nt_user_ok(start, 1u, 0)
+                                                             : !ks_user_addr_ok(start))) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
+    st = nt_mm_get(process, NT_PROCESS_CREATE_THREAD, &m);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    pid = ks_id(m.slot)->tgid;
     r = nt_create_common(&g_nt_thread_ops, out, want, oa, 0, thread_init, 0);
     if (r != NT_STATUS(VIBEOS_STATUS_SUCCESS)) {
+        nt_mm_put(&m);
         return r;
     }
     if (nt_copy_in(&h, out, sizeof(h)) != 0 ||
         nt_handle_ref(h, &g_nt_thread_ops, 0u, &f, 0) != VIBEOS_STATUS_SUCCESS) {
+        nt_mm_put(&m);
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     reserve = reserve ? (reserve + 0xFFFFu) & ~0xFFFFull : NT_THREAD_STACK_DEFAULT;
-    st = nt_alloc_rw(VIBEOS_TEB_PAGES * 4096u, &teb);
+    st = nt_mm_alloc_rw(&m, VIBEOS_TEB_PAGES * 4096u, &teb);
     if (st == VIBEOS_STATUS_SUCCESS) {
-        st = nt_alloc_rw(reserve, &stack);
+        st = nt_mm_alloc_rw(&m, reserve, &stack);
     }
     top = stack + reserve - 0x28u;   /* a call's frame: aligned to 16 once the return is pushed */
     if (st == VIBEOS_STATUS_SUCCESS) {
-        st = thread_spawn(frame, start, param, top, teb, suspended, &idx, &seq, &tid);
+        st = thread_spawn(&m, frame, start, param, top, teb, suspended, &idx, &seq, &tid);
     }
     if (st == VIBEOS_STATUS_SUCCESS) {
         /* The stack's own range, now that it is known. */
         uint64_t lo = stack, hi = stack + reserve;
 
-        (void)nt_copy_out(teb + VIBEOS_TEB_STACK_BASE, &hi, 8u);
-        (void)nt_copy_out(teb + VIBEOS_TEB_STACK_LIMIT, &lo, 8u);
-        (void)nt_copy_out(teb + VIBEOS_TEB_DEALLOCATION_STACK, &lo, 8u);
+        (void)nt_mm_write(&m, teb + VIBEOS_TEB_STACK_BASE, &hi, 8u);
+        (void)nt_mm_write(&m, teb + VIBEOS_TEB_STACK_LIMIT, &lo, 8u);
+        (void)nt_mm_write(&m, teb + VIBEOS_TEB_DEALLOCATION_STACK, &lo, 8u);
         nt_ob_lock();
         o = nt_ob_of(f);
         o->u.th.slot = idx;
         o->u.th.seq = seq;
         o->u.th.tid = tid;
-        o->u.th.pid = ks_id(me)->tgid;
+        o->u.th.pid = pid;
         o->u.th.teb = teb;
         o->u.th.start = start;
         o->u.th.hidden = hidden;
@@ -315,7 +335,7 @@ static long thread_create(ks_regs_t *frame, uint64_t out, uint32_t want, uint64_
         if (client_u != 0u) {
             uint64_t cid[2];
 
-            cid[0] = ks_id(me)->tgid;
+            cid[0] = pid;
             cid[1] = tid;
             (void)nt_copy_out(client_u, cid, sizeof(cid));
         }
@@ -325,12 +345,13 @@ static long thread_create(ks_regs_t *frame, uint64_t out, uint32_t want, uint64_
         }
     } else {
         if (stack) {
-            nt_free_alloc(stack, reserve);
+            nt_mm_free(&m, stack, reserve);
         }
         if (teb) {
-            nt_free_alloc(teb, VIBEOS_TEB_PAGES * 4096u);
+            nt_mm_free(&m, teb, VIBEOS_TEB_PAGES * 4096u);
         }
     }
+    nt_mm_put(&m);
     vibeos_file_put(f);
     if (st != VIBEOS_STATUS_SUCCESS) {
         (void)nt_close_handle(h);

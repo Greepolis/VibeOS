@@ -184,6 +184,23 @@ uint32_t nt_io_event(uint64_t h, int set);
 /* Committed read-write memory of the calling process's, `size` bytes, placed
  * by the kernel, and giving it back (memory.c): a thread's TEB and stack (W5). */
 uint32_t nt_alloc_rw(uint64_t size, uint64_t *base);
+/* A process a memory call is about, held for the call: its state, its address
+ * space - pinned when it is another's, so an exit or exec there cannot free
+ * the tables under the call - and the slot and tenancy of a task of it (W7). */
+typedef struct {
+    vibeos_procstate_t *ps;
+    vibeos_vmspace_t v;
+    int pin;   /* -1: the caller's own, nothing held */
+    int slot;
+    uint32_t seq;
+} nt_mm_t;
+#define NT_MM_NONE { 0, { 0, 0 }, -1, -1, 0 }
+/* The handle must grant `need`; the pseudo-handle for oneself grants all. */
+uint32_t nt_mm_get(uint64_t process, uint32_t need, nt_mm_t *m);
+void nt_mm_put(nt_mm_t *m);
+uint32_t nt_mm_alloc_rw(nt_mm_t *m, uint64_t size, uint64_t *base);
+void nt_mm_free(nt_mm_t *m, uint64_t base, uint64_t size);
+uint32_t nt_mm_write(nt_mm_t *m, uint64_t va, void *src, uint64_t len);
 void nt_free_alloc(uint64_t base, uint64_t size);
 extern const vibeos_file_ops_t g_nt_thread_ops;
 /* A handle in *out for the thread in `slot` - a new process's first (W6). */

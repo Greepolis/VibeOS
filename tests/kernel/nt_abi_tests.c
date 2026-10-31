@@ -29,6 +29,8 @@ static void expect(int cond, const char *what) {
 
 #define ST(s) ((long)(uint32_t)(s))
 
+extern int g_kf_aspace_pins;   /* ksvc_fake.c: address spaces held for a call */
+
 static long nt(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                kf_outcome_t *out) {
     return kf_call(nt_syscall, nr, a0, a1, a2, a3, 0, 0, out);
@@ -1402,6 +1404,85 @@ static void t_create_thread(void) {
            "the last thread's end is the process's, with its status");
 }
 
+static long qthread(uint64_t h, uint32_t cls, uint64_t buf, uint32_t len);   /* below */
+
+/* W7 step 2: a thread made in another process runs there - its address
+ * space, its ntdll entry, its PEB - with a TEB and a stack made in that
+ * process's memory, and only with PROCESS_CREATE_THREAD. */
+static void t_remote_thread(void) {
+    uint64_t cid = kf_ualloc(16), out = kf_ualloc(8);
+    uint64_t rest[7] = { 0x12340000ull, 0x77u, 0, 0, 0, 0, 0 };
+    uint64_t h, ro, teb, v = 0;
+    int me = fresh(62), other = kf_spawn(63, 63), child = -1;
+    uint32_t i;
+
+    ks_image(me)->entry = kf_ualloc(16);
+    ks_image(other)->entry = 0x10400000ull;   /* the other's ntdll, not ours */
+    ks_image(other)->start_arg = 0x13FF0000ull;
+    ((uint64_t *)kf_uptr(cid))[0] = 63u;
+    ((uint64_t *)kf_uptr(cid))[1] = 0u;
+    (void)nt(VIBEOS_NT_NR_NtOpenProcess, out, 0x0002u /* CREATE_THREAD */, 0, cid, 0);
+    h = *(uint64_t *)kf_uptr(out);
+    (void)nt(VIBEOS_NT_NR_NtOpenProcess, out, 0x0010u /* VM_READ */, 0, cid, 0);
+    ro = *(uint64_t *)kf_uptr(out);
+
+    kf_next_sp(stack_args(rest, 7));
+    expect(nt(VIBEOS_NT_NR_NtCreateThreadEx, out, 0x001FFFFFu, 0, ro, 0) ==
+               ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "a handle without PROCESS_CREATE_THREAD makes no thread there");
+    kf_next_sp(stack_args(rest, 7));
+    expect(nt(VIBEOS_NT_NR_NtCreateThreadEx, out, 0x001FFFFFu, 0, h, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "NtCreateThreadEx with another process's handle");
+    for (i = 0; i < KF_SLOTS; i++) {
+        if ((int)i != other && kf_task_start((int)i)[0] == 0x10400000ull) {
+            child = (int)i;
+        }
+    }
+    expect(child >= 0 && ks_id(child)->tgid == 63u && ks_ps(child) == ks_ps(other) &&
+               ks_vm(child).root == ks_vm(other).root && ks_vm(child).root != ks_vm(me).root,
+           "the thread is the other's: its process, its address space, its ntdll's entry");
+    if (child < 0) {
+        return;
+    }
+    teb = ks_gs_get(child);
+    expect(vibeos_vma_find(&ks_ps(other)->mm->vmas, teb) != 0 &&
+               vibeos_vma_find(&ks_ps(me)->mm->vmas, teb) == 0,
+           "its TEB is in the other's memory, not the caller's");
+    kf_set_current(other);
+    expect(kf_peek(teb + VIBEOS_TEB_SELF, &v, 8) == 0 && v == teb &&
+               kf_peek(teb + VIBEOS_TEB_PEB, &v, 8) == 0 && v == 0x13FF0000ull &&
+               kf_peek(teb + VIBEOS_TEB_CLIENT_PROCESS, &v, 8) == 0 && v == 63u,
+           "and names itself, the other's PEB and the other's process id");
+    kf_set_current(me);
+    {
+        uint64_t q = kf_ualloc(48), rest1[1] = { 0 };
+        const uint64_t *tbi = (const uint64_t *)kf_uptr(q);
+
+        kf_next_sp(stack_args(rest1, 1));
+        expect(nt(VIBEOS_NT_NR_NtQueryInformationThread, *(uint64_t *)kf_uptr(out), 0, q, 48, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS) && tbi[1] == teb && tbi[2] == 63u,
+               "its handle reports the other's process id and the TEB made there");
+    }
+    expect(g_kf_aspace_pins == 0, "and the other's address space was let go");
+    {
+        /* THREAD_QUERY_LIMITED_INFORMATION answers the basic classes and not
+         * the start address (kernel32:thread's test_thread_info). */
+        uint64_t q = kf_ualloc(48), lim;
+
+        ((uint64_t *)kf_uptr(cid))[0] = 0;
+        ((uint64_t *)kf_uptr(cid))[1] = ks_id(me)->pid;
+        expect(nt(VIBEOS_NT_NR_NtOpenThread, out, 0x0800u, 0, cid, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "the caller's thread opened with THREAD_QUERY_LIMITED_INFORMATION");
+        lim = *(uint64_t *)kf_uptr(out);
+        expect(qthread(lim, 0, q, 48) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   qthread(lim, 1, q, 32) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   qthread(lim, 12, q, 4) == ST(VIBEOS_STATUS_SUCCESS),
+               "answers ThreadBasicInformation, ThreadTimes, ThreadAmILastThread");
+        expect(qthread(lim, 9, q, 8) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+               "but not the start address, which needs THREAD_QUERY_INFORMATION");
+    }
+}
+
 static long create_thread_flags(uint64_t *h, uint64_t start, uint64_t flags) {
     uint64_t out = kf_ualloc(8);
     uint64_t rest[7] = { start, 0, flags, 0, 0, 0, 0 };
@@ -1958,7 +2039,6 @@ static long vquery(uint64_t va, uint32_t cls, uint64_t len, vibeos_nt_memory_bas
     return r;
 }
 
-extern int g_kf_aspace_pins;
 
 /* NtRead/WriteVirtualMemory and NtWriteVirtualMemory(ProcessHandle, BaseAddress, Buffer, Size,
  * NumberOfBytes): `buf` is the caller's, `n` how many it says were moved. */
@@ -2887,6 +2967,7 @@ int test_nt_abi(void) {
     t_delete_follows_file();
     t_nt_chroot();
     t_create_thread();
+    t_remote_thread();
     t_thread_info();
     t_timers();
     t_apcs();

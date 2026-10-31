@@ -211,6 +211,10 @@ int ks_poke_u32(int slot, uint64_t va, uint32_t val);        /* 0, or -1 with no
  * to the last holder rather than freeing it under the walk. A pin, or -1 when
  * the tenancy has ended or no pin is free; one system call at most. */
 int ks_aspace_pin(int slot, uint32_t seq, vibeos_vmspace_t *out);
+/* ks_thread_regs, joining the process a task of tenancy `seq` runs in - the
+ * caller's or another's (W7 step 2) - asked under the scheduler's lock, where
+ * an exit decides: 0, or -1 when that tenancy has ended. */
+int ks_thread_regs_of(int child, int slot, uint32_t seq, const ks_regs_t *frame, uint64_t stack);
 void ks_aspace_unpin(int pin);
 /* Within one page of a held address space: copy to (write) or from it. 0, or
  * -1 when the page is not there for the user, or not writable. */

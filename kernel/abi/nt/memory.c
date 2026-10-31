@@ -107,20 +107,12 @@ static uint32_t nt_protect_of(const vibeos_vma_t *r) {
  * address space - pinned, when it is another's, so an exit or an exec there
  * cannot free the tables under the call (W7 step 1). The handle must grant
  * `need`; the pseudo-handle for oneself grants everything. */
-typedef struct {
-    vibeos_procstate_t *ps;
-    vibeos_vmspace_t v;
-    int pin;   /* -1: the caller's own, nothing held */
-} nt_mm_t;
-
-#define NT_MM_NONE { 0, { 0, 0 }, -1 }
-
 #define NT_PROCESS_VM_OPERATION    0x0008u
 #define NT_PROCESS_VM_READ         0x0010u
 #define NT_PROCESS_VM_WRITE        0x0020u
 #define NT_PROCESS_QUERY_INFO      0x0400u
 
-static uint32_t nt_mm_get(uint64_t process, uint32_t need, nt_mm_t *m) {
+uint32_t nt_mm_get(uint64_t process, uint32_t need, nt_mm_t *m) {
     const int me = ks_current();
     uint32_t st, seq;
     int slot;
@@ -131,6 +123,8 @@ static uint32_t nt_mm_get(uint64_t process, uint32_t need, nt_mm_t *m) {
     if (process == VIBEOS_NT_CURRENT_PROCESS) {
         m->ps = ks_ps(me);
         m->v = ks_vm(me);
+        m->slot = me;
+        m->seq = ks_seq(me);
         return m->ps ? VIBEOS_STATUS_SUCCESS : VIBEOS_STATUS_INVALID_HANDLE;
     }
     st = nt_process_ps_slot_get(process, need, &m->ps, &slot, &seq);
@@ -143,10 +137,12 @@ static uint32_t nt_mm_get(uint64_t process, uint32_t need, nt_mm_t *m) {
         m->ps = 0;
         return VIBEOS_STATUS_PROCESS_IS_TERMINATING;
     }
+    m->slot = slot;
+    m->seq = seq;
     return VIBEOS_STATUS_SUCCESS;
 }
 
-static void nt_mm_put(nt_mm_t *m) {
+void nt_mm_put(nt_mm_t *m) {
     if (m->pin >= 0) {
         ks_aspace_unpin(m->pin);
         ks_procstate_put(m->ps);
@@ -390,6 +386,26 @@ uint32_t nt_alloc_rw(uint64_t size, uint64_t *base) {
                      VIBEOS_NT_PAGE_READWRITE, 0u, &anywhere, &start, &end);
     *base = st == VIBEOS_STATUS_SUCCESS ? start : 0u;
     return st;
+}
+
+/* nt_alloc_rw and nt_free_alloc in the process `m` holds (W7 step 2: a
+ * thread's TEB and stack made in another process). */
+uint32_t nt_mm_alloc_rw(nt_mm_t *m, uint64_t size, uint64_t *base) {
+    const nt_place_t anywhere = { 0u, 0u, 0u };
+    uint64_t start = 0, end = 0;
+    uint32_t st = nt_allocate(m->ps, &m->v, 0u, size, VIBEOS_NT_MEM_RESERVE | VIBEOS_NT_MEM_COMMIT,
+                              VIBEOS_NT_PAGE_READWRITE, 0u, &anywhere, &start, &end);
+
+    *base = st == VIBEOS_STATUS_SUCCESS ? start : 0u;
+    return st;
+}
+
+void nt_mm_free(nt_mm_t *m, uint64_t base, uint64_t size) {
+    if (base != 0u) {
+        ks_mm_lock(m->ps);
+        (void)vibeos_umem_unmap_vm(&m->v, m->ps, base, base + ((size + 0xFFFu) & ~0xFFFull));
+        ks_mm_unlock(m->ps);
+    }
 }
 
 void nt_free_alloc(uint64_t base, uint64_t size) {
@@ -926,6 +942,31 @@ static long nt_rw_virtual_memory_in(nt_mm_t *m, uint64_t process, uint64_t base,
         st = VIBEOS_STATUS_ACCESS_VIOLATION;
     }
     return NT_STATUS(st);
+}
+
+/* Kernel bytes into the held process's memory, which must be committed and
+ * writable. A status. */
+uint32_t nt_mm_write(nt_mm_t *m, uint64_t va, void *src, uint64_t len) {
+    uint8_t *b = (uint8_t *)src;
+    uint64_t done = 0;
+
+    while (done < len) {
+        uint64_t chunk = len - done;
+        int ok;
+
+        if (chunk > 4096u - ((va + done) & 0xFFFull)) {
+            chunk = 4096u - ((va + done) & 0xFFFull);
+        }
+        ks_mm_lock(m->ps);
+        ok = nt_vm_reach(m, va + done, 1) == 0 &&
+             ks_vm_copy(&m->v, va + done, b + done, (uint32_t)chunk, 1) == 0;
+        ks_mm_unlock(m->ps);
+        if (!ok) {
+            return VIBEOS_STATUS_PARTIAL_COPY;
+        }
+        done += chunk;
+    }
+    return VIBEOS_STATUS_SUCCESS;
 }
 
 /* Each handler with the process it named let go of afterwards, whichever way

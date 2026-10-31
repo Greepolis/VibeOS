@@ -639,6 +639,23 @@ void ks_thread_regs(int child, int parent, const ks_regs_t *frame,
     c->gs_base = p->gs_base;
 }
 
+int ks_thread_regs_of(int child, int slot, uint32_t seq, const ks_regs_t *frame, uint64_t stack) {
+    int ok;
+
+    ks_irq_off();
+    hw_spin_lock_named(&g_sched_lock, __func__);
+    ok = g_tasks[slot].alloc_seq == seq && hw_slot_state(slot) != HW_TASK_FREE &&
+         hw_slot_state(slot) != HW_TASK_ZOMBIE && g_tasks[slot].proc.as.pml4 != 0;
+    if (ok) {
+        /* Under the lock the child holds the tables before anyone decides
+         * they are unheld: a task in SETUP counts (hw_aspace_shared_by_other). */
+        ks_thread_regs(child, slot, frame, stack, 0u);
+    }
+    hw_spin_unlock(&g_sched_lock);
+    ks_irq_on();
+    return ok ? 0 : -1;
+}
+
 int ks_task_start_win64(int slot, uint64_t ip, uint64_t sp, uint64_t a0, uint64_t a1, uint64_t a2) {
     hw_task_t *c = &g_tasks[slot];
 

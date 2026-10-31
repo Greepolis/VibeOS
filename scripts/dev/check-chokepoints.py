@@ -113,7 +113,9 @@ CHOKEPOINTS = {
         4,   # definition, declaration, execve's two argv refusals
         "the reason-carrying check as handlers reach it (A2)."),
     "ks_user_addr_ok": (
-        4,   # definition, declaration, a signal handler's address (H-017), TLS base
+        5,   # definition, declaration, a signal handler's address (H-017), TLS base;
+             # 4 -> 5 in W7 step 2: a thread routine in another process, which is
+             # not the caller's memory to judge, only a user address
         "the address policy as handlers reach it (A2). The sigreturn rip check "
         "(H-018) moved with the frame into ks_sigframe_pop, where it calls "
         "hw_user_addr_ok itself."),

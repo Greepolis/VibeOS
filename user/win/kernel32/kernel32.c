@@ -478,14 +478,15 @@ uint64_t CreateFileA(const char *name, uint32_t access, uint32_t share, const vo
 
 uint32_t GetThreadId(uint64_t h);   /* below, with the thread calls; CreateThread reports it */
 
-uint64_t CreateThread(const void *sa, size_t stack, void *start, void *param, uint32_t flags,
-                      uint32_t *tid) {
+/* A thread in `process` - this one, or another (W7 step 2). */
+uint64_t CreateRemoteThread(uint64_t process, const void *sa, size_t stack, void *start, void *param,
+                            uint32_t flags, uint32_t *tid) {
     named_t n;
     uint64_t h = 0;
     NTSTATUS_T st;
 
     (void)attributes_w(&n, 0, inherits(sa), 0);
-    st = NtCreateThreadEx(&h, 0x001FFFFFu /* THREAD_ALL_ACCESS */, n.oa, VIBEOS_NT_CURRENT_PROCESS,
+    st = NtCreateThreadEx(&h, 0x001FFFFFu /* THREAD_ALL_ACCESS */, n.oa, process,
                           start, param, (flags & 4u) ? 1u : 0u /* CREATE_SUSPENDED */, 0,
                           (flags & 0x10000u) ? 0 : stack, (flags & 0x10000u) ? stack : 0, 0);
     if (failed(st)) {
@@ -495,6 +496,11 @@ uint64_t CreateThread(const void *sa, size_t stack, void *start, void *param, ui
         *tid = GetThreadId(h);
     }
     return h;
+}
+
+uint64_t CreateThread(const void *sa, size_t stack, void *start, void *param, uint32_t flags,
+                      uint32_t *tid) {
+    return CreateRemoteThread(VIBEOS_NT_CURRENT_PROCESS, sa, stack, start, param, flags, tid);
 }
 
 /* ---- waiting and sleeping ------------------------------------------------------------- */
@@ -1939,15 +1945,6 @@ uint32_t ResumeThread(uint64_t h) {
         return 0xFFFFFFFFu;
     }
     return prev;
-}
-
-uint64_t CreateRemoteThread(uint64_t process, const void *sa, size_t stack, void *start, void *param,
-                            uint32_t flags, uint32_t *tid) {
-    if (process != VIBEOS_NT_CURRENT_PROCESS) {
-        set_error(ERROR_INVALID_HANDLE);   /* another process's threads: W6 */
-        return 0;
-    }
-    return CreateThread(sa, stack, start, param, flags, tid);
 }
 
 uint64_t OpenThread(uint32_t access, BOOL32 inherit, uint32_t tid) {

@@ -52,9 +52,9 @@
 
 ### a routine nobody can run is accepted
 --- old
-    if (start == 0u || !nt_user_ok(start, 1u, 0)) {
+    if (start == 0u || (process == VIBEOS_NT_CURRENT_PROCESS ? !nt_user_ok(start, 1u, 0)
 +++ new
-    if (start == 0u) {
+    if (start == 0u || (process == VIBEOS_NT_CURRENT_PROCESS ? 0
 
 ### a thread made suspended starts at once (W5 step 3)
 --- old

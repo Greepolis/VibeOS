@@ -997,6 +997,11 @@ uint64_t *hw_aspace_unpin(int pin) {
     if (g_aspace_pin[pin].pins == 0u) {
         g_aspace_pin[pin].pml4 = 0;
     }
+    /* A thread made into the process while it was pinned holds the tables
+     * now (W7 step 2): its exit frees them, not this. */
+    if (gone && hw_aspace_shared_by_other(gone, -1)) {
+        gone = 0;
+    }
     return gone;
 }
 

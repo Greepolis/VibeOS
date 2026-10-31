@@ -1,0 +1,45 @@
+# A thread made in another process (docs/abi/windows.md W7 step 2), proved by
+# t_remote_thread in tests/kernel/nt_abi_tests.c on the fake kernel, whose
+# threads share their process's tables as the machine's do.
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/abi/nt/thread.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/thread.c scripts/dev/cases/nt-remote-thread.txt
+
+### the thread joins the caller's process
+--- old
+    if (ks_thread_regs_of(idx, m->slot, m->seq, frame, stack_top) != 0) {
++++ new
+    if (ks_thread_regs_of(idx, me, ks_seq(me), frame, stack_top) != 0) {
+
+### PROCESS_CREATE_THREAD is not asked
+--- old
+    st = nt_mm_get(process, NT_PROCESS_CREATE_THREAD, &m);
++++ new
+    st = nt_mm_get(process, 0u, &m);
+
+### the handle reports the caller's process
+--- old
+    pid = ks_id(m.slot)->tgid;
++++ new
+    pid = ks_id(ks_current())->tgid;
+
+### the thread starts at the caller's ntdll, with the caller's PEB
+--- old
+    const vibeos_image_t *img = ks_image(m->slot);
++++ new
+    const vibeos_image_t *img = ks_image(me);
+
+### the other's address space is never let go
+--- old
+    nt_mm_put(&m);
+    vibeos_file_put(f);
++++ new
+    vibeos_file_put(f);
+
+### THREAD_QUERY_LIMITED_INFORMATION is not enough for the basic classes
+--- old
+        st = thread_view(h, NT_THREAD_QUERY_LIMITED, &v);
++++ new
+        st = thread_view(h, NT_THREAD_QUERY_INFORMATION, &v);

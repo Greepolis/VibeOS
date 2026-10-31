@@ -1381,6 +1381,14 @@ int ks_poke_u32(int slot, uint64_t va, uint32_t val) {
 /* Pins are counted, not enforced: the fake has no exit racing the walk, and a
  * test asks that every pin was given back. */
 int g_kf_aspace_pins;
+int ks_thread_regs_of(int child, int slot, uint32_t seq, const ks_regs_t *frame, uint64_t stack) {
+    if (g_t[slot].seq != seq || vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_FREE ||
+        vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_ZOMBIE) {
+        return -1;
+    }
+    ks_thread_regs(child, slot, frame, stack, 0u);
+    return 0;
+}
 int ks_aspace_pin(int slot, uint32_t seq, vibeos_vmspace_t *out) {
     if (g_t[slot].seq != seq || !g_t[slot].has_as || vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_FREE ||
         vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_ZOMBIE) {
@@ -1449,6 +1457,10 @@ void ks_fork_regs(int child, int parent, const ks_regs_t *frame) {
 void ks_thread_regs(int child, int parent, const ks_regs_t *frame, uint64_t stack, uint64_t tls) {
     (void)frame; (void)stack;
     g_t[child].img = g_t[parent].img;
+    /* The same tables, as the machine shares them: a thread made in another
+     * process (W7 step 2) has to be seen running in that one's memory. */
+    g_t[child].as = g_t[parent].as;
+    g_t[child].has_as = g_t[parent].has_as;
     g_t[child].tls = tls;
     g_t[child].gs = g_t[parent].gs;
 }
