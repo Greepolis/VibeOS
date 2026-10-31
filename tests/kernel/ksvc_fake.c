@@ -1378,6 +1378,58 @@ int ks_poke_u32(int slot, uint64_t va, uint32_t val) {
     g_cur = saved;
     return r;
 }
+/* Pins are counted, not enforced: the fake has no exit racing the walk, and a
+ * test asks that every pin was given back. */
+int g_kf_aspace_pins;
+int ks_aspace_pin(int slot, uint32_t seq, vibeos_vmspace_t *out) {
+    if (g_t[slot].seq != seq || !g_t[slot].has_as || vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_FREE ||
+        vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_ZOMBIE) {
+        return -1;
+    }
+    *out = g_t[slot].as;
+    g_kf_aspace_pins++;
+    return 0;
+}
+void ks_aspace_unpin(int pin) {
+    (void)pin;
+    g_kf_aspace_pins--;
+}
+int ks_vm_copy(vibeos_vmspace_t *v, uint64_t va, void *buf, uint32_t len, int write) {
+    uint64_t *e = vibeos_vmspace_entry(v, va & ~0xFFFull);
+    uint64_t need = KF_PTE_PRESENT | KF_PTE_USER | (write ? KF_PTE_WRITE : 0u);
+    uint8_t *page;
+
+    if (len == 0u || (va & 0xFFFull) + len > 4096u) {
+        return -1;
+    }
+    if (!e || (*e & need) != need) {
+        if (!write || vibeos_vmspace_fault(v, va & ~0xFFFull, 1) != 1 ||
+            !(e = vibeos_vmspace_entry(v, va & ~0xFFFull)) || (*e & need) != need) {
+            return -1;
+        }
+    }
+    page = (uint8_t *)kf_phys(*e & KF_PTE_ADDR);
+    if (write) {
+        memcpy(page + (va & 0xFFFull), buf, len);
+    } else {
+        memcpy(buf, page + (va & 0xFFFull), len);
+    }
+    return 0;
+}
+int ks_vm_map_anon(vibeos_vmspace_t *v, uint64_t va, vibeos_prot_t prot) {
+    uint64_t phys = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+
+    if (phys == 0u) {
+        return -1;
+    }
+    memset(kf_phys(phys), 0, 4096u);
+    if (vibeos_vmspace_map(v, va, phys, prot) != 0) {
+        (void)vibeos_frame_put(phys);
+        return -1;
+    }
+    (void)vibeos_frame_put(phys);
+    return 0;
+}
 void ks_drop_aspace(int slot) {
     if (g_t[slot].has_as) {
         (void)vibeos_vmspace_destroy(&g_t[slot].as);

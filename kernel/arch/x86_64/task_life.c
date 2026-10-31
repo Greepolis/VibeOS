@@ -1701,6 +1701,7 @@ void hw_task_exit(uint64_t code) {
      * reachable through the shared kernel identity map, so free it. */
     if (dying >= 0 && g_tasks[dying].id.is_user) {
         int last;
+        vibeos_hw_aspace_t gone_as;
 
         /* The order this subsystem learned the hard way, declared rather than
          * remembered: the address space goes before the slot is announced,
@@ -1710,6 +1711,11 @@ void hw_task_exit(uint64_t code) {
 
         hw_spin_lock_named(&g_sched_lock, __func__);
         last = !hw_aspace_still_shared(dying);
+        /* Freed from a copy, with the task's pointer cleared under the lock:
+         * a pin taken after this decision (hw_aspace_pin) would otherwise
+         * read tables already on their way to the allocator. */
+        gone_as = g_tasks[dying].proc.as;
+        g_tasks[dying].proc.as.pml4 = 0;
         if (!last) {
             /* A sibling is still running in here. Give up the reference
              * without freeing anything - and clear the pointer, so nothing
@@ -1726,7 +1732,7 @@ void hw_task_exit(uint64_t code) {
         } else {
         vibeos_task_stats()->exited++;
         HW_TASK_MARK(dying, aspace_killed_by, "task_exit");
-        hw_aspace_destroy(&g_tasks[dying].proc.as);
+        hw_aspace_destroy(&gone_as);
         (void)vibeos_teardown_step((uint32_t)dying, VIBEOS_TEARDOWN_ASPACE);
         }
         /* The regions go with the last reference to the process, not with

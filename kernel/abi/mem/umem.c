@@ -108,6 +108,13 @@ uint64_t vibeos_umem_place_in(vibeos_procstate_t *ps, uint64_t bytes, uint64_t a
  * the mm lock. */
 long vibeos_umem_unmap(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end) {
     vibeos_vmspace_t v = ks_vm(me);
+
+    return vibeos_umem_unmap_vm(&v, ps, addr, end);
+}
+
+long vibeos_umem_unmap_vm(vibeos_vmspace_t *vm, vibeos_procstate_t *ps, uint64_t addr,
+                          uint64_t end) {
+    vibeos_vmspace_t v = *vm;
     uint64_t va;
 
     /* The middle of a region needs a descriptor to split it with, and the
@@ -176,6 +183,12 @@ long vibeos_umem_unmap(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t e
  * and takes the region's protection when the fault makes it. */
 void vibeos_umem_protect_pages(int me, uint64_t addr, uint64_t end, vibeos_prot_t prot) {
     vibeos_vmspace_t v = ks_vm(me);
+
+    vibeos_umem_protect_vm(&v, addr, end, prot);
+}
+
+void vibeos_umem_protect_vm(vibeos_vmspace_t *vm, uint64_t addr, uint64_t end, vibeos_prot_t prot) {
+    vibeos_vmspace_t v = *vm;
     uint64_t va;
 
     for (va = addr; va < end; va += 4096ull) {

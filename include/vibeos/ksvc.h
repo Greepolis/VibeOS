@@ -206,6 +206,17 @@ void ks_set_user_sp(int slot, uint64_t sp);
  * its view if it must - CLONE_CHILD_SETTID for a forked child, written before
  * the child first runs. 0, or -1 if the word is not there. */
 int ks_poke_u32(int slot, uint64_t va, uint32_t val);        /* 0, or -1 with nothing kept */
+/* Hold the address space a slot's tenancy `seq` runs on, for a caller that
+ * does not run in it (NtReadVirtualMemory, W7 step 1): exit and exec leave it
+ * to the last holder rather than freeing it under the walk. A pin, or -1 when
+ * the tenancy has ended or no pin is free; one system call at most. */
+int ks_aspace_pin(int slot, uint32_t seq, vibeos_vmspace_t *out);
+void ks_aspace_unpin(int pin);
+/* Within one page of a held address space: copy to (write) or from it. 0, or
+ * -1 when the page is not there for the user, or not writable. */
+int ks_vm_copy(vibeos_vmspace_t *v, uint64_t va, void *buf, uint32_t len, int write);
+/* ks_map_anon into a held address space. */
+int ks_vm_map_anon(vibeos_vmspace_t *v, uint64_t va, vibeos_prot_t prot);
 void ks_drop_aspace(int slot);
 int ks_alloc_kstack(int slot);                    /* 0, or -1                   */
 /* Give back a stack ks_alloc_kstack gave a slot that never ran: a fork that

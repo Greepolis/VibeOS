@@ -478,6 +478,81 @@ int ks_poke_u32(int slot, uint64_t va, uint32_t val) {
     return 0;
 }
 
+/* Another process's address space, held for one call (W7 step 1). The slot's
+ * tenancy is asked under the scheduler's lock, which is where exit and exec
+ * decide to free tables; see hw_aspace_pin. */
+int ks_aspace_pin(int slot, uint32_t seq, vibeos_vmspace_t *out) {
+    int pin = -1;
+
+    ks_irq_off();
+    hw_spin_lock_named(&g_sched_lock, __func__);
+    if (g_tasks[slot].alloc_seq == seq && hw_slot_state(slot) != HW_TASK_FREE &&
+        hw_slot_state(slot) != HW_TASK_ZOMBIE && g_tasks[slot].proc.as.pml4 != 0) {
+        pin = hw_aspace_pin(g_tasks[slot].proc.as.pml4);
+        if (pin >= 0) {
+            *out = hw_vm(&g_tasks[slot].proc.as);
+        }
+    }
+    hw_spin_unlock(&g_sched_lock);
+    ks_irq_on();
+    return pin;
+}
+
+void ks_aspace_unpin(int pin) {
+    vibeos_hw_aspace_t gone;
+
+    ks_irq_off();
+    hw_spin_lock_named(&g_sched_lock, __func__);
+    gone.pml4 = hw_aspace_unpin(pin);
+    hw_spin_unlock(&g_sched_lock);
+    ks_irq_on();
+    if (gone.pml4) {
+        hw_aspace_destroy_why(&gone, "aspace_pin_orphan");
+    }
+}
+
+/* Part of one page of another address space, to or from `buf`: present and
+ * the user's, and for a store writable - a copy-on-write page is copied, as
+ * the fault would. 0, or -1 with nothing moved. The caller judged the address
+ * against the process's regions under its mm lock. */
+int ks_vm_copy(vibeos_vmspace_t *v, uint64_t va, void *buf, uint32_t len, int write) {
+    uint64_t *e = vibeos_vmspace_entry(v, va & ~0xFFFull);
+    uint64_t need = PTE_PRESENT | PTE_USER | (write ? PTE_WRITE : 0u);
+    uint8_t *page;
+
+    if (len == 0u || (va & 0xFFFull) + len > 4096u) {
+        return -1;
+    }
+    if (!e || (*e & need) != need) {
+        if (!write || vibeos_vmspace_fault(v, va & ~0xFFFull, 1) != 1 ||
+            !(e = vibeos_vmspace_entry(v, va & ~0xFFFull)) || (*e & need) != need) {
+            return -1;
+        }
+    }
+    page = (uint8_t *)(uintptr_t)(*e & 0x000FFFFFFFFFF000ull);
+    if (write) {
+        __builtin_memcpy(page + (va & 0xFFFull), buf, len);
+    } else {
+        __builtin_memcpy(buf, page + (va & 0xFFFull), len);
+    }
+    return 0;
+}
+
+/* ks_map_anon, into a held address space rather than a slot's. */
+int ks_vm_map_anon(vibeos_vmspace_t *v, uint64_t va, vibeos_prot_t prot) {
+    vibeos_hw_aspace_t as;
+    void *page = hw_alloc_user_page();
+    int r;
+
+    if (!page) {
+        return -1;
+    }
+    as.pml4 = v->root;
+    r = hw_map_page(&as, va, (uint64_t)(uintptr_t)page, ks_leaf_of(prot));
+    hw_page_put((uint64_t)(uintptr_t)page);
+    return r != 0 ? -1 : 0;
+}
+
 void ks_drop_aspace(int slot) {
     hw_aspace_destroy_why(&g_tasks[slot].proc.as, "fork_failed");
 }

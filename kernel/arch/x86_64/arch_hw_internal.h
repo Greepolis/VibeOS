@@ -558,6 +558,8 @@ int hw_console_getc(void);          /* next console byte, or -1 if none yet */
 void hw_console_echo(char c);        /* echo one byte to the screen */
 void hw_fpu_init_area(unsigned char *area);
 int hw_aspace_shared_by_other(const uint64_t *pml4, int except);
+int hw_aspace_pin(uint64_t *pml4);
+uint64_t *hw_aspace_unpin(int pin);
 int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                              uint32_t *why);
 uint64_t *hw_pte_lookup(vibeos_hw_aspace_t *as, uint64_t va);

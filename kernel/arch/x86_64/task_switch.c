@@ -949,6 +949,57 @@ void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
  * Must be called with g_sched_lock held: without it the answer can be stale by
  * the time it is acted on, which is the whole failure mode.
  */
+/* Address spaces held by a task that does not run in them: NtReadVirtualMemory
+ * and its family reaching into another process (docs/abi/windows.md W7 step
+ * 1). Exit and exec free tables only when nobody else holds them, and both ask
+ * that here under g_sched_lock - so a pin is one more holder, and the tables
+ * it holds are given to it, "orphaned", instead of freed under its walk. The
+ * last unpin frees what was orphaned. Small: a pin lasts one system call. */
+#define HW_ASPACE_PINS 16
+static struct {
+    uint64_t *pml4;
+    uint32_t pins;
+    uint32_t orphaned;
+} g_aspace_pin[HW_ASPACE_PINS];
+
+/* Under g_sched_lock. A slot index, or -1 when the table is full. */
+int hw_aspace_pin(uint64_t *pml4) {
+    int i, free_at = -1;
+
+    for (i = 0; i < HW_ASPACE_PINS; i++) {
+        if (g_aspace_pin[i].pins != 0u && g_aspace_pin[i].pml4 == pml4) {
+            g_aspace_pin[i].pins++;
+            return i;
+        }
+        if (g_aspace_pin[i].pins == 0u && free_at < 0) {
+            free_at = i;
+        }
+    }
+    if (free_at >= 0) {
+        g_aspace_pin[free_at].pml4 = pml4;
+        g_aspace_pin[free_at].pins = 1u;
+        g_aspace_pin[free_at].orphaned = 0u;
+    }
+    return free_at;
+}
+
+/* Under g_sched_lock. The tables to free now, or null: they were orphaned
+ * while pinned, and this was the last pin. */
+uint64_t *hw_aspace_unpin(int pin) {
+    uint64_t *gone = 0;
+
+    if (pin < 0 || pin >= HW_ASPACE_PINS || g_aspace_pin[pin].pins == 0u) {
+        hw_panic("aspace unpin of a pin nobody holds");
+    }
+    if (--g_aspace_pin[pin].pins == 0u && g_aspace_pin[pin].orphaned) {
+        gone = g_aspace_pin[pin].pml4;
+    }
+    if (g_aspace_pin[pin].pins == 0u) {
+        g_aspace_pin[pin].pml4 = 0;
+    }
+    return gone;
+}
+
 /* Does any live task other than `except` run on these tables?
  *
  * Asked by address space rather than by task, because exec needs the same
@@ -962,6 +1013,14 @@ int hw_aspace_shared_by_other(const uint64_t *pml4, int except) {
 
     if (pml4 == 0) {
         return 0;
+    }
+    for (i = 0; i < HW_ASPACE_PINS; i++) {
+        if (g_aspace_pin[i].pins != 0u && g_aspace_pin[i].pml4 == pml4) {
+            /* Every caller acts on "shared" by keeping the tables, so the pin
+             * now owns them. */
+            g_aspace_pin[i].orphaned = 1u;
+            return 1;
+        }
     }
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (i == except || hw_slot_state(i) == HW_TASK_FREE) {

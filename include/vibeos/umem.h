@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 #include "vibeos/procstate.h"
+#include "vibeos/vmspace.h"
 #include "vibeos/vma.h"
 #include "vibeos/file.h"
 
@@ -37,6 +38,10 @@ uint64_t vibeos_umem_place_in(vibeos_procstate_t *ps, uint64_t bytes, uint64_t a
 /* Take [addr, end) out of task `me`'s address space: the regions, then the
  * pages. 0, or a negative errno (-ENOMEM when a region could not be split). */
 long vibeos_umem_unmap(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
+/* The same on an address space held by its tables rather than a slot's: one
+ * a caller reached into from outside (NT, W7 step 1). */
+long vibeos_umem_unmap_vm(vibeos_vmspace_t *v, vibeos_procstate_t *ps, uint64_t addr,
+                          uint64_t end);
 
 /* A page a region promises and nothing has made yet: in a region made on first
  * touch (W3), with no entry. mprotect and mlock ask, because "mapped" no
@@ -67,5 +72,6 @@ long vibeos_umem_map_file(int me, vibeos_procstate_t *ps, uint64_t base, uint64_
  * ones, swapped ones, copy-on-write ones as the page-table layer keeps each.
  * The region list is the caller's to have changed first. */
 void vibeos_umem_protect_pages(int me, uint64_t addr, uint64_t end, vibeos_prot_t prot);
+void vibeos_umem_protect_vm(vibeos_vmspace_t *v, uint64_t addr, uint64_t end, vibeos_prot_t prot);
 
 #endif
