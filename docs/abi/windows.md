@@ -1095,3 +1095,40 @@ six boots, the oracle, and the open-items register.
   same `nm` on the kernel with NT counts 107 symbols.
 - **Booted once without NT**: the full gate green, with `nt_absent` in the
   verdict as the gate prints a skip it allows.
+
+### Done: the registry's core (step 2, 2026-11-01)
+
+`kernel/abi/nt/registry/reg.c`, contract in `include/vibeos/ntreg.h`.
+
+- **Keys** are slots of a static table (8,192), held by index and tenancy, so
+  a key deleted while a handle holds it answers STATUS_KEY_DELETED and its
+  slot goes back only with the last reference. Children are kept in name
+  order, as Windows enumerates them; values in the order they were set.
+- **Names** compare without case through Windows' upcase as far as Latin-1,
+  Latin Extended-A, Greek and Cyrillic; the ASCII fold the file layer uses
+  would not do for a registry. Windows' limits: 255 units a key name, 16,383
+  a value name, 512 levels; a value's data is capped at a megabyte.
+- **Memory** is pages the environment supplies: names, values and data in
+  cells of seven size classes, anything past 2 KiB as a chain of pages given
+  back when freed. Every byte counts against a quota, and a value set over an
+  existing one is refused before the old data is let go.
+- **Hives**: a 32-byte header - magic, version, record count, payload length,
+  FNV-1a 64 checksum, and a reserved field that must be zero - then the keys
+  depth first with their values; volatile keys are not written. A load checks
+  the whole image first, builds the new keys detached, and swaps them in only
+  when everything is built: an image with any byte changed, cut short, or one
+  that runs out of room half way leaves the tree exactly as it was.
+- `test_reg` (host), and `vibeos_reg_torture`, a randomised run against a flat
+  model of paths and seeded values with saves and loads in the middle, in
+  `verify-host.sh` and the nightly (100 seeds, sanitized). It does not claim
+  `kernel/abi` for the nightly coverage check: it is one part of it.
+- Ten sabotage cases (`nt-registry.txt`), all red. Two went NOT RED first, and
+  both were the tests: the "load out of room" test was passing because the
+  image length had been reset by an earlier failed save, so its load was
+  refused as corrupt, not for room - and, once that was fixed, the hive
+  turned out to fit in the quota anyway. A five-thousand-byte value now makes
+  it need room it cannot have. The header test changed a byte every seven and
+  never touched the record count; it changes every header byte now.
+
+Nothing calls the registry yet: step 3 starts it in the NT personality and
+gives it its services.
