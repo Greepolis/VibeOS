@@ -884,8 +884,19 @@ uint32_t GetEnvironmentVariableA(const char *name, char *buf, uint32_t size) {
         set_error(ERROR_ENVVAR_NOT_FOUND);
         return 0;
     }
-    r = GetEnvironmentVariableW(wn, wv, sizeof(wv) / 2u);
-    if (r == 0u || r >= sizeof(wv) / 2u) {
+    /* An empty value is a zero too, with no error: told apart by the error
+     * the wide form leaves untouched when it succeeds (kernel32:environ). */
+    {
+        uint32_t saved = get_error();
+
+        set_error(0xFFFFFFFEu);
+        r = GetEnvironmentVariableW(wn, wv, sizeof(wv) / 2u);
+        if (r == 0u && get_error() != 0xFFFFFFFEu) {
+            return 0;
+        }
+        set_error(saved);
+    }
+    if (r >= sizeof(wv) / 2u) {
         return r;
     }
     if (r + 1u > size) {
@@ -2629,4 +2640,1040 @@ BOOL32 TerminateProcess(uint64_t h, uint32_t code) {
     NTSTATUS_T st = NtTerminateProcess(h, code);
 
     return failed(st) ? fail(st) : 1;
+}
+
+/* ---- W7 step 4: the functions kernel32's tests stop at ------------------------------------
+ * Each is the first missing call of one of Wine's tests (the table in
+ * docs/abi/windows.md, W7 step 3; the rows WO-030 onward of
+ * docs/implementation_progress/windows_open_items.md). Written to Windows'
+ * behaviour as those tests check it, and no further. */
+
+#define ERROR_INSUFFICIENT_BUFFER 122u
+#define ERROR_DIRECTORY_INVALID   267u   /* ERROR_DIRECTORY */
+#define ERROR_INVALID_FLAGS       1004u
+#define ERROR_MR_MID_NOT_FOUND    317u
+
+/* -- SYSTEMTIME and FILETIME (WO-030): 100 ns ticks since 1601-01-01, a Monday. */
+
+typedef struct {
+    uint16_t year, month, day_of_week, day, hour, minute, second, ms;
+} k32_systime_t;
+
+static int k32_leap(uint32_t y) {
+    return (y % 4u == 0u && y % 100u != 0u) || y % 400u == 0u;
+}
+
+static uint32_t k32_month_days(uint32_t y, uint32_t m) {
+    static const uint8_t d[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+    return d[m - 1u] + (m == 2u && k32_leap(y) ? 1u : 0u);
+}
+
+#define K32_TICKS_PER_DAY 864000000000ull
+
+BOOL32 SystemTimeToFileTime(const k32_systime_t *st, int64_t *ft) {
+    uint64_t days, years;
+    uint32_t m;
+
+    if (st->year < 1601u || st->year > 30827u || st->month < 1u || st->month > 12u || st->day < 1u ||
+        st->day > k32_month_days(st->year, st->month) || st->hour > 23u || st->minute > 59u ||
+        st->second > 59u || st->ms > 999u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    years = st->year - 1601u;
+    days = years * 365u + years / 4u - years / 100u + years / 400u;
+    for (m = 1; m < st->month; m++) {
+        days += k32_month_days(st->year, m);
+    }
+    days += st->day - 1u;
+    *ft = (int64_t)(days * K32_TICKS_PER_DAY +
+                    ((st->hour * 3600ull + st->minute * 60ull + st->second) * 1000ull + st->ms) * 10000ull);
+    return 1;
+}
+
+BOOL32 FileTimeToSystemTime(const int64_t *ft, k32_systime_t *st) {
+    uint64_t t = (uint64_t)*ft, days, rem;
+    uint32_t y = 1601u, m = 1u;
+
+    if (*ft < 0) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    days = t / K32_TICKS_PER_DAY;
+    rem = t % K32_TICKS_PER_DAY;
+    st->day_of_week = (uint16_t)((days + 1u) % 7u);
+    y += (uint32_t)(days / 146097u) * 400u;   /* whole four-hundred-year cycles */
+    days %= 146097u;
+    while (days >= (k32_leap(y) ? 366u : 365u)) {
+        days -= k32_leap(y) ? 366u : 365u;
+        y++;
+    }
+    while (days >= k32_month_days(y, m)) {
+        days -= k32_month_days(y, m);
+        m++;
+    }
+    st->year = (uint16_t)y;
+    st->month = (uint16_t)m;
+    st->day = (uint16_t)(days + 1u);
+    rem /= 10000u;   /* milliseconds */
+    st->ms = (uint16_t)(rem % 1000u);
+    rem /= 1000u;
+    st->second = (uint16_t)(rem % 60u);
+    st->minute = (uint16_t)((rem / 60u) % 60u);
+    st->hour = (uint16_t)(rem / 3600u);
+    return 1;
+}
+
+/* -- the version (WO-031): Windows 10 22H2, as Wine 9 reports by default. */
+
+#define K32_VER_MAJOR 10u
+#define K32_VER_MINOR 0u
+#define K32_VER_BUILD 19045u
+
+static BOOL32 k32_version(void *info, uint32_t base, uint32_t ex, uint32_t csd_bytes) {
+    uint8_t *b = (uint8_t *)info;
+    uint32_t size = *(const uint32_t *)info, i;
+
+    if (size != base && size != ex) {
+        set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    for (i = 4; i < size; i++) {
+        b[i] = 0;
+    }
+    ((uint32_t *)info)[1] = K32_VER_MAJOR;
+    ((uint32_t *)info)[2] = K32_VER_MINOR;
+    ((uint32_t *)info)[3] = K32_VER_BUILD;
+    ((uint32_t *)info)[4] = 2u;   /* VER_PLATFORM_WIN32_NT */
+    if (size == ex) {
+        b[20u + csd_bytes + 8u] = 1u;   /* wProductType: VER_NT_WORKSTATION */
+    }
+    return 1;
+}
+
+BOOL32 GetVersionExA(void *info) { return k32_version(info, 148u, 156u, 128u); }
+BOOL32 GetVersionExW(void *info) { return k32_version(info, 276u, 284u, 256u); }
+
+uint32_t GetVersion(void) {
+    return K32_VER_MAJOR | (K32_VER_MINOR << 8) | (K32_VER_BUILD << 16);
+}
+
+/* -- power (WO-032): on the mains, no battery. */
+
+BOOL32 GetSystemPowerStatus(void *status) {
+    uint8_t *s = (uint8_t *)status;
+
+    s[0] = 1u;     /* ACLineStatus: online */
+    s[1] = 128u;   /* BatteryFlag: no system battery */
+    s[2] = 255u;   /* BatteryLifePercent: unknown */
+    s[3] = 0u;
+    ((uint32_t *)status)[1] = 0xFFFFFFFFu;   /* BatteryLifeTime: unknown */
+    ((uint32_t *)status)[2] = 0xFFFFFFFFu;   /* BatteryFullLifeTime */
+    return 1;
+}
+
+/* -- Beep (WO-033): there is no speaker; Windows succeeds without one too. */
+
+BOOL32 Beep(uint32_t freq, uint32_t duration) {
+    (void)freq;
+    (void)duration;
+    return 1;
+}
+
+/* -- the current directory (WO-034): the process parameters' CurrentDirectory,
+ * which GetCurrentDirectory and every relative path read, kept with its
+ * trailing separator as Windows keeps it. */
+
+BOOL32 SetCurrentDirectoryW(const uint16_t *dir) {
+    uint64_t params = vibeos_nt_rd64(peb() + VIBEOS_PEB_PROCESS_PARAMS);
+    vibeos_ustring_t *u = (vibeos_ustring_t *)(uintptr_t)(params + VIBEOS_RUPP_CURDIR_PATH);
+    uint16_t full[NAME_CHARS + 2u];
+    uint32_t n, a, i;
+
+    if (!dir) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    n = GetFullPathNameW(dir, NAME_CHARS, full, 0);
+    if (n == 0u || n >= NAME_CHARS) {
+        set_error(n == 0u ? ERROR_PATH_NOT_FOUND : ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    a = GetFileAttributesW(full);
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        return 0;   /* GetFileAttributesW said why */
+    }
+    if (!(a & 0x10u)) {
+        set_error(ERROR_DIRECTORY_INVALID);
+        return 0;
+    }
+    if (full[n - 1u] != '\\') {
+        full[n++] = '\\';
+    }
+    full[n] = 0;
+    if ((n + 1u) * 2u > u->MaximumLength) {
+        uint16_t *nb = (uint16_t *)HeapAlloc(GetProcessHeap(), 0, (NAME_CHARS + 2u) * 2u);
+
+        if (!nb) {
+            set_error(8u);   /* ERROR_NOT_ENOUGH_MEMORY */
+            return 0;
+        }
+        u->Buffer = nb;
+        u->MaximumLength = (uint16_t)((NAME_CHARS + 2u) * 2u);
+    }
+    for (i = 0; i <= n; i++) {
+        u->Buffer[i] = full[i];
+    }
+    u->Length = (uint16_t)(n * 2u);
+    return 1;
+}
+
+BOOL32 SetCurrentDirectoryA(const char *dir) {
+    uint16_t w[NAME_CHARS];
+
+    return wide_name(dir, w) ? SetCurrentDirectoryW(w) : 0;
+}
+
+/* -- drives (WO-035, WO-036): one, C:, the boot volume. */
+
+uint32_t GetLogicalDrives(void) {
+    return 1u << 2;
+}
+
+static const char g_k32_volume[] = "\\Device\\HarddiskVolume1";
+
+/* The device a DOS name names, or with a null name every DOS name; each
+ * string terminated, the list by one more. The count of characters written. */
+uint32_t QueryDosDeviceW(const uint16_t *name, uint16_t *buf, uint32_t max) {
+    const char *s;
+    uint32_t n = 0, i;
+
+    if (!name) {
+        s = "C:";
+    } else if ((name[0] == 'C' || name[0] == 'c') && name[1] == ':' && name[2] == 0) {
+        s = g_k32_volume;
+    } else {
+        set_error(ERROR_FILE_NOT_FOUND);
+        return 0;
+    }
+    while (s[n]) {
+        n++;
+    }
+    if (!buf || max < n + 2u) {
+        set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        buf[i] = (uint16_t)(unsigned char)s[i];
+    }
+    buf[n] = 0;
+    buf[n + 1u] = 0;
+    return n + 2u;
+}
+
+uint32_t QueryDosDeviceA(const char *name, char *buf, uint32_t max) {
+    uint16_t wn[NAME_CHARS], wb[NAME_CHARS];
+    uint32_t n, i;
+
+    if (name && !wide_name(name, wn)) {
+        return 0;
+    }
+    n = QueryDosDeviceW(name ? wn : 0, wb, NAME_CHARS);
+    if (n == 0u) {
+        return 0;
+    }
+    if (!buf || max < n) {
+        set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        buf[i] = narrow(wb[i]);
+    }
+    return n;
+}
+
+/* -- Local and Global memory (WO-037): blocks of the process heap. A moveable
+ * block is a fixed one here - its handle is its address, which LocalLock
+ * hands back as it is - so nothing ever moves and a lock count is not kept. */
+
+#define K32_LMEM_ZEROINIT 0x40u
+
+void *LocalAlloc(uint32_t flags, size_t size) {
+    void *p = HeapAlloc(GetProcessHeap(), (flags & K32_LMEM_ZEROINIT) ? 8u /* HEAP_ZERO_MEMORY */ : 0u,
+                        size);
+
+    if (!p) {
+        set_error(8u);   /* ERROR_NOT_ENOUGH_MEMORY */
+    }
+    return p;
+}
+
+void *LocalFree(void *h) {
+    if (h && !HeapFree(GetProcessHeap(), 0, h)) {
+        set_error(6u);   /* ERROR_INVALID_HANDLE */
+        return h;
+    }
+    return 0;
+}
+
+void *LocalReAlloc(void *h, size_t size, uint32_t flags) {
+    void *p = HeapReAlloc(GetProcessHeap(), (flags & K32_LMEM_ZEROINIT) ? 8u : 0u, h, size);
+
+    if (!p) {
+        set_error(8u);
+    }
+    return p;
+}
+
+size_t LocalSize(void *h) {
+    return h ? HeapSize(GetProcessHeap(), 0, h) : 0u;
+}
+
+void *LocalLock(void *h) { return h; }
+BOOL32 LocalUnlock(void *h) {
+    (void)h;
+    set_error(158u);   /* ERROR_NOT_LOCKED: Windows' answer for a fixed block */
+    return 0;
+}
+
+void *GlobalAlloc(uint32_t flags, size_t size) { return LocalAlloc(flags, size); }
+void *GlobalFree(void *h) { return LocalFree(h); }
+void *GlobalReAlloc(void *h, size_t size, uint32_t flags) { return LocalReAlloc(h, size, flags); }
+size_t GlobalSize(void *h) { return LocalSize(h); }
+void *GlobalLock(void *h) { return h; }
+BOOL32 GlobalUnlock(void *h) { return LocalUnlock(h); }
+
+/* -- heaps (WO-038): the process heap is the only one. */
+
+uint32_t GetProcessHeaps(uint32_t count, uint64_t *heaps) {
+    if (count >= 1u && heaps) {
+        heaps[0] = GetProcessHeap();
+    }
+    return 1u;
+}
+
+/* -- short names (WO-039): a volume here has none, so the long name is the
+ * short one, as Windows answers on a volume with 8.3 names turned off. */
+
+uint32_t GetShortPathNameW(const uint16_t *path, uint16_t *buf, uint32_t size) {
+    uint32_t n, i;
+
+    if (!path) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+        return 0;
+    }
+    n = wlen(path);
+    if (!buf || size <= n) {
+        return n + 1u;
+    }
+    for (i = 0; i <= n; i++) {
+        buf[i] = path[i];
+    }
+    return n;
+}
+
+uint32_t GetShortPathNameA(const char *path, char *buf, uint32_t size) {
+    uint16_t w[NAME_CHARS];
+    uint32_t n, i;
+
+    if (!path) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (!wide_name(path, w) || GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES) {
+        return 0;
+    }
+    n = (uint32_t)lstrlenA(path);
+    if (!buf || size <= n) {
+        return n + 1u;
+    }
+    for (i = 0; i <= n; i++) {
+        buf[i] = path[i];
+    }
+    return n;
+}
+
+/* -- code pages (WO-041): UTF-8, and everything else as the ANSI code page
+ * ntdll widens with, Windows-1252. */
+
+#define K32_CP_UTF8 65001u
+
+int32_t WideCharToMultiByte(uint32_t cp, uint32_t flags, const uint16_t *w, int32_t wn, char *out,
+                            int32_t cap, const char *def, BOOL32 *used_def) {
+    int32_t i, n = 0, used = 0;
+
+    (void)flags;
+    if (!w || wn == 0 || cap < 0 || (cap > 0 && !out) ||
+        (cp == K32_CP_UTF8 && (def || used_def))) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (wn < 0) {
+        wn = (int32_t)wlen(w) + 1;
+    }
+    for (i = 0; i < wn; i++) {
+        uint8_t b[4];
+        uint32_t c = w[i], k, len;
+
+        if (cp == K32_CP_UTF8) {
+            if (c >= 0xD800u && c < 0xDC00u && i + 1 < wn && w[i + 1] >= 0xDC00u && w[i + 1] < 0xE000u) {
+                c = 0x10000u + ((c - 0xD800u) << 10) + (w[i + 1] - 0xDC00u);
+                i++;
+            } else if (c >= 0xD800u && c < 0xE000u) {
+                c = 0xFFFDu;   /* a lone surrogate */
+            }
+            if (c < 0x80u) {
+                b[0] = (uint8_t)c;
+                len = 1;
+            } else if (c < 0x800u) {
+                b[0] = (uint8_t)(0xC0u | (c >> 6));
+                b[1] = (uint8_t)(0x80u | (c & 0x3Fu));
+                len = 2;
+            } else if (c < 0x10000u) {
+                b[0] = (uint8_t)(0xE0u | (c >> 12));
+                b[1] = (uint8_t)(0x80u | ((c >> 6) & 0x3Fu));
+                b[2] = (uint8_t)(0x80u | (c & 0x3Fu));
+                len = 3;
+            } else {
+                b[0] = (uint8_t)(0xF0u | (c >> 18));
+                b[1] = (uint8_t)(0x80u | ((c >> 12) & 0x3Fu));
+                b[2] = (uint8_t)(0x80u | ((c >> 6) & 0x3Fu));
+                b[3] = (uint8_t)(0x80u | (c & 0x3Fu));
+                len = 4;
+            }
+        } else {
+            char ch = narrow((uint16_t)c);
+
+            if (ch == '?' && c != '?') {
+                used = 1;
+                if (def) {
+                    ch = *def;
+                }
+            }
+            b[0] = (uint8_t)ch;
+            len = 1;
+        }
+        if (cap > 0) {
+            if (n + (int32_t)len > cap) {
+                set_error(ERROR_INSUFFICIENT_BUFFER);
+                return 0;
+            }
+            for (k = 0; k < len; k++) {
+                out[n + (int32_t)k] = (char)b[k];
+            }
+        }
+        n += (int32_t)len;
+    }
+    if (used_def) {
+        *used_def = used;
+    }
+    return n;
+}
+
+int32_t MultiByteToWideChar(uint32_t cp, uint32_t flags, const char *s, int32_t sn, uint16_t *out,
+                            int32_t cap) {
+    const uint8_t *b = (const uint8_t *)s;
+    int32_t i = 0, n = 0;
+
+    (void)flags;
+    if (!s || sn == 0 || cap < 0 || (cap > 0 && !out)) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (sn < 0) {
+        sn = lstrlenA(s) + 1;
+    }
+    while (i < sn) {
+        uint32_t c = b[i++], need = 0, k;
+        uint16_t u[2];
+        int32_t len = 1;
+
+        if (cp == K32_CP_UTF8) {
+            if (c >= 0xF0u && c < 0xF8u) {
+                need = 3;
+                c &= 0x07u;
+            } else if (c >= 0xE0u) {
+                need = 2;
+                c &= 0x0Fu;
+            } else if (c >= 0xC2u) {
+                need = 1;
+                c &= 0x1Fu;
+            } else if (c >= 0x80u) {
+                c = 0xFFFDu;
+            }
+            for (k = 0; k < need; k++) {
+                if (i >= sn || (b[i] & 0xC0u) != 0x80u) {
+                    c = 0xFFFDu;
+                    need = 0;
+                    break;
+                }
+                c = (c << 6) | (b[i++] & 0x3Fu);
+            }
+            if (c >= 0x10000u && c != 0xFFFDu) {
+                c -= 0x10000u;
+                u[0] = (uint16_t)(0xD800u + (c >> 10));
+                u[1] = (uint16_t)(0xDC00u + (c & 0x3FFu));
+                len = 2;
+            } else {
+                u[0] = (uint16_t)c;
+            }
+        } else {
+            unsigned char ch = (unsigned char)c, *p = &ch;
+
+            u[0] = RtlAnsiCharToUnicodeChar(&p);
+        }
+        if (cap > 0) {
+            if (n + len > cap) {
+                set_error(ERROR_INSUFFICIENT_BUFFER);
+                return 0;
+            }
+            out[n] = u[0];
+            if (len == 2) {
+                out[n + 1] = u[1];
+            }
+        }
+        n += len;
+    }
+    return n;
+}
+
+/* -- time formats (WO-042): the user default's, which is en-US. */
+
+typedef BOOL32 (*k32_enum_a_t)(char *);
+typedef BOOL32 (*k32_enum_w_t)(uint16_t *);
+
+static const char *const g_k32_times[2][4] = {
+    { "h:mm:ss tt", "hh:mm:ss tt", "H:mm:ss", "HH:mm:ss" },
+    { "h:mm tt", "hh:mm tt", "H:mm", "HH:mm" },   /* TIME_NOSECONDS */
+};
+
+static BOOL32 k32_enum_times(void *proc, uint32_t flags, int wide) {
+    uint32_t i, k;
+
+    if (!proc) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (flags & ~2u) {
+        set_error(ERROR_INVALID_FLAGS);
+        return 0;
+    }
+    for (i = 0; i < 4u; i++) {
+        const char *f = g_k32_times[flags ? 1 : 0][i];
+        char a[16];
+        uint16_t w[16];
+        BOOL32 more;
+
+        for (k = 0; f[k]; k++) {
+            a[k] = f[k];
+            w[k] = (uint16_t)f[k];
+        }
+        a[k] = 0;
+        w[k] = 0;
+        more = wide ? ((k32_enum_w_t)proc)(w) : ((k32_enum_a_t)proc)(a);
+        if (!more) {
+            break;
+        }
+    }
+    return 1;
+}
+
+BOOL32 EnumTimeFormatsA(void *proc, uint32_t lcid, uint32_t flags) {
+    (void)lcid;
+    return k32_enum_times(proc, flags, 0);
+}
+
+BOOL32 EnumTimeFormatsW(void *proc, uint32_t lcid, uint32_t flags) {
+    (void)lcid;
+    return k32_enum_times(proc, flags, 1);
+}
+
+/* -- SignalObjectAndWait (WO-012): the signal, then the wait - two calls, so
+ * not atomic as NtSignalAndWaitForSingleObject would make it, which the
+ * kernel does not have yet. An event is set, a mutant released, a semaphore
+ * released by one: whichever the handle accepts. */
+
+uint32_t SignalObjectAndWait(uint64_t signal, uint64_t wait, uint32_t ms, BOOL32 alertable) {
+    NTSTATUS_T st = NtSetEvent(signal, 0);
+
+    if (st == (NTSTATUS_T)0xC0000024u /* OBJECT_TYPE_MISMATCH */) {
+        st = NtReleaseMutant(signal, 0);
+    }
+    if (st == (NTSTATUS_T)0xC0000024u) {
+        st = NtReleaseSemaphore(signal, 1, 0);
+    }
+    if (failed(st)) {
+        fail(st);
+        return 0xFFFFFFFFu;   /* WAIT_FAILED */
+    }
+    return WaitForSingleObjectEx(wait, ms, alertable);
+}
+
+/* -- the environment (kernel32:environ, after W7 step 3) */
+
+BOOL32 SetEnvironmentVariableW(const uint16_t *name, const uint16_t *value) {
+    vibeos_ustring_t n, v;
+    NTSTATUS_T st;
+
+    if (!name || !name[0]) {
+        set_error(ERROR_ENVVAR_NOT_FOUND);
+        return 0;
+    }
+    n.Length = (uint16_t)(wlen(name) * 2u);
+    n.MaximumLength = n.Length;
+    n.Buffer = (vibeos_wchar_t *)name;
+    if (value) {
+        v.Length = (uint16_t)(wlen(value) * 2u);
+        v.MaximumLength = v.Length;
+        v.Buffer = (vibeos_wchar_t *)value;
+    }
+    st = (NTSTATUS_T)RtlSetEnvironmentVariable(0, &n, value ? &v : 0);
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 SetEnvironmentVariableA(const char *name, const char *value) {
+    uint16_t wn[NAME_CHARS], *wv = 0;
+    BOOL32 r;
+
+    if (!name || widen(name, wn, NAME_CHARS) < 0) {
+        set_error(ERROR_ENVVAR_NOT_FOUND);
+        return 0;
+    }
+    if (value) {
+        uint32_t n = (uint32_t)lstrlenA(value) + 1u;
+
+        wv = (uint16_t *)HeapAlloc(GetProcessHeap(), 0, n * 2u);
+        if (!wv || widen(value, wv, n) < 0) {
+            HeapFree(GetProcessHeap(), 0, wv);
+            set_error(8u);
+            return 0;
+        }
+    }
+    r = SetEnvironmentVariableW(wn, wv);
+    if (wv) {
+        HeapFree(GetProcessHeap(), 0, wv);
+    }
+    return r;
+}
+
+/* -- FormatMessage (WO-040): a message from a string, with its inserts.
+ * There are no message tables here, so FROM_SYSTEM and FROM_HMODULE find
+ * nothing and say ERROR_MR_MID_NOT_FOUND. An insert is %1 to %99 with an
+ * optional !printf-format!, taken from the argument array or, without
+ * ARGUMENT_ARRAY, from the va_list - every slot eight bytes in this ABI, so
+ * the n-th insert is the n-th slot. %0 ends the message, %n is a line break,
+ * %% and %. %! and %space are the character. Width wrapping is not done:
+ * FORMAT_MESSAGE_MAX_WIDTH_MASK only turns the source's line breaks into
+ * spaces. The wide form's %s is a wide string, the ANSI form's an ANSI one. */
+
+#define K32_FM_ALLOCATE   0x0100u
+#define K32_FM_IGNORE     0x0200u
+#define K32_FM_STRING     0x0400u
+#define K32_FM_HMODULE    0x0800u
+#define K32_FM_SYSTEM     0x1000u
+#define K32_FM_ARRAY      0x2000u
+#define K32_FM_WIDTH      0x00FFu
+
+typedef struct {
+    uint16_t *b;
+    uint32_t n, cap;
+    int oom;
+} k32_out_t;
+
+static void k32_put(k32_out_t *o, uint16_t c) {
+    if (o->n + 1u >= o->cap) {
+        uint32_t cap = o->cap ? o->cap * 2u : 256u;
+        uint16_t *nb = (uint16_t *)(o->b ? HeapReAlloc(GetProcessHeap(), 0, o->b, cap * 2u)
+                                         : HeapAlloc(GetProcessHeap(), 0, cap * 2u));
+
+        if (!nb) {
+            o->oom = 1;
+            return;
+        }
+        o->b = nb;
+        o->cap = cap;
+    }
+    o->b[o->n++] = c;
+}
+
+/* One printf conversion - `spec` is what stood between the bangs, without
+ * them - of one argument, and any '*' widths from the slots after it. */
+static void k32_format_one(k32_out_t *o, const uint16_t *spec, uint32_t len, const uint64_t *slot,
+                           uint32_t *used, int wide) {
+    char flags[8];
+    uint32_t nf = 0, i = 0, width = 0, prec = 0, k;
+    int has_prec = 0, longlong = 0, half = 0;
+    char conv;
+    char num[72];
+    uint32_t nn = 0;
+    uint64_t v;
+
+    *used = 1;
+    while (i < len && (spec[i] == '-' || spec[i] == '+' || spec[i] == ' ' || spec[i] == '#' ||
+                       spec[i] == '0') && nf < sizeof(flags)) {
+        flags[nf++] = (char)spec[i++];
+    }
+    if (i < len && spec[i] == '*') {
+        width = (uint32_t)slot[0];
+        slot++;
+        (*used)++;
+        i++;
+    }
+    while (i < len && spec[i] >= '0' && spec[i] <= '9') {
+        width = width * 10u + (spec[i++] - '0');
+    }
+    if (i < len && spec[i] == '.') {
+        has_prec = 1;
+        i++;
+        if (i < len && spec[i] == '*') {
+            prec = (uint32_t)slot[0];
+            slot++;
+            (*used)++;
+            i++;
+        }
+        while (i < len && spec[i] >= '0' && spec[i] <= '9') {
+            prec = prec * 10u + (spec[i++] - '0');
+        }
+    }
+    while (i < len && (spec[i] == 'l' || spec[i] == 'h' || spec[i] == 'I' || spec[i] == '6' ||
+                       spec[i] == '4' || spec[i] == '3' || spec[i] == '2' || spec[i] == 'w')) {
+        if (spec[i] == '6' || (spec[i] == 'l' && i + 1 < len && spec[i + 1] == 'l')) {
+            longlong = 1;
+        }
+        if (spec[i] == 'h') {
+            half = 1;
+        }
+        if (spec[i] == 'w') {
+            half = -1;   /* a wide string or character whatever the form */
+        }
+        i++;
+    }
+    conv = i < len ? (char)spec[i] : 's';
+    v = slot[0];
+    if (conv == 's' || conv == 'S') {
+        int w = (conv == 's') == (wide != 0);   /* %s is the form's own width, %S the other */
+        uint32_t n = 0, pad, left = 0;
+
+        if (half == -1) {
+            w = 1;
+        } else if (half == 1) {
+            w = 0;
+        }
+        if (v == 0u) {
+            static const char null_s[] = "(null)";
+
+            for (k = 0; null_s[k]; k++) {
+                k32_put(o, (uint16_t)null_s[k]);
+            }
+            return;
+        }
+        if (w) {
+            const uint16_t *s = (const uint16_t *)(uintptr_t)v;
+
+            while (s[n] && (!has_prec || n < prec)) {
+                n++;
+            }
+        } else {
+            const char *s = (const char *)(uintptr_t)v;
+
+            while (s[n] && (!has_prec || n < prec)) {
+                n++;
+            }
+        }
+        for (k = 0; k < nf; k++) {
+            left |= flags[k] == '-';
+        }
+        pad = width > n ? width - n : 0u;
+        for (k = 0; !left && k < pad; k++) {
+            k32_put(o, ' ');
+        }
+        for (k = 0; k < n; k++) {
+            k32_put(o, w ? ((const uint16_t *)(uintptr_t)v)[k]
+                         : (uint16_t)(unsigned char)((const char *)(uintptr_t)v)[k]);
+        }
+        for (k = 0; left && k < pad; k++) {
+            k32_put(o, ' ');
+        }
+        return;
+    }
+    if (conv == 'c' || conv == 'C') {
+        k32_put(o, (uint16_t)v);
+        return;
+    }
+    {
+        int neg = 0, left = 0, zero = 0, plus = 0, space = 0, alt = 0;
+        uint32_t base = (conv == 'x' || conv == 'X' || conv == 'p') ? 16u : conv == 'o' ? 8u : 10u;
+        const char *digits = conv == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+        char prefix[3] = { 0, 0, 0 };
+        uint32_t np = 0, total, pad;
+
+        for (k = 0; k < nf; k++) {
+            left |= flags[k] == '-';
+            zero |= flags[k] == '0';
+            plus |= flags[k] == '+';
+            space |= flags[k] == ' ';
+            alt |= flags[k] == '#';
+        }
+        if (conv == 'p') {
+            longlong = 1;
+            if (!has_prec) {
+                has_prec = 1;
+                prec = 16;
+            }
+        }
+        if (!longlong) {
+            v = half == 1 ? (uint64_t)(uint16_t)v : (uint64_t)(uint32_t)v;
+        }
+        if (conv == 'd' || conv == 'i') {
+            int64_t s = longlong ? (int64_t)v : half == 1 ? (int64_t)(int16_t)v : (int64_t)(int32_t)v;
+
+            if (s < 0) {
+                neg = 1;
+                v = (uint64_t)(-(s + 1)) + 1u;
+            } else {
+                v = (uint64_t)s;
+            }
+        }
+        do {
+            num[nn++] = digits[v % base];
+            v /= base;
+        } while (v != 0u && nn < sizeof(num));
+        if (has_prec && prec == 0u && nn == 1u && num[0] == '0') {
+            nn = 0;
+        }
+        while (has_prec && nn < prec && nn < sizeof(num)) {
+            num[nn++] = '0';
+        }
+        if (neg) {
+            prefix[np++] = '-';
+        } else if (plus && (conv == 'd' || conv == 'i')) {
+            prefix[np++] = '+';
+        } else if (space && (conv == 'd' || conv == 'i')) {
+            prefix[np++] = ' ';
+        }
+        if (alt && base == 16u && slot[0] != 0u) {
+            prefix[np++] = '0';
+            prefix[np++] = conv == 'X' ? 'X' : 'x';
+        }
+        total = nn + np;
+        pad = width > total ? width - total : 0u;
+        for (k = 0; !left && !(zero && !has_prec) && k < pad; k++) {
+            k32_put(o, ' ');
+        }
+        for (k = 0; k < np; k++) {
+            k32_put(o, (uint16_t)prefix[k]);
+        }
+        for (k = 0; !left && zero && !has_prec && k < pad; k++) {
+            k32_put(o, '0');
+        }
+        while (nn > 0u) {
+            k32_put(o, (uint16_t)num[--nn]);
+        }
+        for (k = 0; left && k < pad; k++) {
+            k32_put(o, ' ');
+        }
+    }
+}
+
+/* The message, in wide characters, into `o`. A Windows error, or 0. */
+static uint32_t k32_format(uint32_t flags, const uint16_t *src, void *args, k32_out_t *o, int wide) {
+    const uint64_t *slots = 0;
+    uint32_t i = 0;
+
+    if (args) {
+        slots = (flags & K32_FM_ARRAY) ? (const uint64_t *)args
+                                       : *(const uint64_t *const *)args;   /* a va_list's slots */
+    }
+    while (src[i]) {
+        uint16_t c = src[i++];
+
+        if (c == '\r' || c == '\n') {
+            if ((flags & K32_FM_WIDTH) == K32_FM_WIDTH) {
+                if (c == '\r' && src[i] == '\n') {
+                    i++;
+                }
+                k32_put(o, ' ');
+            } else {
+                k32_put(o, c);
+            }
+            continue;
+        }
+        if (c != '%') {
+            k32_put(o, c);
+            continue;
+        }
+        c = src[i];
+        if (c == 0) {
+            break;
+        }
+        if (c == '0') {
+            break;   /* %0: the message ends here, with no line break */
+        }
+        if (c >= '1' && c <= '9') {
+            uint32_t n = (uint32_t)(c - '0'), start = i - 1u, spec = 0, spec_len = 0, used = 0;
+
+            i++;
+            if (src[i] >= '0' && src[i] <= '9') {
+                n = n * 10u + (uint32_t)(src[i++] - '0');
+            }
+            if (src[i] == '!') {
+                spec = i + 1u;
+                while (src[spec + spec_len] && src[spec + spec_len] != '!') {
+                    spec_len++;
+                }
+                if (!src[spec + spec_len]) {
+                    return ERROR_INVALID_PARAMETER;   /* an unterminated format */
+                }
+                i = spec + spec_len + 1u;
+            }
+            if (flags & K32_FM_IGNORE) {
+                uint32_t k;
+
+                for (k = start; k < i; k++) {
+                    k32_put(o, src[k]);
+                }
+                continue;
+            }
+            if (!slots) {
+                return ERROR_INVALID_PARAMETER;
+            }
+            if (spec) {
+                k32_format_one(o, src + spec, spec_len, slots + n - 1u, &used, wide);
+            } else {
+                static const uint16_t s_spec[1] = { 's' };
+
+                k32_format_one(o, s_spec, 1u, slots + n - 1u, &used, wide);
+            }
+            continue;
+        }
+        i++;
+        if (c == 'n') {
+            k32_put(o, '\r');
+            k32_put(o, '\n');
+        } else if (c == 'r') {
+            k32_put(o, '\r');
+        } else if (c == 't') {
+            k32_put(o, '\t');
+        } else {
+            k32_put(o, c);   /* %% %. %! %space and the rest: the character */
+        }
+    }
+    return o->oom ? 8u /* ERROR_NOT_ENOUGH_MEMORY */ : 0u;
+}
+
+uint32_t FormatMessageW(uint32_t flags, const void *source, uint32_t id, uint32_t lang, uint16_t *buf,
+                        uint32_t size, void *args) {
+    k32_out_t o = { 0, 0, 0, 0 };
+    uint32_t err, i;
+
+    (void)id;
+    (void)lang;
+    if (!(flags & K32_FM_STRING)) {
+        set_error(ERROR_MR_MID_NOT_FOUND);   /* no message tables (FROM_SYSTEM, FROM_HMODULE) */
+        return 0;
+    }
+    if (!source || (!buf && !(flags & K32_FM_ALLOCATE))) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    err = k32_format(flags, (const uint16_t *)source, args, &o, 1);
+    if (err == 0u) {
+        k32_put(&o, 0);
+        err = o.oom ? 8u : 0u;
+    }
+    if (err != 0u) {
+        HeapFree(GetProcessHeap(), 0, o.b);
+        set_error(err);
+        return 0;
+    }
+    o.n--;   /* the terminator is not counted */
+    if (flags & K32_FM_ALLOCATE) {
+        uint16_t *a = (uint16_t *)LocalAlloc(0, ((o.n + 1u) > size ? o.n + 1u : size) * 2u);
+
+        if (!a) {
+            HeapFree(GetProcessHeap(), 0, o.b);
+            return 0;
+        }
+        for (i = 0; i <= o.n; i++) {
+            a[i] = o.b[i];
+        }
+        *(uint16_t **)buf = a;
+    } else if (o.n + 1u > size) {
+        HeapFree(GetProcessHeap(), 0, o.b);
+        set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    } else {
+        for (i = 0; i <= o.n; i++) {
+            buf[i] = o.b[i];
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, o.b);
+    return o.n;
+}
+
+uint32_t FormatMessageA(uint32_t flags, const void *source, uint32_t id, uint32_t lang, char *buf,
+                        uint32_t size, void *args) {
+    k32_out_t o = { 0, 0, 0, 0 };
+    uint16_t *w = 0;
+    uint32_t err, i, n;
+
+    (void)id;
+    (void)lang;
+    if (!(flags & K32_FM_STRING)) {
+        set_error(ERROR_MR_MID_NOT_FOUND);
+        return 0;
+    }
+    if (!source || (!buf && !(flags & K32_FM_ALLOCATE))) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    n = (uint32_t)lstrlenA((const char *)source) + 1u;
+    w = (uint16_t *)HeapAlloc(GetProcessHeap(), 0, n * 2u);
+    if (!w) {
+        set_error(8u);
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        unsigned char ch = ((const unsigned char *)source)[i], *p = &ch;
+
+        w[i] = ch < 0x80u ? ch : RtlAnsiCharToUnicodeChar(&p);
+    }
+    err = k32_format(flags, w, args, &o, 0);
+    HeapFree(GetProcessHeap(), 0, w);
+    if (err == 0u) {
+        k32_put(&o, 0);
+        err = o.oom ? 8u : 0u;
+    }
+    if (err != 0u) {
+        HeapFree(GetProcessHeap(), 0, o.b);
+        set_error(err);
+        return 0;
+    }
+    o.n--;
+    if (flags & K32_FM_ALLOCATE) {
+        char *a = (char *)LocalAlloc(0, (o.n + 1u) > size ? o.n + 1u : size);
+
+        if (!a) {
+            HeapFree(GetProcessHeap(), 0, o.b);
+            return 0;
+        }
+        for (i = 0; i <= o.n; i++) {
+            a[i] = narrow(o.b[i]);
+        }
+        *(char **)buf = a;
+    } else if (o.n + 1u > size) {
+        HeapFree(GetProcessHeap(), 0, o.b);
+        set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    } else {
+        for (i = 0; i <= o.n; i++) {
+            buf[i] = narrow(o.b[i]);
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, o.b);
+    return o.n;
 }
