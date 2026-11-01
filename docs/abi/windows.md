@@ -74,7 +74,9 @@ boots, and the step's own tests from the oracle.
 ## What this plan does not do
 
 No graphics: `user32`, `gdi32` and the window system wait for the user interface
-(the roadmap's third item). No registry in the kernel: when `kernel32`'s tests
+(the roadmap's third item) - except what W8 does of user32 and gdi32 without a
+window system. The registry was to be a service outside the kernel; W8
+reversed that (see W8). Originally: no registry in the kernel: when `kernel32`'s tests
 need `advapi32`, the registry is a service of its own. No 32-bit programs (WoW64).
 No driver model. Each of those is a later decision, made when a test or a program
 asks for it.
@@ -1020,3 +1022,52 @@ tests ask - with what remains written down rather than done: every row above
 that is not as Wine is an open item in
 [../implementation_progress/windows_open_items.md](../implementation_progress/windows_open_items.md),
 and the console's own test cannot start before the registry (WO-050).
+
+## W8 (from 2026-11-01): advapi32, user32, gdi32
+
+The three DLLs "What this plan does not do" left out, done as a product: what
+a Windows program meets in them works and survives a reboot, what is not done
+is refused with Windows' own answer, and the oracle is Wine's tests of each DLL
+(`scripts/dev/winetest-build.sh build-gcc-Release advapi32 user32 gdi32`).
+
+**Where the registry lives** (decided 2026-11-01, reversing W0): in the NT
+personality, `kernel/abi/nt/registry/`, not in a service of its own. Windows'
+own registry is a kernel component; a service would first need a channel from
+the kernel to a process, which nothing has yet - the window system will, and
+the registry can move then without its interface (the `Nt*Key` rows)
+changing. What matters is that the registry is Windows' and not the core's:
+it is reached only through `ksvc.h` like every other NT handler, stores its
+hives as ordinary files, and goes with the personality.
+
+1. **The personality is optional, and that is checked.** A kernel built
+   without the NT personality compiles, links and boots. Today the
+   architecture names NT pieces directly (the PE loader, `vibeos_abi_nt`,
+   the exec path's PE test); they move behind a registration so that the core
+   knows a personality only as one of a list. `check.sh` builds the kernel
+   without NT every time, and the step boots it once.
+2. **The registry's core**: keys, values of every Windows type, names without
+   case, volatile and non-volatile keys, limits Windows has (name and value
+   sizes, depth). Portable and host-tested, with an intensive test against a
+   model in the nightly, as every module here has. Hives persist as files
+   written whole and atomically (a new file, then a rename), with a header,
+   a version and a checksum: a hive that does not check is not loaded, and the
+   last good one is kept beside it.
+3. **The `Nt*Key` services**: keys as objects of the object manager with
+   Windows' access rights, the roots `\Registry\Machine` and
+   `\Registry\User`, create, open, delete, set, query, enumerate, flush,
+   rename, and change notification if the tests reach it. Measured by
+   `ntdll:reg`.
+4. **advapi32**: the Reg* API over those services, the predefined handles
+   (HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER, HKEY_CLASSES_ROOT, HKEY_USERS),
+   the default content programs read (the version under
+   `Software\Microsoft\Windows NT\CurrentVersion`, agreeing with
+   GetVersionEx), and what else advapi32's tests and kernel32's
+   (`console`, `debugger`) stop at. Measured by `advapi32:registry` and
+   those two.
+5. **user32**: what programs and tests reach without a window system - the
+   desktop window, atoms, strings, message boxes refused politely - measured
+   first, then written. Windows and messages wait for the UI and are named.
+6. **gdi32**: the same rule.
+
+Each step is closed as W7's were: host tests, sabotage cases, `check.sh all`,
+six boots, the oracle, and the open-items register.

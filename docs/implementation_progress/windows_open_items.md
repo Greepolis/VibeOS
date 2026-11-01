@@ -89,8 +89,8 @@ or a subsystem of its own.
 
 | ID | What | Test | Why not W7 |
 |---|---|---|---|
-| WO-050 | advapi32's registry (RegOpenKeyExA, RegCreateKeyExA) | console, debugger | the registry is its own step (REG) |
-| WO-051 | user32 (GetDesktopWindow) | atom | no user32 yet |
+| WO-050 | advapi32's registry (RegOpenKeyExA, RegCreateKeyExA) | console, debugger | moved into W8 (WO-080) |
+| WO-051 | user32 (GetDesktopWindow) | atom | moved into W8 (WO-081) |
 | WO-052 | Change notifications (FindFirstChangeNotificationA) | change | needs a watch mechanism in the VFS |
 | WO-053 | Serial ports (GetDefaultCommConfigA) | comm | no serial device for NT |
 | WO-054 | Mailslots (GetMailslotInfo) | mailslot | with named pipes (WO-013) |
@@ -99,3 +99,11 @@ or a subsystem of its own.
 | WO-057 | Activation contexts | actctx (skips itself) | SxS manifests |
 | WO-058 | Fibers | fiber (skips itself) | not asked by any other test yet |
 | WO-059 | Toolhelp snapshots | toolhelp (skips itself) | a process/thread walk API |
+
+## W8 (from 2026-11-01)
+
+| ID | What | Status |
+|---|---|---|
+| WO-080 | advapi32's registry moves into W8 (was WO-050, out of plan) | open (W8 steps 2-4) |
+| WO-081 | user32 and gdi32 as far as programs reach without a window system (was WO-051) | open (W8 steps 5-6) |
+| WO-082 | A kernel built without the NT personality is not known to build or boot | open (W8 step 1) |
