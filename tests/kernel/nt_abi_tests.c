@@ -1463,6 +1463,27 @@ static void t_remote_thread(void) {
                    ST(VIBEOS_STATUS_SUCCESS) && tbi[1] == teb && tbi[2] == 63u,
                "its handle reports the other's process id and the TEB made there");
     }
+    {
+        /* A routine that is not mapped anywhere is the thread's to fault on, as
+         * Windows makes it (kernel32:process's test_TerminateProcess). */
+        uint64_t bad[7] = { 0xDEADBEEFull, 0, 1u /* suspended */, 0, 0, 0, 0 };
+
+        kf_next_sp(stack_args(bad, 7));
+        expect(nt(VIBEOS_NT_NR_NtCreateThreadEx, out, 0x001FFFFFu, 0, h, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "a thread at an address the other process has not mapped is still made there");
+    }
+    {
+        /* ProcessBasicInformation answers PROCESS_QUERY_LIMITED_INFORMATION
+         * (kernel32:process's test_process_info). */
+        uint64_t q = kf_ualloc(48), z = 0, lim;
+
+        (void)nt(VIBEOS_NT_NR_NtOpenProcess, out, 0x1000u, 0, cid, 0);
+        lim = *(uint64_t *)kf_uptr(out);
+        kf_next_sp(stack_args_(&z, 1));
+        expect(nt(VIBEOS_NT_NR_NtQueryInformationProcess, lim, VIBEOS_NT_PROCESS_BASIC_INFORMATION, q, 48, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS),
+               "ProcessBasicInformation through a PROCESS_QUERY_LIMITED_INFORMATION handle");
+    }
     expect(g_kf_aspace_pins == 0, "and the other's address space was let go");
     {
         /* THREAD_QUERY_LIMITED_INFORMATION answers the basic classes and not

@@ -286,9 +286,10 @@ static long thread_create(ks_regs_t *frame, uint64_t out, uint32_t want, uint64_
     long r;
 
     /* The routine is the target's to have mapped; only the caller's own
-     * address is judged here, another process's is the thread's to fault on. */
-    if (start == 0u || (process == VIBEOS_NT_CURRENT_PROCESS ? !nt_user_ok(start, 1u, 0)
-                                                             : !ks_user_addr_ok(start))) {
+     * address is judged here. Another process's is the thread's to fault on:
+     * Windows makes a thread at 0xdeadbeef there (kernel32:process's
+     * test_TerminateProcess), and ntdll's entry is what the task starts at. */
+    if (start == 0u || (process == VIBEOS_NT_CURRENT_PROCESS && !nt_user_ok(start, 1u, 0))) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
     st = nt_mm_get(process, NT_PROCESS_CREATE_THREAD, &m);

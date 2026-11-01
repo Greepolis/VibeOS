@@ -43,3 +43,9 @@
         st = thread_view(h, NT_THREAD_QUERY_LIMITED, &v);
 +++ new
         st = thread_view(h, NT_THREAD_QUERY_INFORMATION, &v);
+
+### a routine the other process has not mapped is refused
+--- old
+    if (start == 0u || (process == VIBEOS_NT_CURRENT_PROCESS && !nt_user_ok(start, 1u, 0))) {
++++ new
+    if (start == 0u || !nt_user_ok(start, 1u, 0)) {

@@ -1,0 +1,12 @@
+# NtQueryInformationProcess with PROCESS_QUERY_LIMITED_INFORMATION
+# (docs/abi/windows.md W7 step 4), proved by t_remote_thread in
+# tests/kernel/nt_abi_tests.c.
+#
+# Target source: kernel/abi/nt/process.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/process.c scripts/dev/cases/nt-process-query.txt
+
+### ProcessBasicInformation needs the full right
+--- old
+    st = process_view(process, NT_PROCESS_QUERY_LIMITED, &v);
++++ new
+    st = process_view(process, NT_PROCESS_QUERY_INFORMATION, &v);

@@ -614,7 +614,12 @@ static long nt_query_information_process(uint64_t process, uint64_t cls, uint64_
     if ((uint32_t)len != sizeof(pbi)) {
         return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
     }
-    st = process_view(process, NT_PROCESS_QUERY_INFORMATION, &v);
+    /* PROCESS_QUERY_LIMITED_INFORMATION is enough for this class, and
+     * QUERY_INFORMATION implies it (kernel32:process's test_process_info). */
+    st = process_view(process, NT_PROCESS_QUERY_LIMITED, &v);
+    if (st == VIBEOS_STATUS_ACCESS_DENIED) {
+        st = process_view(process, NT_PROCESS_QUERY_INFORMATION, &v);
+    }
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
