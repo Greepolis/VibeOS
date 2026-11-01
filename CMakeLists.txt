@@ -227,6 +227,7 @@ if(VIBEOS_BUILD_TESTS)
         ${VIBEOS_LINUX_ABI_SOURCES}
         # The NT personality, on the same fake (docs/abi/windows.md W1).
         tests/kernel/nt_abi_tests.c
+        tests/kernel/reg_tests.c
         ${VIBEOS_NT_ABI_SOURCES}
     )
     target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core vibeos_tls)
@@ -345,6 +346,13 @@ if(VIBEOS_BUILD_TESTS)
     target_link_libraries(vibeos_filelock_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_filelock_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-filelock-torture COMMAND vibeos_filelock_torture 1 3000)
+
+    # The registry's core against a flat model of paths and seeded values
+    # (docs/abi/windows.md W8 step 2), saved and loaded back as it goes. It
+    # links the one file it tortures: the NT sources are not in the core.
+    add_executable(vibeos_reg_torture tests/kernel/reg_torture.c kernel/abi/nt/registry/reg.c)
+    target_include_directories(vibeos_reg_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-reg-torture COMMAND vibeos_reg_torture 1 3000)
 
     # msvcrt.dll's portable core (docs/abi/windows.md W2) on the host: printf
     # held against glibc's and against msvcrt's documented differences, the heap

@@ -9872,6 +9872,7 @@ int test_sched_policy(void);
 int test_forkguard(void);
 int test_pe(void);          /* pe_tests.c: the PE32+ parser (docs/abi/windows.md W1) */
 int test_nt_abi(void);      /* nt_abi_tests.c: the NT personality on ksvc_fake.c (W1) */
+int test_reg(void);         /* reg_tests.c: the registry's core (docs/abi/windows.md W8) */
 
 /* M-037: st_blocks is ceil(size / 512) and must not wrap for a size a volume
  * can declare. The old (size + 511) / 512 gave 0 at UINT64_MAX. */
@@ -10249,6 +10250,7 @@ int main(void) {
     RUN_TEST(test_forkguard);
     RUN_TEST(test_pe);
     RUN_TEST(test_nt_abi);
+    RUN_TEST(test_reg);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);

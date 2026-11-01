@@ -38,6 +38,15 @@ if ! out="$("./$BUILD/vibeos_mm_torture" 3 4000 2>&1)"; then
     echo "$out" | grep -E '^FAIL' | head -1
     rc=1
 fi
+# The registry's core against its model (docs/abi/windows.md W8 step 2): two
+# seeds, saves and loads included.
+for seed in 1 2; do
+    if ! out="$("./$BUILD/vibeos_reg_torture" "$seed" 2000 2>&1)"; then
+        echo "$out" | grep -E '^FAIL' | head -1
+        rc=1
+        break
+    fi
+done
 # The GUI's torture too (C7): its thread phase is the only host-side check that
 # can see the GUI's lock go missing.
 if ! out="$("./$BUILD/vibeos_gui_torture" 1 300 4 2>&1)"; then

@@ -1,0 +1,96 @@
+# The registry's core (kernel/abi/nt/registry/reg.c, docs/abi/windows.md W8
+# step 2), proved by test_reg (tests/kernel/reg_tests.c) and the torture
+# against its model (tests/kernel/reg_torture.c).
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/abi/nt/registry/reg.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/registry/reg.c scripts/dev/cases/nt-registry.txt
+
+### names are compared with their case
+--- old
+    if (c >= 'a' && c <= 'z') {
+        return (uint16_t)(c - 32u);
+    }
+    if (c < 0x80u) {
++++ new
+    if (c >= 'a' && c <= 'z') {
+        return c;
+    }
+    if (c < 0x80u) {
+
+### subkeys are kept in the order they were made, not by name
+--- old
+        if (name_cmp(g_keys[o].name, g_keys[o].name_len, buf, units) > 0) {
+            break;
+        }
++++ new
+        (void)units;
+
+### a deleted key's slot goes back while a handle still holds it
+--- old
+    if (g_keys[s].refs == 0u) {
+        blob_free(g_keys[s].name, g_keys[s].name_len);
++++ new
+    if (1) {
+        blob_free(g_keys[s].name, g_keys[s].name_len);
+
+### the quota is never asked
+--- old
+    return g_env.quota == 0u || g_bytes + more <= g_env.quota;
++++ new
+    return 1;
+
+### a hive's checksum is not compared
+--- old
+    if (plen > 0xFFFFFFFFull || sum != rd(p + 24u, 8u)) {
++++ new
+    if (plen > 0xFFFFFFFFull) {
+
+### a hive's record count is not compared
+--- old
+        if (st == VIBEOS_STATUS_SUCCESS && records != (uint32_t)rd(p + 8u, 4u)) {
++++ new
+        if (0) {
+
+### a load that fails half way keeps what it built
+--- old
+        if (st != VIBEOS_STATUS_SUCCESS) {
+            drop_saved(tmp);
+        }
++++ new
+        if (st != VIBEOS_STATUS_SUCCESS) {
+            st = VIBEOS_STATUS_SUCCESS;
+        }
+
+### a value set over another frees the old data before the new is had
+--- old
+        nd = blob_alloc(len);
+        if (len != 0u && !nd) {
++++ new
+        v = find_value(s, name, n);
+        if (v) {
+            blob_free(v->data, v->data_len);
+            v->data = 0;
+            v->data_len = 0;
+        }
+        nd = blob_alloc(len);
+        if (len != 0u && !nd) {
+
+### a large value's chain is cut after its first page
+--- old
+            if (off == CHAIN_PAYLOAD) {
+                p = *(uint8_t **)(void *)p;
+                off = 0;
+            }
++++ new
+            if (off == CHAIN_PAYLOAD) {
+                off = 0;
+            }
+
+### only the last component of a path may be new - is not asked
+--- old
+            if (end < n) {
+                return VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND;   /* only the last may be new */
+            }
++++ new
