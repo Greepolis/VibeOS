@@ -199,6 +199,7 @@ set(VIBEOS_NT_ABI_SOURCES
     kernel/abi/nt/thread.c
     kernel/abi/nt/apc.c
     kernel/abi/nt/except.c
+    kernel/abi/nt/registry/reg.c
 )
 
 # The freestanding half of the kernel image: hardware bring-up that host tests
