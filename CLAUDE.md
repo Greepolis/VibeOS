@@ -565,6 +565,14 @@ Linux maps nothing there and says `SEGV_MAPERR`; the fault path asks whether
 the *program* had a mapping before it says which. Anything new that reads the
 error code on behalf of a program has the same question to ask.
 
+**The core names no personality but Linux.** Since docs/abi/windows.md W8
+step 1 the architecture reaches NT - and any later personality - only through
+the table in `kernel/arch/x86_64/personality.c`, filled at boot by the
+personality's own glue (`nt_glue.c`). `VIBEOS_PERSONALITY_NT=OFF` builds a
+kernel without it, and `check.sh` builds that kernel every run and asks `nm`
+that it holds no NT symbol. A new hook a personality needs goes into
+`hw_personality_t`, not into an `if (abi == vibeos_abi_nt())` in the core.
+
 **Two user windows exist.** VibeOS programs link at `0x8000000000`; Linux
 programs link at `0x400000`, inside the kernel's identity map. The low window's
 physical range is reserved out of the allocator so nothing of the kernel's can

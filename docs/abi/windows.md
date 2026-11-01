@@ -1072,3 +1072,26 @@ hives as ordinary files, and goes with the personality.
 
 Each step is closed as W7's were: host tests, sabotage cases, `check.sh all`,
 six boots, the oracle, and the open-items register.
+
+### Done: the personality is optional (step 1, 2026-11-01)
+
+- **A table of personalities** (`kernel/arch/x86_64/personality.c`). Linux is
+  the machine's own; any other registers at boot with its hooks - its syscall
+  convention, what a fault becomes, whether a staged header is its image, and
+  exec's two halves for it. The core asks the table by the ABI bound to a task
+  or by the image, and names no personality.
+- **NT's glue** (`nt_glue.c`) holds what the core used to name: NT's syscall
+  registers, `vibeos_nt_fault`, the PE test and loader, and the two `ks_`
+  services for image sections. The mapper's relocation of a moved image is a
+  callback the format supplies, so `mm_bridge.c` names no format but ELF.
+- **`VIBEOS_PERSONALITY_NT`** (on by default) decides whether the NT handlers,
+  the PE parser and loader, the glue, the Windows DLLs and programs are
+  built. The image's list of personalities is one generated file
+  (`generated/personalities.c`), the only place that names which were chosen.
+- **Checked every time**: `check.sh` builds the kernel without NT
+  (`nont-rc`) and asks `nm` that the image holds no NT symbol
+  (`nont-symbols`). Both were broken on purpose: a call to
+  `vibeos_nt_abi_init` put back into `arch_hw.c` fails the link, and the
+  same `nm` on the kernel with NT counts 107 symbols.
+- **Booted once without NT**: the full gate green, with `nt_absent` in the
+  verdict as the gate prints a skip it allows.

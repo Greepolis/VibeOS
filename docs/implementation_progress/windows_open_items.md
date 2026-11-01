@@ -106,4 +106,4 @@ or a subsystem of its own.
 |---|---|---|
 | WO-080 | advapi32's registry moves into W8 (was WO-050, out of plan) | open (W8 steps 2-4) |
 | WO-081 | user32 and gdi32 as far as programs reach without a window system (was WO-051) | open (W8 steps 5-6) |
-| WO-082 | A kernel built without the NT personality is not known to build or boot | open (W8 step 1) |
+| WO-082 | A kernel built without the NT personality is not known to build or boot | closed (W8 step 1): check.sh builds it and checks its symbols every run; booted once |
