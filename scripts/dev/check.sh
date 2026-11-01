@@ -139,6 +139,30 @@ do_clang() {
     grep -E 'error:' /tmp/vibeos-clang.log | head -5
 }
 
+# The kernel without the NT personality (docs/abi/windows.md W8 step 1).
+#
+# "Optional" is a property the build has to keep, and nothing else would notice
+# when it stops: every other build has NT on. A core file that names an NT
+# function fails the link here, and one that includes NT and calls nothing of it
+# still leaves its symbols out - which the second half asks: the image must hold
+# no NT symbol at all. The step boots this image once, by hand
+# (VIBEOS_SMOKE: scripts/qemu-cli-smoke-linux.py build-nont-Release).
+do_nont() {
+    echo "=== kernel without the NT personality"
+    cmake -S . -B build-nont-Release -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          -DVIBEOS_PERSONALITY_NT=OFF -DVIBEOS_BUILD_TESTS=OFF > /tmp/vibeos-nont-cfg.log 2>&1
+    cmake --build build-nont-Release --target vibeos_kernel -j"$(nproc)" > /tmp/vibeos-nont.log 2>&1
+    echo "nont-rc=$?"
+    grep -E 'error:|undefined reference' /tmp/vibeos-nont.log | head -5
+    k=$(find build-nont-Release -maxdepth 2 -name 'vibeos_kernel*' -type f | head -1)
+    if [ -z "$k" ]; then
+        echo "nont-symbols=FAIL reason=no_kernel_image"
+    else
+        n=$(nm "$k" 2>/dev/null | grep -cE ' (nt_|vibeos_nt_|vibeos_pe_|hw_pe_|hw_personality_nt)')
+        echo "nont-symbols=$([ "$n" = 0 ] && echo ok || echo "FAIL nt_symbols=$n")"
+    fi
+}
+
 do_fuzz() {
     echo "=== fuzz build"
     if ! command -v clang > /dev/null 2>&1; then
@@ -159,7 +183,8 @@ case "$what" in
     smoke) do_build; do_smoke ;;
     fuzz)  do_fuzz ;;
     clang) do_clang ;;
-    all)   do_build; do_tests; do_clang; do_fuzz; do_smoke ;;
-    *)     echo "usage: $0 [build|tests|smoke|fuzz|all] [build-dir]"; exit 2 ;;
+    nont)  do_nont ;;
+    all)   do_build; do_tests; do_clang; do_nont; do_fuzz; do_smoke ;;
+    *)     echo "usage: $0 [build|tests|smoke|fuzz|clang|nont|all] [build-dir]"; exit 2 ;;
 esac
 echo CHECK_DONE
