@@ -2288,6 +2288,10 @@ static void t_procdev(void) {
     other = kf_spawn(171, 171);
     kf_set_current(slot);
     img = ks_image(slot);
+    if (!img) {
+        expect(0, "procdev: the process has an image");   /* as every other caller asks */
+        return;
+    }
     memcpy(img->exe_path, "/bin/prog", 10);
     memcpy(img->cmdline, "prog\0-x\0", 8);
     img->cmdline_len = 8;
