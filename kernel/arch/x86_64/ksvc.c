@@ -11,7 +11,6 @@
  * docs/abi/phases.md, A2. */
 
 #include "vibeos/sched_policy.h"
-#include "vibeos/abi_nt.h"
 #include "arch_hw_internal.h"
 
 _Static_assert(VIBEOS_HW_MAX_TASKS <= LINUX_FUTEX_TABLE,
@@ -42,30 +41,16 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
     return linux_syscall((struct ks_regs *)(void *)frame, nr, a);
 }
 
-/* The NT convention (docs/abi/windows.md W1): the number in eax, the first four
- * arguments in r10 (our ntdll's stub moved rcx there, as Windows' does), rdx,
- * r8 and r9, the rest on the stack where the dispatcher reads them. */
-static long vibeos_x86_64_nt_syscall(vibeos_x86_64_isr_frame_t *frame) {
-    uint64_t a[6];
-
-    a[0] = frame->r10;
-    a[1] = frame->rdx;
-    a[2] = frame->r8;
-    a[3] = frame->r9;
-    a[4] = 0;
-    a[5] = 0;
-    return nt_syscall((struct ks_regs *)(void *)frame, (uint64_t)(uint32_t)frame->rax, a);
-}
-
 /* Bound at exec, read here: a task speaks one personality at a time, and the
  * one it was given decides how its registers are read. Both entries - the
  * `syscall` instruction and int 0x80 - ask, so neither is a way into the other
  * personality's table. */
 long vibeos_x86_64_syscall_any(vibeos_x86_64_isr_frame_t *frame) {
     int cur = hw_current_task();
+    const hw_personality_t *p = cur >= 0 ? hw_personality_of_abi(g_tasks[cur].abi) : 0;
 
-    if (cur >= 0 && g_tasks[cur].abi == vibeos_abi_nt()) {
-        return vibeos_x86_64_nt_syscall(frame);
+    if (p) {
+        return p->syscall(frame);
     }
     return vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi, frame->rsi, frame->rdx);
 }
@@ -867,13 +852,7 @@ void ks_tls_set(int slot, uint64_t base) {
 
 uint64_t ks_gs_get(int slot) { return g_tasks[slot].gs_base; }
 
-/* PE images (docs/abi/windows.md W2): the loader's work is in pe_load.c. */
-int ks_pe_probe(const struct vibeos_file *f, uint64_t *image_size) {
-    return hw_pe_probe(f, image_size);
-}
-int ks_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint64_t *size) {
-    return hw_map_pe_image(slot, f, base, size);
-}
+/* ks_pe_probe and ks_map_pe_image are the NT personality's, in nt_glue.c. */
 
 /* %gs base for the calling task (ARCH_SET_GS; the NT loader's TEB). Into the
  * MSR that holds it while the kernel runs - GS.base is this core's block until

@@ -32,7 +32,6 @@
 #include "vibeos/random.h"
 #include "vibeos/abi.h"
 #include "vibeos/abi_linux.h"
-#include "vibeos/abi_nt.h"
 #include "vibeos/ceildiv.h"
 #include "vibeos/blkdev.h"
 #include "vibeos/io_stats.h"
@@ -1647,8 +1646,9 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     hw_pipe_init();
     hw_mount_table_init();
     vibeos_linux_abi_init();
-    /* And the NT personality's (docs/abi/windows.md W1), by the same rules. */
-    vibeos_nt_abi_init();
+    /* And every other personality the kernel was built with (W8 step 1): NT's
+     * registry by the same rules, and its hooks into the architecture. */
+    hw_personalities_init();
 
     /* SSE on, explicitly, on this core too.
      *

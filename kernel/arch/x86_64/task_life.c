@@ -7,8 +7,6 @@
 
 #include "arch_hw_internal.h"
 #include "vibeos/crash.h"
-#include "vibeos/pe.h"
-#include "vibeos/abi_nt.h"
 
 #define VIBEOS_HW_KERNEL_DS 0x10u
 
@@ -402,6 +400,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
     uint8_t *top_page = 0;
     uint32_t i;
     uint64_t pe_exe_base = 0;
+    const hw_personality_t *pers;
 
     /* Before anything else, and it is not tidiness.
      *
@@ -451,8 +450,9 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
      * and our ntdll instead of a program and its interpreter, and the PEB and
      * TEB instead of the startup block on the stack. The address space, the
      * stack and the unwinding on failure are the same. */
-    if (vibeos_pe_is_pe(elf, len < staged ? len : staged)) {
-        if (hw_pe_map_images(p, ps, elf, len, staged, path, file_id, &pe_exe_base) != 0) {
+    pers = hw_personality_of_image(elf, len < staged ? len : staged);
+    if (pers) {
+        if (pers->map_images(p, ps, elf, len, staged, path, file_id, &pe_exe_base) != 0) {
             goto fail;
         }
         goto stack;
@@ -690,7 +690,8 @@ stack:
         for (i = 4096u - 0x40u; i < 4096u; i++) {
             top_page[i] = 0;
         }
-        if (hw_pe_start_blocks(p, ps, pe_exe_base, argv, path) != 0) {
+        pers = hw_personality_of_abi(p->abi);
+        if (!pers || pers->start_blocks(p, ps, pe_exe_base, argv, path) != 0) {
             goto fail;
         }
         goto layout;
@@ -2304,8 +2305,8 @@ int hw_fault_to_handler(vibeos_x86_64_isr_frame_t *frame, uint64_t fault_address
     }
     /* The personality the program speaks decides what a fault is to it: a
      * Linux program's signal, a Windows program's exception (W5 step 5). */
-    if (g_tasks[g_current_task].abi == vibeos_abi_nt()) {
-        if (!vibeos_nt_fault((struct ks_regs *)frame, &why)) {
+    if (hw_personality_of_abi(g_tasks[g_current_task].abi)) {
+        if (!hw_personality_of_abi(g_tasks[g_current_task].abi)->fault((struct ks_regs *)frame, &why)) {
             return 0;
         }
     } else if (!linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {

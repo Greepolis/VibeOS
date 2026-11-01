@@ -41,6 +41,6 @@
 
 ### a Windows program's fault never reaches ntdll's dispatcher (W5 step 5)
 --- old
-        if (!vibeos_nt_fault((struct ks_regs *)frame, &why)) {
+        if (!hw_personality_of_abi(g_tasks[g_current_task].abi)->fault((struct ks_regs *)frame, &why)) {
 +++ new
-        if (1 || !vibeos_nt_fault((struct ks_regs *)frame, &why)) {
+        if (1 || !hw_personality_of_abi(g_tasks[g_current_task].abi)->fault((struct ks_regs *)frame, &why)) {

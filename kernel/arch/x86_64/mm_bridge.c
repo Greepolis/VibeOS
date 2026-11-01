@@ -1880,7 +1880,7 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
     /* An image that moved is patched page by page, so no page of it may be
      * the cache's own: a relocation written into a shared page would be
      * written into the file, for every process that maps it next. */
-    int moved = reloc && reloc->pe && reloc->pe->delta != 0;
+    int moved = reloc && reloc->moved;
 
     reader.file_id = file_id;
     reader.file_len = file_len;
@@ -1991,7 +1991,7 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
          * and every static Linux program on its first store to .bss (err=7,
          * cr2 in .bss). Such a page is allocated here as it always was. */
         if (vmas && va >= VIBEOS_HW_IDENTITY_LIMIT && vibeos_elf_page_all_zero(img, va) &&
-            !(moved && vibeos_pe_page_relocated(reloc->pe, reloc->relocs, reloc->len, va))) {
+            !(moved && reloc->page_has(reloc, va))) {
             vibeos_prot_t rp = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
 
             if (flags & VIBEOS_ELF_W) {
@@ -2032,10 +2032,8 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
             vibeos_elf_fill_page(img, elf, va, page);
         }
         if (moved) {
-            vibeos_pe_relocate_page(reloc->pe, reloc->relocs, reloc->len,
-                                    file_id != 0u ? hw_elf_read_cached : hw_read_mem,
-                                    file_id != 0u ? (void *)&reader : (void *)&mem,
-                                    va, page);
+            reloc->fix_page(reloc, file_id != 0u ? hw_elf_read_cached : hw_read_mem,
+                            file_id != 0u ? (void *)&reader : (void *)&mem, va, page);
         }
         vibeos_exec_stats()->pages_copied++;
         if (va < VIBEOS_HW_IDENTITY_LIMIT) {

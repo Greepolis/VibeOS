@@ -42,7 +42,6 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/mm/usage.c
     kernel/core/kmain.c
     kernel/core/elf.c
-    kernel/core/pe.c
     kernel/fs/fat_chain.c
     kernel/fs/blockcache.c
     kernel/fs/vfs.c
@@ -186,6 +185,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
 # Linux's: the image links it against the architecture's services, the host
 # tests against the fake.
 set(VIBEOS_NT_ABI_SOURCES
+    kernel/core/pe.c
     kernel/abi/abi_nt.c
     kernel/abi/nt/dispatch.c
     kernel/abi/nt/process.c
@@ -216,9 +216,8 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/smp.c
     kernel/arch/x86_64/io_bringup.c
     kernel/arch/x86_64/ksvc.c
-    kernel/arch/x86_64/pe_load.c
+    kernel/arch/x86_64/personality.c
     ${VIBEOS_LINUX_ABI_SOURCES}
-    ${VIBEOS_NT_ABI_SOURCES}
     kernel/arch/x86_64/apic.c
     kernel/arch/x86_64/blk.c
     kernel/arch/x86_64/ahci.c
@@ -228,6 +227,15 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/keyboard.c
     kernel/arch/x86_64/fb.c
     kernel/arch/x86_64/mouse.c
+)
+
+# The NT personality's half of the image (docs/abi/windows.md W8 step 1): its
+# handlers, the PE loader and its glue into the architecture. Linked only with
+# VIBEOS_PERSONALITY_NT; nothing in the list above names any of it.
+set(VIBEOS_ARCH_NT_SOURCES
+    kernel/arch/x86_64/pe_load.c
+    kernel/arch/x86_64/nt_glue.c
+    ${VIBEOS_NT_ABI_SOURCES}
 )
 
 # The receive path, as the fuzzer must link it. net_policy.c belongs here

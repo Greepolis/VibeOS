@@ -25,6 +25,17 @@
  * half relocated. */
 #define HW_PE_RELOC_MAX 65536u
 static uint8_t g_pe_relocs[HW_PE_RELOC_MAX];
+
+/* The mapper's two questions about a moved image, answered by the PE parser. */
+static int hw_pe_page_has(const hw_reloc_t *r, uint64_t va) {
+    return vibeos_pe_page_relocated((const vibeos_pe_image_t *)r->image, r->relocs, r->len, va);
+}
+
+static void hw_pe_fix_page(const hw_reloc_t *r, vibeos_elf_read_fn read, void *rctx, uint64_t va,
+                           uint8_t *page) {
+    vibeos_pe_relocate_page((const vibeos_pe_image_t *)r->image, r->relocs, r->len, read, rctx, va,
+                            page);
+}
 /* The two images' descriptions, for the same reason and under the same lock.
  * They were locals - 1,368 bytes each - and in the gcc Debug build they took
  * the exec of a Windows program past the base of its eight-kilobyte kernel
@@ -63,7 +74,10 @@ static int hw_pe_map_one(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *
     if (id == 0u && len > window) {
         return hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, path, "pe_past_window");
     }
-    reloc.pe = pe;
+    reloc.moved = pe->delta != 0;
+    reloc.page_has = hw_pe_page_has;
+    reloc.fix_page = hw_pe_fix_page;
+    reloc.image = pe;
     reloc.relocs = relocs;
     reloc.len = 0;
     if (pe->delta != 0) {

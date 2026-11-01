@@ -40,6 +40,12 @@ IMPLS = (os.path.join(ROOT, "kernel", "arch", "x86_64", "ksvc.c"),
 ELSEWHERE = {
     "vibeos_uaccess_copy": (os.path.join(ROOT, "kernel", "arch", "x86_64", "uaccess.S"),
                             "vibeos_uaccess_copy:"),
+    # The NT personality's services live in its own glue, built only with it
+    # (docs/abi/windows.md W8 step 1).
+    "ks_pe_probe": (os.path.join(ROOT, "kernel", "arch", "x86_64", "nt_glue.c"),
+                    "int ks_pe_probe("),
+    "ks_map_pe_image": (os.path.join(ROOT, "kernel", "arch", "x86_64", "nt_glue.c"),
+                        "int ks_map_pe_image("),
 }
 
 ARCH_HEADER = os.path.join(ROOT, "kernel", "arch", "x86_64", "arch_hw_internal.h")
