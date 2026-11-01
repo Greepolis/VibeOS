@@ -98,6 +98,11 @@ writable by NtProtectVirtualMemory (8b45ad2, H-033's class).
 
 ## Where the oracle stands
 
+At the end of W7 (2026-10-31): `kernel32:power` and `kernel32:generated` are as
+Wine, `directory` and `format_msg` run to their ends, and every other kernel32
+test stops at a function or a defect named in the open-items register. The table
+is "What the oracle says at the end of W7" in [../abi/windows.md](../abi/windows.md).
+
 After W7 step 3 (2026-10-31): every kernel32 test has been run; two hang
 (`environ`, `module`), three skip themselves, `generated` is as Wine, and the
 rest stop at a named missing function - the table is "Step 3" in
@@ -148,7 +153,7 @@ Every open point of the NT personality is a row of
 
 ## Next checkpoint
 
-- W7 (from 2026-10-30): steps 1 and 2 (another process's memory, a thread in another process) done 2026-10-31; step 3 (every kernel32 test run once, the table of where each stops) the same day; next the functions that table names (step 4).
+- W7 (from 2026-10-30): steps 1 and 2 (another process's memory, a thread in another process) done 2026-10-31; steps 3 and 4 the same day: every kernel32 test run, and the functions they stopped at written. W7 is closed; what is left is in [windows_open_items.md](windows_open_items.md).
   Left from W5: another thread's context, timer APC routines, a DLL's static TLS,
   FLS callbacks at a thread's end, single-stepping, keyed events across
   threads (`ntdll:sync`), SignalObjectAndWait, named pipes and object

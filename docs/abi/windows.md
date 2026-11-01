@@ -947,3 +947,76 @@ every kernel32 test. The work list for step 4, grouped by what each needs:
 
 Open points from every step are kept as rows (WO-NNN) in
 [../implementation_progress/windows_open_items.md](../implementation_progress/windows_open_items.md).
+
+### Step 4: what the table named (2026-10-31)
+
+Written to Windows' behaviour as the tests check it (open-items WO-030 to
+WO-042, all closed):
+
+- **kernel32**: SystemTimeToFileTime and FileTimeToSystemTime; GetVersion and
+  GetVersionExA/W (Windows 10 build 19045, Wine 9's default);
+  GetSystemPowerStatus; Beep, which succeeds with no speaker as Windows does;
+  SetCurrentDirectoryA/W into the process parameters; GetLogicalDrives and
+  QueryDosDeviceA/W (one drive, C:); the Local and Global allocators over the
+  process heap, a moveable block being a fixed one; GetProcessHeaps;
+  GetShortPathNameA/W (the long name: no 8.3 names); WideCharToMultiByte and
+  MultiByteToWideChar (UTF-8 and Windows-1252); EnumTimeFormatsA/W;
+  FormatMessageA/W from a string, with inserts and printf formats from an
+  argument array or a va_list; SetEnvironmentVariableA/W;
+  SignalObjectAndWait as a signal then a wait - not atomic, because the
+  kernel has no NtSignalAndWaitForSingleObject (WO-012 stays open for that).
+- **The kernel**: a thread made in another process may start at an address
+  that process has not mapped - Windows makes it, and it faults there
+  (`test_TerminateProcess` starts one at 0xdeadbeef); ProcessBasicInformation
+  answers PROCESS_QUERY_LIMITED_INFORMATION. Host tests and a sabotage case
+  each (`nt-remote-thread.txt`, `nt-process-query.txt`).
+- GetEnvironmentVariableA told an empty value from a missing one by nothing
+  and reported both as missing; it reads the wide form's error now.
+- **stubcall.exe**, the gate's proof that a missing import is named and ends
+  the program, imported Beep. Writing Beep made the program run to its end
+  and the gate red, as it did once with GetTickCount; it imports
+  SetFirmwareEnvironmentVariableA now, which this personality will not offer.
+
+The kernel32 functions have no host test of their own: kernel32 runs only on
+the machine, and the oracle is what measures it - `power` is as Wine now,
+`directory` and `format_msg` run to their ends.
+
+The two hangs of step 3 (WO-021, WO-022) did not come back: alone, and in
+both of step 4's boots, `environ` and `module` ran and stopped at a missing
+function. They happened only after other tests in the same boot, and what
+stopped them is not identified - left open, not closed.
+
+### What the oracle says at the end of W7 (2026-10-31)
+
+| Test | Wine on Linux | VibeOS | Where it ends |
+|---|---|---|---|
+| `ntdll:thread` | 23 tests, 0 failures | 20 tests, 3 failures, to its end | NtCreateUserProcess's create info (WO-016) |
+| `kernel32:thread` | 907 tests, 0 failures | no failure printed, no summary | the process dies after its TLS tests (WO-020) |
+| `kernel32:process` | 2,564 tests, 44 failures | 3 failures, no summary | `winver.exe` is not on the volume (WO-063) |
+| `kernel32:virtual` | rc 5, no summary on Wine either | 40 failures | low arena, the address space spent (WO-001, WO-019, WO-077) |
+| `kernel32:power` | 5 tests, 0 failures | **as Wine** | - |
+| `kernel32:generated` | 0 tests | **as Wine** | - |
+| `kernel32:directory` | 104 tests, 0 failures | **107 tests, 27 failures, to its end** | WO-064 |
+| `kernel32:format_msg` | 1,551 tests, 0 failures | **1,551 tests, 319 failures, to its end** | WO-071 |
+| `kernel32:time` | 2,344 tests | stops | DosDateTimeToFileTime (WO-060) |
+| `kernel32:timer` | 4 tests | stops | SetSystemTime (WO-061) |
+| `kernel32:version` | 146 tests | stops | VerSetConditionMask (WO-062) |
+| `kernel32:path` | 202,604 tests | stops | GetLongPathNameA (WO-065) |
+| `kernel32:drive` | 130 tests | stops | GetDriveTypeA (WO-066) |
+| `kernel32:volume` | 398 tests | stops | DefineDosDeviceA (WO-067) |
+| `kernel32:file` | 563,523 tests | 4 failures, no summary | a read-only file deleted (WO-068) |
+| `kernel32:heap` | 272,701 tests | stops | HeapCreate (WO-069) |
+| `kernel32:loader` | 17,345 tests, 48 failures | 8 failures, stops | CreateHardLinkA (WO-070) |
+| `kernel32:codepage` | 394,761 tests | 10 failures, stops | IsValidCodePage (WO-072) |
+| `kernel32:locale` | 2,306,199 tests | stops | GetLocaleInfoA (WO-073) |
+| `kernel32:sync` | 354,502 tests | 4 failures, stops | OpenSemaphoreA (WO-074) |
+| `kernel32:environ` | 130 tests | no summary | WO-075 |
+| `kernel32:module` | 639 tests | stops | AreFileApisANSI (WO-076) |
+| `kernel32:actctx`, `fiber`, `toolhelp` | - | skip themselves | out of plan (WO-057 to WO-059) |
+| `kernel32:atom`, `change`, `comm`, `console`, `debugger`, `mailslot`, `pipe`, `profile`, `resource` | - | stop at another DLL or subsystem | out of plan (WO-050 to WO-056) |
+
+W7 is closed here, as its row asked - kernel32 and the console as far as the
+tests ask - with what remains written down rather than done: every row above
+that is not as Wine is an open item in
+[../implementation_progress/windows_open_items.md](../implementation_progress/windows_open_items.md),
+and the console's own test cannot start before the registry (WO-050).
