@@ -67,6 +67,7 @@ names the architecture, every user pointer is judged before it is used, and
 | W5 | Threads and exceptions: `NtCreateThreadEx`, TLS, SEH through `KiUserExceptionDispatcher`, APCs, alertable waits | `ntdll:exception`, `ntdll:thread`, `kernel32:thread` |
 | W6 | Processes: `NtCreateUserProcess`, environment, command line, exit codes | `kernel32:process` |
 | W7 | `kernel32` and the console, as far as the tests ask | the rest of `kernel32`'s tests |
+| W8 | advapi32 with the registry in the NT personality, user32 and gdi32 without a window system; the personality optional | `ntdll:reg`, `advapi32:registry`, user32's and gdi32's tests |
 
 Each step is closed as an L-step is: host tests, sabotage cases, check, six
 boots, and the step's own tests from the oracle.
