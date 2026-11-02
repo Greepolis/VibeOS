@@ -15,6 +15,8 @@
 #include "vibeos/nt_layout.h"
 #include "vibeos/ksvc.h"
 #include "vibeos/filelock.h"
+#include "vibeos/ntreg.h"
+#include "vibeos/vfs.h"
 
 int test_nt_abi(void);
 
@@ -2172,6 +2174,226 @@ static void t_remote_memory(void) {
     expect(g_kf_aspace_pins == 0, "and every address space held for a call was let go");
 }
 
+/* ---- the registry (W8 step 3) ------------------------------------------------------- */
+
+void nt_reg_restart(void);   /* key.c: the registry as a reboot leaves it */
+
+/* A UNICODE_STRING of `ascii` in the program's memory. */
+static uint64_t ustr(const char *ascii) {
+    uint32_t n = (uint32_t)strlen(ascii), i;
+    uint64_t us = kf_ualloc(VIBEOS_USTR_SIZE), buf = kf_ualloc(2u * n + 2u);
+    uint8_t *u = (uint8_t *)kf_uptr(us);
+    uint16_t *w = (uint16_t *)kf_uptr(buf);
+
+    for (i = 0; i < n; i++) {
+        w[i] = (uint8_t)ascii[i];
+    }
+    *(uint16_t *)(u + VIBEOS_USTR_LENGTH) = (uint16_t)(2u * n);
+    *(uint16_t *)(u + VIBEOS_USTR_MAXIMUM) = (uint16_t)(2u * n + 2u);
+    *(uint64_t *)(u + VIBEOS_USTR_BUFFER) = buf;
+    return us;
+}
+
+/* NtCreateKey: the handle, and the disposition. */
+static long create_key(uint64_t *h, uint32_t access, uint64_t root, const char *path, uint32_t options,
+                       uint32_t *disp) {
+    uint64_t out = kf_ualloc(8), d = kf_ualloc(4), oa = oattr(path, VIBEOS_OBJ_CASE_INSENSITIVE);
+    uint64_t rest[3] = { 0, options, d };
+    long r;
+
+    *(uint64_t *)kf_uptr(oa + VIBEOS_OA_ROOT_DIRECTORY) = root;
+    *(uint32_t *)kf_uptr(d) = 0xEEEEu;
+    kf_next_sp(stack_args(rest, 3));
+    r = nt(VIBEOS_NT_NR_NtCreateKey, out, access, oa, 0, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    if (disp) {
+        *disp = *(uint32_t *)kf_uptr(d);
+    }
+    return r;
+}
+
+static long open_key(uint64_t *h, uint32_t access, uint64_t root, const char *path) {
+    uint64_t out = kf_ualloc(8), oa = oattr(path, VIBEOS_OBJ_CASE_INSENSITIVE);
+    long r;
+
+    *(uint64_t *)kf_uptr(oa + VIBEOS_OA_ROOT_DIRECTORY) = root;
+    r = nt(VIBEOS_NT_NR_NtOpenKey, out, access, oa, 0, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+static long set_value(uint64_t h, const char *name, uint32_t type, const void *data, uint32_t len) {
+    uint64_t d = kf_ualloc(len ? len : 1u);
+    uint64_t rest[2] = { d, len };
+
+    memcpy(kf_uptr(d), data, len);
+    kf_next_sp(stack_args(rest, 2));
+    return nt(VIBEOS_NT_NR_NtSetValueKey, h, ustr(name), 0, type, 0);
+}
+
+/* NtQueryValueKey of class `cls` into `buf` (`len` bytes): the status, with
+ * ResultLength in *got. */
+static long query_value(uint64_t h, const char *name, uint32_t cls, uint64_t buf, uint32_t len,
+                        uint32_t *got) {
+    uint64_t rl = kf_ualloc(4);
+    uint64_t rest[2] = { len, rl };
+    long r;
+
+    *(uint32_t *)kf_uptr(rl) = 0xEEEEu;
+    kf_next_sp(stack_args(rest, 2));
+    r = nt(VIBEOS_NT_NR_NtQueryValueKey, h, ustr(name), cls, buf, 0);
+    *got = *(uint32_t *)kf_uptr(rl);
+    return r;
+}
+
+static long query_key(uint64_t h, uint32_t cls, uint64_t buf, uint32_t len, uint32_t *got) {
+    uint64_t rl = kf_ualloc(4);
+    uint64_t rest[1] = { rl };
+    long r;
+
+    kf_next_sp(stack_args(rest, 1));
+    r = nt(VIBEOS_NT_NR_NtQueryKey, h, cls, buf, len, 0);
+    *got = *(uint32_t *)kf_uptr(rl);
+    return r;
+}
+
+static int wide_is(const uint8_t *b, uint32_t bytes, const char *s) {
+    uint32_t i;
+
+    if (bytes != 2u * strlen(s)) {
+        return 0;
+    }
+    for (i = 0; s[i]; i++) {
+        if (b[2u * i] != (uint8_t)s[i] || b[2u * i + 1u] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void t_reg_keys(void) {
+    uint64_t sw, k, k2, ro, buf = kf_ualloc(256);
+    const uint8_t *b = (const uint8_t *)kf_uptr(buf);
+    uint32_t disp = 0, got = 0, forty_two = 42u;
+    static uint8_t hive[8192];   /* the whole file: read_file refuses a buffer shorter than it */
+
+    fresh(64);
+    nt_reg_restart();
+    expect(open_key(&sw, 0x000F003Fu, 0, "\\Registry\\Machine\\SOFTWARE") == ST(VIBEOS_STATUS_SUCCESS),
+           "the registry starts with HKLM\\SOFTWARE");
+    expect(create_key(&k, 0x000F003Fu, 0, "\\REGISTRY\\machine\\Software\\VibeTest", 0, &disp) ==
+               ST(VIBEOS_STATUS_SUCCESS) && disp == 1u,
+           "NtCreateKey makes a key by its whole path, REG_CREATED_NEW_KEY");
+    expect(create_key(&k2, 0x000F003Fu, sw, "vibetest", 0, &disp) == ST(VIBEOS_STATUS_SUCCESS) &&
+               disp == 2u,
+           "and made again under a root handle, in another case, REG_OPENED_EXISTING_KEY");
+    (void)nt(VIBEOS_NT_NR_NtClose, k2, 0, 0, 0, 0);
+    expect(open_key(&k2, 0x20019u, sw, "\\VibeTest") == ST(VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD) &&
+               open_key(&k2, 0x20019u, 0, "Machine") == ST(VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD) &&
+               open_key(&k2, 0x20019u, 0, "\\BaseNamedObjects\\x") == ST(VIBEOS_STATUS_OBJECT_TYPE_MISMATCH),
+           "a rooted path under a root, a relative one without, another namespace: refused");
+    expect(open_key(&k2, 0x20019u, 0, "\\Reg\\Machine") == ST(VIBEOS_STATUS_OBJECT_TYPE_MISMATCH),
+           "and a path that only begins like \\Registry is not the registry");
+    expect(set_value(k, "Answer", VIBEOS_REG_DWORD, &forty_two, 4) == ST(VIBEOS_STATUS_SUCCESS),
+           "NtSetValueKey");
+    expect(query_value(k, "ANSWER", 2, buf, 256, &got) == ST(VIBEOS_STATUS_SUCCESS) && got == 16u &&
+               *(const uint32_t *)(b + 4) == VIBEOS_REG_DWORD && *(const uint32_t *)(b + 8) == 4u &&
+               *(const uint32_t *)(b + 12) == 42u,
+           "KeyValuePartialInformation: type, length, data, found without case");
+    expect(query_value(k, "Answer", 1, buf, 256, &got) == ST(VIBEOS_STATUS_SUCCESS) && got == 36u &&
+               *(const uint32_t *)(b + 8) == 32u && *(const uint32_t *)(b + 16) == 12u &&
+               wide_is(b + 20, 12u, "Answer") && *(const uint32_t *)(b + 32) == 42u,
+           "KeyValueFullInformation: the data right after the name, as Wine places it");
+    expect(query_value(k, "Answer", 2, buf, 8, &got) == ST(VIBEOS_STATUS_BUFFER_TOO_SMALL) && got == 16u,
+           "shorter than the fixed part: BUFFER_TOO_SMALL, with the length needed");
+    expect(query_value(k, "Answer", 2, buf, 14, &got) == ST(VIBEOS_STATUS_BUFFER_OVERFLOW) && got == 16u,
+           "the fixed part and not all the data: BUFFER_OVERFLOW");
+    expect(query_value(k, "Nothing", 2, buf, 256, &got) == ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND),
+           "a value nobody set");
+    expect(query_key(k, 3, buf, 256, &got) == ST(VIBEOS_STATUS_SUCCESS) &&
+               wide_is(b + 4, *(const uint32_t *)b, "\\REGISTRY\\MACHINE\\SOFTWARE\\VibeTest"),
+           "KeyNameInformation is the whole path");
+    expect(query_key(k, 2, buf, 256, &got) == ST(VIBEOS_STATUS_SUCCESS) && got == 44u &&
+               *(const uint32_t *)(b + 32) == 1u && *(const uint32_t *)(b + 36) == 12u,
+           "KeyFullInformation counts the value and its longest name");
+    {
+        uint64_t rl = kf_ualloc(4);
+        uint64_t rest[2] = { 256, rl };
+        int found = 0;
+        uint32_t i;
+
+        for (i = 0; i < 16u; i++) {
+            kf_next_sp(stack_args(rest, 2));
+            if (nt(VIBEOS_NT_NR_NtEnumerateKey, sw, i, 0, buf, 0) != ST(VIBEOS_STATUS_SUCCESS)) {
+                break;
+            }
+            found |= wide_is(b + 16, *(const uint32_t *)(b + 12), "VibeTest");
+        }
+        expect(found, "NtEnumerateKey lists it under SOFTWARE");
+    }
+    expect(open_key(&ro, 0x20019u, 0, "\\Registry\\Machine\\Software\\VibeTest") == ST(VIBEOS_STATUS_SUCCESS) &&
+               set_value(ro, "X", VIBEOS_REG_DWORD, &forty_two, 4) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "a handle opened for reading may not set a value");
+    expect(nt(VIBEOS_NT_NR_NtDeleteKey, ro, 0, 0, 0, 0) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "nor delete the key");
+
+    /* What survives a reboot: the hive written by NtFlushKey, then the
+     * registry started again from it. */
+    /* A value set inside the second after a save is only pending: what writes
+     * it is NtFlushKey. The fake's clock does not move, so it stays pending. */
+    (void)set_value(k, "Fresh", VIBEOS_REG_DWORD, &forty_two, 4);
+    expect(nt(VIBEOS_NT_NR_NtFlushKey, k, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS), "NtFlushKey");
+    {
+        vibeos_fsmount_t *m;
+        const char *tail;
+        long n = -1;
+        int fresh_there = 0;
+
+        if (vibeos_fs_resolve("/windows/system32/config/MACHINE.HIV", &m, &tail) == 0) {
+            n = vibeos_fs_read_file(m, tail, hive, sizeof(hive));
+        }
+        for (long i = 0; n > 10 && i + 10 <= n; i++) {
+            fresh_there |= memcmp(hive + i, "F\0r\0e\0s\0h\0", 10) == 0;
+        }
+        expect(n > 0 && memcmp(hive, "VREG", 4) == 0, "and the machine's hive is on the volume");
+        expect(fresh_there, "with the value set just before the flush in it");
+    }
+    (void)nt(VIBEOS_NT_NR_NtClose, ro, 0, 0, 0, 0);
+    (void)nt(VIBEOS_NT_NR_NtClose, k, 0, 0, 0, 0);
+    (void)nt(VIBEOS_NT_NR_NtClose, sw, 0, 0, 0, 0);
+    nt_reg_restart();
+    expect(open_key(&k, 0x20019u, 0, "\\Registry\\Machine\\Software\\VibeTest") == ST(VIBEOS_STATUS_SUCCESS) &&
+               query_value(k, "Answer", 2, buf, 256, &got) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(const uint32_t *)(b + 12) == 42u,
+           "after a restart the key and its value are read back from the hive");
+    (void)nt(VIBEOS_NT_NR_NtClose, k, 0, 0, 0, 0);
+    {
+        /* The hive damaged: the backup is read instead. */
+        vibeos_fsmount_t *m;
+        const char *tail;
+        static const uint8_t junk[40] = { 'V', 'R', 'E', 'G', 1 };
+
+        (void)open_key(&k, 0x000F003Fu, 0, "\\Registry\\Machine\\Software\\VibeTest");
+        (void)set_value(k, "Second", VIBEOS_REG_DWORD, &forty_two, 4);
+        (void)nt(VIBEOS_NT_NR_NtFlushKey, k, 0, 0, 0, 0);   /* the first save is the backup now */
+        (void)nt(VIBEOS_NT_NR_NtClose, k, 0, 0, 0, 0);
+        if (vibeos_fs_resolve("/windows/system32/config/MACHINE.HIV", &m, &tail) == 0) {
+            (void)vibeos_fs_write_file(m, tail, junk, sizeof(junk));
+        }
+        nt_reg_restart();
+        expect(open_key(&k, 0x20019u, 0, "\\Registry\\Machine\\Software\\VibeTest") == ST(VIBEOS_STATUS_SUCCESS) &&
+                   query_value(k, "Answer", 2, buf, 256, &got) == ST(VIBEOS_STATUS_SUCCESS),
+               "a damaged hive is replaced by its backup");
+        (void)nt(VIBEOS_NT_NR_NtClose, k, 0, 0, 0, 0);
+    }
+    (void)open_key(&k, 0x000F003Fu, 0, "\\Registry\\Machine\\Software\\VibeTest");
+    expect(nt(VIBEOS_NT_NR_NtDeleteKey, k, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               query_value(k, "Answer", 2, buf, 256, &got) == ST(VIBEOS_STATUS_KEY_DELETED),
+           "NtDeleteKey, and its handle answers STATUS_KEY_DELETED");
+    (void)nt(VIBEOS_NT_NR_NtClose, k, 0, 0, 0, 0);
+    nt_reg_restart();
+}
+
 static void t_virtual_memory(void) {
     vibeos_nt_memory_basic_t m;
     uint64_t a, as, b, bs, c, cs, x, xs;
@@ -2999,6 +3221,7 @@ int test_nt_abi(void) {
     t_object_share();
     t_virtual_memory();
     t_remote_memory();
+    t_reg_keys();
     t_placeholders();
     t_data_sections();
     return g_fail ? -1 : 0;

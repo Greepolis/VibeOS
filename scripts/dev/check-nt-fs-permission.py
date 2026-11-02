@@ -33,6 +33,9 @@ ALLOWED = {
     # FILE_WRITE_ATTRIBUTES, which the open judged by ownership or write
     # permission; the rename branch in the same function asks for itself.
     "nt_set_information_file": "FILE_WRITE_ATTRIBUTES judged at open; rename asks in place",
+    # The registry writing its own hives (W8 step 3): the kernel acting for
+    # itself on files no program names, as a walk without credentials is.
+    "hive_save": "the registry's own hive files, not a program's request",
 }
 
 

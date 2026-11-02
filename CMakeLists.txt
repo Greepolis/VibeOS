@@ -962,6 +962,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
                     "${VIBEOS_WIN_SRC}/ntdll/stubs.S" "${VIBEOS_WIN_SRC}/ntdll/start.c"
                     "${VIBEOS_WIN_SRC}/ntdll/except.c"
                     ${VIBEOS_NTRTL_CORE} "${VIBEOS_NTRTL_DIR}/platform_win.c"
+                    "${VIBEOS_NTRTL_DIR}/registry.c"
                     "${VIBEOS_NTRTL_DIR}/mem.c"
                     -e vibeos_nt_process_start -Wl,--image-base=0x8002000000
                     -Wl,--out-implib=${VIBEOS_WIN_DIR}/libntdll.a
@@ -969,6 +970,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
                     "${VIBEOS_WIN_SRC}/ntdll/except.c"
                     "${VIBEOS_WIN_SRC}/ntdll/layout_check.c"
                     ${VIBEOS_NTRTL_CORE} "${VIBEOS_NTRTL_DIR}/platform_win.c"
+                    "${VIBEOS_NTRTL_DIR}/registry.c"
                     "${VIBEOS_NTRTL_DIR}/mem.c" "${VIBEOS_NTRTL_DIR}/layout_check.c"
                     "${VIBEOS_NTRTL_DIR}/rtl_internal.h"
                     "${VIBEOS_WIN_SRC}/include/vibeos_ntrtl.h"

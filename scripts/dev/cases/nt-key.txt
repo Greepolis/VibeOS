@@ -1,0 +1,69 @@
+# The Nt*Key services (kernel/abi/nt/key.c, docs/abi/windows.md W8 step 3),
+# proved by t_reg_keys in tests/kernel/nt_abi_tests.c on the fake kernel,
+# whose root volume cannot rename - the least capable one the registry saves
+# its hives on.
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/abi/nt/key.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/key.c scripts/dev/cases/nt-key.txt
+
+### an answer cut short says it was whole
+--- old
+        n = len;
+        st = VIBEOS_STATUS_BUFFER_OVERFLOW;
++++ new
+        n = len;
+
+### a buffer shorter than the fixed part is written into
+--- old
+    if (len < fixed) {
+        return VIBEOS_STATUS_BUFFER_TOO_SMALL;
+    }
++++ new
+
+### a handle opened for reading sets a value
+--- old
+    st = key_ref(h, KEY_SET_VALUE, &k);
+    if (st == VIBEOS_STATUS_SUCCESS) {
+        st = read_ustring(name_u, g_vname, VIBEOS_REG_VALUE_NAME_MAX, &n);
+        if (st == VIBEOS_STATUS_SUCCESS && (uint32_t)size != 0u &&
++++ new
+    st = key_ref(h, 0u, &k);
+    if (st == VIBEOS_STATUS_SUCCESS) {
+        st = read_ustring(name_u, g_vname, VIBEOS_REG_VALUE_NAME_MAX, &n);
+        if (st == VIBEOS_STATUS_SUCCESS && (uint32_t)size != 0u &&
+
+### KeyValueFullInformation's data offset leaves out the name
+--- old
+            put32(8, 20u + nlen);   /* DataOffset: right after the name, unaligned as Wine has it */
++++ new
+            put32(8, 20u);
+
+### a damaged hive is not replaced by its backup
+--- old
+    for (i = 0; i < 3u; i++) {
+        vibeos_fsmount_t *m;
++++ new
+    for (i = 0; i < 1u; i++) {
+        vibeos_fsmount_t *m;
+
+### a path in another namespace is taken for the registry's
+--- old
+            return VIBEOS_STATUS_OBJECT_TYPE_MISMATCH;   /* another namespace's object */
++++ new
+            break;
+
+### NtFlushKey writes nothing
+--- old
+        vibeos_reg_unref(k);
+        flush_now();
++++ new
+        vibeos_reg_unref(k);
+
+### a volume that cannot rename is left without the hive
+--- old
+    if (vibeos_fs_rename(m, t_new, tail, 0u) != 0 &&
+        vibeos_fs_write_file(m, tail, g_stage, g_stage_len) != (long)g_stage_len) {
++++ new
+    if (vibeos_fs_rename(m, t_new, tail, 0u) != 0) {

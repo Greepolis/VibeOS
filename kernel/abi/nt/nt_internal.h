@@ -201,6 +201,13 @@ void nt_mm_put(nt_mm_t *m);
 uint32_t nt_mm_alloc_rw(nt_mm_t *m, uint64_t size, uint64_t *base);
 void nt_mm_free(nt_mm_t *m, uint64_t base, uint64_t size);
 uint32_t nt_mm_write(nt_mm_t *m, uint64_t va, void *src, uint64_t len);
+
+/* ---- the registry (key.c, W8 step 3) ------------------------------------------------ */
+
+extern const vibeos_file_ops_t g_nt_key_ops;
+/* As a reboot leaves it: pending changes written, started again from its
+ * hives at the next call. */
+void nt_reg_restart(void);
 void nt_free_alloc(uint64_t base, uint64_t size);
 extern const vibeos_file_ops_t g_nt_thread_ops;
 /* A handle in *out for the thread in `slot` - a new process's first (W6). */

@@ -1,0 +1,12 @@
+# The registry on the machine (kernel/abi/nt/key.c, docs/abi/windows.md W8
+# step 3), broken; caught at boot by hello.exe's registry_check, which the
+# gate reads as nt_program_did_not_run.
+#
+# Target source: kernel/abi/nt/key.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/key.c scripts/dev/cases/nt-key-boot.txt build-gcc-Release
+
+### a value set is not kept
+--- old
+            st = vibeos_reg_set(k, g_vname, n, (uint32_t)type, g_stage, (uint32_t)size);
++++ new
+            st = VIBEOS_STATUS_SUCCESS;

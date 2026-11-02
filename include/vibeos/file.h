@@ -205,6 +205,10 @@ struct vibeos_file {
      * W2): its slot in kernel/abi/nt/object.c's table. The description is the
      * object; handles to it are descriptors naming it. */
     int nt_ob;
+    /* A registry key (docs/abi/windows.md W8 step 3): its slot in the low
+     * half and the tenancy it was opened on in the high, as the registry's
+     * core hands a key out (vibeos/ntreg.h). */
+    uint64_t nt_key;
     /* The mask NtQueryDirectoryFile was given with the first call on this
      * handle, or after a restart (W4 step 5): kept by the description, as
      * Windows keeps it by the handle. Empty matches everything. */

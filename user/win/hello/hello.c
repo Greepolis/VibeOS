@@ -429,6 +429,50 @@ static uint32_t remote_routine(void *code) {
     return 0;
 }
 
+/* W8 step 3: the registry - a key made under HKLM\SOFTWARE, a value written
+ * and read back, the key's whole name, a flush to the hive on the volume,
+ * and the key deleted again so that every boot starts from the same tree. */
+static const char *registry_check(void) {
+    static const uint16_t path[] = { '\\', 'R', 'e', 'g', 'i', 's', 't', 'r', 'y', '\\', 'M', 'a', 'c', 'h', 'i',
+                                     'n', 'e', '\\', 'S', 'o', 'f', 't', 'w', 'a', 'r', 'e', '\\', 'V', 'i', 'b',
+                                     'e', 'H', 'e', 'l', 'l', 'o', 0 };
+    static const uint16_t vname[] = { 'C', 'o', 'u', 'n', 't', 0 };
+    vibeos_ustring_t us, vn;
+    uint64_t oa[6], key = 0;
+    uint32_t disp = 0, got = 0, value = 0x5EED;
+    static uint8_t info[160];
+
+    RtlInitUnicodeString(&us, path);
+    RtlInitUnicodeString(&vn, vname);
+    oa[0] = 48u;
+    oa[1] = 0;                                  /* RootDirectory */
+    oa[2] = (uint64_t)(uintptr_t)&us;
+    oa[3] = 0x40u;                              /* OBJ_CASE_INSENSITIVE */
+    oa[4] = oa[5] = 0;
+    if (NtCreateKey(&key, 0x000F003Fu, oa, 0, 0, 0, &disp) != VIBEOS_STATUS_SUCCESS || disp != 1u) {
+        return "NT_HELLO_FAIL registry_create\n";
+    }
+    if (NtSetValueKey(key, &vn, 0, 4u /* REG_DWORD */, &value, 4u) != VIBEOS_STATUS_SUCCESS ||
+        NtQueryValueKey(key, &vn, 2u /* partial */, info, sizeof(info), &got) != VIBEOS_STATUS_SUCCESS ||
+        got != 16u || *(const uint32_t *)(info + 12) != 0x5EEDu) {
+        return "NT_HELLO_FAIL registry_value\n";
+    }
+    if (NtQueryKey(key, 3u /* KeyNameInformation */, info, sizeof(info), &got) != VIBEOS_STATUS_SUCCESS ||
+        *(const uint32_t *)info != 2u * 36u || *(const uint16_t *)(info + 4) != '\\' ||
+        *(const uint16_t *)(info + 6) != 'R') {
+        return "NT_HELLO_FAIL registry_name\n";
+    }
+    if (NtFlushKey(key) != VIBEOS_STATUS_SUCCESS) {
+        return "NT_HELLO_FAIL registry_flush\n";
+    }
+    if (NtDeleteKey(key) != VIBEOS_STATUS_SUCCESS ||
+        NtQueryValueKey(key, &vn, 2u, info, sizeof(info), &got) != 0xC000017Cu /* KEY_DELETED */) {
+        return "NT_HELLO_FAIL registry_delete\n";
+    }
+    (void)NtClose(key);
+    return 0;
+}
+
 /* A child that sleeps until something ends it - a thread its parent makes in
  * it, if W7 step 2 works - and otherwise ends with 42 after twenty seconds. */
 static const char *remote_thread_check(void) {
@@ -653,6 +697,9 @@ int nt_hello_start(void) {
         }
         if (!why) {
             why = remote_thread_check();
+        }
+        if (!why) {
+            why = registry_check();
         }
         if (why) {
             return fail(why);

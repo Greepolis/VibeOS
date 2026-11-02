@@ -110,6 +110,24 @@ NT_IMPORT NTSTATUS_T NtProtectVirtualMemory(uint64_t process, uint64_t *base, ui
                                             uint32_t protect, uint32_t *old);
 NT_IMPORT NTSTATUS_T NtQueryVirtualMemory(uint64_t process, uint64_t address, uint32_t cls,
                                           void *buf, uint64_t len, uint64_t *ret_len);
+/* The registry (docs/abi/windows.md W8 step 3). */
+NT_IMPORT NTSTATUS_T NtCreateKey(uint64_t *key, uint32_t access, void *attributes, uint32_t title_index,
+                                 const void *class_name, uint32_t options, uint32_t *disposition);
+NT_IMPORT NTSTATUS_T NtOpenKey(uint64_t *key, uint32_t access, void *attributes);
+NT_IMPORT NTSTATUS_T NtOpenKeyEx(uint64_t *key, uint32_t access, void *attributes, uint32_t options);
+NT_IMPORT NTSTATUS_T NtDeleteKey(uint64_t key);
+NT_IMPORT NTSTATUS_T NtRenameKey(uint64_t key, const void *new_name);
+NT_IMPORT NTSTATUS_T NtFlushKey(uint64_t key);
+NT_IMPORT NTSTATUS_T NtSetValueKey(uint64_t key, const void *name, uint32_t title_index, uint32_t type,
+                                   const void *data, uint32_t size);
+NT_IMPORT NTSTATUS_T NtQueryValueKey(uint64_t key, const void *name, uint32_t cls, void *info,
+                                     uint32_t len, uint32_t *result_len);
+NT_IMPORT NTSTATUS_T NtEnumerateValueKey(uint64_t key, uint32_t index, uint32_t cls, void *info,
+                                         uint32_t len, uint32_t *result_len);
+NT_IMPORT NTSTATUS_T NtDeleteValueKey(uint64_t key, const void *name);
+NT_IMPORT NTSTATUS_T NtEnumerateKey(uint64_t key, uint32_t index, uint32_t cls, void *info, uint32_t len,
+                                    uint32_t *result_len);
+NT_IMPORT NTSTATUS_T NtQueryKey(uint64_t key, uint32_t cls, void *info, uint32_t len, uint32_t *result_len);
 NT_IMPORT NTSTATUS_T NtReadVirtualMemory(uint64_t process, uint64_t address, void *buf,
                                          uint64_t size, uint64_t *done);
 NT_IMPORT NTSTATUS_T NtWriteVirtualMemory(uint64_t process, uint64_t address, const void *buf,
@@ -178,6 +196,26 @@ NT_IMPORT NTSTATUS_T NtDuplicateObject(uint64_t source_process, uint64_t source,
 RTL_API void RtlInitString(vibeos_astring_t *dest, const char *src);
 RTL_API void RtlInitUnicodeString(vibeos_ustring_t *dest, const vibeos_wchar_t *src);
 RTL_API vibeos_boolean_t RtlCreateUnicodeString(vibeos_ustring_t *dest, const vibeos_wchar_t *src);
+RTL_API vibeos_boolean_t RtlCreateUnicodeStringFromAsciiz(vibeos_ustring_t *dest, const char *src);
+RTL_API vibeos_ntstatus_t RtlAppendUnicodeToString(vibeos_ustring_t *dest, const vibeos_wchar_t *src);
+RTL_API vibeos_ntstatus_t RtlUnicodeStringToAnsiString(vibeos_astring_t *dest, const vibeos_ustring_t *src,
+                                                       vibeos_boolean_t alloc);
+RTL_API void RtlFreeAnsiString(vibeos_astring_t *str);
+RTL_API void RtlZeroMemory(void *dest, size_t len);
+/* The registry's Rtl helpers (rtl/registry.c, W8 step 3). */
+RTL_API vibeos_ntstatus_t RtlCreateRegistryKey(uint32_t relative, const vibeos_wchar_t *path);
+RTL_API vibeos_ntstatus_t RtlpNtQueryValueKey(uint64_t key, uint32_t *type, void *data, uint32_t *len,
+                                              uint32_t unused);
+RTL_API vibeos_ntstatus_t RtlFormatCurrentUserKeyPath(vibeos_ustring_t *out);
+RTL_API vibeos_ntstatus_t RtlOpenCurrentUser(uint32_t access, uint64_t *key);
+RTL_API vibeos_ntstatus_t RtlCheckRegistryKey(uint32_t relative, const vibeos_wchar_t *path);
+RTL_API vibeos_ntstatus_t RtlQueryRegistryValues(uint32_t relative, const vibeos_wchar_t *path, void *table,
+                                                 void *context, void *environment);
+RTL_API vibeos_ntstatus_t RtlWriteRegistryValue(uint32_t relative, const vibeos_wchar_t *path,
+                                                const vibeos_wchar_t *name, uint32_t type, const void *data,
+                                                uint32_t len);
+RTL_API vibeos_ntstatus_t RtlDeleteRegistryValue(uint32_t relative, const vibeos_wchar_t *path,
+                                                 const vibeos_wchar_t *name);
 RTL_API void RtlFreeUnicodeString(vibeos_ustring_t *str);
 RTL_API vibeos_ntstatus_t RtlDuplicateUnicodeString(uint32_t flags, const vibeos_ustring_t *src,
                                                     vibeos_ustring_t *dest);
