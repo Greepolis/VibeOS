@@ -70,6 +70,9 @@ typedef struct {
 #define VIBEOS_REG_VOLATILE 0x1u
 
 void vibeos_reg_init(const vibeos_reg_env_t *env);
+/* Everything given back to the environment; init may follow again. Every
+ * key held by a caller is invalid afterwards. */
+void vibeos_reg_fini(void);
 /* \Registry itself, referenced; every path is opened from a key. */
 vibeos_reg_key_t vibeos_reg_root(void);
 

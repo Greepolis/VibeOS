@@ -51,6 +51,7 @@ static uint64_t t_now(void) { return ++g_clock; }
 static void start(uint64_t quota) {
     vibeos_reg_env_t env = { t_page_alloc, t_page_free, t_lock, t_unlock, t_now, quota };
 
+    vibeos_reg_fini();   /* the last test's registry, given back whole */
     vibeos_reg_init(&env);
 }
 
@@ -434,5 +435,7 @@ int test_reg(void) {
     t_quota();
     t_hive();
     expect(!g_locked, "the lock is free after every call");
+    vibeos_reg_fini();
+    expect(g_pages == 0, "and fini gives back every page the registry was given");
     return g_fail;
 }

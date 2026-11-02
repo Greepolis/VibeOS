@@ -36,7 +36,12 @@
 static const uint32_t g_class_size[CLASSES] = { 32u, 64u, 128u, 256u, 512u, 1024u, 2048u };
 static void *g_class_free[CLASSES];
 static vibeos_reg_env_t g_env;
-static uint64_t g_bytes;     /* taken from the environment, cells and chains */
+static uint64_t g_bytes;
+/* Every page carved into cells, so that vibeos_reg_fini can give them all
+ * back: a chain of directory pages, each its successor's address, a count,
+ * and the pages it records. */
+#define DIR_SLOTS ((PAGE / 8u) - 2u)
+static void **g_dir;     /* taken from the environment, cells and chains */
 static uint64_t g_changes;   /* every change a save would write */
 
 static uint32_t class_of(uint32_t len) {
@@ -52,6 +57,24 @@ static int quota_ok(uint64_t more) {
     return g_env.quota == 0u || g_bytes + more <= g_env.quota;
 }
 
+/* Room in the directory for one more carved page: a new directory page when
+ * the current one is full. 0 when there is no page for it. */
+static int dir_room(void) {
+    void **d;
+
+    if (g_dir && (uintptr_t)g_dir[1] < DIR_SLOTS) {
+        return 1;
+    }
+    if (!quota_ok(PAGE) || !(d = (void **)g_env.page_alloc())) {
+        return 0;
+    }
+    g_bytes += PAGE;
+    d[0] = g_dir;
+    d[1] = 0;
+    g_dir = d;
+    return 1;
+}
+
 /* A blob of `len` bytes, or null. Zero bytes is a valid blob with no storage. */
 static void *blob_alloc(uint32_t len) {
     if (len == 0u) {
@@ -65,10 +88,12 @@ static void *blob_alloc(uint32_t len) {
             uint8_t *page;
             uint32_t at;
 
-            if (!quota_ok(PAGE) || !(page = (uint8_t *)g_env.page_alloc())) {
+            if (!dir_room() || !quota_ok(PAGE) || !(page = (uint8_t *)g_env.page_alloc())) {
                 return 0;
             }
             g_bytes += PAGE;
+            g_dir[2u + (uintptr_t)g_dir[1]] = page;
+            g_dir[1] = (void *)((uintptr_t)g_dir[1] + 1u);
             for (at = 0; at + g_class_size[c] <= PAGE; at += g_class_size[c]) {
                 *(void **)(void *)(page + at) = g_class_free[c];
                 g_class_free[c] = page + at;
@@ -140,6 +165,12 @@ static void blob_xfer(void *b, uint32_t len, uint32_t off, const uint8_t *in, ui
                       uint32_t n) {
     uint32_t i;
 
+    /* An empty blob has no storage at all - a null pointer - and the empty
+     * name is the commonest value name there is: nothing to move is nothing
+     * touched, not a null plus zero (UBSan in CI's clang Debug job). */
+    if (n == 0u) {
+        return;
+    }
     if (len <= SMALL_MAX) {
         uint8_t *s = (uint8_t *)b + off;
 
@@ -183,7 +214,7 @@ static void blob_get(void *b, uint32_t len, uint32_t off, void *dst, uint32_t n)
 }
 
 static uint16_t blob_unit(void *b, uint32_t len, uint32_t i) {
-    uint16_t u;
+    uint16_t u = 0;   /* written by the copy; clang's analyzer cannot follow it there */
 
     blob_get(b, len, i * 2u, &u, 2u);
     return u;
@@ -376,13 +407,15 @@ static void key_kill(uint32_t s) {
 /* Insert `c` among `p`'s children, kept in name order. */
 static void link_child(uint32_t p, uint32_t c) {
     uint32_t *link = &g_keys[p].child;
+    /* The new key's name, once, rather than once a sibling; initialised, as
+     * clang's analyzer cannot see the copy fill it. */
+    uint16_t buf[VIBEOS_REG_KEY_NAME_MAX] = { 0 };
+    const uint32_t units = g_keys[c].name_len / 2u;
 
+    blob_get(g_keys[c].name, g_keys[c].name_len, 0, buf, g_keys[c].name_len);
     while (*link != NONE) {
         uint32_t o = *link;
-        uint16_t buf[VIBEOS_REG_KEY_NAME_MAX];
-        uint32_t units = g_keys[c].name_len / 2u;
 
-        blob_get(g_keys[c].name, g_keys[c].name_len, 0, buf, g_keys[c].name_len);
         if (name_cmp(g_keys[o].name, g_keys[o].name_len, buf, units) > 0) {
             break;
         }
@@ -457,6 +490,7 @@ void vibeos_reg_init(const vibeos_reg_env_t *env) {
 
     g_env = *env;
     g_bytes = 0;
+    g_dir = 0;
     g_changes = 0;
     for (i = 0; i < CLASSES; i++) {
         g_class_free[i] = 0;
@@ -473,6 +507,50 @@ void vibeos_reg_init(const vibeos_reg_env_t *env) {
     link_child(g_root, m);
     link_child(g_root, u);
     g_changes = 0;
+}
+
+/* Everything the registry holds, given back to the environment: each key's
+ * values and name (a large one is a chain of pages of its own), then every
+ * page carved into cells. Afterwards the registry is as before its first
+ * init, and init may be called again. */
+void vibeos_reg_fini(void) {
+    uint32_t i;
+
+    if (g_root == NONE) {
+        return;
+    }
+    lock();
+    for (i = 0; i < VIBEOS_REG_KEYS_MAX; i++) {
+        reg_value_t *v;
+
+        if (!(g_keys[i].flags & REG_FLAG_USED)) {
+            continue;
+        }
+        for (v = g_keys[i].vhead; v;) {
+            reg_value_t *n = v->next;
+
+            value_free(v);
+            v = n;
+        }
+        blob_free(g_keys[i].name, g_keys[i].name_len);
+        g_keys[i].flags = 0;
+    }
+    while (g_dir) {
+        void **next = (void **)g_dir[0];
+        uintptr_t n = (uintptr_t)g_dir[1], k;
+
+        for (k = 0; k < n; k++) {
+            g_env.page_free(g_dir[2u + k]);
+        }
+        g_env.page_free(g_dir);
+        g_dir = next;
+    }
+    for (i = 0; i < CLASSES; i++) {
+        g_class_free[i] = 0;
+    }
+    g_bytes = 0;
+    g_root = NONE;
+    unlock();
 }
 
 vibeos_reg_key_t vibeos_reg_root(void) {
@@ -1280,7 +1358,7 @@ uint32_t vibeos_reg_load(vibeos_reg_key_t k, const void *img, uint64_t len) {
         while (c != NONE) {
             uint32_t next = g_keys[c].sibling;
 
-            uint16_t buf[VIBEOS_REG_KEY_NAME_MAX];
+            uint16_t buf[VIBEOS_REG_KEY_NAME_MAX] = { 0 };
 
             g_keys[tmp].subkeys--;
             g_keys[c].sibling = NONE;

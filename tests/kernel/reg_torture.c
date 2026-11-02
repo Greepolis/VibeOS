@@ -422,5 +422,8 @@ int main(int argc, char **argv) {
     }
     printf("reg_torture seed=%llu rounds=%u ok bytes=%llu\n", (unsigned long long)seed, rounds,
            (unsigned long long)vibeos_reg_bytes());
+    vibeos_reg_unref(g_machine);
+    vibeos_reg_unref(root);
+    vibeos_reg_fini();   /* every page back, which the sanitized nightly's leak check asks */
     return 0;
 }
