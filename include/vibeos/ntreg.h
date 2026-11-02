@@ -96,6 +96,9 @@ uint32_t vibeos_reg_info(vibeos_reg_key_t k, vibeos_reg_info_t *out);
 /* The key's own name into `buf` (`cap` bytes); *len is its size, written
  * whole or STATUS_BUFFER_OVERFLOW with as much as fits. */
 uint32_t vibeos_reg_name(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32_t *len);
+/* The key's whole path from the top, "\REGISTRY\MACHINE\...", as
+ * KeyNameInformation reports it; written whole or reported as overflowing. */
+uint32_t vibeos_reg_path(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32_t *len);
 /* The index-th subkey's name, in the order Windows enumerates: by name. */
 uint32_t vibeos_reg_enum_key(vibeos_reg_key_t k, uint32_t index, uint16_t *buf, uint32_t cap,
                              uint32_t *len, uint64_t *last_write);

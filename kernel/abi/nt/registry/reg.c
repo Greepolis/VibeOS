@@ -729,7 +729,11 @@ uint32_t vibeos_reg_rename(vibeos_reg_key_t k, const uint16_t *name, uint32_t n)
     if (st == VIBEOS_STATUS_SUCCESS) {
         uint32_t o = find_child(p, name, n);
 
-        if (o != NONE && o != s) {
+        /* Onto its own name is CANNOT_DELETE, as Windows answers it; onto a
+         * sibling's, a collision. */
+        if (o == s) {
+            st = VIBEOS_STATUS_CANNOT_DELETE;
+        } else if (o != NONE) {
             st = VIBEOS_STATUS_OBJECT_NAME_COLLISION;
         }
     }
@@ -806,6 +810,33 @@ uint32_t vibeos_reg_name(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32
     st = live(k, &s);
     if (st == VIBEOS_STATUS_SUCCESS) {
         st = put_name(g_keys[s].name, g_keys[s].name_len, buf, cap, len);
+    }
+    unlock();
+    return st;
+}
+
+uint32_t vibeos_reg_path(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32_t *len) {
+    uint32_t s, st, x, total = 0, at, depth;
+
+    lock();
+    st = live(k, &s);
+    if (st == VIBEOS_STATUS_SUCCESS) {
+        for (x = s; x != NONE; x = g_keys[x].parent) {
+            total += 2u + g_keys[x].name_len;
+        }
+        *len = total;
+        if (cap < total) {
+            st = VIBEOS_STATUS_BUFFER_OVERFLOW;
+        } else {
+            /* From the key up, each name written where it ends. */
+            at = total;
+            for (x = s, depth = 0; x != NONE && depth <= VIBEOS_REG_DEPTH_MAX; x = g_keys[x].parent, depth++) {
+                at -= g_keys[x].name_len;
+                blob_get(g_keys[x].name, g_keys[x].name_len, 0, (uint8_t *)buf + at, g_keys[x].name_len);
+                at -= 2u;
+                buf[at / 2u] = '\\';
+            }
+        }
     }
     unlock();
     return st;

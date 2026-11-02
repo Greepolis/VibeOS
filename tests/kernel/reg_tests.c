@@ -158,6 +158,10 @@ static void t_keys(void) {
                "and 255 is not");
         vibeos_reg_unref(again);
     }
+    expect(vibeos_reg_path(a, buf, sizeof(buf), &len) == 0 &&
+               name_is(buf, len, "\\REGISTRY\\MACHINE\\Software\\Vendor") &&
+               vibeos_reg_path(a, buf, 8, &len) == VIBEOS_STATUS_BUFFER_OVERFLOW && len == 66u,
+           "a key's whole path from the top, and its size when it does not fit");
     expect(vibeos_reg_delete(a) == VIBEOS_STATUS_CANNOT_DELETE,
            "a key with a subkey is not deleted");
     expect(vibeos_reg_delete(m) == VIBEOS_STATUS_ACCESS_DENIED, "nor is Machine");

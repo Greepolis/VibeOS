@@ -347,7 +347,10 @@ int main(int argc, char **argv) {
             w16(name, n16, &n);
             other = child_named(g_k[i].parent, name);
             st = vibeos_reg_rename(k, n16, n);
-            if (other >= 0 && other != i) {
+            if (other == i) {
+                /* Onto its own name, in any case: Windows' CANNOT_DELETE. */
+                if (st != VIBEOS_STATUS_CANNOT_DELETE) fail("a rename onto its own name was not refused");
+            } else if (other >= 0) {
                 if (st != VIBEOS_STATUS_OBJECT_NAME_COLLISION) fail("a rename onto a sibling did not collide");
             } else if (st == 0) {
                 strcpy(g_k[i].name, name);
