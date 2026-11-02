@@ -104,7 +104,7 @@ or a subsystem of its own.
 
 | ID | What | Status |
 |---|---|---|
-| WO-080 | advapi32's registry moves into W8 (was WO-050, out of plan) | open: core (step 2) and services (step 3) done, advapi32 (step 4) next |
+| WO-080 | advapi32's registry moves into W8 (was WO-050, out of plan) | closed (W8 steps 2-4); what is left is WO-085 onward |
 | WO-081 | user32 and gdi32 as far as programs reach without a window system (was WO-051) | open (W8 steps 5-6) |
 | WO-082 | A kernel built without the NT personality is not known to build or boot | closed (W8 step 1): check.sh builds it and checks its symbols every run; booted once |
 | WO-083 | The registry's small-cell pages are kept once carved: after many values are deleted the memory is reused, not given back (W8 step 2) | open |
@@ -118,3 +118,8 @@ or a subsystem of its own.
 | WO-091 | WoW64 registry redirection (KEY_WOW64_32KEY views) is not done: ntdll:reg's test_redirection fails, as WoW64 is not planned | out of plan |
 | WO-092 | Registry keys have no ACLs: any process may open any key (with SEC) | open |
 | WO-093 | A hive larger than the 1 MiB staging buffer is not saved (W8 step 3) | open |
+| WO-094 | REG_EXPAND_SZ is not expanded by RegGetValue or RegQueryValue (no environment expansion in advapi32 yet) | open |
+| WO-095 | RegLoadMUIString does not load "@file,-id" resource strings | open |
+| WO-096 | RegSaveKey, RegLoadKey, RegUnLoadKey, RegLoadAppKey, RegSetKeySecurity are refused | open |
+| WO-097 | No access tokens: OpenProcessToken fails, AdjustTokenPrivileges has nothing to adjust, SetEntriesInAcl and the ACL API are missing (advapi32:registry stops there) | open (with SEC) |
+| WO-098 | kernel32:console stops at FreeConsole; kernel32:debugger at GetSystemWow64DirectoryW | open |

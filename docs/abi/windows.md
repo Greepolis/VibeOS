@@ -1190,3 +1190,45 @@ What the oracle says after step 3 (2026-11-02): `ntdll:reg` runs to
 it prints before that are WoW64's redirection - a 64-bit program asking for
 the 32-bit view, which is not planned - and the notification and object-name
 services below.
+
+### Done: advapi32 (step 4, 2026-11-02)
+
+`user/win/advapi32/advapi32.c`, built like kernel32 with an import library of
+its own name (`libvibeos_advapi32.a`, so that `-l` never finds mingw's).
+
+- **The registry's Win32 face**: RegOpenKey(Ex), RegCreateKey(Ex) - which makes
+  every missing key of the path, as Windows does - RegCloseKey, RegDeleteKey(Ex),
+  RegDeleteTree, RegSetValue(Ex), RegQueryValue(Ex), RegGetValue, RegDeleteValue,
+  RegDeleteKeyValue, RegSetKeyValue, RegEnumKey(Ex), RegEnumValue,
+  RegQueryInfoKey, RegFlushKey, RegRenameKey, RegCopyTree, RegOpenCurrentUser,
+  RegConnectRegistry for the local machine, RegLoadMUIString for plain
+  strings; A and W forms, the A ones converting names and string data.
+- **Predefined keys** are opened on first use and kept for the process;
+  HKEY_CLASSES_ROOT is `Machine\Software\Classes`, HKEY_CURRENT_USER
+  `User\.DEFAULT` (WO-086).
+- **Windows' small rules the oracle checks**: a string set without its
+  terminator is stored with one; a failed open leaves the handle NULL; a value
+  name that does not fit leaves the caller's length alone and still reports
+  the type and the data's size.
+- **Security, as data and no further**: AllocateAndInitializeSid, FreeSid,
+  InitializeSecurityDescriptor, SetSecurityDescriptorDacl and
+  LookupPrivilegeValueA are written whole; OpenProcessToken and
+  AdjustTokenPrivileges fail cleanly with ERROR_CALL_NOT_IMPLEMENTED and
+  ERROR_INVALID_HANDLE, because there are no tokens yet (the security plan).
+  Change notification, saving and loading hives, and key security are
+  refused by name.
+- msvcrt's `strspn`, which the oracle reached on the way, with its host check
+  against the host's libc.
+- hello.exe makes a two-level path under HKEY_CURRENT_USER, writes and reads a
+  string through the A forms and deletes the tree on every boot;
+  `advapi32-boot.txt`'s two cases go red when the middle key is not made and
+  when the string is not converted.
+
+What the oracle says after step 4 (2026-11-02): `ntdll:reg` **runs to its
+end**, 839 tests and 246 failures against Wine's 3,762 and none - the tests
+that needed a token now get its refusal and go on, and most failures are
+WoW64's redirection and the services below. `advapi32:registry` stops at
+`SetEntriesInAclA` (ACLs, the security plan) with 30 failures printed, mostly
+REG_EXPAND_SZ expansion; `kernel32:console` at `FreeConsole`,
+`kernel32:debugger` at `GetSystemWow64DirectoryW` - both past the registry,
+which is what stopped them in W7.
