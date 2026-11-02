@@ -64,6 +64,55 @@ vibeos_boolean_t RtlCreateUnicodeString(vibeos_ustring_t *dest, const vibeos_wch
     return 1;
 }
 
+/* An ANSI string as a new UNICODE_STRING, terminated, through the code page
+ * every other conversion here uses (W8 step 3: ntdll:reg asks for it before
+ * anything else). FALSE when it does not fit a UNICODE_STRING or there is no
+ * memory for it. */
+vibeos_boolean_t RtlCreateUnicodeStringFromAsciiz(vibeos_ustring_t *dest, const char *src) {
+    size_t n;
+    uint32_t got = 0;
+    vibeos_wchar_t *buf;
+
+    if (!dest || !src) {
+        return 0;
+    }
+    n = cstrlen(src);
+    if (n * 2u > 0xFFFCu) {
+        return 0;
+    }
+    buf = (vibeos_wchar_t *)vibeos_rtl_alloc(n * 2u + 2u);
+    if (!buf) {
+        return 0;
+    }
+    (void)RtlMultiByteToUnicodeN(buf, (uint32_t)(n * 2u), &got, src, (uint32_t)n);
+    buf[got / 2u] = 0;
+    dest->Length = (uint16_t)got;
+    dest->MaximumLength = (uint16_t)(n * 2u + 2u);
+    dest->Buffer = buf;
+    return 1;
+}
+
+/* `src` added to the end of `dest`, terminated when there is room for that
+ * too; STATUS_BUFFER_TOO_SMALL and `dest` unchanged when the text does not
+ * fit. */
+vibeos_ntstatus_t RtlAppendUnicodeToString(vibeos_ustring_t *dest, const vibeos_wchar_t *src) {
+    size_t add;
+
+    if (!src) {
+        return VIBEOS_STATUS_SUCCESS;
+    }
+    add = rtl_wcslen(src) * 2u;
+    if ((size_t)dest->Length + add > dest->MaximumLength) {
+        return VIBEOS_STATUS_BUFFER_TOO_SMALL;
+    }
+    memcpy((uint8_t *)dest->Buffer + dest->Length, src, add);
+    dest->Length = (uint16_t)(dest->Length + add);
+    if ((size_t)dest->Length + 2u <= dest->MaximumLength) {
+        dest->Buffer[dest->Length / 2u] = 0;
+    }
+    return VIBEOS_STATUS_SUCCESS;
+}
+
 void RtlFreeUnicodeString(vibeos_ustring_t *str) {
     if (!str) {
         return;

@@ -90,3 +90,64 @@ vibeos_ntstatus_t RtlMultiByteToUnicodeN(vibeos_wchar_t *dest, uint32_t dest_siz
     }
     return VIBEOS_RTL_ST(VIBEOS_STATUS_SUCCESS);
 }
+
+/* A wide character as the ANSI code page's byte, '?' - Windows' default
+ * character - for one it has none for. */
+static char rtl_narrow(vibeos_wchar_t w) {
+    unsigned c;
+
+    if (w < 0x80u || (w >= 0xA0u && w <= 0xFFu)) {
+        return (char)w;
+    }
+    for (c = 0x80u; c < 0xA0u; c++) {
+        if (g_cp1252_high[c - 0x80u] == w) {
+            return (char)c;
+        }
+    }
+    return '?';
+}
+
+/* RtlUnicodeStringToAnsiString(Ansi, Unicode, Allocate) (W8 step 3: ntdll:reg
+ * asks for it): into the caller's buffer, or a new one when `alloc`; a
+ * terminator after the text when there is room. A text longer than the
+ * caller's buffer is cut to it, with STATUS_BUFFER_OVERFLOW, as Windows does. */
+vibeos_ntstatus_t RtlUnicodeStringToAnsiString(vibeos_astring_t *dest, const vibeos_ustring_t *src,
+                                               vibeos_boolean_t alloc) {
+    uint32_t n = src->Length / 2u, i, take = n;
+    vibeos_ntstatus_t st = VIBEOS_STATUS_SUCCESS;
+
+    if (n + 1u > 0xFFFFu) {
+        return VIBEOS_STATUS_INVALID_PARAMETER_2;
+    }
+    if (alloc) {
+        dest->Buffer = (char *)vibeos_rtl_alloc(n + 1u);
+        if (!dest->Buffer) {
+            return VIBEOS_STATUS_NO_MEMORY;
+        }
+        dest->MaximumLength = (uint16_t)(n + 1u);
+    } else if (n + 1u > dest->MaximumLength) {
+        take = dest->MaximumLength ? dest->MaximumLength - 1u : 0u;
+        st = VIBEOS_STATUS_BUFFER_OVERFLOW;
+    }
+    for (i = 0; i < take; i++) {
+        dest->Buffer[i] = rtl_narrow(src->Buffer[i]);
+    }
+    if (dest->MaximumLength > take) {
+        dest->Buffer[take] = 0;
+    }
+    dest->Length = (uint16_t)take;
+    return st;
+}
+
+void RtlFreeAnsiString(vibeos_astring_t *str) {
+    if (str && str->Buffer) {
+        vibeos_rtl_free(str->Buffer);
+        str->Buffer = 0;
+        str->Length = 0;
+        str->MaximumLength = 0;
+    }
+}
+
+void RtlZeroMemory(void *dest, size_t len) {
+    memset(dest, 0, len);
+}
