@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* L1: address spaces.
  *
  * The only writer of page-table entries. See include/vibeos/vmspace.h for why

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Legacy virtio-net over PCI: the machine's network interface (image-only).
  *
  * QEMU attaches `-device virtio-net-pci` as a transitional device

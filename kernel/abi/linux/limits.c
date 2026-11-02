@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: limits, usage, priorities and personality (docs/abi/ L2 step 4).
  *
  * A process carries Linux's sixteen resource limits, soft and hard, in its

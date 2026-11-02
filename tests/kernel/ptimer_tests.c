@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the process timers (kernel/sched/ptimer.c, docs/abi/ L2 step 3).
  *
  * The table is driven directly: a clock that is just a number, owners that are

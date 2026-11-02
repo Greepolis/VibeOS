@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: the dispatcher (docs/abi/windows.md W1).
  *
  * Find the service's row, gather its arguments where Windows' calling

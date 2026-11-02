@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Boot a disk/CD image under QEMU+OVMF and wait for a serial token.
 
 Reusable smoke for the standalone bootable artifacts (esp.img, .vmdk, .iso):

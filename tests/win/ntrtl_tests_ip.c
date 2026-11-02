@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* RtlIpv4/Ipv6 address conversions (docs/abi/windows.md W2), against the forms
  * Microsoft documents: dotted decimal; the classic inet_addr forms (one to four
  * parts, octal and hexadecimal) when not strict; RFC 4291 text with "::" and a

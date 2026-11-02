@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NTFS, read-only.
  *
  * Bounded on purpose. This driver reads files whose data attribute is resident

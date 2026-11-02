@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/services.h"
 
 static int find_service(const vibeos_service_supervisor_t *s, uint32_t id) {

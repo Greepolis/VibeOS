@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* splice, tee and vmsplice (docs/abi/ L7 step 5): moving bytes into, out of
  * and between pipes without a trip through the program.
  *

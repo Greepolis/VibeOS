@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Write docs/abi/syscalls.md from the registry.
 
     python3 scripts/dev/make-syscall-table.py            # write it

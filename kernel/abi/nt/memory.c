@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: virtual memory (docs/abi/windows.md W3 step 2).
  *
  * NtAllocateVirtualMemory and its Ex form, NtFreeVirtualMemory,

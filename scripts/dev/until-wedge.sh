@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Boot until one attempt wedges, then print what that boot printed last.
 #
 # repeat-boot.sh answers "how often", which stops being the useful question

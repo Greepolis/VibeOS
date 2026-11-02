@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A process's address space as every personality changes it.
  *
  * Lifted out of the Linux personality's mm.c when W3 (docs/abi/windows.md)

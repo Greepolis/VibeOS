@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: timers and the clocks they count (docs/abi/ L2 step 3).
  *
  * alarm, setitimer and getitimer; the POSIX timer_* calls; clock_getres,

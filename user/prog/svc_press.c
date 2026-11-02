@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* svc-press: does memory pressure actually work?
  *
  * Everything else about reclaim is a host test against a stub. This is the one

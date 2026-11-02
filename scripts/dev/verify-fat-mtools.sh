@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Does somebody else's FAT implementation read what this kernel's driver wrote?
 #
 #     scripts/dev/verify-fat-mtools.sh [build-dir]

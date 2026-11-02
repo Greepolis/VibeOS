@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Advisory file locks. See include/vibeos/filelock.h. */
 
 #include "vibeos/filelock.h"

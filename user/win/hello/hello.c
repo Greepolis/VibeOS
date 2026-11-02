@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The first Windows program VibeOS runs (docs/abi/windows.md W1).
  *
  * A PE32+ console executable built by mingw-w64, importing only our ntdll. It

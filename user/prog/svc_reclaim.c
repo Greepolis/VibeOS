@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* svc-reclaim: does the machine reclaim, and does it give back what it took?
  *
  * Nothing on a machine had ever reclaimed an anonymous page. The anonymous

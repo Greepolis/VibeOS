@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Kernel services (include/vibeos/ksvc.h) as this machine provides them.
  *
  * Everything a syscall personality asks of the kernel, answered from the task

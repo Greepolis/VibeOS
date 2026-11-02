@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Regular files and directories, as files (docs/abi/ A3).
  *
  * Moved from the Linux handlers' `fd >= 3` branches. What changed in moving is

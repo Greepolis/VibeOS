@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The device registry. See include/vibeos/device.h for what it is for; the
  * comments here are about how. */
 

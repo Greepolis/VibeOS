@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Submit now, finish later: the contract before the asynchrony (I6).
  *
  * Both drivers are still synchronous, so nothing here is asynchronous yet -

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/service_ipc.h"
 
 static int service_id_valid(uint32_t service_id) {

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Name a ring-3 address against the guest binary that was actually running it.
 #
 # Every Linux program here links at 0x400000, so an address on its own names

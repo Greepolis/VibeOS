@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for scheduler accounting. Phase S-P4 of docs/sched/.
  *
  * The layer is arithmetic, so it can be tested exhaustively rather than

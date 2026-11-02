@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/waitset.h"
 #include "vibeos/ipc.h"
 #include "vibeos/proc.h"

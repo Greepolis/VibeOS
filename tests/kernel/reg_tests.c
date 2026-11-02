@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The registry's core (kernel/abi/nt/registry/reg.c, docs/abi/windows.md W8
  * step 2), on pages from malloc and a lock that counts: keys and paths,
  * names without case, values of every size class, deletion while a key is

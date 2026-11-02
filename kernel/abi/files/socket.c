@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A socket as a file, and the waits a socket call makes (docs/abi/ A3).
  *
  * The TCP/IP stack is kernel/net/inet.c; this is what a descriptor naming one of

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The host tests' kernel services: see ksvc_fake.h. */
 
 #include <setjmp.h>

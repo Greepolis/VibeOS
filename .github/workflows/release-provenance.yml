@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 name: Release Provenance
 
 # VibeOS now ships bootable images somebody downloads and runs: an appliance

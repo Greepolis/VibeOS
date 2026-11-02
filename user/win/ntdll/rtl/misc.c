@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Memory comparison, CRC-32 and the two random number generators
  * (docs/abi/windows.md W2). */
 

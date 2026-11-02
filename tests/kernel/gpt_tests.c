@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Writing a GPT, and what an interrupted write leaves behind (I4c, I5c).
  *
  * The claim is not "the writer writes a GPT". It is that a machine losing

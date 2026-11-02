@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/timer.h"
 
 int vibeos_timer_init(vibeos_timer_t *timer, uint32_t tick_hz) {

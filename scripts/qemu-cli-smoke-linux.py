@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Interactive OVMF smoke test for the VibeOS serial CLI."""
 
 import os

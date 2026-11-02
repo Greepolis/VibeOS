@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/security_model.h"
 
 static int sec_audit_slot_for_index(const vibeos_security_audit_log_t *log, uint32_t index, uint32_t *out_slot) {

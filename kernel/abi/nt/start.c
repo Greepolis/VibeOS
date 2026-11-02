@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: the blocks a process finds in its own memory when it starts
  * (docs/abi/windows.md W1). See vibeos_nt_build_blocks in vibeos/abi_nt.h.
  *

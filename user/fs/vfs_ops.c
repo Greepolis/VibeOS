@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/fs.h"
 
 static int vfs_mount_is_active(const vibeos_vfs_runtime_t *rt, uint32_t mount_id) {

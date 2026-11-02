@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: futex - the table of waiters, waiting and waking.
  *
  * The wait lived with the process syscalls and the table and the wake in the

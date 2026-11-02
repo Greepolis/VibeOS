@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the lifetime decisions. Phase S-P3 of docs/sched/.
  *
  * Three things that have each cost this project a session: a wait status read

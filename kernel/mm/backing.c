@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* L3: backing stores. See include/vibeos/backing.h for why.
  *
  * Two implementations behind one interface, and a page cache underneath the

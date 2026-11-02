@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/log.h"
 
 static void log_copy_message(char *dst, size_t dst_size, const char *src) {

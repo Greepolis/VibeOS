@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Process parameters (docs/abi/windows.md W6): RtlCreateProcessParametersEx
  * and its family, which build the RTL_USER_PROCESS_PARAMETERS a parent hands
  * NtCreateUserProcess.

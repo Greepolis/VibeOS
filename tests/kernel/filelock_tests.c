@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the file-lock table (kernel/fs/filelock.c, docs/abi/ L1 step 6).
  *
  * The table is asked directly, with owners that are just numbers: what a

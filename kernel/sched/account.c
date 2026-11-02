@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* What each task actually costs. Phase S-P4 of docs/sched/.
  *
  * Deliberately arithmetic and nothing else. It makes no decision, holds no

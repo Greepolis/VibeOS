@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for descriptors and open file descriptions (C5; rebuilt for
  * docs/abi/ A3). Each check names the defect it stands for. */
 

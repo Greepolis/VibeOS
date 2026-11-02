@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* ISO9660, read-only.
  *
  * Files are contiguous, so the interesting code here is name handling rather

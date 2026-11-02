@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The options every socket keeps the same way (docs/abi/ L5 step 1).
  *
  * Most of what a program sets on a socket changes nothing this kernel does - a

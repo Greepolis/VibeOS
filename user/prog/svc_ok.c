@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A service that starts, says so, and exits cleanly.
  *
  * The point of it is the contrast with svc_flap.c: a supervisor that cannot

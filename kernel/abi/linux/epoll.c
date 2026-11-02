@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: epoll (docs/abi/ L4 step 5) - an interest list as a file.
  *
  * An entry is a description, the descriptor number it was added under, the

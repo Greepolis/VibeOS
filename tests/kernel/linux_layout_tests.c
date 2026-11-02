@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux's structures and numbers against Linux's own headers (docs/abi/ A5,
  * invariant 8).
  *

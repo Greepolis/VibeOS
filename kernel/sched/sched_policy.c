@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Which of several correct choices to make. Phase S-P5 of docs/sched/.
  *
  * A pure function of state the caller supplies. No task table, no lock, no

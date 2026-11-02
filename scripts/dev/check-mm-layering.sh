@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The layering check: nothing outside kernel/mm/ writes a page-table entry or
 # takes a reference on a frame.
 #

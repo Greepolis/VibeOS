@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* May this task create another one? Phase S-P6 of docs/sched/.
  *
  * A decision and nothing else: told the counts, returns a verdict. Which means

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Does the NT personality touch a program's memory only through nt_copy_in/out?
 
 A row's pointer check covers the arguments it declares. A pointer found inside

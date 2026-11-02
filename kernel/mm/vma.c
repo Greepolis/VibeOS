@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* L2: regions. See include/vibeos/vma.h for why this exists.
  *
  * A sorted list with no overlaps, and every operation maintains both of those.

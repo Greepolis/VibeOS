@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Produce importable VibeOS VM images from a completed build tree.
 #
 #   esp.img   raw FAT16 UEFI EFI System Partition (boots in QEMU+OVMF)

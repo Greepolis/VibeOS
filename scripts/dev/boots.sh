@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Boot N times at once and report every verdict.
 #
 #   scripts/dev/boots.sh [build-dir] [count] [parallel]

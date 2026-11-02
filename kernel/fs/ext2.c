@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* ext2, read-only.
  *
  * Portable: every byte comes through the block cache, which comes through a

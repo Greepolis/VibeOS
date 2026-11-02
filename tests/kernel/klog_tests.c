@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the kernel log (C6, kernel/diag/klog.c). Each check names the
  * defect it stands for; several are defects this kernel has actually had. */
 

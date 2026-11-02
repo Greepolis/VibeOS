@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/userland.h"
 
 static uint32_t native_string_length(const char *s, uint32_t limit) {

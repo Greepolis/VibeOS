@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* MBR and GPT parsing.
  *
  * Pure byte layout over buffers the caller supplies, so the whole thing runs

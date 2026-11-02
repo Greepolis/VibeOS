@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Starting userland: the supervisor's manifest, init and the first tasks, the
  * scheduler armed, the other cores woken, and the wait until every user task
  * has retired.

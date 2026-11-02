@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* How the machine reports on itself: the kernel log's serial device, the
  * backtrace, hw_panic and the park of every core, the lock-deadlock report, the
  * per-CPU summary a panic prints, the walk that explains a vanished mapping, and

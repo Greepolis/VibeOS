@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A socket syscall that waits must re-verify its socket after every wake (M-020).
 
 A blocking socket call holds a descriptor across a wait. A sibling thread can

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/compat.h"
 
 int vibeos_compat_init(vibeos_compat_runtime_t *rt) {

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* PS/2 mouse driver (IRQ12).
  *
  * The controller multiplexes two devices onto one pair of I/O ports, so the

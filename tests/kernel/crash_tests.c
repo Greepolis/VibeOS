@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for crash records (C6, kernel/diag/crash.c). */
 
 #include <stdio.h>

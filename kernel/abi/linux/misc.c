@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: uname, clock_gettime, time, sysinfo, getrandom.
  *
  * Lifted out of arch_hw.c (C4 stage 3), the handlers and the helpers only they

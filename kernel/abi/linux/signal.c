@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Signal delivery, lifted out of arch_hw.c.
  *
  * Building a frame on a user stack, calling a handler on it, and taking the

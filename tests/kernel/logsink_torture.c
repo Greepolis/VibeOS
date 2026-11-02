@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The on-disk log, against a model that does not share its code (I5b).
  *
  * The unit tests check the cases somebody thought of. This checks the sink

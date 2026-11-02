@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: files, descriptors and pipes.
  *
  * What a program does once it is running: look at files, read directories, talk

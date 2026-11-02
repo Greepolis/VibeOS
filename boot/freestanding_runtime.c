@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <stddef.h>
 
 void *memcpy(void *dest, const void *src, size_t n) {

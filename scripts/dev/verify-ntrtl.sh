@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build, and run the Rtl host tests alone: the verify step for sabotage runs of
 # scripts/dev/cases/win-ntrtl.txt (docs/abi/windows.md W2).
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build and verify, in one command.
 #
 #   scripts/dev/check.sh [build|tests|smoke|all] [build-dir]

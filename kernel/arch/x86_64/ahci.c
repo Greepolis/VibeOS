@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* AHCI (SATA) block driver, read/write, polled.
  *
  * Why this exists: the kernel could only talk to virtio-blk, which QEMU

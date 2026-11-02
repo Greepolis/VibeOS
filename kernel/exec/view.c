@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The exec refusal counters, printed. Phase X-P0 of docs/exec/.
  *
  * Deciding what to say is portable; only reaching the serial port is not. The

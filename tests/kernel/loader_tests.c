@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the program loader's data transformations. Phase X-P1 of
  * docs/exec/.
  *

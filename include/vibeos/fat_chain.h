@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Reading a file along a FAT cluster chain, with the device factored out.
  *
  * The reader coalesces consecutive clusters into one device request, because

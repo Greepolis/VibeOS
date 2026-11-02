@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build Wine's conformance tests for the NT personality's oracle (docs/abi/windows.md).
 #
 #   scripts/dev/winetest-build.sh [build-dir] [dll...]      default: ntdll kernel32

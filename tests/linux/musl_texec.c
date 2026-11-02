@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Threads created and joined while the process execs.
  *
  * The other half of the combination that produced the execve defect, and the

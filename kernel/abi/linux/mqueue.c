@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* POSIX message queues (docs/abi/ L7 step 4).
  *
  * A queue has a name, outside every filesystem - Linux keeps them on mqueue,

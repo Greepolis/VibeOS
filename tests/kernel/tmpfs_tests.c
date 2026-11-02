@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for tmpfs (kernel/fs/tmpfs.c, docs/abi/ L1 step 2), through the
  * filesystem interface's wrappers as the kernel calls it. Each check names the
  * defect it stands for.

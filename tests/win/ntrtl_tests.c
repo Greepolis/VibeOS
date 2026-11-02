@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The Rtl runtime of our ntdll on the host (docs/abi/windows.md W2): the
  * allocator, strings and code pages, the checksum and the generators.
  * The same C files are what ntdll.dll is built from; the five hooks they reach the

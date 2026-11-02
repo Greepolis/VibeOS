@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Early serial port I/O for x86_64 boot logging.
  * Targets COM1 (I/O port 0x3F8) for early diagnostics.
  */

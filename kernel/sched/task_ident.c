@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/task_ident.h"
 
 void vibeos_task_identity_reset(vibeos_task_t *t) {

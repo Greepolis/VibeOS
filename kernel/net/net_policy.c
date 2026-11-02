@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/net_policy.h"
 
 static uint32_t prefix_mask(uint8_t length) {

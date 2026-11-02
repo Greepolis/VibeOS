@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The registry's Rtl helpers (docs/abi/windows.md W8 step 3): the ones Wine's
  * ntdll:reg asks for, over the Nt*Key services.
  *

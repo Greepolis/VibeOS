@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Filesystem dispatch: mount a driver, call it through function pointers.
  *
  * Deliberately thin. Everything hard belongs to the drivers; this file exists

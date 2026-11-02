@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Ethernet / ARP / IPv4 / ICMP / UDP / TCP, with a DHCP client and a DNS
  * resolver on top.
  *

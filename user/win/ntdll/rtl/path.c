@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* DOS paths to NT paths (docs/abi/windows.md W2).
  *
  * RtlDosPathNameToNtPathName_U is what every Win32 file call does first: it makes

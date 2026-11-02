@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: brk, mmap, mprotect, munmap and pageinfo.
  *
  * Lifted out of arch_hw.c (C4 stage 3) as they were. Since docs/abi/ L3 mmap

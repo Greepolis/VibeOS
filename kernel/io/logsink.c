@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The kernel's own log, on disk (I5b). See include/vibeos/logsink.h for why.
  *
  * ---- the three decisions in here that are not obvious ----------------------

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* tmpfs. See include/vibeos/tmpfs.h. */
 
 #include "vibeos/tmpfs.h"

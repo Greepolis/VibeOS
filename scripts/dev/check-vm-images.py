@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Check that the appliance we ship is actually importable.
 
     python3 scripts/dev/check-vm-images.py <artifacts-dir>

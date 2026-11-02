@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Our advapi32.dll (docs/abi/windows.md W8 step 4).
  *
  * The registry's Win32 face: Reg* over the Nt*Key services, as Windows'

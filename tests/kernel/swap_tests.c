@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the swap map (plan phase P5, step 1).
  *
  * The guarantee worth testing is not that swap works - it is that a slot is

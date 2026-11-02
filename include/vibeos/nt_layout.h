@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_NT_LAYOUT_H
 #define VIBEOS_NT_LAYOUT_H
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Merge the SARIF files clang's analyzer writes, one a source file, into one.
 
     scripts/dev/sarif-merge.py <directory of .sarif> <output.sarif>

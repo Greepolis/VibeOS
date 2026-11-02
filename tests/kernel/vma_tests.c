@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the region layer (plan phase P3).
  *
  * A pure data structure, so this is where it gets exercised: every case below

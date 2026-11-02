@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A block device backed by a file on another volume.
  *
  * ## Why this exists

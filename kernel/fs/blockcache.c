@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Block cache: fixed slots, least-recently-used eviction, write-back.
  *
  * Portable on purpose. Everything here is bookkeeping over a function pair, so

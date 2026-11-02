@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* PE32+ program-image parser. See include/vibeos/pe.h for what it accepts and
  * why, and for why its answer is an ELF-shaped segment list.
  *

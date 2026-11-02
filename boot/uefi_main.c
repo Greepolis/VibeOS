@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/boot.h"
 #include "vibeos/bootloader.h"
 #include "uefi_boot.h"

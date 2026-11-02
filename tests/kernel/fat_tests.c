@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the FAT driver's write path (kernel/fs/fat.c, docs/abi/ L1 step
  * 4), through the filesystem interface's wrappers as the kernel calls it. Each
  * check names the defect it stands for.

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: inotify (docs/abi/ L4 step 6) - what happened to files, read as
  * records.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Program entry for VibeOS user programs.
  *
  * This is the same _start a real libc provides, and it exists for the same

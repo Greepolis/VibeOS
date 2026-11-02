@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 param(
     [string]$BuildDir = "build",
     [string]$ImagePath = "artifacts/vibeos_boot.img",

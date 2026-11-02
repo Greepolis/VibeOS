@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Real x86_64 hardware bring-up: GDT, IDT and CPU exception handling.
  *
  * This is the on-metal counterpart to the host-modeled idt.c. It is compiled

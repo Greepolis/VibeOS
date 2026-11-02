@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/driver_host.h"
 #include "vibeos/drivers.h"
 #include "vibeos/services.h"

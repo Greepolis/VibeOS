@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The Linux socket syscalls.
  *
  * Lifted out of arch_hw.c (C4), portable since A2, and since docs/abi/ L5 a

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Credentials. See include/vibeos/cred.h. */
 
 #include "vibeos/cred.h"

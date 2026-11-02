@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: registry keys (docs/abi/windows.md W8 step 3).
  *
  * The Nt*Key services over the registry's core (registry/reg.c). A key handle

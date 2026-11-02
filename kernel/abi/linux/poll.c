@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: the event loops (docs/abi/ L4) - poll, ppoll, select and pselect6,
  * on one engine.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: the file services of W1 (docs/abi/windows.md).
  *
  * NtWriteFile, synchronous and at the file's own position: what a console

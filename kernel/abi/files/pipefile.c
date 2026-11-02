@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A pipe end as a file (docs/abi/ A3).
  *
  * The ring and its end counts are kernel/ipc/pipe.c; this is what a descriptor

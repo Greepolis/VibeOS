@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A fork storm, on purpose. Phase S-P6 of docs/sched/.
  *
  * The property being tested is not "fork eventually fails" - it always did, and

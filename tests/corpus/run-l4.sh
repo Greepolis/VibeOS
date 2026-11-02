@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The event loops' programs (docs/abi/ L4 step 7), run by the boot's shell as
 # /corpus/progs.sh. Each prints a line that says what it saw; the boot gate
 # reads them, and drives the two that need someone on the host - it fetches the

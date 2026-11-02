@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Native VibeOS init: the first ring-3 process, and the supervisor of
  * everything after it.
  *

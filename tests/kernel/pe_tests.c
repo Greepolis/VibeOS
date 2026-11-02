@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the PE32+ parser (kernel/core/pe.c, docs/abi/windows.md W1).
  *
  * Two kinds of image. Ones this file writes, to reach every refusal - and those

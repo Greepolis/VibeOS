@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Legacy virtio-blk over PCI: a real block-device driver (image-only).
  *
  * QEMU attaches the disk as a transitional virtio-blk-pci device (0x1AF4:0x1001)

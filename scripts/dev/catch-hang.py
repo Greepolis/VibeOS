@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Boot until it hangs, then ask every core where it is.
 
     scripts/dev/catch-hang.py [build-dir] [attempts]

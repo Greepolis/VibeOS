@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the device registry (C7, kernel/io/device.c). Each check names
  * the property it stands for. */
 

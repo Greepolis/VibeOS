@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The Rtl runtime's process-facing parts on the host (docs/abi/windows.md W2):
  * handle tables, PE headers, environment blocks, critical sections, DOS-to-NT
  * path conversion and DbgPrint. The process parameters they read are a byte block

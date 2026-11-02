@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Signals, from a real Linux program built against a real C library.
  *
  * Written against Linux, not against VibeOS: it uses sigaction and raise the

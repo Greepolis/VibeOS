@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/ipc_transfer.h"
 
 int vibeos_ipc_transfer_handle(

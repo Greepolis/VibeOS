@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 name: Static Analysis
 
 # Two analysers beside CodeQL, each for what the others do not see.

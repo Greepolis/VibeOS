@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* PS/2 keyboard driver (IRQ1) with a small input ring buffer (image-only).
  *
  * Translates set-1 scancodes to ASCII and buffers keystrokes so a blocking

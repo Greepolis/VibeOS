@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/compat.h"
 
 int vibeos_macos_translate_syscall(vibeos_compat_runtime_t *rt, uint32_t foreign_syscall, uint32_t *out_native_syscall) {

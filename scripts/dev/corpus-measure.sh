@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Measure which syscalls each corpus workload makes, on the host, under strace.
 #
 #   scripts/dev/corpus-measure.sh [build-dir] [out-dir]

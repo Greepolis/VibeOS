@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 name: Scorecard
 
 # OpenSSF Scorecard: the repository and its workflows, not the code. Whether

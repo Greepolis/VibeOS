@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Randomised torture for the graphical shell (kernel/io/gui.c), against a
  * reference model, and then under real threads.
  *

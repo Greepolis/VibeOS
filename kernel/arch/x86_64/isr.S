@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* x86_64 interrupt service routine stubs.
  *
  * Each CPU exception vector (0-31) has a small stub that normalizes the

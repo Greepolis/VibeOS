@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build, and run msvcrt's host tests alone: the verify step for
 # scripts/dev/cases/win-msvcrt.txt.
 #

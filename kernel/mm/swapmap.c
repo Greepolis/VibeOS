@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* L3b: the swap map. See include/vibeos/swapmap.h for what it guarantees.
  *
  * A bitmap and a cursor. Deliberately not a free list: a list stores its links

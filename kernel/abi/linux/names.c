@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: names and what is known about a file (docs/abi/ L1 step 5).
  *
  * rename, rmdir, link and symlink; statx, access, statfs; the chmod, chown and

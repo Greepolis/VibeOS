@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # verify-boot.sh, keeping the serial log of every boot it verifies.
 #
 # For SABOTAGE_VERIFY. A sabotage run boots once per case and each boot

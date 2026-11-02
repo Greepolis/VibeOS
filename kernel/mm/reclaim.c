@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* L4: reclaim. See include/vibeos/reclaim.h for why the order is a property.
  *
  * Small on purpose. Everything this layer decides is a policy question, and

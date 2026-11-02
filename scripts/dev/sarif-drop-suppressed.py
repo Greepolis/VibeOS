@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Leave out of a SARIF file the results its own tool marked as suppressed.
 
     scripts/dev/sarif-drop-suppressed.py <file.sarif>

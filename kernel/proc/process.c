@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NOT REACHED BY THE RUNNING KERNEL.
  *
  * The portable process table. It carries two of the three defects C3 names:

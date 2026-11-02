@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Threads, through a real C library.
  *
  * Written against POSIX, not against VibeOS: pthread_create becomes clone()

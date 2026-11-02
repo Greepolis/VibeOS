@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The verify step for sabotage runs whose cases are caught on the host.
 #
 # verify-boot.sh takes ninety seconds a case because it boots a virtual

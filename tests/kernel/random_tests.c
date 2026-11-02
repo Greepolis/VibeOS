@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the kernel's random numbers (kernel/core/random.c, docs/abi/
  * L2 step 6).
  *

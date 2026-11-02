@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The soak property of the memory manager's P7, plus swap, in one run.
 #
 # The boot gate already compares frames free on the way into userland against

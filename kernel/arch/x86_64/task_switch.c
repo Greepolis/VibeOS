@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The context switch: the task table, the scheduler's pick, and loading a task
  * onto a CPU.
  *

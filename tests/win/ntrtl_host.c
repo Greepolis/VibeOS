@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The Rtl core's hooks, answered on the Linux host (docs/abi/windows.md W2).
  *
  * user/win/ntdll/rtl/platform_win.c answers the same five from the TEB, the PEB and

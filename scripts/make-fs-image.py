@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build a small filesystem image with the host's own mkfs, for I5.
 
 I5's whole point is that ext2, NTFS, ISO9660 and exFAT have never been mounted

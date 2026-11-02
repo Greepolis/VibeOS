@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Many seeds of the memory-manager torture test.
 #
 #   scripts/dev/mm-torture.sh [build-dir] [seeds] [rounds]

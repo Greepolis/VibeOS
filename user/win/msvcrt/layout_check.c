@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* msvcrt.dll's types and FILE against mingw-w64's own headers, at compile time
  * (docs/abi/windows.md W2). Contributes nothing to the DLL; if a number our
  * msvcrt.c assumes about msvcrt's ABI disagrees with the headers a Windows

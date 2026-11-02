@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The verify step for sabotage cases that only a sanitizer can see: the CI job
 # "Linux clang / Debug" (cmake-multi-platform.yml), as it runs - clang, ASan
 # and UBSan, host tests only, ctest - and its first failure.

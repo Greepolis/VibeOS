@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Boot the shipped appliance on VirtualBox, and take it apart if it hangs.
 
 Why this exists: the boot gate runs on QEMU, and for a long time that was the

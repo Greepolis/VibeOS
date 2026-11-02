@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* VibeOS shell: a real user-space program that reads commands from the console
  * and runs them, using only syscalls (read/write/fork/execve/wait4/exit).
  *

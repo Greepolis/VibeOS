@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The memory bridge: where the portable memory manager (kernel/mm) meets this
  * machine.
  *

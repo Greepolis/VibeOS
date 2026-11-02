@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Does every module have the parts a module here is supposed to have?
 
 `docs/core/architecture.md` lists seven, and they were written down because

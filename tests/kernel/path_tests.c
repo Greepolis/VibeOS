@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for paths (kernel/fs/path.c, docs/abi/ A4 and L1) and for the
  * filesystem interface's wrappers (kernel/fs/vfs.c, L1). Each check names the
  * defect it stands for. */

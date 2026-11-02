@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The event loops (docs/abi/ L4), from ring 3, through a real C library.
  *
  * One program for the phase, grown a step at a time as SIGNAL.ELF was for L2.

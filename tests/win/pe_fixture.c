@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A PE32+ image built by mingw-w64, for tests/kernel/pe_tests.c: the artefact
  * neither the parser nor its test wrote. Never run - it only has to be the kind
  * of file a linker writes: code, initialised and read-only data, a .bss larger

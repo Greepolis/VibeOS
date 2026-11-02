@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Single source of truth for the two portable libraries.
 #
 # These lists used to be written twice: here, and again by hand inside

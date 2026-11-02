@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* ELF64 program-image parser. See include/vibeos/elf.h for why this works a
  * page at a time rather than a segment at a time.
  *

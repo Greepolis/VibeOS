@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Framebuffer text console (image-only).
  *
  * Renders characters into the UEFI GOP linear framebuffer the bootloader passes

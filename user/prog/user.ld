@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Link the VibeOS user program into the dedicated user virtual-address region
  * (PML4 slot 1, base 512 GiB). User space lives in its own top-level slot so the
  * kernel's identity mapping can stay supervisor-only (US=0) while user pages are

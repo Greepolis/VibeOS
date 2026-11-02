@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for reclaim (plan phase P6, steps 2 to 4).
  *
  * The properties here divide sharply into two kinds, and the tests are ordered

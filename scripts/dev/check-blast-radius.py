@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """How many existing files must be edited to add one thing of a known kind?
 
 `docs/core/` calls this the plan's real progress metric, and the reason is in

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* System V IPC (docs/abi/ L7): what the three kinds share, and message queues.
  *
  * An object is a number a program was given and a key it may be found by.

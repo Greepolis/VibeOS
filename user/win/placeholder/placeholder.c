@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A DLL that loads and exports nothing (docs/abi/windows.md W2): built as
  * kernel32.dll, user32.dll and advapi32.dll until each is written.
  *

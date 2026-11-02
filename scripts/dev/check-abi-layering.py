@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Does every syscall personality stay above the kernel services?
 
 docs/abi/ phase A2 took the Linux handlers off the architecture's private header:

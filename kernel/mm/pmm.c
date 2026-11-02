@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/mm.h"
 
 static uintptr_t align_up(uintptr_t value, size_t align) {

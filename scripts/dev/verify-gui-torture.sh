@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The verify step for sabotage runs against the GUI torture: build, then run it
 # on a few seeds with threads, and print its first failure.
 #

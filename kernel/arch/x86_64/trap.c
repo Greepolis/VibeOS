@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/trap.h"
 
 #define VIBEOS_TRAP_LOG_USER_FAULT 0x54554655u

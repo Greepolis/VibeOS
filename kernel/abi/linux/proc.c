@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: creating, running, waiting for and ending tasks.
  *
  * What a C runtime asks for before it runs the program, and what it does to

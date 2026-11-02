@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Randomised torture for the memory manager, run against a reference model.
  *
  * The host tests check the cases somebody thought of. This checks the ones

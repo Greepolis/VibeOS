@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Every NT system service, as the one-line stub Windows' own ntdll has for it
  * (docs/abi/windows.md W1).
  *

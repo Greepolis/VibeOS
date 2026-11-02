@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Crash records. See include/vibeos/crash.h. */
 
 #include "vibeos/crash.h"

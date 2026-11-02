@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Hosted TLS dependency boundary.
  *
  * The audited transport-security library sits behind these few functions, so

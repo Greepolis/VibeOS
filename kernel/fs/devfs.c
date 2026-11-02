@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* /dev. See include/vibeos/devfs.h. */
 
 #include "vibeos/devfs.h"

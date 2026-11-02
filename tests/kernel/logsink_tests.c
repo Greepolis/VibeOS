@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The kernel's own log, on disk (I5b).
  *
  * The medium is a RAM array that survives across "reboots" - the whole point

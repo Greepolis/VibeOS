@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Application-processor boot trampoline.
  *
  * A processor woken by INIT-SIPI starts in 16-bit real mode at a page-aligned

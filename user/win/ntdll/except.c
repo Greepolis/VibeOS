@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The exception runtime of our ntdll (docs/abi/windows.md W5 step 5).
  *
  * The kernel turns a fault, or an NtRaiseException with FirstChance set, into a

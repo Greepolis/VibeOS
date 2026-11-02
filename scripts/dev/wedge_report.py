@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Ask the emulator what a wedged guest is doing, and how it got there.
 
     python3 scripts/dev/wedge_report.py <monitor-socket> <kernel-elf>

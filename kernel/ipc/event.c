@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/ipc.h"
 
 void vibeos_event_init(vibeos_event_t *event) {

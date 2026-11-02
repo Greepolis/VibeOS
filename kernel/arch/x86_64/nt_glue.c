@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The NT personality's hooks into the architecture (docs/abi/windows.md W8
  * step 1).
  *

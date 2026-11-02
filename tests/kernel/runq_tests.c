@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the run queue. Phase S-P2 of docs/sched/.
  *
  * The case that justifies the whole phase is the last one: two CPUs must never

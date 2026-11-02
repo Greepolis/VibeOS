@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A thread pool and the rest of what pthreads offers, for the corpus
  * (docs/abi/ L6 step 4). Built twice by scripts/dev/corpus-build.sh - against
  * musl statically and against glibc dynamically - and run by

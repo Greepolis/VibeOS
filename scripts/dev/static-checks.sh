@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The repository's own checks, the ones that read the tree rather than run it.
 #
 #   scripts/dev/static-checks.sh [build-dir]

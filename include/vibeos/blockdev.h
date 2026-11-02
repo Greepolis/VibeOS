@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_BLOCKDEV_H
 #define VIBEOS_BLOCKDEV_H
 

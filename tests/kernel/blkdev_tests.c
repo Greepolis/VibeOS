@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the block layer contract (plan phase I0).
  *
  * The layer is three things: validate, dispatch, and check what came back

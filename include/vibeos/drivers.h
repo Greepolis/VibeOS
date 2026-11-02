@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_DRIVERS_H
 #define VIBEOS_DRIVERS_H
 

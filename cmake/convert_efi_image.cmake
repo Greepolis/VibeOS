@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # convert_efi_image.cmake
 # Convert a bootloader image to an EFI PE32+ application and validate headers.
 

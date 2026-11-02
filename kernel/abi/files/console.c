@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The console as a file (docs/abi/ A3): what descriptors 0, 1 and 2 name when a
  * program starts with nothing redirected.
  *

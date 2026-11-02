@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* IPv4 and IPv6 addresses to and from text (docs/abi/windows.md W2).
  *
  * Both parsers work on arrays of 16-bit units, so the ANSI and wide entry points

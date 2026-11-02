@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Writing a partition table: the refusals, and the one write that is allowed.
  *
  * Every test here is about a *refusal*, which is unusual and is the point.

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A service that does not exit: it faults.
  *
  * svc-flap proves the restart policy, but it exits with a status - which is a

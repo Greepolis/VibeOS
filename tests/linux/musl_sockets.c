@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Sockets (docs/abi/ L5), from ring 3, through a real C library.
  *
  * Every check prints SOCK_FAIL with its reason on a line of its own, and the

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Package a built VibeOS disk as a VM you can import by double-clicking.
 
     python3 scripts/make_ova.py <esp.img> <out-dir> [--name VibeOS]

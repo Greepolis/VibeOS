@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* UEFI x86_64 PE32+ Linker Script for VibeOS Bootloader */
 
 ENTRY(efi_main)

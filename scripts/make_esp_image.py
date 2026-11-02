@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build a bootable UEFI FAT16 EFI System Partition image from a directory.
 
 Self-contained: no mtools / mkfs.fat required. Produces a raw "superfloppy"

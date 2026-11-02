@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Writing a partition table. See include/vibeos/parttab.h for the four rules
  * that make it safe and why this is not in partition.c. */
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The network bring-up: the interface the portable stack drives, the pump that
  * feeds it received frames and runs its timers, and DHCP at boot with a stated
  * fallback.

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: threads (docs/abi/windows.md W5).
  *
  * An NT thread is a task in its process, made through the same door a Linux

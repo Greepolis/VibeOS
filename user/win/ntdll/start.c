@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Where every NT process starts, and its loader: our ntdll's entry point
  * (docs/abi/windows.md W1, W2).
  *

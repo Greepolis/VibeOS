@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The kernel log. See include/vibeos/klog.h for what this is and why it left
  * arch_hw.c; the comments here are about how. */
 

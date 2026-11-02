@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/object.h"
 
 static void handle_emit_event(vibeos_handle_table_t *table, vibeos_handle_lifecycle_event_t event, const vibeos_handle_entry_t *entry) {

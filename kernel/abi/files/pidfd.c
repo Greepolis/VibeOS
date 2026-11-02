@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A description that names a process (docs/abi/ L2 step 5).
  *
  * Linux's pidfd - and what a Windows process handle is, which is why it lives

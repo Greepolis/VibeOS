@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The printf subset DbgPrint needs (docs/abi/windows.md W2), with Windows'
  * meanings on x64 (LLP64), which are not the C library's on Linux:
  *

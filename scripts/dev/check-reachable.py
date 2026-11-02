@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Which of the portable kernel's functions does nothing reach?
 
 This project has a specific and repeated failure: code that exists, compiles,

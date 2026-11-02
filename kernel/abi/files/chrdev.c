@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Character devices (docs/abi/ L2 step 6): what a node of type S_IFCHR opens
  * as, chosen by its number (vibeos/devfs.h).
  *

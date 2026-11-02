@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Boot and take a picture of the screen.
 
     scripts/dev/screenshot.py [build-dir] [out.ppm] [seconds]

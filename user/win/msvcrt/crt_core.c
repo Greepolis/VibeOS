@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* msvcrt.dll's portable core (docs/abi/windows.md W2). See crt_core.h for why
  * this file knows nothing about Windows.
  *

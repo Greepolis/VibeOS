@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the address-space layer (plan phase P2).
  *
  * The page-table format here is real x86-64; only the memory is malloc'd. That

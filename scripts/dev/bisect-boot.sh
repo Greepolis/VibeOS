@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build one revision, boot it N times, and always come back to where you were.
 #
 #   scripts/dev/bisect-boot.sh <rev> [count] [build-dir]

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The personalities other than Linux, as the architecture reaches them
  * (docs/abi/windows.md W8 step 1).
  *

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Download, verify and build the corpus's third-party programs with musl.
 #
 #   scripts/dev/corpus-build.sh [build-dir] [--no-ltp]

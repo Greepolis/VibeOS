@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A timer as a file (docs/abi/ L4 step 3): Linux's timerfd, read for how many
  * times it expired since it was last read.
  *

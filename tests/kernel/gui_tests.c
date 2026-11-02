@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the graphical shell (C7, kernel/io/gui.c). Each check names the
  * property it stands for. The randomised model and the threads are in
  * gui_torture.c; these are the cases somebody thought of. */

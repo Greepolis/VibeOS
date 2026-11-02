@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Which kernel modules have no intensive nightly test?
 
 **Every module gets one.** That is the rule, and it is here rather than only in

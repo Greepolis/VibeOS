@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Boot until a signature appears in the serial log, and keep every log worth
 # reading.
 #

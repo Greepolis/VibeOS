@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Reclaim's anonymous tier. See include/vibeos/anon.h for why it exists. */
 
 #include "vibeos/anon.h"

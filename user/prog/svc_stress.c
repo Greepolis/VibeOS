@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Randomised churn, with a seed you can replay.
  *
  * Every hard bug found in this kernel so far needed a specific coincidence:

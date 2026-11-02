@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A producer and a consumer over System V shared memory and semaphores, and a
  * round trip through each kind of message queue (docs/abi/ L7 step 6).
  *

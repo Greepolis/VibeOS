@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A basic graphical shell for the UEFI framebuffer (include/vibeos/gui.h).
  *
  * Not a window system. It draws a desktop, a panel, one window with text in

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* /proc. See include/vibeos/procfs.h. */
 
 #include "vibeos/procfs.h"

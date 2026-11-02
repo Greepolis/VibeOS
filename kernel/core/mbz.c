@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Must-be-zero registry. See include/vibeos/mbz.h.
  *
  * No lock, deliberately: every count is a lock-free atomic add, so no increment

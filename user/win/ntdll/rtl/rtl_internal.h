@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_RTL_INTERNAL_H
 #define VIBEOS_RTL_INTERNAL_H
 

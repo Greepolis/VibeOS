@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_WAITSET_H
 #define VIBEOS_WAITSET_H
 

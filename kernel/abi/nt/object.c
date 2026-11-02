@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: the object manager's core (docs/abi/windows.md W2).
  *
  * An NT object is a description of one of the NT types below, and a handle to

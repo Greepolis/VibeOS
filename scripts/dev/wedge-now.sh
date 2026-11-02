@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Ask a guest that is stuck right now what every core is doing.
 #
 # catch-hang.py and until-wedge.sh boot their own guests. This is for the one

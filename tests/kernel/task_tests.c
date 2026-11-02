@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the task state machine. Phase S-P1 of docs/sched/.
  *
  * The transitions that are *absent* from the table are the ones that matter,

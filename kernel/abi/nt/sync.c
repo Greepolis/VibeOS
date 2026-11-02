@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: events, mutants, semaphores and the waits (docs/abi/windows.md W2).
  *
  * An event is the simplest object that can be waited on, which is why it comes

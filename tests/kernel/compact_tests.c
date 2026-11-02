@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for compaction (plan phase P6, step 5).
  *
  * Compaction is the one operation in this subsystem that moves memory that is

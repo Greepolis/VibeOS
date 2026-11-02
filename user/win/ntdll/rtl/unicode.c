@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Code pages and case (docs/abi/windows.md W2).
  *
  * The ANSI code page is Windows-1252 and nothing else is offered: DBCS lead bytes

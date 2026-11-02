@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* msvcrt.dll's portable core, on the host (docs/abi/windows.md W2).
  *
  * crt_core.c is compiled twice: by mingw-w64 into the DLL and by the host's

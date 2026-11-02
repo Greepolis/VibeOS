@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* An event counter as a file (docs/abi/ L4 step 2): Linux's eventfd, and what any
  * personality's "a count a waiter can wait on" would be - so it lives with the
  * file types, not in the Linux layer.

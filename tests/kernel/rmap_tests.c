@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the reverse map (plan phase P6, step 1).
  *
  * What this layer has to be right about is identity, not quantity: compaction

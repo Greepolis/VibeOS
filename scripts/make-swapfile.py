@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Create the swap file staged on the boot medium.
 
 Somewhere for swap to write. The memory manager's P5 - swap map, page-out,

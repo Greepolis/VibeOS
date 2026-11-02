@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The corpus's file workloads, run for their answers (docs/abi/ L1 step 8).
 #
 #     busybox sh run-l1.sh

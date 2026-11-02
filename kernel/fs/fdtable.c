@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Descriptor tables. See include/vibeos/fdtable.h. */
 
 #include "vibeos/fdtable.h"

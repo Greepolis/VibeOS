@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: user APCs (docs/abi/windows.md W5 step 4).
  *
  * An APC is a call a thread makes on its own behalf when it next waits

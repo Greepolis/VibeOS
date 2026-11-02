@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* What a Windows program meets when it calls a function nobody has written
  * yet (docs/abi/windows.md W2).
  *

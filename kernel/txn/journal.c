@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Moved out of kernel/fs/ in I5c.
  *
  * It lived there, and that said it was a filesystem concern. It is not: ext2

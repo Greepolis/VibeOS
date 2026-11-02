@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Which boot-gate assertions has nobody ever proved can fire?
 
 An assertion that cannot go red is not a check. This project has shipped one:

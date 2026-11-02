@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Reading a file along a FAT cluster chain. See include/vibeos/fat_chain.h. */
 
 #include "vibeos/fat_chain.h"

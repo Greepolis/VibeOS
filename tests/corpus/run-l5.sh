@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The sockets' programs (docs/abi/ L5 step 4), run by the boot's shell as
 # /corpus/progs5.sh after SOCKETS.ELF has run its own checks. Each prints what
 # came back; the boot gate reads it. No marker the gate asserts on appears here

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The firmware-independent half of the bootloader: parsing a kernel image and
  * planning where its segments go.
  *

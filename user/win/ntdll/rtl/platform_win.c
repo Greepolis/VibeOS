@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The Rtl core's five hooks, answered on Windows' side of the machine
  * (docs/abi/windows.md W2): the TEB and PEB through %gs, and the kernel through
  * NtWriteFile, NtTerminateProcess and NtAllocateVirtualMemory. tests/win/ntrtl_host.c answers the same

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Reading a PE image that is already in memory (docs/abi/windows.md W2).
  *
  * Both functions trust the memory at Base to be at least as large as the headers

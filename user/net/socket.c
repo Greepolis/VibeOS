@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/net.h"
 
 static vibeos_socket_entry_t *find_socket(vibeos_net_runtime_t *rt, uint32_t socket_id) {

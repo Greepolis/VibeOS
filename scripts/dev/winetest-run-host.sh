@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Run the oracle built by winetest-build.sh under Wine on the host, and keep the
 # answers VibeOS is measured against (docs/abi/windows.md).
 #

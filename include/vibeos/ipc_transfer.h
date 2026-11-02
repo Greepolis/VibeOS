@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_IPC_TRANSFER_H
 #define VIBEOS_IPC_TRANSFER_H
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Our msvcrt.dll (docs/abi/windows.md W2).
  *
  * The C runtime Wine's conformance executables import, written from the C

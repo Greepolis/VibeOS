@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The task table's state machine. Phase S-P1 of docs/sched/.
  *
  * The transition table is the design. Everything else in this file exists to

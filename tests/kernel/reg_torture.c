@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Randomised torture for the registry's core (kernel/abi/nt/registry/reg.c,
  * docs/abi/windows.md W8 step 2), checked against a model that shares
  * nothing with it.

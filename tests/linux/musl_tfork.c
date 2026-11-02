@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* fork() from a process that still has a thread running.
  *
  * This is the one shape that needs a TLB shootdown, and nothing else in the

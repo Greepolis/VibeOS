@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 name: Nightly Deep Checks
 
 # The per-PR matrix answers "does one run work?". These answer the two

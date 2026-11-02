@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Does any decision rest on the reverse map alone?
 
 The reverse map is best effort by design. `vibeos_rmap_add` can fail - the node

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Process timers. See include/vibeos/ptimer.h. */
 
 #include "vibeos/ptimer.h"

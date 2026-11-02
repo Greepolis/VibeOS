@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* What memory is being used for, right now.
  *
  * The counters in stats.c say what has happened - how many frames were mapped,

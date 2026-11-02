@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: exceptions (docs/abi/windows.md W5 step 5).
  *
  * A fault in a Windows program is the program's to handle, as Windows hands it

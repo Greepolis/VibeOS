@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* RTL_HANDLE_TABLE (docs/abi/windows.md W2): a fixed array of equal-sized entries
  * with a free list, whose entries a program holds by address.
  *

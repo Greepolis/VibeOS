@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the frame layer (plan phase P1).
  *
  * This is the point of putting L0 in the portable kernel: today's frame

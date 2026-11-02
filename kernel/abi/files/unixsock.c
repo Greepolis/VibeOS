@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Local sockets (docs/abi/ L5 steps 2 and 3): AF_UNIX's streams and datagrams,
  * and open file descriptions passed between processes with a message.
  *

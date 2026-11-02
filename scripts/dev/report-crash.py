@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Collect crashes from a serial log into one GitHub issue.
 
 The idea is the one every desktop OS has: when something dies, offer to send a

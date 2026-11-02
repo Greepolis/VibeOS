@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Where swap lives. See include/vibeos/swaparea.h for the property this exists
  * to guarantee.
  *

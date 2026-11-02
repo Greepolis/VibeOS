@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* B1 — block devices. See include/vibeos/blkdev.h for why a request is a value.
  *
  * The whole of the layer is: validate, dispatch, and check what came back

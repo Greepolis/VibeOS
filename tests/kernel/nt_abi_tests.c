@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the NT personality (docs/abi/windows.md W1).
  *
  * The registry against nt_services.def, the dispatcher's three kinds of no,

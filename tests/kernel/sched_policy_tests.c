@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the scheduling policy. Phase S-P5 of docs/sched/.
  *
  * The plan asks for weights that are *measured* rather than asserted by

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Does the Linux ABI layer touch user memory only through the fault-safe copy?
 
 A syscall handler receives user addresses as integers. The dispatcher checks the

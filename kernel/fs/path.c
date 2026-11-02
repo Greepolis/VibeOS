@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Paths. See include/vibeos/path.h. */
 
 #include "vibeos/path.h"

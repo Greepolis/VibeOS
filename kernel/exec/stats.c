@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Exec refusal counters. Phase X-P0 of docs/exec/.
  *
  * No lock, for the reason the task and memory counters have none: these are

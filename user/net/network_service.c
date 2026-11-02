@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/services.h"
 
 int vibeos_net_start(vibeos_net_state_t *state) {

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The LTP tests that belong to a phase of docs/abi/phases.md, one name a line.
 
     scripts/dev/ltp-list.py L1 [<git revision>]        > tests/corpus/ltp-l1.txt

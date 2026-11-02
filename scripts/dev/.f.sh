@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Full verification. Exits non-zero if anything is red, because a summary line
 # saying FAIL above "exited with code 0" is a line you learn not to read - the
 # same trap as check.sh's rc=, wearing a wrapper.

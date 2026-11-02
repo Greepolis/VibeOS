@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* System V semaphores (docs/abi/ L7 step 2), over what ipc.c shares.
  *
  * A set is up to LINUX_SEMMSL counters, and semop applies a list of changes

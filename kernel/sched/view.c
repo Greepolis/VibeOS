@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The task table, printed. Phase S-P0 of docs/sched/.
  *
  * This lives outside the architecture layer on purpose, and it is the first

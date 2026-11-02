@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* RTL_CRITICAL_SECTION (docs/abi/windows.md W2).
  *
  * The structure is Windows' (40 bytes on x64), because programs and Wine's tests

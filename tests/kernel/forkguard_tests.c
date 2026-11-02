@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the fork guard. Phase S-P6 of docs/sched/.
  *
  * The property under test is not "fork eventually fails" - it already did. It

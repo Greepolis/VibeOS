@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Randomised torture for kernel/diag (the kernel log and the crash records),
  * against a reference model.
  *

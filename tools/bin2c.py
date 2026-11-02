@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Embed a binary file as a C byte array.
 
 Usage: bin2c.py <input> <output.c> <symbol>

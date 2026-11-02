@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The task lifecycle: creating, describing, signalling and ending tasks.
  *
  * Lifted out of arch_hw.c (C5). Nothing here is new: it sat beside the context switch

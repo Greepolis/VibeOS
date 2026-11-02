@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: the descriptors that are events (docs/abi/ L4 steps 2 to 4) -
  * eventfd, timerfd and signalfd.
  *

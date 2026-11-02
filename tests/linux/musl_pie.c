@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A position-independent Linux binary, to prove VibeOS can place one.
  *
  * An ET_DYN executable describes itself from address zero and expects the

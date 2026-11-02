@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "uefi_memory.h"
 #include "uefi_serial.h"
 #include "uefi_boot.h"

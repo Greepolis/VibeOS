@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/services.h"
 
 int vibeos_devmgr_start(vibeos_devmgr_state_t *state) {

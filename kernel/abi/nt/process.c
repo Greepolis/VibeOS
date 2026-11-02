@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: the process services (docs/abi/windows.md W1, W6).
  *
  * NtTerminateProcess and NtQueryInformationProcess, for the calling process and

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* vibeos_ntrtl.h against mingw-w64's own headers, at compile time
  * (docs/abi/windows.md W2). Compiled with ntdll and contributing nothing to it:
  * every structure the Rtl runtime declares under its own name, that mingw-w64

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Pipes. See include/vibeos/pipe.h.
  *
  * A pipe's ring is a list of pages, not one array: the allocator hands out a page

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* An ordinary Linux program.
  *
  * Nothing in this file knows VibeOS exists. It is compiled by musl-gcc into a

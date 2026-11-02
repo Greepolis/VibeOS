@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A service that fails every time it is started.
  *
  * Deliberately not a crash: it exits with a non-zero status, which is the

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The kernel's syscall vocabulary: names and declared checks. See
  * include/vibeos/abi.h. Read-only tables generated from the one list there,
  * so this file has no state and nothing to keep in step by hand. The table is

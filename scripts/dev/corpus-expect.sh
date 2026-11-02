@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # What Linux answers the corpus's file workloads with.
 #
 #     scripts/dev/corpus-expect.sh [build-dir]            write tests/corpus/l1-expected.txt

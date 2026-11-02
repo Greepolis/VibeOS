@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Randomised torture for tmpfs (kernel/fs/tmpfs.c, docs/abi/ L1 step 2),
  * checked against a model kept in plain arrays.
  *

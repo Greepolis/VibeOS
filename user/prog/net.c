@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NET.ELF - a user-space TCP client, to prove the stack end to end.
  *
  * Opens a TCP connection to the host QEMU presents at 10.0.2.2, sends a line,

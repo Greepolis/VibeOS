@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Memory management counters.
  *
  * A plain structure with one accessor, and deliberately nothing more: no lock,

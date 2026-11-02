@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: the dispatcher - find the syscall's row, then run it.
  *
  * There is no list of syscalls here. Each file that implements some declares them

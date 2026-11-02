@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the task identity (C5). Each check names the defect it stands for. */
 
 #include <stdio.h>

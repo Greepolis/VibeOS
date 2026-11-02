@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Loading a PE program: the NT personality's half of hw_proc_create
  * (docs/abi/windows.md W1).
  *

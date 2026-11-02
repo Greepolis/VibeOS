@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_SOCKOPS_H
 #define VIBEOS_SOCKOPS_H
 

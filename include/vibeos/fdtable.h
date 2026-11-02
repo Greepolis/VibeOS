@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_FDTABLE_H
 #define VIBEOS_FDTABLE_H
 

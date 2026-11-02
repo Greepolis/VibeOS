@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_UEFI_SERIAL_H
 #define VIBEOS_UEFI_SERIAL_H
 

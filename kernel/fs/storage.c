@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Disk bring-up. See include/vibeos/storage.h for why this file exists. */
 
 #include "vibeos/storage.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* FAT16/FAT32: the boot volume's filesystem, and any other volume formatted so.
  *
  * It began as a read-only reader over the virtio-blk driver - an MBR, a BPB, an

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the memory-management counters (plan phase P0).
  *
  * A separate file rather than nine hundred more lines in kernel_tests.c, which

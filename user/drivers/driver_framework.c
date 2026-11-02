@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/drivers.h"
 
 static vibeos_driver_record_t *find_driver_record(vibeos_driver_framework_t *fw, uint32_t id) {

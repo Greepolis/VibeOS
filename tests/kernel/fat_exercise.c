@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The FAT writer, on a volume somebody else made, for somebody else to read
  * (docs/abi/ L1 step 4).
  *

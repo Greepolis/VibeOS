@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Turn a kernel backtrace into function names and source lines.
 
     python3 scripts/dev/symbolize.py [build-dir] < serial.log

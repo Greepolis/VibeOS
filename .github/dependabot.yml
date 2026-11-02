@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The workflows name every action by commit, which is what makes a tag moved
 # under them harmless - and what would leave them on old code for ever if
 # nothing moved the pins. This opens a pull request when an action has a newer

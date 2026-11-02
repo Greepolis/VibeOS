@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Does every NT function that changes the filesystem ask who is asking?
 
 M-105 found NtOpenFile opening anything for anybody; three weeks later the v7

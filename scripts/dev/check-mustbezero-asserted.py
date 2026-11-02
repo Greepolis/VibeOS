@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Is every MUSTBEZERO the kernel prints actually read by the boot gate?
 
 Two checks already watch the checks. `check-counters-produced.py` matches every

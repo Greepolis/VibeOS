@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Do the security checks still have the number of call sites they declare?
 
 These are choke points *because* they are called from one place per path and

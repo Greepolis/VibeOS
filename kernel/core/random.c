@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The kernel's random numbers. See include/vibeos/random.h. */
 
 #include "vibeos/random.h"

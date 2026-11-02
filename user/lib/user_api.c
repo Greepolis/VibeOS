@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/kernel.h"
 #include "vibeos/user_api.h"
 

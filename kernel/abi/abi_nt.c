@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The NT personality's registry (docs/abi/windows.md W1). See vibeos/abi_nt.h.
  *
  * Portable and host-tested, like abi_linux.c beside it: the table of services

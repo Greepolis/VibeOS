@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Is the Linux syscall table complete, unambiguous, and honest about its checks?
 
 C4 gave the kernel a vocabulary (include/vibeos/abi.h) in which each operation is

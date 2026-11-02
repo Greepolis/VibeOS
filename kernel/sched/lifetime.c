@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The decisions a task's death involves. Phase S-P3 of docs/sched/. */
 
 #include "vibeos/lifetime.h"

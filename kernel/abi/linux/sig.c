@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: sending signals and the signal mask.
  *
  * Lifted out of arch_hw.c (C4 stage 3). Nothing here is new: the handlers and the

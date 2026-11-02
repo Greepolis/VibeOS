@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: sections (docs/abi/windows.md W2, W3 step 5).
  *
  * How a Windows loader brings a DLL in: NtOpenFile the file, NtCreateSection

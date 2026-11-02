@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The allocator under the Rtl functions that allocate (docs/abi/windows.md W2,
  * W3 step 3).
  *

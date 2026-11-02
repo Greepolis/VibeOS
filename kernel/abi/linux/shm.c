@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* System V shared memory (docs/abi/ L7 step 3), over what ipc.c shares.
  *
  * A segment is a file on /tmp that nothing names - memfd_create's kind, made

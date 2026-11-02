@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Does every sabotage case still have something to break?
 
 `scripts/dev/cases/*.txt` are the argument that a check works: each case removes

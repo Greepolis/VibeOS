@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* P7 — the acceptance properties, as far as a host test can carry them.
  *
  * The phases above build the memory manager; this one is meant to prove it is

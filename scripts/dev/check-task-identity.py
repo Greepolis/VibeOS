@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """C5: who owns "what is a task".
 
 Two properties, both of which the type system cannot state:

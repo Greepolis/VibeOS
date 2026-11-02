@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Break a thing on purpose and confirm a named test goes red.
 
     scripts/dev/sabotage.py <source-file> <cases-file> [build-dir]

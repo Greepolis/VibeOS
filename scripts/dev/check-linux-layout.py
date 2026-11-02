@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Is every Linux layout and number the kernel declares compared with Linux's?
 
 docs/abi/ phase A5. The kernel is freestanding, so it declares Linux's

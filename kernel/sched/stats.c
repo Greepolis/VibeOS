@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Task counters. Phase S-P0 of docs/sched/.
  *
  * One structure, no lock, for the same reason the memory manager's is: these

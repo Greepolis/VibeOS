@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The kernel's own log, on a medium that survives the machine (I5b).
  *
  * Not the same thing as kernel/fs/journal.c. That is a write-ahead journal for

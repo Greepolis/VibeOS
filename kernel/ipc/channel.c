@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/ipc.h"
 
 void vibeos_channel_init(vibeos_channel_t *channel) {

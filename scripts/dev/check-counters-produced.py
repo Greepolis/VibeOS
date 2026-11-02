@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Which counters does the kernel report that nothing ever increments?
 
 A counter with no producer is an assertion that cannot go red. This project

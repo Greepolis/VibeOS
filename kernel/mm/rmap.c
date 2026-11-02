@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* L1a: the reverse map. See include/vibeos/rmap.h for why it exists.
  *
  * A chained hash from frame index to a list of holders, out of a fixed pool.

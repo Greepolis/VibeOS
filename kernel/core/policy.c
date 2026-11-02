@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/policy.h"
 
 static int policy_capability_target_valid(vibeos_policy_capability_target_t target) {

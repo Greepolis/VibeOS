@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* include/vibeos/nt_layout.h against mingw-w64's own headers, at compile time
  * (docs/abi/windows.md W1). Compiled with ntdll and contributing nothing to it:
  * if an offset the kernel writes and our ntdll reads disagrees with where

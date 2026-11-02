@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Environment blocks (docs/abi/windows.md W2).
  *
  * A block is a run of "NAME=value" strings, each ended by a NUL, and the run is

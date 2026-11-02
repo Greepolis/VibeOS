@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A dynamically linked Linux binary: the last kind this kernel could not run.
  *
  * The difference from the static and position-independent tests is not the

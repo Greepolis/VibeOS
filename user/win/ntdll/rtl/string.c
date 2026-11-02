@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* STRING and UNICODE_STRING (docs/abi/windows.md W2), from Microsoft's description
  * of each function. Every length here is in BYTES, as Windows counts them, and a
  * UNICODE_STRING is not assumed to be terminated - except where a function says

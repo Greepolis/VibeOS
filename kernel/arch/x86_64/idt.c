@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/arch_x86_64.h"
 
 int vibeos_x86_64_idt_init(vibeos_x86_64_idt_t *idt) {

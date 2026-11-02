@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Application-processor bring-up: the local APIC on the bootstrap core, then
  * every other core woken, given its per-CPU area and an idle task, and handed to
  * the scheduler.

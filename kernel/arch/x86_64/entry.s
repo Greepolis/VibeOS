@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 # x86_64 kernel entry point for QEMU q35
 # 
 # Multiboot2 header for QEMU direct kernel loading

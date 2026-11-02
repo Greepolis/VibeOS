@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Looping user task for the VibeOS scheduler demo.
  *
  * The kernel passes this task's id as argv[0], the way any program gets its

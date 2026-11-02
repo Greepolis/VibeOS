@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # create_boot_image.cmake - Generate EFI boot media layout artifacts
 
 set(ARTIFACTS_DIR "${CMAKE_BINARY_DIR}/artifacts")

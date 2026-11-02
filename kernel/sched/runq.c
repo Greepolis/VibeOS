@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Which task runs next. Phase S-P2 of docs/sched/.
  *
  * Round-robin over the runnable slots, one cursor per CPU. The algorithm is

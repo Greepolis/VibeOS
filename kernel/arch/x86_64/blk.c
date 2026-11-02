@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Which block driver the filesystem talks to.
  *
  * fat.c used to call vibeos_x86_64_virtio_blk_read by name, from nine places.

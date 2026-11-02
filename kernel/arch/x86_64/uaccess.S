@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copying to and from user memory, surviving a fault (H-003, H-010).
  *
  * A user range the kernel has validated can stop being mapped before it is

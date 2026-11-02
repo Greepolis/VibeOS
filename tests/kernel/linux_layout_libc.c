@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The half of the layout test (linux_layout_tests.c) that Linux's uapi headers
  * cannot answer, answered by the C library's headers instead (docs/abi/ A5).
  *

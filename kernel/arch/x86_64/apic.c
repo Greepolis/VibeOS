@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* ACPI discovery + local/IO APIC + SMP application-processor startup.
  *
  * This replaces the legacy 8259 PIC / PIT pair with the interrupt hardware a

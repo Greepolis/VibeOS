@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_KLOG_H
 #define VIBEOS_KLOG_H
 

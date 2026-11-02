@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* memcpy and friends for a DLL linked -nostdlib (docs/abi/windows.md W2).
  *
  * The compiler emits calls to these for struct copies and for loops it

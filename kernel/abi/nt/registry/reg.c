@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The Windows registry's core (docs/abi/windows.md W8 step 2). See
  * vibeos/ntreg.h for the contract.
  *

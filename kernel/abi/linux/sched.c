@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linux ABI: scheduling - policies and priorities, affinity, the CPU a thread
  * is on, I/O priorities and membarrier (docs/abi/ L6 step 2).
  *

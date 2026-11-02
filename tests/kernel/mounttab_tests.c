@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The mount table: attachment, longest-prefix resolution, and the refusals.
  *
  * There was one global mount before this, which was the structural reason only

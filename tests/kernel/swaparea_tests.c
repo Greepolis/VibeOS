@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the swap area — where swap lives.
  *
  * One property matters more than everything else here and the tests are

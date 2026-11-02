@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Fuzz the network receive path.
  *
  * vibeos_inet_input() is the one function in the system that is fed bytes

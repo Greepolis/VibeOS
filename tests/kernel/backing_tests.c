@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the backing layer and the page cache (plan phase P4).
  *
  * The cache is where a wrong answer is worst: a hit that returns the wrong

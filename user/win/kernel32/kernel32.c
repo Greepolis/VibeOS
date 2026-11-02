@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Our kernel32.dll (docs/abi/windows.md W2).
  *
  * Windows' kernel32 is mostly a translation: a Win32 call becomes an Nt call,

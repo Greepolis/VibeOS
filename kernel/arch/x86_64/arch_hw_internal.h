@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIBEOS_ARCH_HW_INTERNAL_H
 #define VIBEOS_ARCH_HW_INTERNAL_H
 

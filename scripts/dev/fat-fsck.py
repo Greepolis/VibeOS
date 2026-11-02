@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Is a FAT16/FAT32 volume consistent with itself?
 
     scripts/dev/fat-fsck.py <image>

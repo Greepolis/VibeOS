@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The Linux x86-64 ABI: the registry of its syscalls.
  *
  * A syscall is a row - number, kernel operation, handler - that lives beside the

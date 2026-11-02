@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NT personality: the system services of W1 (docs/abi/windows.md).
  *
  * The time, the performance counter, and SystemBasicInformation - what a

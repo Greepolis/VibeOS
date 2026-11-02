@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A disk that fails, swept across which request fails (I7).
  *
  * Every other test of this layer asks what happens when the disk works. This

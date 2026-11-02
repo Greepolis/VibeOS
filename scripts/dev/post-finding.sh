@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Fire a security-review finding at the repo's repository_dispatch "webhook", which
 # the Finding-to-discussion workflow turns into a comment on the running
 # "Security review findings" Discussion.

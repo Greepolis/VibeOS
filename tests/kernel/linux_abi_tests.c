@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests for the Linux syscall handlers (docs/abi/ phase A2).
  *
  * The handlers in kernel/abi/linux run here as they run in the kernel, entered

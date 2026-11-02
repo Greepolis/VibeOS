@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Storage and I/O bring-up: what the machine does with its disks at boot.
  *
  * Cut out of arch_hw.c, which had grown to eleven thousand lines - two and a

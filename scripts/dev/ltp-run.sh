@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Run Linux Test Project tests on VibeOS and say what each one concluded.
 #
 #     scripts/dev/ltp-run.sh <build-dir> <test> [<test> ...]

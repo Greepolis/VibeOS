@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* exFAT, read-only.
  *
  * The node identity here is the first cluster plus a contiguity flag, and both

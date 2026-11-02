@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Randomised torture for the file-lock table (kernel/fs/filelock.c, docs/abi/
  * L1 step 6), checked against a model that shares nothing with it.
  *

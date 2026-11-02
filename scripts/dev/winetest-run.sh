@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Run Wine's conformance tests on VibeOS and hold each against Wine's own answer
 # (docs/abi/windows.md W2): the NT personality's oracle, as ltp-run.sh is the
 # Linux one's.

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* L0: physical frames.
  *
  * One owner for physical memory. Everything that allocates, shares or releases

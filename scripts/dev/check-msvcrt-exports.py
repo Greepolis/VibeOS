@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """msvcrt.dll exports exactly what msvcrt.def lists, and imports only ntdll.dll.
 
     scripts/dev/check-msvcrt-exports.py <msvcrt.dll> <msvcrt.def> [objdump]

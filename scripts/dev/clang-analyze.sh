@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # clang's static analyzer over the portable kernel, one file at a time.
 #
 #     scripts/dev/clang-analyze.sh [--sarif <dir>] [file.c ...]

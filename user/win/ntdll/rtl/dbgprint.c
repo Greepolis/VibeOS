@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* DbgPrint and its relatives (docs/abi/windows.md W2).
  *
  * On Windows these go to an attached debugger, and to nowhere when there is none.

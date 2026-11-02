@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Generate the table of contents mdBook needs, from the docs that exist.
 
     python3 scripts/dev/make-book-summary.py [docs-dir]

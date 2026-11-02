@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Open file descriptions. See include/vibeos/file.h. */
 
 #include "vibeos/file.h"

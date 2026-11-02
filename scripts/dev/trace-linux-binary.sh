@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Which Linux syscalls does a real program actually use, and which of them does
 # VibeOS not serve yet?
 #

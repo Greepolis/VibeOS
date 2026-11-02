@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Freestanding user-space program for VibeOS.
  *
  * Built as a static, position-dependent ELF64 (see user.ld) with no libc. It

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """What a memory soak run measured, and whether it is acceptable.
 
 One definition, used by scripts/dev/soak.sh and by the nightly. Two copies of

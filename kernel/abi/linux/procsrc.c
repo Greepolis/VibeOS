@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* What /proc says about processes (docs/abi/ L2 step 6): the source that
  * kernel/fs/procfs.c asks, written against the kernel services like a handler.
  *
