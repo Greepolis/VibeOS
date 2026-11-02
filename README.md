@@ -187,8 +187,10 @@ questions rather than to build: [docs/development_tools.md](docs/development_too
 
 ## License
 
-MIT - see [LICENSE](LICENSE). The vendored dependency under `third_party/` keeps
-its own license.
+GNU General Public License, version 3 or (at your option) any later version -
+see [LICENSE](LICENSE). Releases before this change were published under MIT
+and stay so for whoever took them. The vendored dependency under
+`third_party/` keeps its own license (mbedTLS, Apache-2.0, which GPLv3 accepts).
 
 ## Progress Tracking
 

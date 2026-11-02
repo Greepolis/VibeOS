@@ -34,7 +34,7 @@ registry, and later the window system.
 executables. Each is run first under Wine on the build host, which is what the
 answers are compared with - the corpus's rule, "compare with what the reference
 printed, not with what you expect". They are LGPL and used only as an oracle:
-nothing of Wine goes into VibeOS, which is MIT, and our `ntdll` and `kernel32`
+nothing of Wine goes into VibeOS, which is GPLv3, and our `ntdll` and `kernel32`
 are written without its code in front of us.
 
 Unlike LTP, the tests cannot be the measure from the first day: they need a PE
