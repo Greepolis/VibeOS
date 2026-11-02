@@ -104,8 +104,17 @@ or a subsystem of its own.
 
 | ID | What | Status |
 |---|---|---|
-| WO-080 | advapi32's registry moves into W8 (was WO-050, out of plan) | open (W8 steps 2-4) |
+| WO-080 | advapi32's registry moves into W8 (was WO-050, out of plan) | open: core (step 2) and services (step 3) done, advapi32 (step 4) next |
 | WO-081 | user32 and gdi32 as far as programs reach without a window system (was WO-051) | open (W8 steps 5-6) |
 | WO-082 | A kernel built without the NT personality is not known to build or boot | closed (W8 step 1): check.sh builds it and checks its symbols every run; booted once |
 | WO-083 | The registry's small-cell pages are kept once carved: after many values are deleted the memory is reused, not given back (W8 step 2) | open |
 | WO-084 | The registry folds case for Latin, Greek and Cyrillic only; Windows' upcase table covers all of Unicode (W8 step 2) | open |
+| WO-085 | Symbolic keys (REG_OPTION_CREATE_LINK) are NOT_SUPPORTED (W8 step 3) | open |
+| WO-086 | Every process's current user is `\Registry\User\.DEFAULT`: there are no tokens to name another (W8 step 3; with SEC) | open |
+| WO-087 | RtlQueryRegistryValues hands a REG_EXPAND_SZ over unexpanded (W8 step 3) | open |
+| WO-088 | A registry change made in the last second before nothing else calls the registry waits for the next call: no flush at shutdown or when idle (W8 step 3) | open |
+| WO-089 | NtNotifyChangeKey and NtNotifyChangeMultipleKeys are MISSING (ntdll:reg's test_notify) | open |
+| WO-090 | NtQueryObject does not answer for a key handle (ntdll:reg's test_NtDeleteKey) | open |
+| WO-091 | WoW64 registry redirection (KEY_WOW64_32KEY views) is not done: ntdll:reg's test_redirection fails, as WoW64 is not planned | out of plan |
+| WO-092 | Registry keys have no ACLs: any process may open any key (with SEC) | open |
+| WO-093 | A hive larger than the 1 MiB staging buffer is not saved (W8 step 3) | open |

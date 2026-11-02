@@ -1132,3 +1132,61 @@ six boots, the oracle, and the open-items register.
 
 Nothing calls the registry yet: step 3 starts it in the NT personality and
 gives it its services.
+
+### Done: the Nt*Key services (step 3, 2026-11-02)
+
+`kernel/abi/nt/key.c`, over step 2's core.
+
+- **Keys are handles of their own type**, "Key", with Windows' rights
+  (KEY_QUERY_VALUE, _SET_VALUE, _CREATE_SUB_KEY, _ENUMERATE_SUB_KEYS, DELETE
+  for NtDeleteKey): a description holding the core's key in `nt_key`, not an
+  object of the object manager's table, which is sized for events and threads.
+- **NtCreateKey, NtOpenKey(Ex), NtDeleteKey, NtRenameKey, NtFlushKey,
+  NtSetValueKey, NtQueryValueKey, NtEnumerateValueKey, NtDeleteValueKey,
+  NtEnumerateKey, NtQueryKey**, with every information class Wine's tests
+  read and Windows' rule for a short buffer: the length always reported,
+  BUFFER_TOO_SMALL below the fixed part, BUFFER_OVERFLOW with as much as fits
+  above it. Paths are `\Registry\...` or relative to a root key's handle;
+  anything else is OBJECT_PATH_SYNTAX_BAD or OBJECT_TYPE_MISMATCH, as Windows
+  answers.
+- **Hives on the volume**: `\Windows\System32\config\MACHINE.HIV` and
+  `USER.HIV`, read at the registry's first call (the personality starts before
+  the filesystem is mounted), written behind - at most once a second, and at
+  NtFlushKey - as .NEW, then the hive moved to .BAK and .NEW into its place.
+  A hive that does not check is replaced by .BAK; a volume that cannot rename
+  gets the hive written in place with .NEW kept whole beside it, which the load
+  reads last. A fresh machine gets the default content: the version under
+  CurrentVersion agreeing with GetVersionEx, Classes, the Wow6432Node keys
+  Windows x64 has, `.DEFAULT` for the user.
+- **ntdll's registry helpers** (`user/win/ntdll/rtl/registry.c`, in the DLL
+  only): RtlOpenCurrentUser, RtlFormatCurrentUserKeyPath, RtlCheckRegistryKey,
+  RtlQueryRegistryValues, RtlWriteRegistryValue, RtlDeleteRegistryValue,
+  RtlCreateRegistryKey, RtlpNtQueryValueKey; and in the portable runtime
+  RtlCreateUnicodeStringFromAsciiz, RtlAppendUnicodeToString,
+  RtlUnicodeStringToAnsiString, RtlFreeAnsiString, RtlZeroMemory.
+- `t_reg_keys` on the fake kernel, whose root volume cannot rename; eight
+  sabotage cases (`nt-key.txt`), all red - two went NOT RED first, both the
+  test's arrangement: a prefix like `\Reg\` was not tried, and the hive was
+  already on the volume before the flush the test meant to prove. hello.exe
+  makes, writes, reads back, names, flushes and deletes a key on every boot;
+  `nt-key-boot.txt` goes red when a value set is not kept.
+
+**A quiet boot that was the test's own loop.** With the Wow6432Node keys
+added, ntdll:reg went quiet: one core inside the frame layer's page-table
+audit, the timers still. Two causes were written and disproved before the
+evidence was read the right way - the registry's page frees (a counter showed
+none reached the frame layer) and a hive written on every key closed. What
+named it was the kernel printing each registry call it served: 70,519, the
+last tens of thousands all NtEnumerateKey. test_redirection counts a key's
+subkeys with NtQueryKey and enumerates that many; the key it asked about,
+`Software\Wow6432Node\Classes`, did not exist, the query failed, and the count
+came from a buffer an earlier call had left. Windows x64 has that key; the
+default content has it now. The two disproved changes are kept - a page cache
+and the same second's limit at a key's close are sound on their own - with
+comments that say they were not the cause.
+
+What the oracle says after step 3 (2026-11-02): `ntdll:reg` runs to
+`advapi32.dll.OpenProcessToken` (Wine: 3,762 tests, 0 failures). The failures
+it prints before that are WoW64's redirection - a 64-bit program asking for
+the 32-bit view, which is not planned - and the notification and object-name
+services below.
