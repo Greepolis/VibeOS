@@ -195,6 +195,18 @@ size_t vc_strcspn(const char *s, const char *reject) {
     return n;
 }
 
+/* The length of the run of `s` made only of characters in `accept` (W8 step
+ * 4: advapi32's registry test calls it). */
+size_t vc_strspn(const char *s, const char *accept) {
+    size_t n = 0;
+    for (; s[n]; n++) {
+        if (!vc_strchr(accept, s[n])) {
+            break;
+        }
+    }
+    return n;
+}
+
 /* The caller keeps the position: msvcrt keeps it per thread, and a process has
  * one thread until W5 (msvcrt.c holds the single copy). */
 char *vc_strtok(char *s, const char *delim, char **state) {

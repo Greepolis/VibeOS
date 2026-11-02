@@ -623,6 +623,7 @@ static void test_strings(uint64_t seed) {
                   "strnicmp(%s,%s,3)", x, y);
             CHECK(vc_strstr(x, y) == strstr(x, y), "strstr(%s,%s)", x, y);
             CHECK(vc_strcspn(x, y) == strcspn(x, y), "strcspn(%s,%s)", x, y);
+            CHECK(vc_strspn(x, y) == strspn(x, y), "strspn(%s,%s)", x, y);
         }
         for (k = 0; k < 128; k += 7) {
             CHECK(vc_strchr(pool[i], k) == strchr(pool[i], k), "strchr(%s,%d)", pool[i], k);

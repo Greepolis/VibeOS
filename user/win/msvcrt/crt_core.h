@@ -30,6 +30,7 @@ char *vc_strstr(const char *s, const char *needle);
 char *vc_strcpy(char *d, const char *s);
 char *vc_strcat(char *d, const char *s);
 size_t vc_strcspn(const char *s, const char *reject);
+size_t vc_strspn(const char *s, const char *accept);
 char *vc_strtok(char *s, const char *delim, char **state);
 void *vc_memchr(const void *s, int c, size_t n);
 int vc_memcmp(const void *a, const void *b, size_t n);

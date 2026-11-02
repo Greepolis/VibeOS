@@ -397,6 +397,7 @@ char *strstr(const char *s, const char *n) { return vc_strstr(s, n); }
 char *strcpy(char *d, const char *s) { return vc_strcpy(d, s); }
 char *strcat(char *d, const char *s) { return vc_strcat(d, s); }
 size_t strcspn(const char *s, const char *r) { return vc_strcspn(s, r); }
+size_t strspn(const char *s, const char *a) { return vc_strspn(s, a); }
 
 static char *g_strtok_state;
 char *strtok(char *s, const char *delim) { return vc_strtok(s, delim, &g_strtok_state); }

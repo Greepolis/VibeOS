@@ -38,6 +38,7 @@ strcspn
 strlen
 strncmp
 strrchr
+strspn
 strstr
 strtoul
 vprintf
