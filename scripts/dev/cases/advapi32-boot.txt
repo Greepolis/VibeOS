@@ -1,0 +1,21 @@
+# Our advapi32 (user/win/advapi32/advapi32.c, docs/abi/windows.md W8 step 4),
+# broken; caught at boot by hello.exe's advapi32_check, which the gate reads as
+# nt_program_did_not_run. advapi32 runs only on the machine, so the boot is
+# its test.
+#
+# Target source: user/win/advapi32/advapi32.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py user/win/advapi32/advapi32.c scripts/dev/cases/advapi32-boot.txt build-gcc-Release
+
+### RegCreateKeyEx makes only the last key of a path
+--- old
+        st = NtCreateKey(&next, last ? (sam & ~KEY_WOW64_MASK) : MAXIMUM_ALLOWED, oa, 0, 0, options & 1u,
+                         &d);
++++ new
+        st = last ? NtCreateKey(&next, sam & ~KEY_WOW64_MASK, oa, 0, 0, options & 1u, &d)
+                  : NtOpenKey(&next, MAXIMUM_ALLOWED, oa);
+
+### an ANSI string is stored without its conversion
+--- old
+            rec[12u + i] = (uint8_t)narrow(src[i]);
++++ new
+            rec[12u + i] = (uint8_t)(src[i] >> 8);

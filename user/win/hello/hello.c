@@ -473,6 +473,41 @@ static const char *registry_check(void) {
     return 0;
 }
 
+/* W8 step 4: the registry through advapi32 - a two-level path made under
+ * HKEY_CURRENT_USER (RegCreateKeyEx makes the missing middle key too), a
+ * string written and read back through the ANSI forms, which convert it, and
+ * the tree deleted again. */
+__declspec(dllimport) int32_t RegCreateKeyExA(uint64_t, const char *, uint32_t, char *, uint32_t, uint32_t,
+                                              void *, uint64_t *, uint32_t *);
+__declspec(dllimport) int32_t RegSetValueExA(uint64_t, const char *, uint32_t, uint32_t, const uint8_t *,
+                                             uint32_t);
+__declspec(dllimport) int32_t RegQueryValueExA(uint64_t, const char *, uint32_t *, uint32_t *, uint8_t *,
+                                               uint32_t *);
+__declspec(dllimport) int32_t RegDeleteTreeA(uint64_t, const char *);
+__declspec(dllimport) int32_t RegCloseKey(uint64_t);
+
+static const char *advapi32_check(void) {
+    const uint64_t hkcu = 0xFFFFFFFF80000001ull;   /* HKEY_CURRENT_USER, as a 64-bit HKEY holds it */
+    uint64_t key = 0;
+    uint32_t disp = 0, type = 0, len = 16;
+    uint8_t back[16];
+
+    if (RegCreateKeyExA(hkcu, "Software\\VibeHello\\Deep", 0, 0, 0, 0x000F003Fu, 0, &key, &disp) != 0 ||
+        disp != 1u) {
+        return "NT_HELLO_FAIL advapi32_create\n";
+    }
+    if (RegSetValueExA(key, "Greeting", 0, 1u /* REG_SZ */, (const uint8_t *)"hi", 3u) != 0 ||
+        RegQueryValueExA(key, "greeting", 0, &type, back, &len) != 0 || type != 1u || len != 3u ||
+        back[0] != 'h' || back[1] != 'i' || back[2] != 0) {
+        return "NT_HELLO_FAIL advapi32_value\n";
+    }
+    (void)RegCloseKey(key);
+    if (RegDeleteTreeA(hkcu, "Software\\VibeHello") != 0) {
+        return "NT_HELLO_FAIL advapi32_delete\n";
+    }
+    return 0;
+}
+
 /* A child that sleeps until something ends it - a thread its parent makes in
  * it, if W7 step 2 works - and otherwise ends with 42 after twenty seconds. */
 static const char *remote_thread_check(void) {
@@ -700,6 +735,9 @@ int nt_hello_start(void) {
         }
         if (!why) {
             why = registry_check();
+        }
+        if (!why) {
+            why = advapi32_check();
         }
         if (why) {
             return fail(why);

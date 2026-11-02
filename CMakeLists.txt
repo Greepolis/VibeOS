@@ -1009,9 +1009,10 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             OUTPUT "${VIBEOS_WIN_DIR}/hello.exe"
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS}
                     -o "${VIBEOS_WIN_DIR}/hello.exe" "${VIBEOS_WIN_SRC}/hello/hello.c"
-                    -L${VIBEOS_WIN_DIR} -lntdll -l:libmsvcrt.a -e nt_hello_start
-                    -Wl,--dynamicbase
+                    -L${VIBEOS_WIN_DIR} -lntdll -l:libmsvcrt.a -l:libvibeos_advapi32.a
+                    -e nt_hello_start -Wl,--dynamicbase
             DEPENDS "${VIBEOS_WIN_SRC}/hello/hello.c" "${VIBEOS_WIN_DIR}/libntdll.a"
+                    "${VIBEOS_WIN_DIR}/libvibeos_advapi32.a"
             COMMENT "Building the first Windows program with mingw-w64"
             VERBATIM
         )
@@ -1031,10 +1032,26 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMENT "Building our kernel32.dll with mingw-w64"
             VERBATIM
         )
-        # user32 and advapi32 as placeholders that load and export nothing (W2):
-        # every import from them binds to one of ntdll's named stubs, so a
-        # program runs until the first it calls, and says which.
-        foreach(VIBEOS_PH user32 advapi32)
+        # advapi32.dll (docs/abi/windows.md W8 step 4): the registry's Win32 face
+        # over the Nt*Key services. Its import library has a name of its own, so
+        # that -l never finds mingw's advapi32 for it.
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/advapi32.dll" "${VIBEOS_WIN_DIR}/libvibeos_advapi32.a"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
+                    -o "${VIBEOS_WIN_DIR}/advapi32.dll"
+                    "${VIBEOS_WIN_SRC}/advapi32/advapi32.c" "${VIBEOS_WIN_SRC}/advapi32/advapi32.def"
+                    -e vibeos_advapi32_main -Wl,--image-base=0x8007000000
+                    -L${VIBEOS_WIN_DIR} -lntdll
+                    -Wl,--out-implib=${VIBEOS_WIN_DIR}/libvibeos_advapi32.a
+            DEPENDS "${VIBEOS_WIN_SRC}/advapi32/advapi32.c" "${VIBEOS_WIN_SRC}/advapi32/advapi32.def"
+                    "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h" "${VIBEOS_WIN_DIR}/libntdll.a"
+            COMMENT "Building our advapi32.dll with mingw-w64"
+            VERBATIM
+        )
+        # user32 as a placeholder that loads and exports nothing (W2): every
+        # import from it binds to one of ntdll's named stubs, so a program runs
+        # until the first it calls, and says which.
+        foreach(VIBEOS_PH user32)
             add_custom_command(
                 OUTPUT "${VIBEOS_WIN_DIR}/${VIBEOS_PH}.dll"
                 COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
