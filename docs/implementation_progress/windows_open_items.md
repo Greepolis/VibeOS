@@ -105,7 +105,7 @@ or a subsystem of its own.
 | ID | What | Status |
 |---|---|---|
 | WO-080 | advapi32's registry moves into W8 (was WO-050, out of plan) | closed (W8 steps 2-4); what is left is WO-085 onward |
-| WO-081 | user32 and gdi32 as far as programs reach without a window system (was WO-051) | open (W8 steps 5-6) |
+| WO-081 | user32 and gdi32 as far as programs reach without a window system (was WO-051) | closed (W8 steps 5-6); what is left is WO-101 onward |
 | WO-082 | A kernel built without the NT personality is not known to build or boot | closed (W8 step 1): check.sh builds it and checks its symbols every run; booted once |
 | WO-083 | The registry's small-cell pages are kept once carved: after many values are deleted the memory is reused, not given back (W8 step 2) | open |
 | WO-084 | The registry folds case for Latin, Greek and Cyrillic only; Windows' upcase table covers all of Unicode (W8 step 2) | open |
@@ -123,3 +123,10 @@ or a subsystem of its own.
 | WO-096 | RegSaveKey, RegLoadKey, RegUnLoadKey, RegLoadAppKey, RegSetKeySecurity are refused | open |
 | WO-097 | No access tokens: OpenProcessToken fails, AdjustTokenPrivileges has nothing to adjust, SetEntriesInAcl and the ACL API are missing (advapi32:registry stops there) | open (with SEC) |
 | WO-098 | kernel32:console stops at FreeConsole; kernel32:debugger at GetSystemWow64DirectoryW | open |
+| WO-099 | NtWriteVirtualMemory and NtReadVirtualMemory reach only the regions in the NT personality's list, so a process's own main stack is refused (W8 step 6) | open |
+| WO-100 | gdi32's GetObject refuses only a buffer below 64 KiB; any other bad pointer faults, where Windows answers ERROR_NOACCESS from under an exception handler (W8 step 6) | open |
+| WO-101 | No window system: classes, windows, messages, cursors, icons, menus, accelerators, desktops (user32:class, static, resource, winstation stop there) | open (with the UI) |
+| WO-102 | Resources are not read from an image: LoadString and the Load* family fail | open |
+| WO-103 | SystemParametersInfo and EnumDisplayDevices are missing (user32:sysparams, monitor) | open (with the UI) |
+| WO-104 | GDI regions, mapping modes, graphics modes and paths are missing (gdi32:gdiobj, clipping, dc, mapping stop at CreateRectRgn, SetMapMode, SetGraphicsMode) | open |
+| WO-105 | Pattern and DIB brushes, ExtCreatePen, DIBs and DIB sections, palettes, fonts and ICM are missing, and nothing is drawn (gdi32:brush, pen, bitmap, path, palette, font, icm) | open |

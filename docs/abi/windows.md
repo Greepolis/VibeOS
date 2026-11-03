@@ -1232,3 +1232,71 @@ WoW64's redirection and the services below. `advapi32:registry` stops at
 REG_EXPAND_SZ expansion; `kernel32:console` at `FreeConsole`,
 `kernel32:debugger` at `GetSystemWow64DirectoryW` - both past the registry,
 which is what stopped them in W7.
+
+### Done: user32 and gdi32 without a window system (steps 5 and 6, 2026-11-03)
+
+`user/win/user32/user32.c` and `user/win/gdi32/gdi32.c`, built like advapi32
+with import libraries of their own names (`libvibeos_user32.a`,
+`libvibeos_gdi32.a`). user32 imports gdi32 for the screen's DC. hid, imm32 and
+setupapi stay placeholders.
+
+- **user32**: wsprintf and wvsprintf in both widths - flags, width,
+  precision, `h`, `l`, `w`, `I`, `I32`, `I64`, `%c`/`%C`, `%s`/`%S`, `%p`, at
+  most 1,024 characters as Windows writes; the character case functions
+  (CharUpper/Lower and their Buff forms, IsCharAlpha/Upper/Lower) for
+  Windows-1252, with a pointer below 64 KiB taken as a character; the handles
+  there is one of - GetDesktopWindow, GetProcessWindowStation,
+  GetThreadDesktop - and GetDC/GetWindowDC/ReleaseDC on gdi32's display DC;
+  GetSystemMetrics for a 1024x768 screen.
+- **What needs a window system fails, by name**: RegisterClass(Ex),
+  CreateWindowEx, LoadCursor, LoadIcon, LoadString and
+  RegisterClipboardFormat answer failure with ERROR_CALL_NOT_IMPLEMENTED
+  instead of binding to a stub that ends the process, so a program can tell
+  "no windows here" from a crash.
+- **gdi32**: one handle table in Windows' shape (the index in the low 16
+  bits, the type in bits 16-22, 0x00800000 for a stock object, a generation
+  in bits 24-30, so a handle survives being passed through an int); the stock
+  objects; solid, hatched and indirect brushes, pens, bitmaps that hold their
+  bits (Get/SetBitmapBits), display and memory DCs; SelectObject with
+  Windows' rules (a bitmap only into a memory DC and one DC at a time),
+  GetCurrentObject, GetObject, GetObjectType, DeleteObject (a stock object is
+  accepted and kept; a bitmap selected into a DC is refused), the DC's
+  colours, background mode, character extra and brush origin, and
+  GetDeviceCaps. Nothing is drawn: PatBlt, MoveToEx, LineTo and GetPixel fail
+  with ERROR_CALL_NOT_IMPLEMENTED.
+- **Windows' small rules the oracle checks**: a null handle fails without
+  setting an error, except for GetObjectType, which sets
+  ERROR_INVALID_HANDLE; GetObject into a buffer too small gets nothing; a
+  hatch style past the six public ones makes a solid brush.
+- **kernel32**, for the tests on the way: GetSystemDefaultLangID and its
+  siblings (English (United States), the locale Windows-1252 belongs to),
+  GetACP, GetOEMCP, IsWow64Process, GetCPInfo, GetCPInfoExW and
+  IsDBCSLeadByte.
+- hello.exe checks wsprintf, a refused CreateWindowEx, a pen selected into
+  the screen's DC and described back by GetObject, and its deletion on every
+  boot; `user32-boot.txt` and `gdi32-boot.txt` hold two cases each.
+
+Found on the way: NtWriteVirtualMemory refuses a process's own main stack,
+because it reaches only the regions in the personality's own list (WO-099).
+gdi32 first copied GetObject's answer through it, to have the kernel judge the
+pointer, and hello.exe's buffer on the stack was refused; it copies directly
+now and refuses only a pointer below 64 KiB (WO-100).
+
+Every DLL but ntdll is relocated: the kernel places DLLs between
+`VIBEOS_HW_PE_DLL_BASE` and `VIBEOS_HW_NT_BLOCK`, 32 MiB from 0x8002000000, so
+the image bases from 0x8004000000 up are never honoured. Relocation works; an
+address from a fault has to be put back against the place the DLL was loaded,
+not its image base.
+
+What the oracle says after steps 5 and 6 (2026-11-03): `user32:wsprintf` is
+**as Wine**, 58 tests and no failures. The others now run past the handles and
+objects and stop at what is a window system or a real GDI: `user32:resource` at
+CreateAcceleratorTableA, `user32:winstation` at OpenInputDesktop,
+`user32:sysparams` at SystemParametersInfoA, `user32:monitor` at
+EnumDisplayDevicesA, `user32:static` at ShowWindow, `user32:class` at
+RegisterClassExA's refusal; `gdi32:gdiobj` at CreateRectRgn, `gdi32:dc` at
+SetMapMode, `gdi32:brush` at CreatePatternBrush, `gdi32:pen` at ExtCreatePen,
+`gdi32:bitmap` at CreateDIBitmap, `gdi32:font` at CreateFontIndirectA,
+`gdi32:mapping` at SetGraphicsMode, `gdi32:palette` at CreatePalette,
+`gdi32:path` at CreateDIBSection, `gdi32:clipping` at CreateRectRgn,
+`gdi32:icm` at GetICMProfileA. Those are WO-101 to WO-105; W8 is closed.
