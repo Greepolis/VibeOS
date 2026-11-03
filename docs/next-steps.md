@@ -11,10 +11,9 @@ was decided.
 1. **The filesystem's hierarchy** - [filesystem-design/](filesystem-design/README.md),
    phases F0-F2 first: what lives where, the current root's tree laid out on it,
    and a mount manifest. F0-F2 need no choice of on-disk format.
-2. **The native root format** (F3) - a writable POSIX filesystem for `/`,
-   `/var` and `/home`. Recommended: ext2, then ext4's journal, because mkfs and
-   fsck exist on every host and are the oracle; to be approved before F3
-   starts.
+2. **ext4 as the native root** (F3, decided 2026-11-03) -
+   [filesystem-design/ext4.md](filesystem-design/ext4.md): read ext4, write it,
+   the journal, then the root on it. `mkfs.ext4` and `e2fsck` are the oracle.
 
 ## Next
 
@@ -39,5 +38,4 @@ was decided.
 
 ## Decisions waiting
 
-- The native root format (item 2).
 - Our compositor or an existing one (item 4).

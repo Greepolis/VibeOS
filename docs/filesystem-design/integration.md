@@ -82,7 +82,8 @@ noncritical services is logged and isolated.
 ## 3. Storage format and durability decision
 
 The hierarchy is independent of the filesystem format. The production root
-format is **not yet selected**. The existing AuroraFS concept is a candidate,
+format is **ext4** (decided 2026-11-03; the plan is [ext4.md](ext4.md)); what
+follows is the bar it has to clear, written before the choice. The existing AuroraFS concept is a candidate,
 not an accepted disk format. Before selection, compare at least:
 
 - whether an existing driver can be made safely writable and maintained;

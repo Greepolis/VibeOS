@@ -36,6 +36,7 @@ change.
 | [hierarchy.md](hierarchy.md) | Canonical directories, ownership, mode and content policy |
 | [integration.md](integration.md) | VFS, mounts, boot, security, Linux and Windows path integration |
 | [implementation-phases.md](implementation-phases.md) | Sequenced work, dependencies, tests and phase exit criteria |
+| [ext4.md](ext4.md) | The native root format (decided 2026-11-03) and the steps to a writable, journalled ext4 |
 
 ## Normative language
 
