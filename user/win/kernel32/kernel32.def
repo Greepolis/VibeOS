@@ -223,3 +223,13 @@ SetEnvironmentVariableW
 SignalObjectAndWait
 SystemTimeToFileTime
 WideCharToMultiByte
+GetSystemDefaultLangID
+GetUserDefaultLangID
+GetSystemDefaultLCID
+GetUserDefaultLCID
+GetACP
+GetOEMCP
+IsWow64Process
+GetCPInfo
+IsDBCSLeadByte
+GetCPInfoExW

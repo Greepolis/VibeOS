@@ -3678,3 +3678,73 @@ uint32_t FormatMessageA(uint32_t flags, const void *source, uint32_t id, uint32_
     HeapFree(GetProcessHeap(), 0, o.b);
     return o.n;
 }
+
+/* ---- locale and machine, as user32 and gdi32's tests ask (W8 steps 5, 6) ----------------- */
+
+/* English (United States): the only locale there is, and the one Windows-1252,
+ * the code page ntdll widens with, belongs to. */
+uint16_t GetSystemDefaultLangID(void) { return 0x0409u; }
+uint16_t GetUserDefaultLangID(void) { return 0x0409u; }
+uint32_t GetSystemDefaultLCID(void) { return 0x0409u; }
+uint32_t GetUserDefaultLCID(void) { return 0x0409u; }
+uint32_t GetACP(void) { return 1252u; }
+uint32_t GetOEMCP(void) { return 437u; }
+
+/* A 64-bit process on a 64-bit machine: not under WOW64. */
+int32_t IsWow64Process(uint64_t process, int32_t *wow64) {
+    (void)process;
+    if (!wow64) {
+        set_error(87u);
+        return 0;
+    }
+    *wow64 = 0;
+    return 1;
+}
+
+/* CPINFO: a single-byte code page has no lead bytes. */
+int32_t GetCPInfo(uint32_t cp, uint8_t *info) {
+    if (!info || (cp != 0u && cp != 1u && cp != 3u && cp != 1252u && cp != 437u && cp != 20127u)) {
+        set_error(87u);
+        return 0;
+    }
+    *(uint32_t *)info = 1u;   /* MaxCharSize */
+    info[4] = '?';
+    info[5] = 0;
+    for (int i = 6; i < 18; i++) {
+        info[i] = 0;
+    }
+    return 1;
+}
+
+/* CPINFOEXW: CPINFO, then the default character in UTF-16, the code page's
+ * number and its name. */
+int32_t GetCPInfoExW(uint32_t cp, uint32_t flags, uint8_t *info) {
+    static const char *const name = "1252  (ANSI - Latin I)";
+    uint16_t *w;
+    int i;
+
+    (void)flags;
+    if (!GetCPInfo(cp, info)) {
+        return 0;
+    }
+    if (cp == 0u || cp == 1u || cp == 3u) {
+        cp = 1252u;
+    }
+    *(uint16_t *)(info + 18) = '?';
+    *(uint32_t *)(info + 20) = cp;
+    w = (uint16_t *)(info + 24);
+    if (cp == 1252u) {
+        for (i = 0; name[i]; i++) {
+            w[i] = (uint16_t)name[i];
+        }
+        w[i] = 0;
+    } else {
+        w[0] = 0;
+    }
+    return 1;
+}
+
+int32_t IsDBCSLeadByte(uint8_t c) {
+    (void)c;
+    return 0;
+}
