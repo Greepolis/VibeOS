@@ -33,6 +33,7 @@ static void expect(int cond, const char *what) {
 #define ST(s) ((long)(uint32_t)(s))
 
 extern int g_kf_aspace_pins;   /* ksvc_fake.c: address spaces held for a call */
+extern int g_kf_lock_reentry;  /* ksvc_fake.c: a preemptible lock taken again by its holder */
 
 static long nt(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                kf_outcome_t *out) {
@@ -2281,6 +2282,70 @@ static int wide_is(const uint8_t *b, uint32_t bytes, const char *s) {
     return 1;
 }
 
+/* Who may open a process (v8 review, H-040): any mask was granted to any
+ * caller, and a handle writes the process's memory and runs a thread in it.
+ * Now Linux's ptrace rule: an unprivileged caller opens only a process all of
+ * whose ids are its own; the superuser opens any. */
+static long open_pid(uint32_t pid, uint64_t *h) {
+    uint64_t cid = kf_ualloc(16), out = kf_ualloc(8);
+    long r;
+
+    ((uint64_t *)kf_uptr(cid))[0] = pid;
+    ((uint64_t *)kf_uptr(cid))[1] = 0u;
+    r = nt(VIBEOS_NT_NR_NtOpenProcess, out, 0x001FFFFFu /* PROCESS_ALL_ACCESS */, 0, cid, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+static void t_open_process_cred(void) {
+    uint64_t h = 0;
+    int me = fresh(70), root = kf_spawn(71, 71), mine = kf_spawn(72, 72), setuid = kf_spawn(73, 73);
+    vibeos_cred_t user;
+
+    vibeos_cred_root(&user);
+    user.uid = user.euid = user.suid = user.fsuid = 1000u;
+    user.gid = user.egid = user.sgid = user.fsgid = 1000u;
+    ks_ps(me)->cred = user;
+    ks_ps(mine)->cred = user;
+    ks_ps(setuid)->cred = user;
+    ks_ps(setuid)->cred.suid = 0u;   /* a setuid program that kept root in its saved id */
+    (void)root;   /* root's credentials: the fake's default */
+    expect(open_pid(71, &h) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "an unprivileged process cannot open a root process");
+    expect(open_pid(73, &h) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "nor one of its own uid that keeps root as its saved id");
+    expect(open_pid(72, &h) == ST(VIBEOS_STATUS_SUCCESS),
+           "it opens a process whose ids are all its own");
+    kf_set_current(root);
+    expect(open_pid(72, &h) == ST(VIBEOS_STATUS_SUCCESS), "and the superuser opens anybody's");
+}
+
+/* A key opened with the handle table full (v8 review, H-041): the install
+ * fails, the description goes with the key's reference, and its release ran
+ * under the registry lock key_open already held - a self-deadlock on the
+ * machine, a re-entry counted here. Then the registry still answers. */
+static void t_reg_full_table(void) {
+    uint64_t h = 0, last = 0;
+    long r = ST(VIBEOS_STATUS_SUCCESS);
+    int me = fresh(65), before;
+    uint32_t i;
+
+    nt_reg_restart();
+    ks_ps(me)->files.limit = 16u;   /* RLIMIT_NOFILE: the table is full sooner */
+    before = g_kf_lock_reentry;
+    for (i = 0; i < 64u && r == ST(VIBEOS_STATUS_SUCCESS); i++) {
+        r = open_key(&h, 0x000F003Fu, 0, "\\Registry\\Machine\\SOFTWARE");
+        if (r == ST(VIBEOS_STATUS_SUCCESS)) {
+            last = h;
+        }
+    }
+    expect(r != ST(VIBEOS_STATUS_SUCCESS) && i < 64u, "a key opened with the handle table full is refused");
+    expect(g_kf_lock_reentry == before, "without its release taking the registry's lock a second time");
+    (void)nt(VIBEOS_NT_NR_NtClose, last, 0, 0, 0, 0);
+    expect(open_key(&h, 0x000F003Fu, 0, "\\Registry\\Machine\\SOFTWARE") == ST(VIBEOS_STATUS_SUCCESS),
+           "and with a handle closed, the registry opens a key again");
+}
+
 static void t_reg_keys(void) {
     uint64_t sw, k, k2, ro, buf = kf_ualloc(256);
     const uint8_t *b = (const uint8_t *)kf_uptr(buf);
@@ -3232,6 +3297,8 @@ int test_nt_abi(void) {
     t_virtual_memory();
     t_remote_memory();
     t_reg_keys();
+    t_reg_full_table();
+    t_open_process_cred();
     t_placeholders();
     t_data_sections();
     return g_fail ? -1 : 0;

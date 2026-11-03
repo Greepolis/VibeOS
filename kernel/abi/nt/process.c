@@ -238,6 +238,8 @@ static long nt_terminate_process(uint64_t process, uint64_t status) {
 /* NtOpenProcess(ProcessHandle, DesiredAccess, ObjectAttributes, ClientId): a
  * handle to the process the client id's first word names. */
 static long nt_open_process(uint64_t out, uint32_t want, uint64_t cid) {
+    vibeos_cred_t me, them;
+    vibeos_procstate_t *ps = 0;
     uint64_t pid = 0;
     int slot;
 
@@ -250,10 +252,35 @@ static long nt_open_process(uint64_t out, uint32_t want, uint64_t cid) {
     if (slot >= 0 && (ks_id(slot)->pid != ks_id(slot)->tgid || !ks_id(slot)->is_user)) {
         slot = -1;   /* a thread's id, or a kernel task's: not a process */
     }
+    /* Its credentials are read after the scheduler's lock is let go, under
+     * the state's own: one reference, unless it has none left. */
+    if (slot >= 0 && (ps = ks_ps(slot)) != 0) {
+        uint32_t r = __atomic_load_n(&ps->refs, __ATOMIC_ACQUIRE);
+
+        while (r != 0u && !__atomic_compare_exchange_n(&ps->refs, &r, r + 1u, 0, __ATOMIC_ACQ_REL,
+                                                       __ATOMIC_ACQUIRE)) {
+        }
+        if (r == 0u) {
+            ps = 0;
+        }
+    }
     ks_unlock(ks_sched_lock());
     ks_irq_on();
-    if (slot < 0) {
+    if (slot < 0 || !ps) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_CID);
+    }
+    /* Who may have a handle to it at all (v8 review, H-040). Any mask was
+     * granted to anybody, and since W7 a handle reads and writes the process's
+     * memory and runs a thread in it: an unprivileged program opened a root
+     * daemon and ran code as root. Linux's ptrace rule, with the effective
+     * ids; the superuser is never refused. */
+    nt_cred(&me);
+    ks_lock(&ps->files_lock, __func__);
+    them = ps->cred;
+    ks_unlock(&ps->files_lock);
+    ks_procstate_put(ps);
+    if (vibeos_cred_may_inspect(&me, me.euid, me.egid, &them) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
     return nt_create_common(&g_nt_process_ops, out, want, 0, 0, process_init, &slot);
 }

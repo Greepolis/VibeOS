@@ -46,6 +46,9 @@ int nt_user_ok(uint64_t base, uint64_t len, int write);
  * is not the program's or a page that faulted (dispatch.c). */
 int nt_copy_in(void *dst, uint64_t src, uint64_t len);
 int nt_copy_out(uint64_t dst, const void *src, uint64_t len);
+/* Who is asking: the calling process's credentials, root for the kernel
+ * itself (file.c). */
+void nt_cred(vibeos_cred_t *out);
 
 /* A handle, as W1 has them: a descriptor of the process's table, (fd + 1) * 4.
  * Windows' handles are multiples of four counted from four, and the program's

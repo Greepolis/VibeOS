@@ -67,3 +67,9 @@
         vibeos_fs_write_file(m, tail, g_stage, g_stage_len) != (long)g_stage_len) {
 +++ new
     if (vibeos_fs_rename(m, t_new, tail, 0u) != 0) {
+
+### a key's release takes the registry's lock even when its caller holds it (H-041)
+--- old
+    const int held = io_held();
++++ new
+    const int held = 0;

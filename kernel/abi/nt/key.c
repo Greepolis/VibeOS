@@ -114,8 +114,31 @@ static void reg_lock(void) { ks_lock_preemptible(&g_core); }
 static void reg_unlock(void) { ks_unlock_preemptible(&g_core); }
 static uint64_t reg_now(void) { return nt_ticks_to_filetime(ks_ticks()); }
 
-static void io_lock(void) { ks_lock_preemptible(&g_io); }
-static void io_unlock(void) { ks_unlock_preemptible(&g_io); }
+/* Which task holds g_io, or -1. The last reference to a key's description can
+ * be put with the lock held - a handle install that fails (a full table), a
+ * handle closed because its number could not be copied out, a sibling's close
+ * landing between key_ref's reference and its put - and the release then
+ * took g_io again: a self-deadlock any program reached with 1024 key handles
+ * (v8 review, H-041). The release asks this instead of locking blindly. */
+static int g_io_owner = -1;
+
+static void io_lock(void) {
+    ks_lock_preemptible(&g_io);
+    __atomic_store_n(&g_io_owner, ks_current(), __ATOMIC_RELAXED);
+}
+
+static void io_unlock(void) {
+    __atomic_store_n(&g_io_owner, -1, __ATOMIC_RELAXED);
+    ks_unlock_preemptible(&g_io);
+}
+
+/* Does the calling task already hold g_io? Only it can have stored its own
+ * number there, so a match cannot be another task's. */
+static int io_held(void) {
+    int me = ks_current();
+
+    return me >= 0 && __atomic_load_n(&g_io_owner, __ATOMIC_RELAXED) == me;
+}
 
 static const char *const g_hive_dirs[] = { "/windows", "/windows/system32", "/windows/system32/config" };
 static const char *const g_hive_file[2] = { "/windows/system32/config/MACHINE.HIV",
@@ -407,7 +430,11 @@ static vibeos_reg_key_t key_of(const vibeos_file_t *f) {
 }
 
 static void key_release(vibeos_file_t *f) {
-    io_lock();
+    const int held = io_held();
+
+    if (!held) {
+        io_lock();
+    }
     vibeos_reg_unref(key_of(f));
     /* The same second's limit as every other write-behind. A save on every
      * close of a key that changed something rewrites the whole hive each time
@@ -417,7 +444,9 @@ static void key_release(vibeos_file_t *f) {
     if (g_pending) {
         flush_behind();
     }
-    io_unlock();
+    if (!held) {
+        io_unlock();
+    }
 }
 
 /* A handle for `k`, whose reference it takes over; written to `out_u`. */

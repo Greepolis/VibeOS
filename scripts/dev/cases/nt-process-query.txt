@@ -10,3 +10,9 @@
     st = process_view(process, NT_PROCESS_QUERY_LIMITED, &v);
 +++ new
     st = process_view(process, NT_PROCESS_QUERY_INFORMATION, &v);
+
+### NtOpenProcess grants a handle to anybody's process (H-040)
+--- old
+    if (vibeos_cred_may_inspect(&me, me.euid, me.egid, &them) != 0) {
++++ new
+    if (0 && vibeos_cred_may_inspect(&me, me.euid, me.egid, &them) != 0) {

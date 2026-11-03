@@ -905,7 +905,17 @@ void ks_unlock(vibeos_lock_t *l) {
     l->locked--;
     g_lock_depth--;
 }
-void ks_lock_preemptible(vibeos_lock_t *l) { ks_lock(l, "preemptible"); }
+/* A preemptible lock is not recursive on the machine: taking it again from
+ * the task that holds it spins for ever. The fake's lock is a count and would
+ * let it through, so the attempt is counted instead (v8 review, H-041: the
+ * registry's g_io was taken again by a key's release). */
+int g_kf_lock_reentry;
+void ks_lock_preemptible(vibeos_lock_t *l) {
+    if (l->locked > 0) {
+        g_kf_lock_reentry++;
+    }
+    ks_lock(l, "preemptible");
+}
 void ks_unlock_preemptible(vibeos_lock_t *l) { ks_unlock(l); }
 void ks_irq_off(void) {}
 void ks_irq_on(void) {}

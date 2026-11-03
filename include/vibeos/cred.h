@@ -68,6 +68,15 @@ int vibeos_cred_may_remove(const vibeos_cred_t *c, uint32_t dir_mode, uint32_t d
 /* May the caller change a file's times or attributes as its owner may? 0 for
  * the owner or the superuser, else -EPERM. */
 int vibeos_cred_may_own(const vibeos_cred_t *c, uint32_t owner);
+/* May a process with ids `uid`/`gid` reach inside one with credentials
+ * `them` - read its memory, write it, run a thread in it, end it? Linux's
+ * ptrace rule, which both personalities ask: the superuser may; anybody else
+ * only if each of the target's real, effective and saved ids is theirs, for
+ * the user and the group - so a setuid program that kept root in its saved id
+ * is not anybody's to open. Linux's procfs asks with the filesystem ids, NT's
+ * process handles with the effective ones. 0 or -EACCES. (v8 review, H-040:
+ * NtOpenProcess asked nothing, and W7 made that code execution as root.) */
+int vibeos_cred_may_inspect(const vibeos_cred_t *c, uint32_t uid, uint32_t gid, const vibeos_cred_t *them);
 
 /* The set calls. Each returns 0 or -EPERM, and changes nothing when refused.
  * VIBEOS_ID_KEEP leaves an id alone where the call has that meaning. */

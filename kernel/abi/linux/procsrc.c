@@ -515,11 +515,7 @@ static int src_may_inspect(uint32_t pid) {
     them = ps->cred;
     ks_unlock(&ps->files_lock);
     ks_procstate_put(ps);
-    if (them.uid != me.fsuid || them.euid != me.fsuid || them.suid != me.fsuid ||
-        them.gid != me.fsgid || them.egid != me.fsgid || them.sgid != me.fsgid) {
-        return -VIBEOS_EACCES;
-    }
-    return 0;
+    return vibeos_cred_may_inspect(&me, me.fsuid, me.fsgid, &them);
 }
 
 void linux_procfs_bind(vibeos_procfs_t *pf) {

@@ -17,6 +17,17 @@ static int privileged(const vibeos_cred_t *c) {
     return c->euid == 0u;
 }
 
+int vibeos_cred_may_inspect(const vibeos_cred_t *c, uint32_t uid, uint32_t gid, const vibeos_cred_t *them) {
+    if (privileged(c)) {
+        return 0;
+    }
+    if (them->uid != uid || them->euid != uid || them->suid != uid || them->gid != gid ||
+        them->egid != gid || them->sgid != gid) {
+        return -VIBEOS_EACCES;
+    }
+    return 0;
+}
+
 int vibeos_cred_in_group(const vibeos_cred_t *c, uint32_t gid, int real) {
     uint32_t i;
 

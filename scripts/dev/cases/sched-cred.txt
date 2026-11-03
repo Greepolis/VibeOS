@@ -97,3 +97,9 @@
     if ((dir_mode & 01000u) && c->fsuid != dir_uid && c->fsuid != owner) {
 +++ new
     if (0) {
+
+### the saved id is not one of the ids an unprivileged opener must share (H-040)
+--- old
+    if (them->uid != uid || them->euid != uid || them->suid != uid || them->gid != gid ||
++++ new
+    if (them->uid != uid || them->euid != uid || them->gid != gid ||

@@ -277,6 +277,27 @@ Filed as GitHub issues; #14-#18 are M-119..M-123 above. Every claim about what L
 | #17, #75 | fallocate reserves nothing; ONFAULT locks eagerly | **closed as documented approximations** |
 | label `perf-phase` (30 issues) | the rest of #74, #79-#131, #136, #140 | **deferred to a performance phase after W4**: each changes a shared mechanism (readiness wakeups, cache locking, ring buffers, the boot order) and none is a defect; to be taken with the benchmarks #85 asks for |
 
+## Fifteenth review (2026-11-03, v8, of HEAD 15e75ed9)
+
+Static reading of W5-W8 and the relicense; H-037..H-039 and M-131..M-133 read
+again and confirmed closed. Rows marked (agent) are the reviewer's sub-agents'
+and are to verify before fixing. One agent claim was withdrawn by the reviewer
+after reading `hw_aspace_unpin` - page tables freed while a thread still ran on
+them: the last unpin asks `hw_aspace_shared_by_other` again and leaves them to
+the last live thread's exit - and has no ID. The reviewer asks for a gate on
+global pools: every new table declares its per-process quota.
+
+| ID | Sev | Finding | Status | Evidence / next step |
+|---|---|---|---|---|
+| H-040 | H | NtOpenProcess grants whatever is asked of any user process it can name: `nt_open_process` refuses only threads and kernel tasks, and nothing limits the mask. With W7 any NT process opens a root daemon with PROCESS_ALL_ACCESS, writes its memory, makes it executable and starts a thread in it. M-089 / M-105's class. NtTerminateProcess the same | **fixed** (2026-11-03): `nt_open_process` asks `vibeos_cred_may_inspect` - Linux's ptrace rule, now in `cred.c` for both personalities, procfs's `src_may_inspect` included - with the effective ids; terminating needs a handle, so it is covered. `t_open_process_cred`; cases in `nt-process-query.txt` and `sched-cred.txt` red | `kernel/abi/nt/process.c`, `kernel/sched/cred.c` |
+| H-041 | H | `key_open` deadlocks itself when the handle table is full: it holds `g_io` across `key_handle`, a failed `nt_handle_install` puts the description, and `key_release` takes `g_io` again. Any process with 1024 key handles stops the registry for every process, and every exit that holds a key | **fixed** (2026-11-03): `io_lock` records its holder and `key_release` works under the lock its caller already holds - which closes the two other paths of the same shape too, a handle closed because its number could not be copied out and a sibling's close landing in `key_ref`. The fake's preemptible lock counts a re-entry; `t_reg_full_table`, case in `nt-key.txt` red | `kernel/abi/nt/key.c` |
+| M-134 | M | Global pools without a per-process quota (agent): the registry's 16 MiB quota and 8192 key slots (carved pages never return, so a process that writes and deletes 16 MiB of values leaves every later write QUOTA_EXCEEDED); the 64-entry APC table, never reclaimed at a thread's or process's exit; a CREATE_SUSPENDED thread never resumed keeps its process, kernel stack window and slot alive past exit_group and SIGKILL; NtCreateThreadEx skips `linux_nproc_check` | open, to verify | M-110 / M-127's family; with the gate the reviewer asks for |
+| M-135 | M | Slot-reuse races of M-116's class (agent): `thread.c` signals after unlocking (SIGSTOP, READY, `exec_killed`); `process.c:230` reads the sequence and sends SIGKILL without the lock - either can reach a process that took the slot | open, to verify | `kernel/abi/nt/thread.c`, `process.c` |
+| M-136 | M | NtTerminateProcess signals only the leader's slot (agent): with the leader a zombie and threads running it reports success and the process goes on | open, to verify | `kernel/abi/nt/process.c` |
+| M-137 | M | No rights asked of a key's root handle and no security per key (agent): NtCreateKey and NtOpenKey do not ask KEY_CREATE_SUB_KEY of the handle they are relative to, and every uid opens every key with KEY_ALL_ACCESS, HKLM and every user's HKCU included. Nothing in the kernel consumes the values today | open, to verify | WO-092; `kernel/abi/nt/key.c` |
+| M-138 | L | Registry hives, four notes (agent): a hive past 1 MiB + 64 KiB is never saved and every later call serialises it again under `g_io`; a hive loaded deeper than the limit leaves unwritten bytes in NtQueryKey's buffer; hives are written with the kernel's authority to fixed paths; `find_child` is linear in siblings | open, to verify | WO-093; `kernel/abi/nt/key.c`, `registry/reg.c` |
+| M-139 | L | CONTEXT_FULL includes FLOATING_POINT, and the FP/XMM state is neither saved nor restored by APCs, exceptions or NtContinue (agent). Correctness, not security | open, to verify | `kernel/abi/nt/` context code |
+
 ## Found internally while verifying the above
 
 | What | Status | Evidence / next step |

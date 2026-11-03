@@ -37,7 +37,7 @@ static uint32_t nt_file_refusal(uint64_t handle, uint32_t need) {
 /* Who is asking: the process's credentials, which a Windows program has as a
  * Linux one does (docs/abi/ L2), read under the lock that guards them. Root
  * for a task with no process state - the kernel itself. */
-static void nt_cred(vibeos_cred_t *out) {
+void nt_cred(vibeos_cred_t *out) {
     int me = ks_current();
     vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
 
