@@ -21,8 +21,11 @@
  * log disk, the RAM scratch device, and the two loop devices behind I5's ext2
  * and ISO9660 images. At four the fifth was refused, and the refusal is
  * counted and asserted - which is how it was found, rather than by a device
- * quietly not being there. */
-#define BLK_MAX_DEVICES 8u
+ * quietly not being there. 8 -> 12 for ext4's image (docs/filesystem-design/
+ * ext4.md step 1): a boot registers nine now - the boot disk, the log disk,
+ * the scratch device and six loop devices - and at eight the long-name FAT
+ * image's was refused, reported by the gate as io_register_refused=1. */
+#define BLK_MAX_DEVICES 12u
 
 static vibeos_blk_driver_t g_dev[BLK_MAX_DEVICES];
 static uint32_t g_count;

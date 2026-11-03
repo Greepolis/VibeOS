@@ -88,7 +88,8 @@ memory manager depends on a layer being refactored underneath it. Doing it in
 I4b is cheap; doing it later is safer.
 
 **Q4 — how many devices, and how many mounts?** Fixed arrays, since this kernel
-does not allocate on these paths. Four devices and eight mounts is a guess.
+does not allocate on these paths. Four devices and eight mounts was a guess;
+the devices are twelve since ext4's image made a boot register nine.
 Whatever the number, `*_peak` counters say afterwards what it should have been,
 the way `rmap_peak` and `nodes_peak` already do.
 
