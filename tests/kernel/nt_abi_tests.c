@@ -2124,6 +2124,15 @@ static void t_remote_memory(void) {
     y = 0xEE;
     expect(kf_poke(base + 0x10u, &y, 1) == 0, "and stores a byte of its own");
     kf_set_current(me);
+    /* A region its inserter mapped - exec's first stack pages - is PRESENT, not
+     * DEMAND, and is committed all the same: refusing it refused a process's
+     * own main stack (WO-099). The page is touched already, so making it
+     * PRESENT is what exec leaves. */
+    expect(vibeos_vma_change(&ks_ps(other)->mm->vmas, base, 0x1000u, VIBEOS_VMA_CHANGE_STATE, 0, 0,
+                             VIBEOS_VMA_PRESENT) == 0 &&
+               vm_rw(VIBEOS_NT_NR_NtWriteVirtualMemory, h, base + 0x40u, buf, 16u, &n) ==
+                   ST(VIBEOS_STATUS_SUCCESS) && n == 16u,
+           "NtWriteVirtualMemory into a PRESENT region, as a main stack is");
     memset(p, 0, 0x1800u);
     expect(vm_rw(VIBEOS_NT_NR_NtReadVirtualMemory, ro, base, buf, 0x1800u, &n) ==
                ST(VIBEOS_STATUS_SUCCESS) && n == 0x1800u && p[0x10] == 0xEE &&

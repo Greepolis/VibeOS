@@ -123,7 +123,7 @@ or a subsystem of its own.
 | WO-096 | RegSaveKey, RegLoadKey, RegUnLoadKey, RegLoadAppKey, RegSetKeySecurity are refused | open |
 | WO-097 | No access tokens: OpenProcessToken fails, AdjustTokenPrivileges has nothing to adjust, SetEntriesInAcl and the ACL API are missing (advapi32:registry stops there) | open (with SEC) |
 | WO-098 | kernel32:console stops at FreeConsole; kernel32:debugger at GetSystemWow64DirectoryW | open |
-| WO-099 | NtWriteVirtualMemory and NtReadVirtualMemory reach only the regions in the NT personality's list, so a process's own main stack is refused (W8 step 6) | open |
+| WO-099 | NtWriteVirtualMemory and NtReadVirtualMemory reach only the regions in the NT personality's list, so a process's own main stack is refused (W8 step 6) | closed (2026-11-03): a PRESENT region is reached too, host-tested |
 | WO-100 | gdi32's GetObject refuses only a buffer below 64 KiB; any other bad pointer faults, where Windows answers ERROR_NOACCESS from under an exception handler (W8 step 6) | open |
 | WO-101 | No window system: classes, windows, messages, cursors, icons, menus, accelerators, desktops (user32:class, static, resource, winstation stop there) | open (with the UI) |
 | WO-102 | Resources are not read from an image: LoadString and the Load* family fail | open |

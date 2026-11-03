@@ -877,14 +877,21 @@ static long nt_query_virtual_memory_in(nt_mm_t *m, uint64_t process, uint64_t va
  * from outside it? Committed, accessible as asked, and made if the region
  * promises it and nobody has touched it yet, as the fault would. Under the mm
  * lock. A view's untouched page, or one in swap, is not reached: the fault
- * that would bring it is the owner's, and the copy reports a partial one. */
+ * that would bring it is the owner's, and the copy reports a partial one.
+ *
+ * A PRESENT region is committed too: its pages were mapped by whoever inserted
+ * it - exec's first stack pages, an image's sections. Refusing it refused a
+ * process's own main stack (WO-099), which gdi32's GetObject found. */
 static int nt_vm_reach(nt_mm_t *m, uint64_t va, int write) {
     const vibeos_vma_t *r = vibeos_vma_find(&m->ps->mm->vmas, va);
     const uint64_t *e;
 
-    if (!r || r->state != VIBEOS_VMA_DEMAND || !(r->prot & VIBEOS_PROT_READ) ||
+    if (!r || r->state == VIBEOS_VMA_RESERVED || !(r->prot & VIBEOS_PROT_READ) ||
         (write && !(r->prot & VIBEOS_PROT_WRITE))) {
         return -1;
+    }
+    if (r->state == VIBEOS_VMA_PRESENT) {
+        return 0;   /* mapped already; ks_vm_copy takes a copy-on-write page */
     }
     e = vibeos_vmspace_entry(&m->v, va & ~0xFFFull);
     if ((!e || *e == 0u) && r->backing == VIBEOS_BACKING_ANON) {

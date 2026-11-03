@@ -44,3 +44,9 @@
     NT_MM_GET(write ? NT_PROCESS_VM_WRITE : NT_PROCESS_VM_READ);
 +++ new
     NT_MM_GET(NT_PROCESS_VM_READ);
+
+### a PRESENT region is not reached, as a main stack was not (WO-099)
+--- old
+        return 0;   /* mapped already; ks_vm_copy takes a copy-on-write page */
++++ new
+        return -1;
