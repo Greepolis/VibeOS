@@ -58,6 +58,16 @@ if(Python3_Interpreter_FOUND)
     if(NOT _ext2_rc EQUAL 0)
         message(WARNING "ext2 image not staged (rc=${_ext2_rc})")
     endif()
+    # ext4 as mkfs.ext4 makes it by default (docs/filesystem-design/ext4.md
+    # step 1): 8 MiB, the least that holds its journal.
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_LIST_DIR}/../scripts/make-fs-image.py"
+                ext4 "${EFI_BOOT_DIR}/EXT4.IMG" 8388608
+        RESULT_VARIABLE _ext4_rc)
+    if(NOT _ext4_rc EQUAL 0)
+        message(WARNING "ext4 image not staged (rc=${_ext4_rc})")
+    endif()
     execute_process(
         COMMAND ${Python3_EXECUTABLE}
                 "${CMAKE_CURRENT_LIST_DIR}/../scripts/make-fs-image.py"

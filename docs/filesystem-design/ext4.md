@@ -58,3 +58,9 @@ all`, six boots, and the open items written down.
 
 The installer, A/B slots and rollback (F4) and whether `/var` and `/home` are
 separate volumes: one ext4 volume holds all three until F4 says otherwise.
+
+## Progress
+
+Step 1, reading ext4, done 2026-11-03; what it does, how it is proved and what
+is left open (E4-001 onward) are in
+[implementation_progress/fs_ext4.md](../implementation_progress/fs_ext4.md).

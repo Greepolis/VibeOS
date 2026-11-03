@@ -23,7 +23,7 @@ static uint32_t rd32(const uint8_t *p) {
 
 /* One filesystem block, assembled from the 512-byte sectors under it. The
  * caller supplies the buffer; this file has no allocator. */
-static int ext2_read_block(vibeos_ext2_t *fs, uint32_t block, uint8_t *out) {
+static int ext2_read_block(vibeos_ext2_t *fs, uint64_t block, uint8_t *out) {
     uint32_t sectors = fs->block_size / VIBEOS_BLOCK_SIZE;
     uint32_t i;
 
@@ -38,7 +38,7 @@ static int ext2_read_block(vibeos_ext2_t *fs, uint32_t block, uint8_t *out) {
         return -1;
     }
     for (i = 0; i < sectors; i++) {
-        uint64_t lba = fs->part_lba + (uint64_t)block * sectors + i;
+        uint64_t lba = fs->part_lba + block * sectors + i;
         if (vibeos_blockcache_read(fs->cache, lba, out + i * VIBEOS_BLOCK_SIZE) != 0) {
             return -1;
         }
@@ -52,7 +52,70 @@ static int ext2_read_block(vibeos_ext2_t *fs, uint32_t block, uint8_t *out) {
 #define EXT2_MAX_BLOCK 4096u
 #define EXT2_MAX_INODE_SIZE 256u
 
+/* The superblock's feature words (docs/filesystem-design/ext4.md). */
+#define INCOMPAT_FILETYPE  0x0002u
+#define INCOMPAT_RECOVER   0x0004u
+#define INCOMPAT_EXTENTS   0x0040u
+#define INCOMPAT_64BIT     0x0080u
+#define INCOMPAT_FLEX_BG   0x0200u
+#define INCOMPAT_CSUM_SEED 0x2000u
+#define INCOMPAT_LARGEDIR  0x4000u
+#define RO_COMPAT_METADATA_CSUM 0x0400u
+
+/* What this driver reads. Everything else in the incompat word changes where
+ * or how something is stored - meta_bg moves the group descriptors, inline
+ * data puts a file in its inode, casefold changes what a name matches - and
+ * reading such a volume without knowing would return the wrong bytes, so it is
+ * refused. RECOVER is refused too: the journal holds metadata newer than the
+ * volume, and until step 3 replays it, reading past it reads the past. A
+ * ro_compat feature only matters to a writer, and this is not one yet. */
+#define INCOMPAT_KNOWN (INCOMPAT_FILETYPE | INCOMPAT_EXTENTS | INCOMPAT_64BIT | INCOMPAT_FLEX_BG | \
+                        INCOMPAT_CSUM_SEED | INCOMPAT_LARGEDIR)
+
+#define INODE_FLAG_EXTENTS 0x00080000u
+#define EXTENT_MAGIC 0xF30Au
+#define EXTENT_MAX_DEPTH 5u   /* what ext4 itself allows; deeper is a loop or garbage */
+
 static uint64_t g_ext2_hits;
+static uint64_t g_ext2_csum_bad;
+static uint32_t g_ext2_refused;
+
+uint64_t vibeos_ext2_csum_failures(void) {
+    return __atomic_load_n(&g_ext2_csum_bad, __ATOMIC_RELAXED);
+}
+
+uint32_t vibeos_ext2_last_refused_features(void) {
+    return __atomic_load_n(&g_ext2_refused, __ATOMIC_RELAXED);
+}
+
+uint32_t vibeos_ext2_crc32c(uint32_t crc, const void *data, uint32_t len) {
+    const uint8_t *p = (const uint8_t *)data;
+
+    while (len-- > 0u) {
+        uint32_t k;
+
+        crc ^= *p++;
+        for (k = 0; k < 8u; k++) {
+            crc = (crc >> 1) ^ (0x82F63B78u & (0u - (crc & 1u)));
+        }
+    }
+    return crc;
+}
+
+static uint32_t le32_crc(uint32_t crc, uint32_t v) {
+    uint8_t b[4] = { (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24) };
+
+    return vibeos_ext2_crc32c(crc, b, 4u);
+}
+
+/* A checksum that did not match: counted, and the caller refuses what it
+ * covers. Never used anyway - a metadata block with a wrong checksum is the
+ * moment a corruption is cheapest to stop. */
+static int csum_bad(uint64_t what) {
+    __atomic_add_fetch(&g_ext2_csum_bad, 1ull, __ATOMIC_RELAXED);
+    vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, what);
+    return -1;
+}
 
 uint64_t vibeos_ext2_cache_hits(void) {
     return __atomic_load_n(&g_ext2_hits, __ATOMIC_RELAXED);
@@ -105,7 +168,8 @@ static void ext2_cache_put(uint32_t *seq, uint32_t *slot_key, uint32_t key, uint
 int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
                       uint64_t part_lba) {
     uint8_t sb[VIBEOS_BLOCK_SIZE * 2u];
-    uint32_t log_bs, blocks_count;
+    uint32_t log_bs;
+    uint64_t blocks_count, groups;
 
     if (!fs || !cache) {
         return -1;
@@ -117,6 +181,8 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     fs->cached_ptr_block = 0;
     fs->ino_seq = 0;
     fs->ptr_seq = 0;
+    fs->csum = 0;
+    __atomic_store_n(&g_ext2_refused, 0u, __ATOMIC_RELAXED);
 
     /* The superblock is at byte 1024, whatever the block size, which is why it
      * is read as sectors rather than as a block: the block size is what we are
@@ -136,12 +202,42 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     fs->blocks_per_group = rd32(sb + 32);
     fs->inodes_per_group = rd32(sb + 40);
     fs->first_data_block = rd32(sb + 20);
+
+    /* The feature words exist from revision 1; revision 0 has none. */
+    fs->incompat = rd32(sb + 76) >= 1u ? rd32(sb + 0x60) : 0u;
+    fs->ro_compat = rd32(sb + 76) >= 1u ? rd32(sb + 0x64) : 0u;
+    if ((fs->incompat & ~INCOMPAT_KNOWN) != 0u) {
+        __atomic_store_n(&g_ext2_refused, fs->incompat & ~INCOMPAT_KNOWN, __ATOMIC_RELAXED);
+        return -1;
+    }
+    /* metadata_csum: the superblock checks itself, and every other checksum
+     * is seeded from the uuid - or from a seed stored beside it, so that the
+     * uuid can change without rewriting every piece of metadata. */
+    if ((fs->ro_compat & RO_COMPAT_METADATA_CSUM) != 0u) {
+        if (vibeos_ext2_crc32c(~0u, sb, 0x3FCu) != rd32(sb + 0x3FC)) {
+            return csum_bad(0);
+        }
+        fs->csum = 1;
+        fs->csum_seed = (fs->incompat & INCOMPAT_CSUM_SEED) != 0u ? rd32(sb + 0x270)
+                                                                 : vibeos_ext2_crc32c(~0u, sb + 0x68, 16u);
+    }
+    /* A 64-bit volume keeps the high half of its length beside the low one,
+     * and its group descriptors grow to s_desc_size. */
     blocks_count = rd32(sb + 4);
+    fs->desc_size = 32u;
+    if ((fs->incompat & INCOMPAT_64BIT) != 0u) {
+        blocks_count |= (uint64_t)rd32(sb + 0x150) << 32;
+        fs->desc_size = rd16(sb + 0xFE);
+        if (fs->desc_size < 64u || fs->desc_size > 1024u || (fs->desc_size & (fs->desc_size - 1u)) != 0u) {
+            return -1;
+        }
+    }
     fs->blocks_count = blocks_count;
 
     /* s_inode_size only exists from revision 1; revision 0 always used 128. */
     fs->inode_size = (rd32(sb + 76) >= 1u) ? rd16(sb + 88) : 128u;
-    if (fs->inode_size < 128u || fs->inode_size > EXT2_MAX_INODE_SIZE) {
+    if (fs->inode_size < 128u || fs->inode_size > EXT2_MAX_INODE_SIZE ||
+        (fs->inode_size & (fs->inode_size - 1u)) != 0u) {
         return -1;
     }
     if (fs->blocks_per_group == 0u || fs->inodes_per_group == 0u) {
@@ -163,11 +259,11 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     if (blocks_count == 0u || fs->first_data_block >= blocks_count) {
         return -1;
     }
-    fs->group_count = (blocks_count - fs->first_data_block + fs->blocks_per_group - 1u)
-                      / fs->blocks_per_group;
-    if (fs->group_count == 0u) {
+    groups = (blocks_count - fs->first_data_block + fs->blocks_per_group - 1u) / fs->blocks_per_group;
+    if (groups == 0u || groups > 0xFFFFFFFFull) {
         return -1;
     }
+    fs->group_count = (uint32_t)groups;
     /* The group descriptors live in the block after the superblock, which is
      * block 1 for a 1 KiB filesystem and block 1 as well for larger ones -
      * because the superblock still starts at byte 1024, inside block 0. */
@@ -177,28 +273,82 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
 }
 
 /* Fill `out` with one inode's 128 bytes of header. */
+/* Where group `group`'s inode table starts. A descriptor is 32 bytes, or
+ * s_desc_size with 64bit, which also keeps the high half of each block number
+ * at +0x20 past the low one; with metadata_csum it checks itself. */
+static int ext2_inode_table(vibeos_ext2_t *fs, uint32_t group, uint64_t *out) {
+    uint8_t block[EXT2_MAX_BLOCK];
+    uint64_t at = (uint64_t)group * fs->desc_size;
+    const uint8_t *d;
+
+    if (ext2_read_block(fs, fs->group_desc_block + at / fs->block_size, block) != 0) {
+        return -1;
+    }
+    d = block + at % fs->block_size;
+    if (fs->csum) {
+        static const uint8_t zero[2] = { 0, 0 };
+        uint32_t c = le32_crc(fs->csum_seed, group);
+
+        c = vibeos_ext2_crc32c(c, d, 0x1Eu);
+        c = vibeos_ext2_crc32c(c, zero, 2u);
+        c = vibeos_ext2_crc32c(c, d + 0x20u, fs->desc_size - 0x20u);
+        if ((c & 0xFFFFu) != rd16(d + 0x1Eu)) {
+            return csum_bad(group);
+        }
+    }
+    *out = rd32(d + 8u);
+    if (fs->desc_size >= 64u) {
+        *out |= (uint64_t)rd32(d + 0x28u) << 32;
+    }
+    return 0;
+}
+
+/* metadata_csum's per-inode seed: the volume's seed, then the inode's number
+ * and generation, so that a block moved to another file no longer checks. */
+static uint32_t inode_seed(const vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode) {
+    return le32_crc(le32_crc(fs->csum_seed, ino), rd32(inode + 100u));
+}
+
+/* An inode's checksum: crc32c over the whole inode with its two checksum
+ * halves read as zero - the low half at 0x7C, the high one at 0x82 when the
+ * inode's extra size reaches it. */
+static int inode_csum_ok(const vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode) {
+    static const uint8_t zero[2] = { 0, 0 };
+    uint32_t c = inode_seed(fs, ino, inode), want = rd16(inode + 0x7Cu);
+    int hi = 0;
+
+    c = vibeos_ext2_crc32c(c, inode, 0x7Cu);
+    c = vibeos_ext2_crc32c(c, zero, 2u);
+    c = vibeos_ext2_crc32c(c, inode + 0x7Eu, 2u);
+    if (fs->inode_size > 128u) {
+        hi = rd16(inode + 0x80u) >= 4u;   /* i_extra_isize covers i_checksum_hi */
+        c = vibeos_ext2_crc32c(c, inode + 0x80u, 2u);
+        if (hi) {
+            c = vibeos_ext2_crc32c(c, zero, 2u);
+            want |= (uint32_t)rd16(inode + 0x82u) << 16;
+        }
+        c = vibeos_ext2_crc32c(c, inode + (hi ? 0x84u : 0x82u), fs->inode_size - (hi ? 0x84u : 0x82u));
+    }
+    return hi ? c == want : (c & 0xFFFFu) == want;
+}
+
+/* Fill `out` with one whole inode, inode_size bytes. */
 static int ext2_read_inode(vibeos_ext2_t *fs, uint32_t ino, uint8_t *out) {
     uint8_t block[EXT2_MAX_BLOCK];
-    uint32_t group, index, table_block, offset, per_block;
+    uint32_t group, index, offset, per_block, i;
+    uint64_t table_block;
 
     if (ino == 0u) {
         return -1;   /* inode zero does not exist; it means "no entry" */
     }
-    if (ext2_cache_get(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, 128u)) {
+    if (ext2_cache_get(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, fs->inode_size)) {
         return 0;
     }
     group = (ino - 1u) / fs->inodes_per_group;
     index = (ino - 1u) % fs->inodes_per_group;
-    if (group >= fs->group_count) {
+    if (group >= fs->group_count || ext2_inode_table(fs, group, &table_block) != 0) {
         return -1;
     }
-    /* Group descriptors are 32 bytes; the inode table pointer is at +8. */
-    if (ext2_read_block(fs, fs->group_desc_block + (group * 32u) / fs->block_size,
-                        block) != 0) {
-        return -1;
-    }
-    table_block = rd32(block + ((group * 32u) % fs->block_size) + 8u);
-
     per_block = fs->block_size / fs->inode_size;
     if (per_block == 0u) {
         return -1;
@@ -207,13 +357,13 @@ static int ext2_read_inode(vibeos_ext2_t *fs, uint32_t ino, uint8_t *out) {
         return -1;
     }
     offset = (index % per_block) * fs->inode_size;
-    {
-        uint32_t i;
-        for (i = 0; i < 128u; i++) {
-            out[i] = block[offset + i];
-        }
+    for (i = 0; i < fs->inode_size; i++) {
+        out[i] = block[offset + i];
     }
-    ext2_cache_put(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, 128u);
+    if (fs->csum && !inode_csum_ok(fs, ino, out)) {
+        return csum_bad(ino);
+    }
+    ext2_cache_put(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, fs->inode_size);
     return 0;
 }
 
@@ -239,8 +389,112 @@ static int ext2_read_ptrs(vibeos_ext2_t *fs, uint32_t block, uint8_t *out) {
  * boundaries are where this goes wrong, so they are computed rather than
  * unrolled: an off-by-one here returns a real block from the wrong offset, and
  * the file reads back plausible and wrong. */
-static int ext2_map_block(vibeos_ext2_t *fs, const uint8_t *inode, uint32_t n,
-                          uint32_t *out) {
+static int ext2_map_indirect(vibeos_ext2_t *fs, const uint8_t *inode, uint32_t n, uint32_t *out);
+
+/* An extent tree's node: a 12-byte header, then `entries` 12-byte entries -
+ * index entries above the leaves, extents in them. `room` is the bytes the node
+ * occupies, which bounds `max` before anything is read through it. */
+static int extent_header_ok(const uint8_t *node, uint32_t room, uint32_t *entries, uint32_t *depth) {
+    uint32_t max = rd16(node + 4u);
+
+    *entries = rd16(node + 2u);
+    *depth = rd16(node + 6u);
+    if (rd16(node) != EXTENT_MAGIC || max == 0u || 12u + max * 12u > room || *entries > max ||
+        *depth > EXTENT_MAX_DEPTH) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, rd16(node));
+        return -1;
+    }
+    return 0;
+}
+
+/* Which block holds a file's block `n`, through its extent tree. The root is the
+ * inode's sixty bytes of i_block; each level down is a block with its own
+ * checksum in a tail after its entries, seeded by the inode that owns it. A
+ * block nobody wrote - past every extent, or in an extent marked
+ * uninitialised - reads as a hole: 0. */
+static int ext2_map_extent(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint32_t n,
+                           uint64_t *out) {
+    uint8_t block[EXT2_MAX_BLOCK];
+    const uint8_t *node = inode + 40u;
+    uint32_t room = 60u, entries, depth, level, i;
+
+    if (extent_header_ok(node, room, &entries, &depth) != 0) {
+        return -1;
+    }
+    for (level = 0; depth > 0u; level++) {
+        uint64_t child;
+        uint32_t want_depth = depth - 1u;
+
+        if (entries == 0u || level >= EXTENT_MAX_DEPTH) {
+            *out = 0;
+            return 0;
+        }
+        /* The last index whose first block is at or below n. */
+        i = 0;
+        while (i + 1u < entries && rd32(node + 12u + (i + 1u) * 12u) <= n) {
+            i++;
+        }
+        child = rd32(node + 12u + i * 12u + 4u) | ((uint64_t)rd16(node + 12u + i * 12u + 8u) << 32);
+        if (ext2_read_block(fs, child, block) != 0) {
+            return -1;
+        }
+        node = block;
+        room = fs->block_size;
+        if (extent_header_ok(node, room, &entries, &depth) != 0 || depth != want_depth) {
+            return -1;   /* a child that is not one level below its parent: a loop, or garbage */
+        }
+        if (fs->csum) {
+            uint32_t at = 12u + rd16(node + 4u) * 12u;
+
+            if (at + 4u > fs->block_size ||
+                vibeos_ext2_crc32c(inode_seed(fs, ino, inode), node, at) != rd32(node + at)) {
+                return csum_bad(child);
+            }
+        }
+    }
+    for (i = 0; i < entries; i++) {
+        const uint8_t *e = node + 12u + i * 12u;
+        uint32_t first = rd32(e), len = rd16(e + 4u);
+
+        if (len > 32768u) {
+            len -= 32768u;   /* uninitialised: allocated, and reads as zeros */
+            if (n >= first && n - first < len) {
+                *out = 0;
+                return 0;
+            }
+            continue;
+        }
+        if (n >= first && n - first < len) {
+            *out = (((uint64_t)rd16(e + 6u) << 32) | rd32(e + 8u)) + (n - first);
+            return 0;
+        }
+    }
+    *out = 0;
+    return 0;
+}
+
+/* Which filesystem block holds a file's block `n`: through the extent tree on
+ * an inode that has one, through ext2's pointers otherwise. */
+static int ext2_map_block(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint32_t n,
+                          uint64_t *out) {
+    uint32_t b = 0;
+
+    if ((rd32(inode + 32u) & INODE_FLAG_EXTENTS) != 0u) {
+        if ((fs->incompat & INCOMPAT_EXTENTS) == 0u) {
+            vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, ino);
+            return -1;   /* an extent inode on a volume that says it has none */
+        }
+        return ext2_map_extent(fs, ino, inode, n, out);
+    }
+    if (ext2_map_indirect(fs, inode, n, &b) != 0) {
+        return -1;
+    }
+    *out = b;
+    return 0;
+}
+
+static int ext2_map_indirect(vibeos_ext2_t *fs, const uint8_t *inode, uint32_t n,
+                             uint32_t *out) {
     uint32_t per = fs->block_size / 4u;
     uint8_t block[EXT2_MAX_BLOCK];
 
@@ -316,8 +570,32 @@ static uint32_t ext2_dir_nblocks(const vibeos_ext2_t *fs, uint64_t size) {
     return (uint32_t)n;
 }
 
-/* Find `name` in a directory inode. Returns the inode number, or 0. */
-static uint32_t ext2_dir_find(vibeos_ext2_t *fs, const uint8_t *dir,
+/* One block of directory `ino`, read and, with metadata_csum, checked. A leaf
+ * block ends in a twelve-byte entry that names no inode (file type 0xDE) and
+ * holds crc32c of everything before it; that entry is skipped by the scan like
+ * any other with inode 0. An htree node keeps its checksum elsewhere and has no
+ * such tail: it is read as the empty block it looks like to a linear scan,
+ * which is what htree was designed to be, and not checked here. */
+static int ext2_dir_block(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *dir, uint64_t phys,
+                          uint8_t *block) {
+    const uint8_t *t;
+
+    if (ext2_read_block(fs, phys, block) != 0) {
+        return -1;
+    }
+    if (!fs->csum) {
+        return 0;
+    }
+    t = block + fs->block_size - 12u;
+    if (rd32(t) == 0u && rd16(t + 4u) == 12u && t[6] == 0u && t[7] == 0xDEu &&
+        vibeos_ext2_crc32c(inode_seed(fs, ino, dir), block, fs->block_size - 12u) != rd32(t + 8u)) {
+        return csum_bad(phys);
+    }
+    return 0;
+}
+
+/* Find `name` in directory `dir_ino`. Returns the inode number, or 0. */
+static uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
                               const char *name, uint32_t name_len) {
     uint8_t block[EXT2_MAX_BLOCK];
     uint64_t size = inode_size(dir);
@@ -325,11 +603,12 @@ static uint32_t ext2_dir_find(vibeos_ext2_t *fs, const uint8_t *dir,
     uint32_t bi;
 
     for (bi = 0; bi < nblocks; bi++) {
-        uint32_t phys = 0, off = 0;
-        if (ext2_map_block(fs, dir, bi, &phys) != 0 || phys == 0u) {
+        uint64_t phys = 0;
+        uint32_t off = 0;
+        if (ext2_map_block(fs, dir_ino, dir, bi, &phys) != 0 || phys == 0u) {
             continue;
         }
-        if (ext2_read_block(fs, phys, block) != 0) {
+        if (ext2_dir_block(fs, dir_ino, dir, phys, block) != 0) {
             return 0;
         }
         while (off + 8u <= fs->block_size) {
@@ -392,7 +671,7 @@ static uint32_t ext2_resolve(vibeos_ext2_t *fs, const char *path, uint8_t *inode
             if (!inode_is_dir(inode)) {
                 return 0;   /* a path component that is not a directory */
             }
-            ino = ext2_dir_find(fs, inode, path + start, len);
+            ino = ext2_dir_find(fs, ino, inode, path + start, len);
             if (ino == 0u || ext2_read_inode(fs, ino, inode) != 0) {
                 return 0;
             }
@@ -408,7 +687,7 @@ static uint32_t ext2_resolve(vibeos_ext2_t *fs, const char *path, uint8_t *inode
 
 static int ext2_op_lookup(void *fsv, const char *path, vibeos_fs_node_t *out) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
-    uint8_t inode[128];
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
     uint32_t ino;
 
     if (!fs || !fs->mounted) {
@@ -427,7 +706,7 @@ static int ext2_op_lookup(void *fsv, const char *path, vibeos_fs_node_t *out) {
 static long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
                             uint64_t offset, void *buf, uint32_t len) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
-    uint8_t inode[128];
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
     uint8_t block[EXT2_MAX_BLOCK];
     uint8_t *dst = (uint8_t *)buf;
     uint64_t size;
@@ -456,7 +735,7 @@ static long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
         uint32_t bi = (uint32_t)bi64;
         uint32_t within = (uint32_t)((offset + done) % fs->block_size);
         uint32_t chunk = fs->block_size - within;
-        uint32_t phys = 0;
+        uint64_t phys = 0;
         uint32_t i;
 
         /* A size from the volume can reach past the 2^32 blocks a block
@@ -469,7 +748,7 @@ static long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
         if (chunk > len - done) {
             chunk = len - done;
         }
-        if (ext2_map_block(fs, inode, bi, &phys) != 0) {
+        if (ext2_map_block(fs, (uint32_t)node->id, inode, bi, &phys) != 0) {
             return (done > 0u) ? (long)done : -1;
         }
         if (phys == 0u) {
@@ -495,12 +774,12 @@ static long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
 static int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
                         uint32_t name_cap, uint64_t *out_size, int *out_is_dir) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
-    uint8_t dir[128];
+    uint8_t dir[EXT2_MAX_INODE_SIZE];
     uint8_t block[EXT2_MAX_BLOCK];
     uint64_t size;
-    uint32_t nblocks, bi, seen = 0;
+    uint32_t nblocks, bi, seen = 0, dir_ino;
 
-    if (!fs || !fs->mounted || ext2_resolve(fs, path, dir) == 0u) {
+    if (!fs || !fs->mounted || (dir_ino = ext2_resolve(fs, path, dir)) == 0u) {
         return -1;
     }
     if (!inode_is_dir(dir)) {
@@ -509,11 +788,12 @@ static int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
     size = inode_size(dir);
     nblocks = ext2_dir_nblocks(fs, size);
     for (bi = 0; bi < nblocks; bi++) {
-        uint32_t phys = 0, off = 0;
-        if (ext2_map_block(fs, dir, bi, &phys) != 0 || phys == 0u) {
+        uint64_t phys = 0;
+        uint32_t off = 0;
+        if (ext2_map_block(fs, dir_ino, dir, bi, &phys) != 0 || phys == 0u) {
             continue;
         }
-        if (ext2_read_block(fs, phys, block) != 0) {
+        if (ext2_dir_block(fs, dir_ino, dir, phys, block) != 0) {
             return -1;
         }
         while (off + 8u <= fs->block_size) {
@@ -542,7 +822,7 @@ static int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
                     }
                     name[i] = 0;
                     if (out_size || out_is_dir) {
-                        uint8_t child[128];
+                        uint8_t child[EXT2_MAX_INODE_SIZE];
                         if (ext2_read_inode(fs, ino, child) == 0) {
                             if (out_size) {
                                 *out_size = inode_size(child);
@@ -591,13 +871,44 @@ static int ext2_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
     if (fs == 0 || vibeos_ext2_mount(fs, bc, first_lba) != 0) {
         return -1;
     }
+    /* Under its own name only: a volume with extents or 64-bit numbers is
+     * ext4's, and the ext4 descriptor below takes it, so what the storage scan
+     * and /proc/mounts report says what the volume is. */
+    if ((fs->incompat & (INCOMPAT_EXTENTS | INCOMPAT_64BIT)) != 0u) {
+        fs->mounted = 0;
+        return -1;
+    }
     return vibeos_fs_mount(out, vibeos_ext2_ops(), fs, "ext2");
+}
+
+static int ext4_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
+                             uint64_t first_lba, uint64_t sectors, void *state)
+{
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)state;
+
+    (void)sectors;
+    if (fs == 0 || vibeos_ext2_mount(fs, bc, first_lba) != 0) {
+        return -1;
+    }
+    return vibeos_fs_mount(out, vibeos_ext2_ops(), fs, "ext4");
 }
 
 static const vibeos_fs_driver_t g_ext2_driver = {
     "ext2", 0, ext2_driver_mount, 0, 30u
 };
 VIBEOS_FS_DRIVER(g_ext2_driver);
+
+/* The same reader, tried after ext2 so that a plain ext2 volume keeps ext2's
+ * name. */
+static const vibeos_fs_driver_t g_ext4_driver = {
+    "ext4", 0, ext4_driver_mount, 0, 31u
+};
+VIBEOS_FS_DRIVER(g_ext4_driver);
+
+const vibeos_fs_driver_t *vibeos_ext4_fs_driver(void)
+{
+    return &g_ext4_driver;
+}
 
 /* For a host test, which does not walk the linker section and registers the
  * drivers itself. A function rather than an exported object, so the

@@ -80,6 +80,10 @@ do_tests() {
     fm="$(bash scripts/dev/verify-fat-mtools.sh "$d" | tail -1)"
     echo "$fm"
     case "$fm" in fat-mtools=ok*|fat-mtools=skip*) ;; *) t=1 ;; esac
+    local e4
+    e4="$(bash scripts/dev/verify-ext4.sh "$d" | tail -1)"
+    echo "$e4"
+    case "$e4" in ext4=ok*|ext4=skip*) ;; *) t=1 ;; esac
     if [ "$k" -eq 0 ] && [ "$b" -eq 0 ] && [ "$t" -eq 0 ] && [ "$c" -eq 0 ]; then
         echo "host-tests=pass"
     else

@@ -479,6 +479,10 @@ static int hw_fsimage_write(void *ctx, uint64_t lba, const void *buf) {
 static hw_fsimage_t g_fsimages[] = {
     { "ext2",    "EFI/BOOT/EXT2.IMG",  "/ext2",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
+    /* mkfs.ext4's defaults: extents, 64bit, flex_bg, metadata_csum (docs/
+     * filesystem-design/ext4.md step 1). */
+    { "ext4",    "EFI/BOOT/EXT4.IMG",  "/ext4",  "HELLO.TXT", 0ull, {0},
+      {{0}}, {{0}}, {0}, {0}, {0}, -1 },
     { "iso9660", "EFI/BOOT/ISO.IMG",   "/iso",   "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
     { "ntfs",    "EFI/BOOT/NTFS.IMG",  "/ntfs",  "HELLO.TXT", 0ull, {0},

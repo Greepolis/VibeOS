@@ -1,0 +1,48 @@
+# The ext4 reader (kernel/fs/ext2.c, docs/filesystem-design/ext4.md step 1),
+# broken; caught by scripts/dev/verify-ext4.sh, which reads volumes mkfs.ext4
+# made and holds them against the host's tree.
+#
+# Target source: kernel/fs/ext2.c
+# Run: SABOTAGE_VERIFY="cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/ext4-read.txt build-gcc-Release
+
+### an index node always descends into its first child
+--- old
+        while (i + 1u < entries && rd32(node + 12u + (i + 1u) * 12u) <= n) {
++++ new
+        while (0 && i + 1u < entries && rd32(node + 12u + (i + 1u) * 12u) <= n) {
+
+### a block inside an extent is read at the extent's start
+--- old
+            *out = (((uint64_t)rd16(e + 6u) << 32) | rd32(e + 8u)) + (n - first);
++++ new
+            *out = (((uint64_t)rd16(e + 6u) << 32) | rd32(e + 8u));
+
+### an inode's checksum is not checked
+--- old
+    if (fs->csum && !inode_csum_ok(fs, ino, out)) {
++++ new
+    if (0 && fs->csum && !inode_csum_ok(fs, ino, out)) {
+
+### the checksum covers only the first 128 bytes of an inode
+--- old
+        c = vibeos_ext2_crc32c(c, inode + (hi ? 0x84u : 0x82u), fs->inode_size - (hi ? 0x84u : 0x82u));
++++ new
+        c = vibeos_ext2_crc32c(c, inode + (hi ? 0x84u : 0x82u), 0u);
+
+### a feature the driver does not read is mounted anyway
+--- old
+    if ((fs->incompat & ~INCOMPAT_KNOWN) != 0u) {
++++ new
+    if ((fs->incompat & ~INCOMPAT_KNOWN & 0u) != 0u) {
+
+### a group descriptor is read at 32 bytes whatever s_desc_size says
+--- old
+    uint64_t at = (uint64_t)group * fs->desc_size;
++++ new
+    uint64_t at = (uint64_t)group * 32u;
+
+### the superblock's checksum seed is not the uuid's
+--- old
+                                                                 : vibeos_ext2_crc32c(~0u, sb + 0x68, 16u);
++++ new
+                                                                 : vibeos_ext2_crc32c(0u, sb + 0x68, 16u);

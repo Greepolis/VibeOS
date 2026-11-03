@@ -62,6 +62,29 @@ def build_ext2(path, size_bytes):
     return None
 
 
+def build_ext4(path, size_bytes):
+    # ext4 as mkfs.ext4 makes it on this host, defaults untouched - the feature
+    # set docs/filesystem-design/ext4.md says the driver reads is exactly
+    # those defaults, so a host whose e2fsprogs moves them is a host where this
+    # image says so at boot rather than a test that quietly stops covering it.
+    tool = shutil.which("mkfs.ext4")
+    if not tool:
+        return "mkfs.ext4 not found"
+
+    workdir = path + ".d"
+    os.makedirs(workdir, exist_ok=True)
+    with open(os.path.join(workdir, MARKER), "wb") as f:
+        f.write(content())
+
+    with open(path, "wb") as f:
+        f.truncate(size_bytes)
+    r = subprocess.run([tool, "-q", "-F", "-d", workdir, path], capture_output=True, text=True)
+    shutil.rmtree(workdir, ignore_errors=True)
+    if r.returncode != 0:
+        return "mkfs.ext4 failed: " + (r.stderr or r.stdout).strip()[:200]
+    return None
+
+
 def build_iso9660(path, size_bytes):
     # xorriso rather than genisoimage: it is what ships on a modern distro and
     # what ships in the CI image. size_bytes is ignored - an ISO is whatever
@@ -232,6 +255,7 @@ def build_fat(path, size_bytes):
 BUILDERS = {
     "fat": build_fat,
     "ext2": build_ext2,
+    "ext4": build_ext4,
     "iso9660": build_iso9660,
     "ntfs": build_ntfs,
     "exfat": build_exfat,
@@ -250,7 +274,7 @@ def main():
     # contents are a constant of this script.
     try:
         n = os.path.getsize(path)
-        if (n == size) if kind in ("ext2", "ntfs", "exfat", "fat") else (n > 0):
+        if (n == size) if kind in ("ext2", "ext4", "ntfs", "exfat", "fat") else (n > 0):
             return 0
     except OSError:
         pass

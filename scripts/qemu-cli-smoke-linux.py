@@ -2042,7 +2042,7 @@ def main():
                 problems.append("tmpfs_not_mounted")
 
             # fat since docs/abi/ A4: VFAT long names written by mtools.
-            for want in ("ext2", "iso9660", "ntfs", "exfat", "fat"):
+            for want in ("ext2", "ext4", "iso9660", "ntfs", "exfat", "fat"):
                 res = seen_fs.get(want)
                 if res is None:
                     problems.append("fsimage_missing:" + want)
