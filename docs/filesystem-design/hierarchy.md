@@ -12,37 +12,66 @@ this tree is not a claim that their service already exists.
 |-- dev/                  device nodes and pseudo-devices (devfs)
 |-- etc/                  host configuration and identity policy
 |   `-- vibeos/            VibeOS-owned configuration, versioned by schema
-|-- home/<user>/           user-owned documents and per-user state
-|-- media/<label>/         automount locations for removable media
-|-- mnt/<name>/            administrator-controlled temporary mounts
+|-- home/<user>/           user-owned documents and per-user state (XDG layout)
+|-- mnt/<name>/            administrator-controlled mounts
 |-- opt/<vendor>/<app>/    optional third-party application trees
 |-- proc/                  process and kernel view (procfs)
 |-- root/                  root administrator's home directory
 |-- run/                   volatile service/session state (tmpfs)
-|-- srv/<service>/         data intentionally served by a local service
+|   `-- media/<user>/<label>/  removable media, mounted for the session's user
 |-- sys/                   devices, buses and kernel control view (sysfs)
 |-- tmp/                   volatile, shared scratch space (tmpfs, mode 01777)
 |-- usr/
-|   |-- bin/               user commands and applications
-|   |-- lib/               shared libraries and runtime data
-|   |-- libexec/           non-interactive helper programs
-|   |-- sbin/              system administration executables
-|   |-- share/             architecture-independent data, docs, locales
-|   `-- local/             administrator-managed software, not OS updates
-|-- var/
-|   |-- cache/             recreatable caches
-|   |-- lib/               persistent service state and databases
-|   |-- log/               bounded, rotated system/service logs
-|   |-- spool/             queued work
-|   `-- tmp/               temporary data that must survive reboot
-`-- win/                   transitional alias only; see integration.md
+|   |-- bin/               every command: user and administration alike
+|   |-- lib/               shared libraries, runtime data, private helpers
+|   |   `-- windows/       the NT personality's system files (C:\Windows)
+|   `-- share/             architecture-independent data, docs, locales, fonts
+`-- var/
+    |-- cache/             recreatable caches
+    |-- lib/               persistent service state and databases
+    |   `-- windows/       NT machine state: the registry's hives
+    |-- log/               bounded, rotated system/service logs
+    `-- tmp/               temporary data that must survive reboot
 ```
 
-`/bin`, `/sbin` and `/lib` MUST resolve to their `/usr` counterparts for the
-Linux personality's merged-`/usr` expectation. Implement them as aliases only
-after symlink and secure path-walk behavior is proven; do not duplicate mutable
-binaries in two locations. `/var/tmp` is persistent temporary storage and MUST
-not alias `/tmp`.
+`/bin`, `/sbin`, `/lib` and `/usr/sbin` MUST resolve to `/usr/bin` and
+`/usr/lib` for the Linux personality's merged-`/usr` expectation. Implement them
+as aliases only after symlink and secure path-walk behavior is proven; do not
+duplicate mutable binaries in two locations. `/var/tmp` is persistent temporary
+storage and MUST not alias `/tmp`.
+
+### Simplifications decided 2026-11-03
+
+Taken while nothing depends on the tree yet, each one a directory Linux keeps
+for history or for a case VibeOS does not have:
+
+- **No `sbin`.** Administration commands live in `/usr/bin` beside the rest,
+  as Fedora and Arch do: whether a command needs privilege is decided by the
+  credential checks, not by where it sits. `/sbin` and `/usr/sbin` exist only
+  as aliases for programs that name them.
+- **No `/usr/libexec`.** A program's private helpers live under
+  `/usr/lib/<program>/`, as Arch does: one place per program, not two.
+- **No `/usr/local`.** Software the administrator installs outside the OS
+  goes to `/opt/<vendor>/<app>`; one location, not two that differ only by
+  convention.
+- **No `/srv`.** A service's data is its state, in `/var/lib/<service>`.
+- **No `/media`.** Removable media is mounted per user under
+  `/run/media/<user>/`, which is volatile (a stale mount point cannot outlive a
+  reboot) and private to the session that mounted it.
+- **No `/var/spool`.** Queued work is a service's state, under
+  `/var/lib/<service>`.
+- **One home for both personalities.** A Windows program's profile,
+  `C:\Users\<name>`, is the user's `/home/<name>`, not a second tree: a file
+  saved from a Windows program is in the same place the shell sees.
+- **One place for Windows' system files.** Today they are in three: the DLLs
+  in `/win`, the registry's hives in `/windows/system32/config`, and kernel32
+  answers `C:\win` for the system directory. They move to `/usr/lib/windows`
+  (read-only, ours, updated with the OS; `C:\Windows`) and
+  `/var/lib/windows` (the machine's registry, which survives updates), in
+  one change with the loader, the hive paths and the Wine test harness.
+- **Per-user state follows XDG.** `~/.config`, `~/.local/share`,
+  `~/.local/state` and `~/.cache`, decided now so the shell and the GUI do
+  not each invent their own.
 
 ## 2. Directory contract
 
@@ -53,13 +82,11 @@ not alias `/tmp`.
 | `/dev` | devfs | per-node policy | Device access is capability/permission checked, not granted by path visibility alone |
 | `/etc` | persistent machine configuration | `root:root`, usually `0755`; secrets stricter | Human/admin configuration, not generated package payloads |
 | `/home/<user>` | persistent data volume | user-owned, usually `0700` initially | User files and explicit per-user configuration |
-| `/media` | removable-volume mounts | policy-dependent | No automatic execution; mount options default restrictive |
 | `/mnt` | administrator-managed mounts | root-owned | Not an implicit automount namespace |
 | `/opt` | verified application payload or managed app volume | root-owned | Optional vendor trees; mutable app state lives elsewhere |
 | `/proc` | procfs | per-object visibility | Process/runtime diagnostics, not a durable filesystem |
 | `/root` | persistent or encrypted admin state | `root:root`, `0700` | Never exposed to unprivileged sessions |
-| `/run` | tmpfs, cleared at boot | root-owned, service subdirs | PIDs, sockets, locks and ephemeral credentials; no durable configuration |
-| `/srv` | persistent service data | dedicated service identity | A service receives only its own subtree |
+| `/run` | tmpfs, cleared at boot | root-owned, service subdirs | PIDs, sockets, locks and ephemeral credentials; no durable configuration. `/run/media/<user>` holds removable media, owned by that user, mounted `nodev,nosuid,noexec` by default |
 | `/sys` | sysfs/control service | capability/policy gated | Device and kernel controls are not writable by ordinary users |
 | `/tmp` | tmpfs, cleared at boot | `root:root`, `01777` | Sticky bit mandatory; apply per-process quotas and `nosuid,nodev` |
 | `/usr` | verified system slot, read-only | `root:root`, `0755` | OS executables/libraries/data; ordinary applications cannot replace files |

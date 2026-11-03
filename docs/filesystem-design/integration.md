@@ -71,12 +71,12 @@ Target default mounts:
 | `/tmp` | scratch | tmpfs, `01777`, quotas, `nosuid,nodev` |
 | `/var` | persistent service state/logs | separate data area or verified subvolume, quota/rotation |
 | `/home` | user data | separate data area or verified subvolume, per-user policy |
-| `/media/*` | removable devices | explicit/managed mount, `nodev,nosuid,noexec` by default |
+| `/run/media/<user>/*` | removable devices | explicit/managed mount per user, `nodev,nosuid,noexec` by default |
 | `/mnt/*` | administrator mounts | explicit only, no implicit fallback |
 
 All mount attempts have bounded timeouts and stable error codes. Failure to
 mount a required root is fatal to normal startup but MUST preserve a usable
-diagnostic/recovery path. Failure of optional `/media`, network filesystems or
+diagnostic/recovery path. Failure of optional removable media, network filesystems or
 noncritical services is logged and isolated.
 
 ## 3. Storage format and durability decision
@@ -121,13 +121,21 @@ or `/var/lib`, not in a boot script or the ESP.
 ### Windows NT personality
 
 An NT process receives a per-process DOS-device map and a Windows path view.
-The recommended system DLL location is `C:\Windows\System32`; user data is
-`C:\Users\<name>`; application data is under a policy-controlled
-`C:\Program Files` or `C:\ProgramData`. The mapping targets VFS objects and
-is capability-scoped; it does not require a second on-disk tree. Until the NT
-loader and case-insensitive lookup contract are complete, `/win` remains a
-compatibility alias to the currently staged DLL directory and must be measured
-for use before removal.
+The mapping targets VFS objects and is capability-scoped; it does not require
+a second on-disk tree (decided 2026-11-03, [hierarchy.md](hierarchy.md)):
+
+| Windows path | VFS location |
+| --- | --- |
+| `C:\Windows`, `C:\Windows\System32` | `/usr/lib/windows`, `/usr/lib/windows/system32` - ours, read-only, updated with the OS |
+| `C:\Windows\System32\config` | `/var/lib/windows/config` - the registry's hives, which survive an OS update |
+| `C:\Users\<name>` | `/home/<name>` - the same home the shell sees |
+| `C:\Program Files`, `C:\ProgramData` | `/opt/windows/program-files`, `/var/lib/windows/programdata` |
+
+Today the DLLs are staged at `/win`, the hives at `/windows/system32/config`,
+and kernel32 answers `C:\win` for the system directory. All three move in one
+change with the NT loader, the hive paths and the Wine test harness; until
+then `/win` is a compatibility alias and must be measured for use before
+removal.
 
 The current code uses `/win` as a provisional location and `docs/abi/windows.md`
 tracks that decision. A migration must update the NT loader, image staging,

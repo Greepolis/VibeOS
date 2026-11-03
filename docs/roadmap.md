@@ -1,6 +1,8 @@
 # Subsystem Rewrites: Order and Scope
 
 What is planned, what is deliberately sketched rather than planned, and why.
+This file is the history of how the order was decided; **what comes next is in
+[next-steps.md](next-steps.md)**, kept current.
 
 The memory manager is being rebuilt to a written plan with layers, invariants,
 host tests and sabotage cases. That treatment came from one decision - stopping
