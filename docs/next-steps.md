@@ -20,10 +20,11 @@ was decided.
 3. **The user's shell** - designed before written: login, prompt, line
    editing and completion, job control, which commands are built in, how it
    finds programs in the new hierarchy. It is also the terminal inside the GUI.
-4. **The GUI** - decision needed first: our own compositor
-   ([ui-design/](ui-design/README.md), `displayd`) or an existing Linux
-   compositor on a minimal DRM/KMS and evdev (README's "a desktop from
-   Linux"). The desktop and the shell stay ours either way.
+4. **The GUI** - decided 2026-11-03: an existing Wayland compositor on a
+   minimal DRM/KMS (dumb buffers, one output) and evdev, as the README's "a
+   desktop from Linux" said; extended later. The desktop and the shell stay
+   ours. [ui-design/](ui-design/README.md)'s own `displayd` is set aside, its
+   requirements (safe failure, observability) kept as the bar.
 5. **Windows' window system** - user32 as a client of that compositor, as
    Wine's Wayland driver is, and gdi32 drawing into shared buffers. Open items
    WO-101 to WO-105.
@@ -38,4 +39,4 @@ was decided.
 
 ## Decisions waiting
 
-- Our compositor or an existing one (item 4).
+- Which Wayland compositor (item 4), chosen when that step is planned.
