@@ -1,0 +1,18 @@
+# Our gdi32 (user/win/gdi32/gdi32.c, docs/abi/windows.md W8 step 6), broken;
+# caught at boot by hello.exe's user32_gdi32_check, which the gate reads as
+# nt_program_did_not_run.
+#
+# Target source: user/win/gdi32/gdi32.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py user/win/gdi32/gdi32.c scripts/dev/cases/gdi32-boot.txt build-gcc-Release
+
+### SelectObject hands back the brush where it replaced a pen
+--- old
+        prev = dc->pen;
++++ new
+        prev = dc->brush;
+
+### a deleted object is still found by its handle
+--- old
+    o->type = 0;   /* a selected pen or brush goes anyway, as on Windows */
++++ new
+    /* a selected pen or brush goes anyway, as on Windows */

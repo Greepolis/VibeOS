@@ -1011,9 +1011,11 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS}
                     -o "${VIBEOS_WIN_DIR}/hello.exe" "${VIBEOS_WIN_SRC}/hello/hello.c"
                     -L${VIBEOS_WIN_DIR} -lntdll -l:libmsvcrt.a -l:libvibeos_advapi32.a
+                    -l:libvibeos_user32.a -l:libvibeos_gdi32.a
                     -e nt_hello_start -Wl,--dynamicbase
             DEPENDS "${VIBEOS_WIN_SRC}/hello/hello.c" "${VIBEOS_WIN_DIR}/libntdll.a"
-                    "${VIBEOS_WIN_DIR}/libvibeos_advapi32.a"
+                    "${VIBEOS_WIN_DIR}/libvibeos_advapi32.a" "${VIBEOS_WIN_DIR}/libvibeos_user32.a"
+                    "${VIBEOS_WIN_DIR}/libvibeos_gdi32.a"
             COMMENT "Building the first Windows program with mingw-w64"
             VERBATIM
         )
@@ -1049,10 +1051,40 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMENT "Building our advapi32.dll with mingw-w64"
             VERBATIM
         )
-        # user32 as a placeholder that loads and exports nothing (W2): every
-        # import from it binds to one of ntdll's named stubs, so a program runs
+        # gdi32.dll and user32.dll (docs/abi/windows.md W8 steps 5 and 6): GDI's
+        # objects without a display, and the part of user32 that needs no
+        # window system. user32 imports gdi32 for the screen's DC.
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/gdi32.dll" "${VIBEOS_WIN_DIR}/libvibeos_gdi32.a"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
+                    -o "${VIBEOS_WIN_DIR}/gdi32.dll"
+                    "${VIBEOS_WIN_SRC}/gdi32/gdi32.c" "${VIBEOS_WIN_SRC}/gdi32/gdi32.def"
+                    -e vibeos_gdi32_main -Wl,--image-base=0x8008000000
+                    -L${VIBEOS_WIN_DIR} -lntdll
+                    -Wl,--out-implib=${VIBEOS_WIN_DIR}/libvibeos_gdi32.a
+            DEPENDS "${VIBEOS_WIN_SRC}/gdi32/gdi32.c" "${VIBEOS_WIN_SRC}/gdi32/gdi32.def"
+                    "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h" "${VIBEOS_WIN_DIR}/libntdll.a"
+            COMMENT "Building our gdi32.dll with mingw-w64"
+            VERBATIM
+        )
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/user32.dll" "${VIBEOS_WIN_DIR}/libvibeos_user32.a"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
+                    -o "${VIBEOS_WIN_DIR}/user32.dll"
+                    "${VIBEOS_WIN_SRC}/user32/user32.c" "${VIBEOS_WIN_SRC}/user32/user32.def"
+                    -e vibeos_user32_main -Wl,--image-base=0x8009000000
+                    -L${VIBEOS_WIN_DIR} -lntdll -l:libvibeos_gdi32.a
+                    -Wl,--out-implib=${VIBEOS_WIN_DIR}/libvibeos_user32.a
+            DEPENDS "${VIBEOS_WIN_SRC}/user32/user32.c" "${VIBEOS_WIN_SRC}/user32/user32.def"
+                    "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h" "${VIBEOS_WIN_DIR}/libntdll.a"
+                    "${VIBEOS_WIN_DIR}/libvibeos_gdi32.a"
+            COMMENT "Building our user32.dll with mingw-w64"
+            VERBATIM
+        )
+        # The rest as placeholders that load and export nothing (W2): every
+        # import from one binds to one of ntdll's named stubs, so a program runs
         # until the first it calls, and says which.
-        foreach(VIBEOS_PH user32)
+        foreach(VIBEOS_PH hid imm32 setupapi)
             add_custom_command(
                 OUTPUT "${VIBEOS_WIN_DIR}/${VIBEOS_PH}.dll"
                 COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
@@ -1082,6 +1114,8 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             DEPENDS "${VIBEOS_WIN_DIR}/ntdll.dll" "${VIBEOS_WIN_DIR}/msvcrt.dll"
                     "${VIBEOS_WIN_DIR}/hello.exe" "${VIBEOS_WIN_DIR}/stubcall.exe"
                     "${VIBEOS_WIN_DIR}/kernel32.dll" "${VIBEOS_WIN_DIR}/user32.dll"
+                    "${VIBEOS_WIN_DIR}/gdi32.dll" "${VIBEOS_WIN_DIR}/hid.dll"
+                    "${VIBEOS_WIN_DIR}/imm32.dll" "${VIBEOS_WIN_DIR}/setupapi.dll"
                     "${VIBEOS_WIN_DIR}/advapi32.dll")
         find_program(VIBEOS_MINGW_OBJDUMP_WIN x86_64-w64-mingw32-objdump)
         if(VIBEOS_BUILD_TESTS AND VIBEOS_MINGW_OBJDUMP_WIN AND Python3_EXECUTABLE)

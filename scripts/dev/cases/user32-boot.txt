@@ -1,0 +1,22 @@
+# Our user32 and gdi32 (user/win/user32/user32.c, user/win/gdi32/gdi32.c,
+# docs/abi/windows.md W8 steps 5 and 6), broken; caught at boot by hello.exe's
+# user32_gdi32_check, which the gate reads as nt_program_did_not_run. Both run
+# only on the machine, so the boot is their test. These cases target user32.c;
+# gdi32-boot.txt targets gdi32.c.
+#
+# Target source: user/win/user32/user32.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py user/win/user32/user32.c scripts/dev/cases/user32-boot.txt build-gcc-Release
+
+### wsprintf ignores the left-justify flag
+--- old
+                left = 1;
++++ new
+                left = 0;
+
+### I64 reads only 32 bits of the argument
+--- old
+            } else if (size == 3) {
+                v = __builtin_va_arg(ap, uint64_t);
++++ new
+            } else if (size == 3) {
+                v = __builtin_va_arg(ap, uint32_t);

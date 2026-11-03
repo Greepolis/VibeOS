@@ -198,7 +198,8 @@ if(EXISTS "${WIN_MSVCRT}")
 endif()
 # The placeholders for the DLLs not written yet, and the program that calls
 # into one (W2).
-foreach(WIN_EXTRA kernel32.dll user32.dll advapi32.dll stubcall.exe)
+foreach(WIN_EXTRA kernel32.dll user32.dll advapi32.dll gdi32.dll hid.dll imm32.dll
+                  setupapi.dll stubcall.exe)
     if(EXISTS "${CMAKE_BINARY_DIR}/win/${WIN_EXTRA}")
         file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/win")
         file(COPY_FILE "${CMAKE_BINARY_DIR}/win/${WIN_EXTRA}" "${EFI_ROOT_DIR}/win/${WIN_EXTRA}"

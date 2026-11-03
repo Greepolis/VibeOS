@@ -509,6 +509,66 @@ static const char *advapi32_check(void) {
     return 0;
 }
 
+/* W8 steps 5 and 6: user32 and gdi32 without a display - wsprintf with the
+ * flags Wine's test exercises, a pen selected into the screen's DC that
+ * GetDC hands over and GetObject describing it back, and a window that
+ * cannot be made saying so rather than ending the process. */
+__declspec(dllimport) int32_t wsprintfA(char *, const char *, ...);
+__declspec(dllimport) uint64_t GetDC(uint64_t);
+__declspec(dllimport) int32_t ReleaseDC(uint64_t, uint64_t);
+__declspec(dllimport) uint64_t CreateWindowExA(uint32_t, const char *, const char *, uint32_t, int32_t,
+                                               int32_t, int32_t, int32_t, uint64_t, uint64_t, uint64_t,
+                                               void *);
+__declspec(dllimport) uint64_t CreatePen(int32_t, int32_t, uint32_t);
+__declspec(dllimport) uint64_t SelectObject(uint64_t, uint64_t);
+__declspec(dllimport) int32_t GetObjectW(uint64_t, int32_t, void *);
+__declspec(dllimport) int32_t DeleteObject(uint64_t);
+
+static int text_equal(const char *a, const char *b) {
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static const char *user32_gdi32_check(void) {
+    char buf[32];
+    uint64_t dc, pen, old;
+    struct {
+        uint32_t style;
+        int32_t width_x, width_y;
+        uint32_t color;
+    } lp = {0};
+
+    if (wsprintfA(buf, "%-3d|%05x|%I64X|%s", 7, 0x2au, 0x123456789ABull, "ok") != 24 ||
+        !text_equal(buf, "7  |0002a|123456789AB|ok")) {
+        return "NT_HELLO_FAIL user32_wsprintf\n";
+    }
+    if (CreateWindowExA(0, "BUTTON", "x", 0, 0, 0, 1, 1, 0, 0, 0, 0) != 0) {
+        return "NT_HELLO_FAIL user32_window\n";
+    }
+    dc = GetDC(0);
+    pen = CreatePen(0 /* PS_SOLID */, 3, 0x00123456u);
+    if (!dc || !pen) {
+        return "NT_HELLO_FAIL gdi32_create\n";
+    }
+    old = SelectObject(dc, pen);
+    if (!old || SelectObject(dc, old) != pen) {
+        return "NT_HELLO_FAIL gdi32_select\n";
+    }
+    if (GetObjectW(pen, (int32_t)sizeof(lp), &lp) != (int32_t)sizeof(lp)) {
+        return "NT_HELLO_FAIL gdi32_getobject\n";
+    }
+    if (lp.width_x != 3 || lp.color != 0x00123456u) {
+        return "NT_HELLO_FAIL gdi32_pen\n";
+    }
+    if (!DeleteObject(pen) || GetObjectW(pen, (int32_t)sizeof(lp), &lp) != 0 || ReleaseDC(0, dc) != 1) {
+        return "NT_HELLO_FAIL gdi32_delete\n";
+    }
+    return 0;
+}
+
 /* A child that sleeps until something ends it - a thread its parent makes in
  * it, if W7 step 2 works - and otherwise ends with 42 after twenty seconds. */
 static const char *remote_thread_check(void) {
@@ -739,6 +799,9 @@ int nt_hello_start(void) {
         }
         if (!why) {
             why = advapi32_check();
+        }
+        if (!why) {
+            why = user32_gdi32_check();
         }
         if (why) {
             return fail(why);

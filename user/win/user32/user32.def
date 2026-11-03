@@ -1,0 +1,47 @@
+; What our user32.dll exports (docs/abi/windows.md W8 step 5): every name must be
+; defined in user32.c. A program importing anything else is bound to one of
+; ntdll's named stubs and says which when it calls it.
+LIBRARY user32.dll
+EXPORTS
+    CharLowerA
+    CharLowerBuffA
+    CharLowerBuffW
+    CharLowerW
+    CharUpperA
+    CharUpperBuffA
+    CharUpperBuffW
+    CharUpperW
+    CreateWindowExA
+    CreateWindowExW
+    DestroyWindow
+    GetCursorPos
+    GetDC
+    GetDesktopWindow
+    GetProcessWindowStation
+    GetSystemMetrics
+    GetThreadDesktop
+    GetWindowDC
+    IsCharAlphaA
+    IsCharAlphaW
+    IsCharLowerA
+    IsCharLowerW
+    IsCharUpperA
+    IsCharUpperW
+    IsWindow
+    LoadCursorA
+    LoadCursorW
+    LoadIconA
+    LoadIconW
+    LoadStringA
+    LoadStringW
+    RegisterClassA
+    RegisterClassExA
+    RegisterClassExW
+    RegisterClassW
+    RegisterClipboardFormatA
+    RegisterClipboardFormatW
+    ReleaseDC
+    wsprintfA
+    wsprintfW
+    wvsprintfA
+    wvsprintfW

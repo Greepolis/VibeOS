@@ -1,0 +1,42 @@
+; What our gdi32.dll exports (docs/abi/windows.md W8 step 6): every name must be
+; defined in gdi32.c. A program importing anything else is bound to one of
+; ntdll's named stubs and says which when it calls it.
+LIBRARY gdi32.dll
+EXPORTS
+    CreateBitmap
+    CreateBitmapIndirect
+    CreateBrushIndirect
+    CreateCompatibleBitmap
+    CreateCompatibleDC
+    CreateDCA
+    CreateDCW
+    CreateHatchBrush
+    CreatePen
+    CreatePenIndirect
+    CreateSolidBrush
+    DeleteDC
+    DeleteObject
+    GetBitmapBits
+    GetBkColor
+    GetBkMode
+    GetBrushOrgEx
+    GetCurrentObject
+    GetDeviceCaps
+    GetObjectA
+    GetObjectType
+    GetObjectW
+    GetPixel
+    GetStockObject
+    GetTextCharacterExtra
+    GetTextColor
+    LineTo
+    MoveToEx
+    PatBlt
+    SelectObject
+    SetBitmapBits
+    SetBkColor
+    SetBkMode
+    SetBrushOrgEx
+    SetTextCharacterExtra
+    SetTextColor
+    UnrealizeObject
