@@ -2,9 +2,9 @@
 /* The ext4 reader, on a volume mkfs.ext4 made (docs/filesystem-design/ext4.md
  * step 1).
  *
- *     vibeos_ext4_exercise <image> walk
- *     vibeos_ext4_exercise <image> refused-file <path>
- *     vibeos_ext4_exercise <image> refused-mount
+ *     vibeos_ext4_exercise walk                (in the directory that holds fs.img)
+ *     vibeos_ext4_exercise refused-file <path> (a path on the volume)
+ *     vibeos_ext4_exercise refused-mount
  *
  * scripts/dev/verify-ext4.sh builds a tree on the host, has mkfs.ext4 -d put
  * it on a volume, and holds what this prints against the tree itself: "walk"
@@ -142,12 +142,15 @@ static int walk(const char *dir) {
 int main(int argc, char **argv) {
     vibeos_fsmount_t m;
 
-    if (argc < 3 || load(argv[1]) != 0) {
-        fprintf(stderr, "usage: vibeos_ext4_exercise <image> walk|refused-file <path>|refused-mount\n");
+    /* fs.img in the working directory, as fat_exercise does: a program
+     * that opened a path from its arguments is a path-injection finding for
+     * code scanning, and a test has no reason to take one. */
+    if (argc < 2 || load("fs.img") != 0) {
+        fprintf(stderr, "usage: vibeos_ext4_exercise walk|refused-file <path>|refused-mount, beside fs.img\n");
         return 2;
     }
     g_ops = vibeos_ext2_ops();
-    if (strcmp(argv[2], "refused-mount") == 0) {
+    if (strcmp(argv[1], "refused-mount") == 0) {
         if (vibeos_ext2_mount(&g_fs, &g_bc, 0) == 0) {
             fprintf(stderr, "FAIL:ext4_exercise mounted a volume with a feature it does not read\n");
             return 1;
@@ -164,7 +167,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "FAIL:ext4_exercise the volume has no metadata_csum: nothing would be checked\n");
         return 1;
     }
-    if (strcmp(argv[2], "walk") == 0) {
+    if (strcmp(argv[1], "walk") == 0) {
         int bad = walk("/");
 
         if (vibeos_ext2_csum_failures() != 0u) {
@@ -174,11 +177,11 @@ int main(int argc, char **argv) {
         }
         return bad;
     }
-    if (strcmp(argv[2], "refused-file") == 0 && argc == 4) {
+    if (strcmp(argv[1], "refused-file") == 0 && argc == 3) {
         vibeos_fs_node_t node;
 
-        if (g_ops->lookup(&g_fs, argv[3], &node) == 0) {
-            fprintf(stderr, "FAIL:ext4_exercise read %s through a checksum that does not match\n", argv[3]);
+        if (g_ops->lookup(&g_fs, argv[2], &node) == 0) {
+            fprintf(stderr, "FAIL:ext4_exercise read %s through a checksum that does not match\n", argv[2]);
             return 1;
         }
         printf("refused csum_failures=%llu\n", (unsigned long long)vibeos_ext2_csum_failures());

@@ -58,7 +58,7 @@ debugfs -R "htree /many" "$T/fs.img" 2>/dev/null | grep -q "Root node dump" \
     || fail "/many is not htree-indexed" fixture_has_no_htree
 
 python3 scripts/dev/ext4-tree.py list "$T/tree" > "$T/want.txt"
-"$EX" "$T/fs.img" walk > "$T/seen.raw" 2> "$T/walk.err" \
+(cd "$T" && "$EX" walk) > "$T/seen.raw" 2> "$T/walk.err" \
     || fail "$(grep -m1 FAIL "$T/walk.err" || tail -1 "$T/walk.err")" driver_walk_failed
 sort "$T/seen.raw" > "$T/seen.txt"
 if ! diff "$T/want.txt" "$T/seen.txt" > "$T/diff.txt"; then
@@ -67,15 +67,16 @@ fi
 entries="$(grep -c . "$T/seen.txt")"
 
 # An inode whose checksum no longer matches: its low half set to zero.
-cp "$T/fs.img" "$T/csum.img"
-debugfs -w -R "sif /small.txt checksum 0" "$T/csum.img" > /dev/null 2>&1
-"$EX" "$T/csum.img" refused-file /small.txt > "$T/csum.out" 2> "$T/csum.err" \
+mkdir -p "$T/csum" "$T/feat"
+cp "$T/fs.img" "$T/csum/fs.img"
+debugfs -w -R "sif /small.txt checksum 0" "$T/csum/fs.img" > /dev/null 2>&1
+(cd "$T/csum" && "$EX" refused-file /small.txt) > "$T/csum.out" 2> "$T/csum.err" \
     || fail "$(cat "$T/csum.err" "$T/csum.out" | head -1)" bad_inode_checksum_read
 
 # A feature this driver does not read: inline_data puts a file in its inode.
-cp "$T/fs.img" "$T/feat.img"
-debugfs -w -R "feature inline_data" "$T/feat.img" > /dev/null 2>&1
-"$EX" "$T/feat.img" refused-mount > "$T/feat.out" 2> "$T/feat.err" \
+cp "$T/fs.img" "$T/feat/fs.img"
+debugfs -w -R "feature inline_data" "$T/feat/fs.img" > /dev/null 2>&1
+(cd "$T/feat" && "$EX" refused-mount) > "$T/feat.out" 2> "$T/feat.err" \
     || fail "$(cat "$T/feat.err" "$T/feat.out" | head -1)" unknown_feature_mounted
 grep -q "features=0x8000" "$T/feat.out" || fail "$(cat "$T/feat.out")" refusal_names_wrong_feature
 
