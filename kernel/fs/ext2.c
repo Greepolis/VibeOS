@@ -341,7 +341,9 @@ static int ext2_read_inode(vibeos_ext2_t *fs, uint32_t ino, uint8_t *out) {
     if (ino == 0u) {
         return -1;   /* inode zero does not exist; it means "no entry" */
     }
-    if (ext2_cache_get(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, fs->inode_size)) {
+    /* The whole buffer, a constant: the bytes past a 128-byte inode are zeros
+     * the read below writes, so a hit returns exactly what a miss would. */
+    if (ext2_cache_get(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, EXT2_MAX_INODE_SIZE)) {
         return 0;
     }
     group = (ino - 1u) / fs->inodes_per_group;
@@ -357,13 +359,13 @@ static int ext2_read_inode(vibeos_ext2_t *fs, uint32_t ino, uint8_t *out) {
         return -1;
     }
     offset = (index % per_block) * fs->inode_size;
-    for (i = 0; i < fs->inode_size; i++) {
-        out[i] = block[offset + i];
+    for (i = 0; i < EXT2_MAX_INODE_SIZE; i++) {
+        out[i] = i < fs->inode_size ? block[offset + i] : 0u;
     }
     if (fs->csum && !inode_csum_ok(fs, ino, out)) {
         return csum_bad(ino);
     }
-    ext2_cache_put(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, fs->inode_size);
+    ext2_cache_put(&fs->ino_seq, &fs->cached_ino, ino, fs->cached_inode, out, EXT2_MAX_INODE_SIZE);
     return 0;
 }
 
@@ -904,11 +906,6 @@ static const vibeos_fs_driver_t g_ext4_driver = {
     "ext4", 0, ext4_driver_mount, 0, 31u
 };
 VIBEOS_FS_DRIVER(g_ext4_driver);
-
-const vibeos_fs_driver_t *vibeos_ext4_fs_driver(void)
-{
-    return &g_ext4_driver;
-}
 
 /* For a host test, which does not walk the linker section and registers the
  * drivers itself. A function rather than an exported object, so the
