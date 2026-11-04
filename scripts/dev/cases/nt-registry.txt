@@ -94,3 +94,23 @@
                 return VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND;   /* only the last may be new */
             }
 +++ new
+
+### a hive's depth is bounded within the hive, not along the whole path (M-138)
+--- old
+            if (d == 0u || d > depth + 1u || base + d > VIBEOS_REG_DEPTH_MAX || (nl & 1u) || nl == 0u ||
++++ new
+            if (d == 0u || d > depth + 1u || d > VIBEOS_REG_DEPTH_MAX || (nl & 1u) || nl == 0u ||
+
+### a renamed key keeps its old name's hash (M-138)
+--- old
+            g_keys[s].name_hash = name_hash(name, n);
++++ new
+            (void)name_hash(name, n);
+
+### a carved page whose last cell is freed is kept (M-134, WO-083)
+--- old
+            if (used == 0u) {
+                page_reclaim(c, d, (uintptr_t)k);
++++ new
+            if (0 && used == 0u) {
+                page_reclaim(c, d, (uintptr_t)k);

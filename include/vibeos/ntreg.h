@@ -100,6 +100,11 @@ uint32_t vibeos_reg_name(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32
 /* The key's whole path from the top, "\REGISTRY\MACHINE\...", as
  * KeyNameInformation reports it; written whole or reported as overflowing. */
 uint32_t vibeos_reg_path(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32_t *len);
+/* The name of the key's ancestor just below the root - "MACHINE" or "USER" -
+ * into `buf` (`cap` bytes), *len its size in bytes; 0 for the root itself.
+ * What decides who may write a key (v8 review, M-137), without building the
+ * whole path. */
+uint32_t vibeos_reg_top(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32_t *len);
 /* The index-th subkey's name, in the order Windows enumerates: by name. */
 uint32_t vibeos_reg_enum_key(vibeos_reg_key_t k, uint32_t index, uint16_t *buf, uint32_t cap,
                              uint32_t *len, uint64_t *last_write);

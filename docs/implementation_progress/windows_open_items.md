@@ -107,7 +107,7 @@ or a subsystem of its own.
 | WO-080 | advapi32's registry moves into W8 (was WO-050, out of plan) | closed (W8 steps 2-4); what is left is WO-085 onward |
 | WO-081 | user32 and gdi32 as far as programs reach without a window system (was WO-051) | closed (W8 steps 5-6); what is left is WO-101 onward |
 | WO-082 | A kernel built without the NT personality is not known to build or boot | closed (W8 step 1): check.sh builds it and checks its symbols every run; booted once |
-| WO-083 | The registry's small-cell pages are kept once carved: after many values are deleted the memory is reused, not given back (W8 step 2) | open |
+| WO-083 | The registry's small-cell pages are kept once carved: after many values are deleted the memory is reused, not given back (W8 step 2) | closed (2026-11-04, M-134): a page goes back when its last cell is freed |
 | WO-084 | The registry folds case for Latin, Greek and Cyrillic only; Windows' upcase table covers all of Unicode (W8 step 2) | open |
 | WO-085 | Symbolic keys (REG_OPTION_CREATE_LINK) are NOT_SUPPORTED (W8 step 3) | open |
 | WO-086 | Every process's current user is `\Registry\User\.DEFAULT`: there are no tokens to name another (W8 step 3; with SEC) | open |
@@ -117,7 +117,7 @@ or a subsystem of its own.
 | WO-090 | NtQueryObject does not answer for a key handle (ntdll:reg's test_NtDeleteKey) | open |
 | WO-091 | WoW64 registry redirection (KEY_WOW64_32KEY views) is not done: ntdll:reg's test_redirection fails, as WoW64 is not planned | out of plan |
 | WO-092 | Registry keys have no ACLs: any process may open any key (with SEC) | open |
-| WO-093 | A hive larger than the 1 MiB staging buffer is not saved (W8 step 3) | open |
+| WO-093 | A hive larger than the 1 MiB staging buffer is not saved, nor could it be loaded: both take the whole image in one buffer (W8 step 3). Since M-138 a refused save is retried after a minute and said once | open: saving and loading have to stream |
 | WO-094 | REG_EXPAND_SZ is not expanded by RegGetValue or RegQueryValue (no environment expansion in advapi32 yet) | open |
 | WO-095 | RegLoadMUIString does not load "@file,-id" resource strings | open |
 | WO-096 | RegSaveKey, RegLoadKey, RegUnLoadKey, RegLoadAppKey, RegSetKeySecurity are refused | open |

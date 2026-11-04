@@ -38,10 +38,13 @@ static const uint32_t g_class_size[CLASSES] = { 32u, 64u, 128u, 256u, 512u, 1024
 static void *g_class_free[CLASSES];
 static vibeos_reg_env_t g_env;
 static uint64_t g_bytes;
-/* Every page carved into cells, so that vibeos_reg_fini can give them all
- * back: a chain of directory pages, each its successor's address, a count,
- * and the pages it records. */
-#define DIR_SLOTS ((PAGE / 8u) - 2u)
+/* Every page carved into cells: a chain of directory pages, each its
+ * successor's address, a count, and pairs of a page and how many of its cells
+ * are in use. The count is what gives a page back once its last cell is freed
+ * - a carved page used to be kept for good, so a program that wrote values and
+ * deleted them left the quota spent until a reboot (v8 review, M-134,
+ * WO-083) - and the list is what vibeos_reg_fini gives back. */
+#define DIR_PAIRS (((PAGE / 8u) - 2u) / 2u)
 static void **g_dir;     /* taken from the environment, cells and chains */
 static uint64_t g_changes;   /* every change a save would write */
 
@@ -63,7 +66,7 @@ static int quota_ok(uint64_t more) {
 static int dir_room(void) {
     void **d;
 
-    if (g_dir && (uintptr_t)g_dir[1] < DIR_SLOTS) {
+    if (g_dir && (uintptr_t)g_dir[1] < DIR_PAIRS) {
         return 1;
     }
     if (!quota_ok(PAGE) || !(d = (void **)g_env.page_alloc())) {
@@ -74,6 +77,52 @@ static int dir_room(void) {
     d[1] = 0;
     g_dir = d;
     return 1;
+}
+
+/* The directory pair recording the page `cell` lies in: *d its directory
+ * page, the return its index there; -1 if none does. A walk of every carved
+ * page, which the quota bounds to a few thousand. */
+static long page_of(const void *cell, void ***d) {
+    const uint8_t *c = (const uint8_t *)cell;
+    void **x;
+
+    for (x = g_dir; x; x = (void **)x[0]) {
+        uintptr_t n = (uintptr_t)x[1], k;
+
+        for (k = 0; k < n; k++) {
+            const uint8_t *p = (const uint8_t *)x[2u + 2u * k];
+
+            if (c >= p && c < p + PAGE) {
+                *d = x;
+                return (long)k;
+            }
+        }
+    }
+    return -1;
+}
+
+/* A carved page whose last cell came back: its cells out of the class's free
+ * list, the page to the environment, its pair replaced by the directory
+ * page's last. */
+static void page_reclaim(uint32_t c, void **d, uintptr_t k) {
+    uint8_t *page = (uint8_t *)d[2u + 2u * k];
+    uintptr_t last = (uintptr_t)d[1] - 1u;
+    void **link = &g_class_free[c];
+
+    while (*link) {
+        uint8_t *cell = (uint8_t *)*link;
+
+        if (cell >= page && cell < page + PAGE) {
+            *link = *(void **)(void *)cell;
+        } else {
+            link = (void **)(void *)cell;
+        }
+    }
+    g_env.page_free(page);
+    g_bytes -= PAGE;
+    d[2u + 2u * k] = d[2u + 2u * last];
+    d[3u + 2u * k] = d[3u + 2u * last];
+    d[1] = (void *)last;
 }
 
 /* A blob of `len` bytes, or null. Zero bytes is a valid blob with no storage. */
@@ -93,7 +142,8 @@ static void *blob_alloc(uint32_t len) {
                 return 0;
             }
             g_bytes += PAGE;
-            g_dir[2u + (uintptr_t)g_dir[1]] = page;
+            g_dir[2u + 2u * (uintptr_t)g_dir[1]] = page;
+            g_dir[3u + 2u * (uintptr_t)g_dir[1]] = 0;
             g_dir[1] = (void *)((uintptr_t)g_dir[1] + 1u);
             for (at = 0; at + g_class_size[c] <= PAGE; at += g_class_size[c]) {
                 *(void **)(void *)(page + at) = g_class_free[c];
@@ -102,6 +152,14 @@ static void *blob_alloc(uint32_t len) {
             cell = g_class_free[c];
         }
         g_class_free[c] = *(void **)cell;
+        {
+            void **d;
+            long k = page_of(cell, &d);
+
+            if (k >= 0) {
+                d[3u + 2u * (uintptr_t)k] = (void *)((uintptr_t)d[3u + 2u * (uintptr_t)k] + 1u);
+            }
+        }
         return cell;
     } else {
         uint32_t pages = (len + CHAIN_PAYLOAD - 1u) / CHAIN_PAYLOAD, i;
@@ -142,9 +200,19 @@ static void blob_free(void *b, uint32_t len) {
     }
     if (len <= SMALL_MAX) {
         uint32_t c = class_of(len);
+        void **d;
+        long k = page_of(b, &d);
 
         *(void **)b = g_class_free[c];
         g_class_free[c] = b;
+        if (k >= 0) {
+            uintptr_t used = (uintptr_t)d[3u + 2u * (uintptr_t)k] - 1u;
+
+            d[3u + 2u * (uintptr_t)k] = (void *)used;
+            if (used == 0u) {
+                page_reclaim(c, d, (uintptr_t)k);
+            }
+        }
     } else {
         uint8_t *p = (uint8_t *)b;
 
@@ -274,6 +342,20 @@ static int name_cmp(void *b, uint32_t blen, const uint16_t *n, uint32_t nlen) {
     return units == nlen ? 0 : (units < nlen ? -1 : 1);
 }
 
+/* FNV-1a over a name folded to upper case: equal names under Windows' rule
+ * hash equal, so a sibling whose hash differs cannot be the one. */
+static uint32_t name_hash(const uint16_t *name, uint32_t units) {
+    uint32_t h = 2166136261u, i;
+
+    for (i = 0; i < units; i++) {
+        uint16_t c = vibeos_reg_upcase(name[i]);
+
+        h = (h ^ (c & 0xFFu)) * 16777619u;
+        h = (h ^ (uint32_t)(c >> 8)) * 16777619u;
+    }
+    return h;
+}
+
 /* ---- keys and values ----------------------------------------------------------------- */
 
 typedef struct reg_value {
@@ -293,6 +375,7 @@ typedef struct {
     uint32_t subkeys, values;
     void *name;
     uint32_t name_len;   /* bytes */
+    uint32_t name_hash;  /* of the name folded to upper case: find_child's first test */
     reg_value_t *vhead, *vtail;
     uint64_t last_write;
 } reg_key_t;
@@ -347,6 +430,7 @@ static uint32_t key_new(const uint16_t *name, uint32_t units, uint32_t flags) {
     g_keys[s].subkeys = g_keys[s].values = 0;
     g_keys[s].name = nb;
     g_keys[s].name_len = units * 2u;
+    g_keys[s].name_hash = name ? name_hash(name, units) : 0u;
     g_keys[s].vhead = g_keys[s].vtail = 0;
     if (units != 0u) {
         blob_put(nb, units * 2u, 0, name, units * 2u);
@@ -428,11 +512,15 @@ static void link_child(uint32_t p, uint32_t c) {
     g_keys[p].subkeys++;
 }
 
+/* A child by name. Still a walk of the siblings, but each step compares a
+ * number and reads a name only on a match: it read every sibling's name out
+ * of its blob (v8 review, M-138). */
 static uint32_t find_child(uint32_t p, const uint16_t *name, uint32_t units) {
+    const uint32_t h = name_hash(name, units);
     uint32_t c;
 
     for (c = g_keys[p].child; c != NONE; c = g_keys[c].sibling) {
-        if (name_cmp(g_keys[c].name, g_keys[c].name_len, name, units) == 0) {
+        if (g_keys[c].name_hash == h && name_cmp(g_keys[c].name, g_keys[c].name_len, name, units) == 0) {
             return c;
         }
     }
@@ -541,7 +629,7 @@ void vibeos_reg_fini(void) {
         uintptr_t n = (uintptr_t)g_dir[1], k;
 
         for (k = 0; k < n; k++) {
-            g_env.page_free(g_dir[2u + k]);
+            g_env.page_free(g_dir[2u + 2u * k]);
         }
         g_env.page_free(g_dir);
         g_dir = next;
@@ -753,6 +841,7 @@ uint32_t vibeos_reg_rename(vibeos_reg_key_t k, const uint16_t *name, uint32_t n)
             blob_free(g_keys[s].name, g_keys[s].name_len);
             g_keys[s].name = nb;
             g_keys[s].name_len = n * 2u;
+            g_keys[s].name_hash = name_hash(name, n);
             link_child(p, s);
             touch(s);
             touch(p);
@@ -822,11 +911,15 @@ uint32_t vibeos_reg_path(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32
     lock();
     st = live(k, &s);
     if (st == VIBEOS_STATUS_SUCCESS) {
-        for (x = s; x != NONE; x = g_keys[x].parent) {
+        /* Measured with the bound the write below has, or the two disagree
+         * and the bytes between are never written (v8 review, M-138). */
+        for (x = s, depth = 0; x != NONE && depth <= VIBEOS_REG_DEPTH_MAX; x = g_keys[x].parent, depth++) {
             total += 2u + g_keys[x].name_len;
         }
         *len = total;
-        if (cap < total) {
+        if (x != NONE) {
+            st = VIBEOS_STATUS_REGISTRY_CORRUPT;   /* deeper than any key may be */
+        } else if (cap < total) {
             st = VIBEOS_STATUS_BUFFER_OVERFLOW;
         } else {
             /* From the key up, each name written where it ends. */
@@ -837,6 +930,27 @@ uint32_t vibeos_reg_path(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32
                 at -= 2u;
                 buf[at / 2u] = '\\';
             }
+        }
+    }
+    unlock();
+    return st;
+}
+
+uint32_t vibeos_reg_top(vibeos_reg_key_t k, uint16_t *buf, uint32_t cap, uint32_t *len) {
+    uint32_t s, st, x, depth;
+
+    lock();
+    st = live(k, &s);
+    *len = 0;
+    if (st == VIBEOS_STATUS_SUCCESS && g_keys[s].parent != NONE) {
+        for (x = s, depth = 0; g_keys[g_keys[x].parent].parent != NONE && depth <= VIBEOS_REG_DEPTH_MAX;
+             x = g_keys[x].parent, depth++) {
+        }
+        *len = g_keys[x].name_len;
+        if (cap < *len) {
+            st = VIBEOS_STATUS_BUFFER_OVERFLOW;
+        } else {
+            blob_get(g_keys[x].name, g_keys[x].name_len, 0, (uint8_t *)buf, g_keys[x].name_len);
         }
     }
     unlock();
@@ -1237,7 +1351,7 @@ static uint16_t g_name_bounce[VIBEOS_REG_VALUE_NAME_MAX];   /* under the lock */
 /* One pass over the image: with `build` null, only checks it; with it,
  * makes the keys under `build` (a detached key) and its values. 0, or the
  * status that refuses it. */
-static uint32_t hive_walk(const uint8_t *p, uint64_t len, uint32_t build, uint32_t *records) {
+static uint32_t hive_walk(const uint8_t *p, uint64_t len, uint32_t build, uint32_t *records, uint32_t base) {
     uint64_t at = 0;
     uint32_t depth = 0, cur = build;
     uint32_t keys = 0;
@@ -1283,7 +1397,10 @@ static uint32_t hive_walk(const uint8_t *p, uint64_t len, uint32_t build, uint32
             }
             d = (uint32_t)rd(p + at + 2u, 2u);
             nl = (uint32_t)rd(p + at + 4u, 2u);
-            if (d == 0u || d > depth + 1u || d > VIBEOS_REG_DEPTH_MAX || (nl & 1u) || nl == 0u ||
+            /* Deep as the whole path, not as the hive: the hive hangs two levels
+             * down, and a key past the limit left NtQueryKey's path half written
+             * (v8 review, M-138). */
+            if (d == 0u || d > depth + 1u || base + d > VIBEOS_REG_DEPTH_MAX || (nl & 1u) || nl == 0u ||
                 nl / 2u > VIBEOS_REG_KEY_NAME_MAX || len - at - 16u < nl ||
                 ++keys > VIBEOS_REG_KEYS_MAX) {
                 return VIBEOS_STATUS_REGISTRY_CORRUPT;
@@ -1366,7 +1483,7 @@ uint32_t vibeos_reg_load(vibeos_reg_key_t k, const void *img, uint64_t len) {
     lock();
     st = live(k, &s);
     if (st == VIBEOS_STATUS_SUCCESS) {
-        st = hive_walk(p + HIVE_HEADER, plen, NONE, &records);   /* the whole image first */
+        st = hive_walk(p + HIVE_HEADER, plen, NONE, &records, depth_of(s));   /* the whole image first */
         if (st == VIBEOS_STATUS_SUCCESS && records != (uint32_t)rd(p + 8u, 4u)) {
             st = VIBEOS_STATUS_REGISTRY_CORRUPT;
         }
@@ -1380,7 +1497,7 @@ uint32_t vibeos_reg_load(vibeos_reg_key_t k, const void *img, uint64_t len) {
             st = VIBEOS_STATUS_INSUFFICIENT_RESOURCES;
         } else {
             g_keys[tmp].refs = 1u;
-            st = hive_walk(p + HIVE_HEADER, plen, tmp, &records);
+            st = hive_walk(p + HIVE_HEADER, plen, tmp, &records, depth_of(s));
         }
     }
     if (st == VIBEOS_STATUS_SUCCESS) {

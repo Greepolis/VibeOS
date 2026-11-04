@@ -73,3 +73,21 @@
     const int held = io_held();
 +++ new
     const int held = 0;
+
+### a key is made through a handle that may not add to its parent (M-137)
+--- old
+            if (root_h != 0u && i == n &&
++++ new
+            if (0 && root_h != 0u && i == n &&
+
+### anybody makes a machine key (M-137)
+--- old
+            } else if (machine_key(base, g_path, n) && !caller_privileged()) {
++++ new
+            } else if (0 && machine_key(base, g_path, n) && !caller_privileged()) {
+
+### anybody opens a machine key to change it (M-137)
+--- old
+    if ((access & KEY_CHANGES) != 0u && machine_key(k, 0, 0u) && !caller_privileged()) {
++++ new
+    if (0 && (access & KEY_CHANGES) != 0u && machine_key(k, 0, 0u) && !caller_privileged()) {

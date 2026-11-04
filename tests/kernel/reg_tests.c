@@ -191,6 +191,15 @@ static void t_keys(void) {
         expect(vibeos_reg_rename(b, nm, n) == VIBEOS_STATUS_SUCCESS &&
                    vibeos_reg_enum_key(a, 1, buf, sizeof(buf), &len, 0) == 0 && name_is(buf, len, "Beta"),
                "a rename takes its new place in the order");
+        {
+            vibeos_reg_key_t found;
+
+            /* Found by its new name, in another case: a lookup compares the
+             * name's hash first (M-138), so a rename that kept the old one
+             * would leave the key unreachable. */
+            expect(open_(a, "BETA", &found) == 0, "and is found by its new name");
+            vibeos_reg_unref(found);
+        }
     }
     expect(vibeos_reg_info(a, &info) == 0 && info.subkeys == 2u && info.max_subkey_name == 10u,
            "a key's information counts its subkeys and their longest name");
@@ -287,6 +296,49 @@ static void t_values(void) {
                "and one of 16,383 is kept whole across the page chain");
     }
     expect(vibeos_reg_delete(k) == 0, "a key with values is deleted");
+    vibeos_reg_unref(k);
+    vibeos_reg_unref(m);
+    vibeos_reg_unref(root);
+}
+
+/* Small values fill the quota through carved pages, and deleting them gives
+ * the pages back (v8 review, M-134, WO-083): a carved page was kept for good,
+ * and a program that wrote and deleted the quota's worth left every later
+ * write QUOTA_EXCEEDED until a reboot. Two classes, so that a page is given
+ * back from the middle of a free list, not only from its head. */
+static void t_pool_returns(void) {
+    vibeos_reg_key_t root, m, k;
+    uint32_t disp, i, first = 0, again = 0;
+    uint8_t data[2000];
+    char name[16];
+    uint64_t base;
+
+    memset(data, 0x3C, sizeof(data));
+    start(48u * 4096u);
+    root = vibeos_reg_root();
+    (void)open_(root, "Machine", &m);
+    base = vibeos_reg_bytes();
+    (void)create_(m, "Pool", 0, &k, &disp);
+    for (i = 0; i < 4000u; i++) {
+        snprintf(name, sizeof(name), "p%u", i);
+        if (set_(k, name, VIBEOS_REG_BINARY, data, (i & 1u) ? 40u : sizeof(data)) != 0) {
+            break;
+        }
+        first++;
+    }
+    expect(first > 0u && first < 4000u, "small values fill the quota");
+    expect(vibeos_reg_delete(k) == 0, "and the key holding them is deleted");
+    vibeos_reg_unref(k);
+    expect(vibeos_reg_bytes() <= base + 4096u, "which gives back every page they were carved from");
+    (void)create_(m, "Pool2", 0, &k, &disp);
+    for (i = 0; i < 4000u; i++) {
+        snprintf(name, sizeof(name), "p%u", i);
+        if (set_(k, name, VIBEOS_REG_BINARY, data, (i & 1u) ? 40u : sizeof(data)) != 0) {
+            break;
+        }
+        again++;
+    }
+    expect(again + 2u >= first, "and the quota holds as much again");
     vibeos_reg_unref(k);
     vibeos_reg_unref(m);
     vibeos_reg_unref(root);
@@ -433,12 +485,49 @@ static void t_hive(void) {
     }
 }
 
+/* A hive saved from one depth and loaded at a deeper one (v8 review, M-138):
+ * the load bounded depth within the hive, not along the whole path, so a key
+ * could end up past VIBEOS_REG_DEPTH_MAX, and the path NtQueryKey builds then
+ * left bytes of its buffer unwritten. */
+static void t_deep_load(void) {
+    vibeos_reg_key_t root, m, k, next, low;
+    uint32_t disp, i;
+    static uint8_t copy[1 << 20];
+    uint32_t copy_len;
+
+    start(0);
+    root = vibeos_reg_root();
+    (void)open_(root, "Machine", &m);
+    k = m;
+    vibeos_reg_ref(k);
+    for (i = 0; i + 1u < VIBEOS_REG_DEPTH_MAX; i++) {   /* to the deepest a key may be */
+        if (create_(k, "d", 0, &next, &disp) != 0) {
+            break;
+        }
+        vibeos_reg_unref(k);
+        k = next;
+    }
+    vibeos_reg_unref(k);
+    expect(i + 1u == VIBEOS_REG_DEPTH_MAX, "keys made down to the deepest allowed");
+    g_img_len = 0;
+    expect(vibeos_reg_save(m, sink, 0) == 0, "and saved from Machine");
+    memcpy(copy, g_img, g_img_len);
+    copy_len = g_img_len;
+    expect(create_(m, "Lower", 0, &low, &disp) == 0, "a key one level further down");
+    expect(vibeos_reg_load(low, copy, copy_len) == VIBEOS_STATUS_REGISTRY_CORRUPT,
+           "will not take the hive: its deepest key would be past the limit");
+    vibeos_reg_unref(low);
+    vibeos_reg_unref(m);
+}
+
 int test_reg(void) {
     g_fail = 0;
     t_keys();
     t_values();
     t_quota();
+    t_pool_returns();
     t_hive();
+    t_deep_load();
     expect(!g_locked, "the lock is free after every call");
     vibeos_reg_fini();
     expect(g_pages == 0, "and fini gives back every page the registry was given");

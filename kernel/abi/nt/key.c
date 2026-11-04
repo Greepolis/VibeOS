@@ -81,6 +81,12 @@ static uint64_t g_saved;        /* vibeos_reg_changes() at the last save */
 static uint64_t g_saved_tick;
 static int g_pending;           /* a change not yet written */
 static int g_no_volume;         /* the volume refused a save: memory only, said once */
+/* A hive larger than the staging buffer cannot be saved, and every save tried
+ * serialised it whole under g_io first, once a second for as long as it stayed
+ * that size (v8 review, M-138). The tick of the last such refusal: the next
+ * try waits a minute, and the refusal is said once. */
+static uint64_t g_oversize_tick;
+static int g_oversize_said;
 
 /* Pages the registry gave back, kept for its next value rather than returned
  * to the frame layer. A large value is a chain of pages, and setting one again
@@ -330,7 +336,10 @@ static int hive_save(uint32_t h) {
     g_stage_len = 0;
     i = vibeos_reg_save(k, stage_sink, 0);
     vibeos_reg_unref(k);
-    if (i != VIBEOS_STATUS_SUCCESS || vibeos_fs_resolve(g_hive_file[h], &m, &tail) != 0) {
+    if (i != VIBEOS_STATUS_SUCCESS) {
+        return -2;   /* the only way the sink refuses: larger than the staging buffer */
+    }
+    if (vibeos_fs_resolve(g_hive_file[h], &m, &tail) != 0) {
         return -1;
     }
     for (i = 0; i < sizeof(g_hive_dirs) / sizeof(g_hive_dirs[0]); i++) {
@@ -362,13 +371,23 @@ static void flush_now(void) {
     int ok = 1;
 
     for (h = 0; h < 2u; h++) {
-        if (hive_save(h) != 0) {
+        int r = hive_save(h);
+
+        if (r != 0) {
             ok = 0;
+        }
+        if (r == -2) {
+            g_oversize_tick = ks_ticks();
+            if (!g_oversize_said) {
+                g_oversize_said = 1;
+                ks_log(VIBEOS_LOG_WARN, 92u, h, STAGE_BYTES, "registry: a hive is larger than can be saved; kept in memory");
+            }
         }
     }
     g_saved_tick = ks_ticks();
     if (ok) {
         g_saved = changes;
+        g_oversize_tick = 0;
         g_pending = 0;
     } else if (!g_no_volume) {
         g_no_volume = 1;
@@ -380,6 +399,10 @@ static void flush_now(void) {
  * save was a second or more ago, otherwise left for later. */
 static void flush_behind(void) {
     if (vibeos_reg_changes() == g_saved) {
+        return;
+    }
+    if (g_oversize_tick != 0u && ks_ticks() - g_oversize_tick < 60u * (uint64_t)ks_hz()) {
+        g_pending = 1;   /* a hive too large to save: tried again in a minute, not every second */
         return;
     }
     if (ks_ticks() - g_saved_tick >= (uint64_t)ks_hz()) {
@@ -449,18 +472,76 @@ static void key_release(vibeos_file_t *f) {
     }
 }
 
+/* The rights that change a key or what is under it. */
+#define KEY_CHANGES (KEY_SET_VALUE | KEY_CREATE_SUB_KEY | 0x0020u /* KEY_CREATE_LINK */ | VIBEOS_DELETE | \
+                     0x00040000u /* WRITE_DAC */ | 0x00080000u /* WRITE_OWNER */)
+
+/* Is the caller the superuser? Machine keys are the system's: anybody else
+ * reads them and changes nothing (v8 review, M-137). Until security
+ * descriptors exist (WO-092) this stands in for HKLM's: Windows grants
+ * Users read on HKLM and its administrators the rest. */
+static int caller_privileged(void) {
+    vibeos_cred_t me;
+
+    nt_cred(&me);
+    return me.euid == 0u;
+}
+
+/* Does `k`, or the path `n` units long under it, lie under \Registry\Machine? */
+static int machine_key(vibeos_reg_key_t k, const uint16_t *path, uint32_t n) {
+    static const char machine[] = "MACHINE";
+    uint16_t top[8];
+    uint32_t len = 0, i;
+
+    if (vibeos_reg_top(k, top, sizeof(top), &len) == VIBEOS_STATUS_BUFFER_OVERFLOW) {
+        return 0;   /* a name longer than MACHINE's is not MACHINE */
+    }
+    if (len == 0u) {   /* the root: the path's first name decides */
+        for (len = 0; len < n && path[len] != '\\'; len++) {
+        }
+        if (len != 7u) {
+            return 0;
+        }
+        for (i = 0; i < 7u; i++) {
+            if (vibeos_reg_upcase(path[i]) != (uint16_t)machine[i]) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+    if (len != 14u) {
+        return 0;
+    }
+    for (i = 0; i < 7u; i++) {
+        if (vibeos_reg_upcase(top[i]) != (uint16_t)machine[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* A handle for `k`, whose reference it takes over; written to `out_u`. */
 static uint32_t key_handle(vibeos_reg_key_t k, uint32_t want, uint32_t attributes, uint64_t out_u) {
-    vibeos_file_t *f = vibeos_file_alloc(&g_nt_key_ops, 0);
+    vibeos_file_t *f;
     uint64_t h = 0;
-    uint32_t st;
+    uint32_t st, access = nt_map_access(&g_nt_key_ops, want);
 
+    /* A machine key, for anybody but the superuser: MAXIMUM_ALLOWED gets what
+     * is allowed, a right that changes it is refused outright (M-137). */
+    if ((access & KEY_CHANGES) != 0u && machine_key(k, 0, 0u) && !caller_privileged()) {
+        if ((want & VIBEOS_MAXIMUM_ALLOWED) == 0u) {
+            vibeos_reg_unref(k);
+            return VIBEOS_STATUS_ACCESS_DENIED;
+        }
+        access &= ~KEY_CHANGES;
+    }
+    f = vibeos_file_alloc(&g_nt_key_ops, 0);
     if (!f) {
         vibeos_reg_unref(k);
         return VIBEOS_STATUS_INSUFFICIENT_RESOURCES;
     }
     f->nt_key = (uint64_t)k.idx | ((uint64_t)k.gen << 32);
-    st = nt_handle_install(f, nt_map_access(&g_nt_key_ops, want), attributes, &h);
+    st = nt_handle_install(f, access, attributes, &h);
     if (st != VIBEOS_STATUS_SUCCESS) {
         return st;   /* the install released the description, and with it the key */
     }
@@ -512,7 +593,8 @@ static uint32_t read_ustring(uint64_t us, uint16_t *out, uint32_t cap, uint32_t 
 /* OBJECT_ATTRIBUTES as a key to start from and a path under it: a root key's
  * handle and a relative path, or no root and a path under \Registry. The key
  * is referenced, the path is in g_path. */
-static uint32_t key_from_oa(uint64_t oa, vibeos_reg_key_t *base, uint32_t *n, uint32_t *attributes) {
+static uint32_t key_from_oa(uint64_t oa, vibeos_reg_key_t *base, uint32_t *n, uint32_t *attributes,
+                            uint64_t *root_h) {
     static const char prefix[] = "\\REGISTRY";
     uint8_t a[32];
     uint64_t root = 0, name = 0;
@@ -534,6 +616,7 @@ static uint32_t key_from_oa(uint64_t oa, vibeos_reg_key_t *base, uint32_t *n, ui
     while (*n > 0u && g_path[*n - 1u] == '\\') {
         (*n)--;   /* "Software\" names Software, as Windows reads it */
     }
+    *root_h = root;
     if (root != 0u) {
         if (*n > 0u && g_path[0] == '\\') {
             return VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD;
@@ -565,7 +648,8 @@ static uint32_t key_from_oa(uint64_t oa, vibeos_reg_key_t *base, uint32_t *n, ui
 static long key_open(uint64_t out_u, uint32_t want, uint64_t oa, int create, uint32_t options,
                      uint64_t disp_u) {
     vibeos_reg_key_t base, k;
-    uint32_t st, n = 0, attributes = 0, disp = 0;
+    uint32_t st, n = 0, attributes = 0, disp = 0, i;
+    uint64_t root_h = 0;
 
     if (create && (options & ~(REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK | REG_OPTION_BACKUP |
                                REG_OPTION_OPEN_LINK)) != 0u) {
@@ -576,12 +660,37 @@ static long key_open(uint64_t out_u, uint32_t want, uint64_t oa, int create, uin
     }
     io_lock();
     reg_start();
-    st = key_from_oa(oa, &base, &n, &attributes);
-    if (st == VIBEOS_STATUS_SUCCESS) {
-        st = create ? vibeos_reg_create(base, g_path, n,
-                                        (options & REG_OPTION_VOLATILE) ? VIBEOS_REG_VOLATILE : 0u, &k,
-                                        &disp)
-                    : vibeos_reg_open(base, g_path, n, &k);
+    st = key_from_oa(oa, &base, &n, &attributes, &root_h);
+    /* A key that does not exist yet is made only by somebody allowed to add
+     * to its parent (v8 review, M-137): the handle it is named under must
+     * hold KEY_CREATE_SUB_KEY when it is that parent, as Windows asks, and a
+     * machine key is the superuser's to make. One that exists is opened,
+     * and key_handle decides what the handle may do with it. */
+    if (st == VIBEOS_STATUS_SUCCESS && create) {
+        st = vibeos_reg_open(base, g_path, n, &k);
+        if (st == VIBEOS_STATUS_SUCCESS) {
+            disp = 2u;   /* REG_OPENED_EXISTING_KEY */
+        } else if (st == VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND) {
+            vibeos_file_t *rf = 0;
+
+            for (i = 0; i < n && g_path[i] != '\\'; i++) {
+            }
+            if (root_h != 0u && i == n &&
+                nt_handle_ref(root_h, &g_nt_key_ops, KEY_CREATE_SUB_KEY, &rf, 0) != VIBEOS_STATUS_SUCCESS) {
+                st = VIBEOS_STATUS_ACCESS_DENIED;
+            } else if (machine_key(base, g_path, n) && !caller_privileged()) {
+                st = VIBEOS_STATUS_ACCESS_DENIED;
+            } else {
+                st = vibeos_reg_create(base, g_path, n,
+                                       (options & REG_OPTION_VOLATILE) ? VIBEOS_REG_VOLATILE : 0u, &k, &disp);
+            }
+            if (rf) {
+                vibeos_file_put(rf);
+            }
+        }
+        vibeos_reg_unref(base);
+    } else if (st == VIBEOS_STATUS_SUCCESS) {
+        st = vibeos_reg_open(base, g_path, n, &k);
         vibeos_reg_unref(base);
     }
     if (st == VIBEOS_STATUS_SUCCESS) {
@@ -1078,5 +1187,7 @@ void nt_reg_restart(void) {
     g_started = 0;
     g_pending = 0;
     g_no_volume = 0;
+    g_oversize_tick = 0;
+    g_oversize_said = 0;
     io_unlock();
 }
