@@ -33,7 +33,6 @@
 
 ### NtContinue leaves the frame as it was
 --- old
-    nt_context_to_regs(ctx, &r, flags);
     if (ks_regs_set(frame, &r) != 0) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }
@@ -55,9 +54,9 @@
 
 ### a thread's queue has no bound
 --- old
-    if (at < 0 || mine >= NT_APC_PER_THREAD) {
+    if (at < 0 || mine >= NT_APC_PER_THREAD || proc >= NT_APC_PER_PROCESS) {
 +++ new
-    if (at < 0) {
+    if (at < 0 || proc >= NT_APC_PER_PROCESS) {
 
 ### the newest APC is delivered first
 --- old
@@ -70,3 +69,32 @@
     if (routine == 0u || !nt_user_ok(routine, 1u, 0)) {
 +++ new
     if (routine == 0u) {
+
+### an APC left for a thread that ended keeps its entry (M-134)
+--- old
+        if (g_apc[i].used && ks_seq(g_apc[i].slot) != g_apc[i].seq) {
++++ new
+        if (0 && g_apc[i].used && ks_seq(g_apc[i].slot) != g_apc[i].seq) {
+
+### an APC's context carries no x87/SSE state (M-139)
+--- old
+        nt_context_fpu_out(ctx_at) != 0) {
+        return -1;
++++ new
+        0) {
+        return -1;
+
+### NtContinue leaves the x87/SSE state as the APC routine left it (M-139)
+--- old
+    if (nt_context_fpu_in(ctx_u, flags) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    if (ks_regs_set(frame, &r) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
+    if (test_alert && apc_take(&a)) {
++++ new
+    if (ks_regs_set(frame, &r) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
+    if (test_alert && apc_take(&a)) {

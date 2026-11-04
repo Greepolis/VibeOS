@@ -1,0 +1,17 @@
+# exit_group and a thread held in SETUP by its creator (v8 review, M-134): a
+# thread created suspended and never resumed cannot run to take the SIGKILL
+# its process's end sends, and kept the process alive for good. hello.exe
+# leaves one behind on purpose; with the branch gone the process never ends,
+# and the machine, which leaves userland only once every user task has ended,
+# never finishes the boot.
+#
+# Target source: kernel/arch/x86_64/task_life.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/nt-exit-held-boot.txt build-gcc-Release
+
+### a held sibling is left in SETUP when its process ends (M-134)
+--- old
+        } else if (i != me && g_tasks[i].ps == ps && hw_slot_state(i) == HW_TASK_RESERVED &&
+                   g_tasks[i].id.held) {
++++ new
+        } else if (0 && i != me && g_tasks[i].ps == ps && hw_slot_state(i) == HW_TASK_RESERVED &&
+                   g_tasks[i].id.held) {

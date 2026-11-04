@@ -39,6 +39,27 @@ static int nt_is_self(uint64_t h) {
 
 /* Has it ended? A slot that is not the tenancy the object names has; a zombie
  * has, and leaves its code, the whole 32 bits a Windows parent reads. */
+/* Does a thread of the process whose leader holds `slot` still run? A process
+ * ends with its last thread, as Windows has it, not with its first: a leader
+ * that ended while its threads ran was taken for the process, so waits on it
+ * returned and NtTerminateProcess had nothing left to kill (v8 review,
+ * M-136). Slot states are read without the scheduler's lock: a thread that
+ * ends between the reads is caught by the next look. */
+static int process_threads_live(int slot) {
+    const uint32_t tgid = ks_id(slot)->tgid;
+    uint32_t i;
+
+    for (i = 0; i < ks_slots(); i++) {
+        vibeos_task_state_t st = vibeos_task_state(i);
+
+        if ((int)i != slot && ks_id((int)i)->is_user && ks_id((int)i)->tgid == tgid &&
+            st != VIBEOS_TASK_FREE && st != VIBEOS_TASK_ZOMBIE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int process_ended(nt_ob_t *o) {
     vibeos_task_state_t s;
 
@@ -49,7 +70,7 @@ static int process_ended(nt_ob_t *o) {
     if (ks_seq(o->u.pr.slot) != o->u.pr.seq || s == VIBEOS_TASK_FREE) {
         o->u.pr.exit_code = 0;   /* gone before anyone looked: reaped elsewhere */
         o->u.pr.ended = 1;
-    } else if (s == VIBEOS_TASK_ZOMBIE) {
+    } else if (s == VIBEOS_TASK_ZOMBIE && !process_threads_live(o->u.pr.slot)) {
         const vibeos_task_t *t = ks_id(o->u.pr.slot);
 
         o->u.pr.exit_code = t->exit_signal ? 1u : (uint32_t)t->exit_code;
@@ -204,6 +225,43 @@ uint32_t nt_process_ps_slot_get(uint64_t h, uint32_t need, vibeos_procstate_t **
     return VIBEOS_STATUS_SUCCESS;
 }
 
+/* SIGKILL for the process whose leader held `slot` at tenancy `seq`, decided
+ * and sent under the scheduler's lock (v8 review). The tenancy was read and
+ * the signal sent without it, so a slot freed and taken between the two
+ * killed whoever had it next (M-135); and it went to the leader's slot alone,
+ * so a leader that had ended while its threads ran took it as a zombie and the
+ * process went on, reported terminated (M-136). A zombie leader's kill goes to
+ * a live thread of the process instead, as Linux's kill does, and a SIGKILL
+ * taken by any thread ends them all. */
+static void kill_process(int slot, uint32_t seq) {
+    int target = -1;
+
+    ks_irq_off();
+    ks_lock(ks_sched_lock(), __func__);
+    if (ks_seq(slot) == seq) {
+        const uint32_t tgid = ks_id(slot)->tgid;
+        uint32_t i;
+
+        target = slot;
+        if (vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_ZOMBIE) {
+            target = -1;
+            for (i = 0; i < ks_slots() && target < 0; i++) {
+                vibeos_task_state_t st = vibeos_task_state(i);
+
+                if (ks_id((int)i)->is_user && ks_id((int)i)->tgid == tgid && st != VIBEOS_TASK_FREE &&
+                    st != VIBEOS_TASK_SETUP && st != VIBEOS_TASK_ZOMBIE) {
+                    target = (int)i;
+                }
+            }
+        }
+        if (target >= 0) {
+            (void)ks_signal_send(target, VIBEOS_SIGKILL, 0);
+        }
+    }
+    ks_unlock(ks_sched_lock());
+    ks_irq_on();
+}
+
 /* NtTerminateProcess(ProcessHandle, ExitStatus). Oneself: the whole process
  * ends with the status. Another: killed, and its handles report the status
  * asked for, since the kill leaves none of its own. Windows also lets 0 mean
@@ -227,9 +285,7 @@ static long nt_terminate_process(uint64_t process, uint64_t status) {
             nt_ob_of(v.f)->u.pr.ended = 1;
         }
         nt_ob_unlock();
-        if (ks_seq(v.slot) == v.seq) {
-            (void)ks_signal_send(v.slot, VIBEOS_SIGKILL, 0);
-        }
+        kill_process(v.slot, v.seq);
     }
     process_unview(&v);
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);

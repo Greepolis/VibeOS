@@ -823,6 +823,9 @@ vibeos_procstate_t *ks_ps(int slot) { return g_t[slot].ps; }
 void ks_set_ps(int slot, vibeos_procstate_t *ps) { g_t[slot].ps = ps; }
 vibeos_image_t *ks_image(int slot) { return &g_t[slot].img; }
 uint32_t ks_seq(int slot) { return g_t[slot].seq; }
+/* The slot's tenancy moves on, as a thread's exit and the next tenant would
+ * make it: whatever was keyed by the old one names nobody. */
+void kf_retire(int slot) { g_t[slot].seq++; }
 const vibeos_abi_t *ks_abi(int slot) { (void)slot; return vibeos_abi_linux(); }
 uint64_t ks_cr3(int slot) { (void)slot; return 0; }
 void ks_mark_ready(int slot, const char *where) { g_t[slot].ready_by = where; }

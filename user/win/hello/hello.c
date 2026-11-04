@@ -362,6 +362,16 @@ static const char *thread_check(void) {
             return "NT_HELLO_FAIL thread_resume\n";
         }
         (void)NtClose(th);
+        /* And one made suspended and never resumed, left behind on purpose:
+         * the process's end has to take it (v8 review, M-134). It used to keep
+         * the process alive for good, and the boot - which leaves userland only
+         * once every user task has ended - never finished. */
+        if (NtCreateThreadEx(&th, 0x001FFFFFu, 0, VIBEOS_NT_CURRENT_PROCESS, (void *)thread_routine,
+                             (void *)(uintptr_t)0xDEADu, 1u /* CREATE_SUSPENDED */, 0, 0, 0, 0) !=
+            VIBEOS_STATUS_SUCCESS) {
+            return "NT_HELLO_FAIL thread_left_suspended\n";
+        }
+        (void)NtClose(th);
     }
     /* W5 step 4: an APC queued for oneself runs in the next alertable wait,
      * which then returns STATUS_USER_APC - through ntdll and NtContinue, back

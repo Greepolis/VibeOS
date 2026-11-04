@@ -120,6 +120,14 @@ typedef struct vibeos_task {
      * alert, which an alertable wait takes (step 4). */
     uint32_t nt_suspend;
     uint8_t nt_alerted;
+
+    /* Built whole and kept in SETUP by its creator until it says go - a
+     * thread created suspended. SETUP alone also means "a creator is still
+     * filling this in", which nobody may touch; this says which. exit_group
+     * reads it: a held sibling cannot run to take its SIGKILL, so it is made
+     * runnable to take it, and it no longer keeps its process alive past the
+     * end (v8 review, M-134). */
+    uint8_t held;
 } vibeos_task_t;
 
 #define VIBEOS_EXIT_SIG_NONE 0xFFu

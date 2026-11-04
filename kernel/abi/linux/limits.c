@@ -93,6 +93,10 @@ long linux_nproc_check(void) {
     return n >= lim ? -VIBEOS_EAGAIN : 0;
 }
 
+long vibeos_linux_nproc_check(void) {
+    return linux_nproc_check();
+}
+
 /* ---- getrlimit, setrlimit, prlimit64 ---------------------------------------------- */
 
 /* Change one limit of `ps` (the process `tgid`) as `c` asks. The rules are

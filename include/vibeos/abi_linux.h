@@ -164,6 +164,11 @@ long vibeos_linux_fork_win64(const struct ks_regs *frame, uint64_t ip, uint64_t 
                              uint64_t a1, uint64_t a2, int stopped);
 long vibeos_linux_execve(struct ks_regs *frame, uint64_t path, uint64_t argv, uint64_t envp);
 void vibeos_linux_reap(uint32_t pid);
+/* May the calling process have one more task? RLIMIT_NPROC as fork and clone
+ * ask it - every task the user has, threads included, the superuser exempt -
+ * for NtCreateThreadEx, which made threads past it (v8 review, M-134). 0, or
+ * -EAGAIN. */
+long vibeos_linux_nproc_check(void);
 
 /* The line for a number, or NULL for a number Linux does not have. */
 const vibeos_sys_entry_t *vibeos_linux_syscall(uint64_t nr);

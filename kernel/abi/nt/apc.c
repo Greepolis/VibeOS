@@ -16,8 +16,12 @@
 
 #include "nt_internal.h"
 
-#define NT_APC_MAX           64u      /* queued across the machine          */
+/* Each pool a program can fill has a per-process share (v8 review, M-134):
+ * four threads with sixteen APCs each took the whole table from every other
+ * process. */
+#define NT_APC_MAX           256u     /* queued across the machine          */
 #define NT_APC_PER_THREAD    16u      /* queued for one thread              */
+#define NT_APC_PER_PROCESS   32u      /* queued for one process's threads   */
 #define NT_APC_ENTRY_MARK    1u       /* rcx at ntdll's entry: an APC        */
 #define NT_CONTEXT_FULL      0x0010000Bu   /* CONTEXT_AMD64 | CONTROL | INTEGER | FLOATING_POINT */
 #define NT_CONTEXT_SIZE      0x4D0u
@@ -27,10 +31,13 @@ typedef struct {
     uint32_t used;
     int slot;
     uint32_t seq;
+    uint32_t tgid;   /* the process it counts against */
     uint64_t routine;
     uint64_t arg[3];
 } nt_apc_t;
 
+/* quota: NT_APC_PER_PROCESS a process, NT_APC_PER_THREAD a thread, enforced in
+ * nt_queue_apc_thread; an ended thread's are given back by its next scan. */
 static nt_apc_t g_apc[NT_APC_MAX];   /* under the object lock */
 
 /* Take the oldest APC queued for the calling thread into *out; 1 if there was
@@ -100,7 +107,8 @@ static int apc_enter(ks_regs_t *frame, const nt_apc_t *a, uint64_t ret) {
     rec[1] = a->arg[0];
     rec[2] = a->arg[1];
     rec[3] = a->arg[2];
-    if (nt_copy_out(ctx_at, ctx, sizeof(ctx)) != 0 || nt_copy_out(rec_at, rec, sizeof(rec)) != 0) {
+    if (nt_copy_out(ctx_at, ctx, sizeof(ctx)) != 0 || nt_copy_out(rec_at, rec, sizeof(rec)) != 0 ||
+        nt_context_fpu_out(ctx_at) != 0) {
         return -1;
     }
     r.rip = img->entry;
@@ -129,7 +137,7 @@ long nt_apc_after(ks_regs_t *frame, long result) {
 /* NtQueueApcThread(ThreadHandle, ApcRoutine, Arg1, Arg2, Arg3). */
 static long nt_queue_apc_thread(uint64_t h, uint64_t routine, uint64_t a1, uint64_t a2, uint64_t a3) {
     int slot;
-    uint32_t seq, i, mine = 0, st;
+    uint32_t seq, i, mine = 0, proc = 0, st, tgid;
     int at = -1;
 
     if (routine == 0u || !nt_user_ok(routine, 1u, 0)) {
@@ -139,21 +147,33 @@ static long nt_queue_apc_thread(uint64_t h, uint64_t routine, uint64_t a1, uint6
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
     }
+    tgid = ks_id(slot)->tgid;
     nt_ob_lock();
     for (i = 0; i < NT_APC_MAX; i++) {
+        /* An APC for a thread that has ended will never be taken: its slot's
+         * tenancy moved on. It used to hold its entry for the rest of the
+         * boot (M-134); the scan gives it back. */
+        if (g_apc[i].used && ks_seq(g_apc[i].slot) != g_apc[i].seq) {
+            g_apc[i].used = 0;
+        }
         if (g_apc[i].used && g_apc[i].slot == slot && g_apc[i].seq == seq) {
             mine++;
-        } else if (!g_apc[i].used && at < 0) {
+        }
+        if (g_apc[i].used && g_apc[i].tgid == tgid) {
+            proc++;
+        }
+        if (!g_apc[i].used && at < 0) {
             at = (int)i;
         }
     }
-    if (at < 0 || mine >= NT_APC_PER_THREAD) {
+    if (at < 0 || mine >= NT_APC_PER_THREAD || proc >= NT_APC_PER_PROCESS) {
         nt_ob_unlock();
         return NT_STATUS(VIBEOS_STATUS_NO_MEMORY);
     }
     g_apc[at].used = 1;
     g_apc[at].slot = slot;
     g_apc[at].seq = seq;
+    g_apc[at].tgid = tgid;
     g_apc[at].routine = routine;
     g_apc[at].arg[0] = a1;
     g_apc[at].arg[1] = a2;
@@ -198,6 +218,9 @@ static long nt_continue(ks_regs_t *frame, uint64_t ctx_u, uint64_t test_alert) {
             (uint32_t)ctx[0x33] << 24;
     ks_regs_get(frame, &r);
     nt_context_to_regs(ctx, &r, flags);
+    if (nt_context_fpu_in(ctx_u, flags) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
     if (ks_regs_set(frame, &r) != 0) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }

@@ -218,6 +218,11 @@ static uint32_t thread_spawn(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint6
     if (!ps || entry == 0u) {
         return VIBEOS_STATUS_INVALID_PARAMETER;
     }
+    /* RLIMIT_NPROC, as Linux's clone asks it before a slot is taken: an NT
+     * thread is a task of the user's like any other (v8 review, M-134). */
+    if (vibeos_linux_nproc_check() != 0) {
+        return VIBEOS_STATUS_INSUFFICIENT_RESOURCES;
+    }
     idx = ks_task_alloc_for_user("NtCreateThreadEx");
     if (idx < 0) {
         return VIBEOS_STATUS_INSUFFICIENT_RESOURCES;
@@ -268,6 +273,7 @@ static uint32_t thread_spawn(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint6
     *slot = idx;
     *seq = ks_seq(idx);
     *tid = child->pid;
+    child->held = suspended ? 1u : 0u;   /* whole now: an exit_group may start it to end it */
     return VIBEOS_STATUS_SUCCESS;
 }
 
@@ -758,12 +764,14 @@ static long nt_suspend_thread(uint64_t h, uint64_t prev_u) {
         st = VIBEOS_STATUS_SUSPEND_COUNT_EXCEEDED;
     } else {
         ks_id(v.slot)->nt_suspend = prev + 1u;
+        /* Stopped in the same critical section that found it alive: sent
+         * after the unlock, the slot could be another thread's by then
+         * (v8 review, M-135). */
+        if (prev == 0u && vibeos_task_state((uint32_t)v.slot) != VIBEOS_TASK_SETUP) {
+            (void)ks_signal_send(v.slot, VIBEOS_SIGSTOP, 0);
+        }
     }
     ks_unlock(ks_sched_lock());
-    if (st == VIBEOS_STATUS_SUCCESS && prev == 0u &&
-        vibeos_task_state((uint32_t)v.slot) != VIBEOS_TASK_SETUP) {
-        (void)ks_signal_send(v.slot, VIBEOS_SIGSTOP, 0);
-    }
     thread_unview(&v);
     if (st == VIBEOS_STATUS_SUCCESS && prev_u != 0u && nt_copy_out(prev_u, &prev, 4u) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
@@ -774,8 +782,6 @@ static long nt_suspend_thread(uint64_t h, uint64_t prev_u) {
 /* The count goes down; at zero a thread that never started is started, and
  * one that was stopped is continued. The previous count in *prev. A status. */
 static uint32_t thread_resume(const thread_view_t *v, uint32_t *prev) {
-    int start = 0, cont = 0;
-
     ks_lock(ks_sched_lock(), __func__);
     if (!thread_live(v)) {
         ks_unlock(ks_sched_lock());
@@ -784,18 +790,17 @@ static uint32_t thread_resume(const thread_view_t *v, uint32_t *prev) {
     *prev = ks_id(v->slot)->nt_suspend;
     if (*prev > 0u) {
         ks_id(v->slot)->nt_suspend = *prev - 1u;
-        if (*prev == 1u) {
-            start = vibeos_task_state((uint32_t)v->slot) == VIBEOS_TASK_SETUP;
-            cont = !start;
+        /* Started or continued while the tenancy is the one just checked
+         * (M-135): after the unlock it could have been another's. */
+        if (*prev == 1u && vibeos_task_state((uint32_t)v->slot) == VIBEOS_TASK_SETUP) {
+            ks_id(v->slot)->held = 0;
+            (void)ks_set_state(v->slot, VIBEOS_TASK_READY, __func__);
+            ks_mark_ready(v->slot, "NtResumeThread");
+        } else if (*prev == 1u) {
+            (void)ks_signal_send(v->slot, VIBEOS_SIGCONT, 0);
         }
     }
     ks_unlock(ks_sched_lock());
-    if (start) {
-        (void)ks_set_state(v->slot, VIBEOS_TASK_READY, __func__);
-        ks_mark_ready(v->slot, "NtResumeThread");
-    } else if (cont) {
-        (void)ks_signal_send(v->slot, VIBEOS_SIGCONT, 0);
-    }
     return VIBEOS_STATUS_SUCCESS;
 }
 
@@ -923,6 +928,42 @@ void nt_context_to_regs(const uint8_t *ctx, vibeos_uregs_t *r, uint32_t flags) {
     }
 }
 
+#define NT_CONTEXT_FLOATING_POINT 0x00100008u
+#define NT_CONTEXT_FLTSAVE        0x100u   /* XMM_SAVE_AREA32: FXSAVE's layout */
+#define NT_CONTEXT_MXCSR          0x34u
+
+/* The calling thread's x87 and SSE state into the CONTEXT at `ctx_u`, which
+ * the caller has already written: FltSave from the CPU, and MxCsr beside it as
+ * Windows keeps it twice. CONTEXT_FULL says FLOATING_POINT, and a handler or
+ * an APC that used an XMM register handed the interrupted code back one it
+ * never wrote (v8 review, M-139). The registers are still the task's while the
+ * kernel runs on its behalf - the kernel is built without SSE - which is what
+ * makes saving them here true. 0, or -1. */
+int nt_context_fpu_out(uint64_t ctx_u) {
+    uint32_t mxcsr = 0;
+
+    if (!nt_user_ok(ctx_u + NT_CONTEXT_FLTSAVE, ks_fpu_size(), 1) ||
+        ks_fpu_save(ctx_u + NT_CONTEXT_FLTSAVE) != 0 ||
+        nt_copy_in(&mxcsr, ctx_u + NT_CONTEXT_FLTSAVE + 24u, 4u) != 0 ||
+        nt_copy_out(ctx_u + NT_CONTEXT_MXCSR, &mxcsr, 4u) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* And back, when the CONTEXT's flags name FLOATING_POINT: everything read is
+ * the program's, and ks_fpu_restore clears what FXRSTOR would fault on. */
+int nt_context_fpu_in(uint64_t ctx_u, uint32_t flags) {
+    if ((flags & NT_CONTEXT_FLOATING_POINT) != NT_CONTEXT_FLOATING_POINT) {
+        return 0;
+    }
+    if (!nt_user_ok(ctx_u + NT_CONTEXT_FLTSAVE, ks_fpu_size(), 0) ||
+        ks_fpu_restore(ctx_u + NT_CONTEXT_FLTSAVE) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 /* NtGetContextThread(ThreadHandle, Context). */
 static long nt_get_context_thread(ks_regs_t *frame, uint64_t h, uint64_t ctx_u) {
     uint8_t ctx[0x100];
@@ -943,8 +984,11 @@ static long nt_get_context_thread(ks_regs_t *frame, uint64_t h, uint64_t ctx_u) 
     }
     ks_regs_get(frame, &r);
     nt_context_from_regs(&r, ctx, flags);
-    return NT_STATUS(nt_copy_out(ctx_u, ctx, sizeof(ctx)) != 0 ? VIBEOS_STATUS_ACCESS_VIOLATION
-                                                               : VIBEOS_STATUS_SUCCESS);
+    if (nt_copy_out(ctx_u, ctx, sizeof(ctx)) != 0 ||
+        ((flags & NT_CONTEXT_FLOATING_POINT) == NT_CONTEXT_FLOATING_POINT && nt_context_fpu_out(ctx_u) != 0)) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
 }
 
 /* NtSetContextThread(ThreadHandle, Context): the calling thread resumes from
@@ -964,6 +1008,9 @@ static long nt_set_context_thread(ks_regs_t *frame, uint64_t h, uint64_t ctx_u) 
             (uint32_t)ctx[0x33] << 24;
     ks_regs_get(frame, &r);
     nt_context_to_regs(ctx, &r, flags);
+    if (nt_context_fpu_in(ctx_u, flags) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
     if (ks_regs_set(frame, &r) != 0) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
     }
@@ -987,12 +1034,20 @@ static uint32_t thread_terminate_other(uint64_t h, uint32_t status) {
         nt_ob_lock();
         nt_ob_each(&g_nt_thread_ops, thread_mark, &e);
         nt_ob_unlock();
-        ks_id(v.slot)->exec_killed = 1;
-        ks_id(v.slot)->nt_suspend = 0;
-        if (vibeos_task_state((uint32_t)v.slot) == VIBEOS_TASK_SETUP) {
-            (void)ks_set_state(v.slot, VIBEOS_TASK_READY, __func__);   /* to take the kill */
+        /* Marked and killed only while the slot is still this thread's,
+         * asked again under the scheduler's lock (M-135): the thread could
+         * have ended since thread_live, and its slot gone to a stranger. */
+        ks_lock(ks_sched_lock(), __func__);
+        if (thread_live(&v)) {
+            ks_id(v.slot)->exec_killed = 1;
+            ks_id(v.slot)->nt_suspend = 0;
+            if (vibeos_task_state((uint32_t)v.slot) == VIBEOS_TASK_SETUP) {
+                ks_id(v.slot)->held = 0;
+                (void)ks_set_state(v.slot, VIBEOS_TASK_READY, __func__);   /* to take the kill */
+            }
+            (void)ks_signal_send(v.slot, VIBEOS_SIGKILL, 0);
         }
-        (void)ks_signal_send(v.slot, VIBEOS_SIGKILL, 0);
+        ks_unlock(ks_sched_lock());
     }
     thread_unview(&v);
     return VIBEOS_STATUS_SUCCESS;

@@ -52,7 +52,11 @@ static uint32_t get32(const uint8_t *b, uint32_t at) {
 
 /* Send the thread into ntdll with `record` and `ctx`, both copied onto its
  * stack below `below`. 0, or -1 when the stack would not take them. */
-static int exception_enter(ks_regs_t *frame, const uint8_t *record, const uint8_t *ctx, uint64_t below) {
+/* `capture_fpu`: the context is the kernel's, built from a fault, and its
+ * FltSave is the CPU's now; a raised exception's context is the program's and
+ * keeps the FltSave it came with. */
+static int exception_enter(ks_regs_t *frame, const uint8_t *record, const uint8_t *ctx, uint64_t below,
+                           int capture_fpu) {
     const vibeos_image_t *img = ks_image(ks_current());
     vibeos_uregs_t r;
     uint64_t ctx_at, rec_at, sp;
@@ -64,7 +68,8 @@ static int exception_enter(ks_regs_t *frame, const uint8_t *record, const uint8_
     rec_at = (ctx_at - NT_RECORD_SIZE) & ~0xFull;
     sp = ((rec_at - 0x28u) & ~0xFull) - 8u;   /* home space, aligned as after a call */
     if (!nt_user_ok(sp, below - sp, 1) || nt_copy_out(ctx_at, ctx, NT_CONTEXT_SIZE) != 0 ||
-        nt_copy_out(rec_at, record, NT_RECORD_SIZE) != 0) {
+        nt_copy_out(rec_at, record, NT_RECORD_SIZE) != 0 ||
+        (capture_fpu && nt_context_fpu_out(ctx_at) != 0)) {
         return -1;
     }
     ks_regs_get(frame, &r);
@@ -121,7 +126,7 @@ int vibeos_nt_fault(struct ks_regs *frame, const struct vibeos_siginfo *why) {
     }
     nt_context_from_regs(&r, ctx, NT_CONTEXT_FULL);
     put32(ctx, 0x30u, NT_CONTEXT_FULL);
-    return exception_enter(frame, rec, ctx, r.rsp) == 0;
+    return exception_enter(frame, rec, ctx, r.rsp, 1) == 0;
 }
 
 /* NtRaiseException(ExceptionRecord, Context, FirstChance). A first chance
@@ -150,7 +155,7 @@ static long nt_raise_exception(ks_regs_t *frame, uint64_t rec_u, uint64_t ctx_u,
             sp = csp;
         }
     }
-    if (exception_enter(frame, rec, ctx, sp) != 0) {
+    if (exception_enter(frame, rec, ctx, sp, 0) != 0) {
         ks_task_exit_group((uint64_t)get32(rec, 0x00u));
     }
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);   /* the frame is ntdll's dispatcher now */

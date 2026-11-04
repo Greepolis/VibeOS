@@ -34,6 +34,7 @@ static void expect(int cond, const char *what) {
 
 extern int g_kf_aspace_pins;   /* ksvc_fake.c: address spaces held for a call */
 extern int g_kf_lock_reentry;  /* ksvc_fake.c: a preemptible lock taken again by its holder */
+void kf_retire(int slot);       /* ksvc_fake.c: a slot's tenancy moves on */
 
 static long nt(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                kf_outcome_t *out) {
@@ -1352,6 +1353,23 @@ static long create_thread(uint64_t *h, uint64_t start, uint64_t param, uint64_t 
     return r;
 }
 
+/* RLIMIT_NPROC holds for an NT thread as for a Linux clone (v8 review, M-134):
+ * an unprivileged user at the limit gets no thread, the superuser does. */
+static void t_thread_nproc(void) {
+    uint64_t h = 0;
+    int me = fresh(56);
+
+    ks_image(me)->entry = kf_ualloc(16);
+    ks_image(me)->start_arg = kf_ualloc(64);
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = 1000u;
+    ks_ps(me)->rlim_cur[VIBEOS_RLIM_NPROC] = 1u;   /* the caller itself is the one */
+    expect(create_thread(&h, kf_ualloc(16), 0, 0) == ST(VIBEOS_STATUS_INSUFFICIENT_RESOURCES),
+           "a user at RLIMIT_NPROC makes no NT thread");
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = 0u;
+    expect(create_thread(&h, kf_ualloc(16), 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "and the superuser is not counted against it");
+}
+
 /* W5 step 1: a thread is a task of the process, started at ntdll's entry with
  * (0, routine, parameter), on a stack and with a TEB of its own; its handle is
  * signalled when it ends; the last thread's end is the process's. */
@@ -1698,6 +1716,46 @@ static void t_timers(void) {
     }
 }
 
+/* CONTEXT_FULL names FLOATING_POINT, so the x87/SSE state goes into an APC's
+ * context and NtContinue puts it back (v8 review, M-139): an APC routine that
+ * used an XMM register handed the interrupted code back one it never wrote.
+ * The fake's CPU state is g_kf_fpu. */
+extern unsigned char g_kf_fpu[512];
+
+static void t_apc_fpu(void) {
+    uint64_t routine = kf_ualloc(16), interval = kf_ualloc(8), stack = kf_ualloc(16384);
+    uint64_t top = (stack + 16384u) & ~0xFull, ctx, entry = kf_ualloc(16);
+    uint8_t area[512];
+    uint32_t mx = 0, i;
+    int me = fresh(57);
+
+    ks_image(me)->entry = entry;
+    *(int64_t *)kf_uptr(interval) = -100000;
+    for (i = 0; i < 512u; i++) {
+        g_kf_fpu[i] = (unsigned char)(i * 13u + 1u);
+    }
+    g_kf_fpu[24] = 0x80;   /* MXCSR 0x1F80, the default */
+    g_kf_fpu[25] = 0x1F;
+    g_kf_fpu[26] = g_kf_fpu[27] = 0;
+    {
+        uint64_t rest[1] = { 0 };
+
+        kf_next_sp(stack_args(rest, 1));
+        (void)nt(VIBEOS_NT_NR_NtQueueApcThread, VIBEOS_NT_CURRENT_THREAD, routine, 1, 2, 0);
+    }
+    kf_next_sp(top);
+    (void)nt(VIBEOS_NT_NR_NtDelayExecution, 1, interval, 0, 0, 0);
+    ctx = kf_last_frame()->arg2;
+    expect(kf_peek(ctx + 0x100, area, sizeof(area)) == 0 && memcmp(area, g_kf_fpu, sizeof(area)) == 0 &&
+               kf_peek(ctx + 0x34, &mx, 4) == 0 && mx == 0x1F80u,
+           "an APC's context holds the x87/SSE state in FltSave, and MxCsr beside it");
+    area[160] ^= 0xFFu;   /* xmm0's first byte, changed by the handler */
+    expect(kf_poke(ctx + 0x100, area, sizeof(area)) == 0, "the context's FltSave changed");
+    kf_next_sp(kf_last_frame()->sp);
+    (void)nt(VIBEOS_NT_NR_NtContinue, ctx, 0, 0, 0, 0);
+    expect(g_kf_fpu[160] == area[160], "and NtContinue puts it back into the CPU");
+}
+
 /* W5 step 4: an APC queued for a thread runs when it next waits alertably:
  * the wait ends STATUS_USER_APC and the thread enters ntdll with rcx 1, the
  * context to go back to in rdx and the APC in r8; NtContinue goes back. */
@@ -1761,6 +1819,25 @@ static void t_apcs(void) {
         expect(nt(VIBEOS_NT_NR_NtTestAlert, 0, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
                    kf_last_frame()->rcx == 1u && kf_peek(kf_last_frame()->other[0] + 8, &v, 8) == 0 && v == 0u,
                "NtTestAlert delivers the oldest");
+    }
+    {
+        /* APCs left for a thread that ended (v8 review, M-134): they held
+         * their entries for good, and a process's share filled up with
+         * them. Three rounds of sixteen, the thread's tenancy moved on after
+         * each, and every one is queued. */
+        uint64_t rest[1] = { 0 };
+        uint32_t i, ok = 0, round;
+
+        for (round = 0; round < 3u; round++) {
+            kf_retire(me);
+            for (i = 0; i < 16u; i++) {
+                kf_next_sp(stack_args(rest, 1));
+                ok += nt(VIBEOS_NT_NR_NtQueueApcThread, VIBEOS_NT_CURRENT_THREAD, routine, i, 0, 0) ==
+                      ST(VIBEOS_STATUS_SUCCESS);
+            }
+        }
+        expect(ok == 48u, "an ended thread's APCs give their entries back");
+        kf_retire(me);
     }
     {
         uint64_t rest[1] = { 0 };
@@ -2318,6 +2395,57 @@ static void t_open_process_cred(void) {
            "it opens a process whose ids are all its own");
     kf_set_current(root);
     expect(open_pid(72, &h) == ST(VIBEOS_STATUS_SUCCESS), "and the superuser opens anybody's");
+}
+
+/* Who may change a key (v8 review, M-137): a handle that names a parent must
+ * hold KEY_CREATE_SUB_KEY for a key to be made under it, and machine keys are
+ * the superuser's to change - anybody else reads them. */
+static void t_reg_rights(void) {
+    uint64_t ro, k, max;
+    uint32_t disp = 0, one = 1u;
+    int me = fresh(66);
+
+    nt_reg_restart();
+    expect(open_key(&ro, 0x00020019u /* KEY_READ */, 0, "\\Registry\\Machine\\SOFTWARE") ==
+               ST(VIBEOS_STATUS_SUCCESS),
+           "a key opened to read");
+    expect(create_key(&k, 0x000F003Fu, ro, "MadeThroughRead", 0, &disp) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "makes no subkey through a handle without KEY_CREATE_SUB_KEY");
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = 1000u;
+    expect(open_key(&k, 0x000F003Fu, 0, "\\Registry\\Machine\\SOFTWARE") == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "an unprivileged caller cannot open a machine key to change it");
+    expect(open_key(&max, VIBEOS_MAXIMUM_ALLOWED, 0, "\\Registry\\Machine\\SOFTWARE") ==
+               ST(VIBEOS_STATUS_SUCCESS) &&
+               set_value(max, "x", 4u, &one, 4u) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "MAXIMUM_ALLOWED gives it a handle that reads and does not write");
+    /* Asked to read, so the handle's own refusal cannot stand in for the
+     * creation's: the key must not exist afterwards. */
+    expect(create_key(&k, 0x00020019u, 0, "\\Registry\\Machine\\SOFTWARE\\UserMade", 0, &disp) ==
+               ST(VIBEOS_STATUS_ACCESS_DENIED) &&
+               open_key(&k, 0x00020019u, 0, "\\Registry\\Machine\\SOFTWARE\\UserMade") ==
+                   ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND),
+           "nor make a machine key");
+    expect(create_key(&k, 0x000F003Fu, 0, "\\Registry\\User\\.Default\\UserMade", 0, &disp) ==
+               ST(VIBEOS_STATUS_SUCCESS) && disp == 1u,
+           "and makes its own under the user's hive");
+}
+
+/* NtTerminateProcess of a process whose leader has ended while a thread runs
+ * (v8 review, M-136): the kill went to the leader's slot, a zombie took it,
+ * and the process went on reported terminated. It reaches the live thread. */
+static void t_terminate_zombie_leader(void) {
+    uint64_t h = 0;
+    int me = fresh(80), leader = kf_spawn(81, 81), thread = kf_spawn(82, 81);
+
+    (void)me;
+    ks_id(thread)->tgid = 81u;
+    ks_id(thread)->is_thread = 1;
+    ks_set_ps(thread, ks_ps(leader));
+    expect(open_pid(81, &h) == ST(VIBEOS_STATUS_SUCCESS), "a handle to the process");
+    expect(ks_set_state(leader, VIBEOS_TASK_ZOMBIE, "test") == 0, "whose leader has ended");
+    expect(nt(VIBEOS_NT_NR_NtTerminateProcess, h, 5, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               (ks_id(thread)->sig_pending & (1ull << VIBEOS_SIGKILL)) != 0u,
+           "NtTerminateProcess kills its live thread, not the leader's zombie slot");
 }
 
 /* A key opened with the handle table full (v8 review, H-041): the install
@@ -3285,10 +3413,12 @@ int test_nt_abi(void) {
     t_delete_follows_file();
     t_nt_chroot();
     t_create_thread();
+    t_thread_nproc();
     t_remote_thread();
     t_thread_info();
     t_timers();
     t_apcs();
+    t_apc_fpu();
     t_raise_exception();
     t_create_file();
     t_sections();
@@ -3299,6 +3429,8 @@ int test_nt_abi(void) {
     t_reg_keys();
     t_reg_full_table();
     t_open_process_cred();
+    t_terminate_zombie_leader();
+    t_reg_rights();
     t_placeholders();
     t_data_sections();
     return g_fail ? -1 : 0;

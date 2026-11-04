@@ -16,3 +16,17 @@
     if (vibeos_cred_may_inspect(&me, me.euid, me.egid, &them) != 0) {
 +++ new
     if (0 && vibeos_cred_may_inspect(&me, me.euid, me.egid, &them) != 0) {
+
+### a leader that has ended is the process ending, threads or not (M-136)
+--- old
+    } else if (s == VIBEOS_TASK_ZOMBIE && !process_threads_live(o->u.pr.slot)) {
++++ new
+    } else if (s == VIBEOS_TASK_ZOMBIE) {
+
+### a zombie leader takes the kill meant for its process (M-136)
+--- old
+        if (vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_ZOMBIE) {
+            target = -1;
++++ new
+        if (0 && vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_ZOMBIE) {
+            target = -1;

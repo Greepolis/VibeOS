@@ -72,11 +72,9 @@
 
 ### the first resume starts a thread suspended twice (W5 step 3)
 --- old
-        if (*prev == 1u) {
-            start = vibeos_task_state((uint32_t)v->slot) == VIBEOS_TASK_SETUP;
+        if (*prev == 1u && vibeos_task_state((uint32_t)v->slot) == VIBEOS_TASK_SETUP) {
 +++ new
-        if (*prev >= 1u) {
-            start = vibeos_task_state((uint32_t)v->slot) == VIBEOS_TASK_SETUP;
+        if (*prev >= 1u && vibeos_task_state((uint32_t)v->slot) == VIBEOS_TASK_SETUP) {
 
 ### NtAlertThread alerts nothing (W5 step 3)
 --- old
@@ -124,3 +122,9 @@
         ks_id(v.slot)->exec_killed = 1;
 +++ new
         ks_id(v.slot)->exec_killed = 0;
+
+### an NT thread is made past RLIMIT_NPROC (M-134)
+--- old
+    if (vibeos_linux_nproc_check() != 0) {
++++ new
+    if (0 && vibeos_linux_nproc_check() != 0) {

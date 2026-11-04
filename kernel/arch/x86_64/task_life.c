@@ -2098,6 +2098,14 @@ static void hw_task_exit_group_as(uint64_t code, uint32_t sig) {
             hw_slot_state(i) != HW_TASK_RESERVED &&
             hw_slot_state(i) != HW_TASK_ZOMBIE) {
             (void)hw_signal_raise(i, VIBEOS_SIGKILL);
+        } else if (i != me && g_tasks[i].ps == ps && hw_slot_state(i) == HW_TASK_RESERVED &&
+                   g_tasks[i].id.held) {
+            /* Built and held, never started: it cannot run to take the kill,
+             * and it kept its process alive for good (v8 review, M-134). A
+             * slot still being filled in is not held, and is left alone. */
+            g_tasks[i].id.held = 0;
+            (void)hw_signal_raise(i, VIBEOS_SIGKILL);
+            (void)hw_task_set_state(i, HW_TASK_READY, __func__);
         }
     }
     hw_spin_unlock(&g_sched_lock);

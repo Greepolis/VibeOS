@@ -49,6 +49,10 @@ int nt_copy_out(uint64_t dst, const void *src, uint64_t len);
 /* Who is asking: the calling process's credentials, root for the kernel
  * itself (file.c). */
 void nt_cred(vibeos_cred_t *out);
+/* The calling thread's x87/SSE state into and out of a CONTEXT in the
+ * program's memory, at FltSave (thread.c). 0, or -1. */
+int nt_context_fpu_out(uint64_t ctx_u);
+int nt_context_fpu_in(uint64_t ctx_u, uint32_t flags);
 
 /* A handle, as W1 has them: a descriptor of the process's table, (fd + 1) * 4.
  * Windows' handles are multiples of four counted from four, and the program's
