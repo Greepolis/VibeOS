@@ -16,10 +16,9 @@
 
 ### the source lets every caller
 --- old
-    if (them.uid != me.fsuid || them.euid != me.fsuid || them.suid != me.fsuid ||
-        them.gid != me.fsgid || them.egid != me.fsgid || them.sgid != me.fsgid) {
+    return vibeos_cred_may_inspect(&me, me.fsuid, me.fsgid, &them);
 +++ new
-    if (0) {
+    return 0;
 
 ### reading a file does not ask
 --- old
