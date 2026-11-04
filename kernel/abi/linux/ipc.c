@@ -259,7 +259,11 @@ typedef struct {
     uint8_t text[LINUX_MSGMNB];
 } linux_msgq_t;
 
+/* quota: none - System V IPC is machine-wide by Linux's own definition (SHMMNI,
+ * SEMMNI, MSGMNI): one table of ids for every process, as ipcs shows it. A
+ * user's share is the security plan's, with the rest of per-user limits. */
 static linux_ipc_obj_t g_msg_obj[LINUX_IPC_SLOTS];
+/* quota: none - as g_msg_obj, whose ids these are. */
 static linux_msgq_t g_msgq[LINUX_IPC_SLOTS];
 static linux_ipc_ns_t g_msg_ns = {0, -1, LINUX_IPC_SLOTS, -1};
 

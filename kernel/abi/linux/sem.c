@@ -44,7 +44,11 @@ typedef struct {
 #define LINUX_SEM_UNDOS 512u
 #define LINUX_SEM_UNDOS_PER_PROCESS (LINUX_SEM_UNDOS / 4u)   /* M-110 */
 
+/* quota: none - System V IPC is machine-wide by Linux's own definition (SHMMNI,
+ * SEMMNI, MSGMNI): one table of ids for every process, as ipcs shows it. A
+ * user's share is the security plan's, with the rest of per-user limits. */
 static linux_ipc_obj_t g_sem_obj[LINUX_IPC_SLOTS];
+/* quota: none - as g_sem_obj, whose ids these are. */
 static linux_semset_t g_sem[LINUX_IPC_SLOTS];
 static linux_semundo_t g_undo[LINUX_SEM_UNDOS];
 static linux_ipc_ns_t g_sem_ns = {0, -1, LINUX_IPC_SLOTS, -1};

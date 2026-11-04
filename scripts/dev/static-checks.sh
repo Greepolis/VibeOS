@@ -57,6 +57,8 @@ run syscall-checks         python3 scripts/dev/check-syscall-checks.py
 run syscall-table          python3 scripts/dev/make-syscall-table.py --check
 # Every sabotage case still has an anchor to break.
 run sabotage-anchors       python3 scripts/dev/check-sabotage-anchors.py
+# Every global table a program can fill says how it is shared out (v8 review, M-134).
+run pool-quota             python3 scripts/dev/check-pool-quota.py
 if [ -n "$d" ]; then
     # The seven parts of a module, for the four a script can judge.
     run subsystem          python3 scripts/dev/check-subsystem.py "$d"

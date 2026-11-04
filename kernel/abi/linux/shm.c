@@ -29,7 +29,11 @@ typedef struct {
     uint32_t cpid, lpid;
 } linux_shmseg_t;
 
+/* quota: none - System V IPC is machine-wide by Linux's own definition (SHMMNI,
+ * SEMMNI, MSGMNI): one table of ids for every process, as ipcs shows it. A
+ * user's share is the security plan's, with the rest of per-user limits. */
 static linux_ipc_obj_t g_shm_obj[LINUX_IPC_SLOTS];
+/* quota: none - as g_shm_obj, whose ids these are. */
 static linux_shmseg_t g_shm[LINUX_IPC_SLOTS];
 static linux_ipc_ns_t g_shm_ns = {0, -1, LINUX_IPC_SLOTS, -1};
 /* shmmax and shmall: Linux's defaults, ULONG_MAX less 2^24; a program may
