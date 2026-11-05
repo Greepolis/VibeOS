@@ -64,3 +64,11 @@ separate volumes: one ext4 volume holds all three until F4 says otherwise.
 Step 1, reading ext4, done 2026-11-03; what it does, how it is proved and what
 is left open (E4-001 onward) are in
 [implementation_progress/fs_ext4.md](../implementation_progress/fs_ext4.md).
+
+Step 2, writing ext4 without the journal, done 2026-11-05
+(`kernel/fs/ext4_write.c`): every operation of the interface, the free counts,
+bitmaps and every checksum kept exact, groups mkfs left uninitialised made on
+first use. Proved by `scripts/dev/verify-ext4.sh` on volumes `mkfs.ext4` made:
+a scripted set of changes through the driver, then `e2fsck -fn` clean and the
+whole volume read back by `debugfs rdump` and held against the host's own copy
+of the tree. Open items E4-007 onward in the same file.

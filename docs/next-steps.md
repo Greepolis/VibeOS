@@ -11,9 +11,9 @@ was decided.
 1. **The filesystem's hierarchy** - [filesystem-design/](filesystem-design/README.md),
    phases F0-F2 first: what lives where, the current root's tree laid out on it,
    and a mount manifest. F0-F2 need no choice of on-disk format.
-2. **ext4 as the native root** (F3, decided 2026-11-03) -
-   [filesystem-design/ext4.md](filesystem-design/ext4.md): read ext4, write it,
-   the journal, then the root on it. `mkfs.ext4` and `e2fsck` are the oracle.
+2. **ext4 as the native root** (F3, decided 2026-11-03; steps 1 and 2, read and write, done) -
+   [filesystem-design/ext4.md](filesystem-design/ext4.md): read ext4, write it (done),
+   the journal (next), then the root on it. `mkfs.ext4` and `e2fsck` are the oracle.
 
 ## Next
 
