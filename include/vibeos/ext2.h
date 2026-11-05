@@ -2,7 +2,8 @@
 #ifndef VIBEOS_EXT2_H
 #define VIBEOS_EXT2_H
 
-/* ext2 and ext4, read-only (ext4 since docs/filesystem-design/ext4.md step 1).
+/* ext2 and ext4, read (ext4 since docs/filesystem-design/ext4.md step 1) and ext4
+ * written (step 2).
  *
  * ext4 is ext2 with extent trees for a file's blocks, 64-bit block numbers
  * and group descriptors, and crc32c over every piece of metadata. The driver
@@ -23,8 +24,10 @@
  * interface rather than a complaint about ext2, and it is written down here
  * rather than fixed in the same step that discovered it.
  *
- * Read-only on purpose. Writing means allocation bitmaps, link counts and
- * ordering, and roadmap M16 is where ordering gets built once, for everyone.
+ * ext2 is read-only on purpose. Writing means allocation bitmaps, link counts
+ * and ordering, and roadmap M16 is where ordering gets built once, for
+ * everyone; ext4 is written, without a journal, by kernel/fs/ext4_write.c
+ * (docs/filesystem-design/ext4.md step 2).
  */
 
 #include <stdint.h>
@@ -65,6 +68,22 @@ typedef struct {
     uint32_t ino_seq;
     uint32_t ptr_seq;
     uint8_t cached_inode[256];    /* a whole inode: ext4's are 256 bytes, its checksum in both halves */
+
+    /* ---- the writer's (docs/filesystem-design/ext4.md step 2) ----
+     * Kept here, in the volume's state, so the driver needs no allocator and
+     * two volumes are written at once; the VFS serialises calls into one
+     * (vibeos_fs_ops_t.serialize), which is what makes one set enough. */
+    int writable;                 /* ext4 with metadata_csum and nothing it does not write */
+    uint8_t sb[1024];             /* the superblock as on the volume: counts and checksum kept in it */
+    uint8_t wbuf[4096];           /* one block, for whatever the operation is changing */
+    uint8_t wbuf2[4096];          /* the allocator's, for a bitmap: never held across a call */
+    uint32_t ext_n;               /* the file being changed: its extents, in order */
+    struct {
+        uint32_t lblk;            /* first block of the file it covers */
+        uint16_t len;             /* blocks, 1..32768 */
+        uint16_t start_hi;        /* the volume block it starts at, high 16 bits */
+        uint32_t start_lo;
+    } ext[1360];                  /* four leaves of 340: depth 1 at most */
     uint8_t cached_ptrs[4096];
 } vibeos_ext2_t;
 

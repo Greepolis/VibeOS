@@ -27,11 +27,15 @@
 #define VIBEOS_STORAGE_MAX_VOLUMES 8u
 
 /* Room for one mounted filesystem's own state, which the caller supplies - the
- * volume, or whoever mounts a driver by name. The largest today is NTFS's,
- * 4160 bytes because it carries a sector buffer; each driver asserts at compile
+ * volume, or whoever mounts a driver by name. Each driver asserts at compile
  * time that its state fits, so growing one past this is a build error rather
- * than an overrun. */
-#define VIBEOS_FS_STATE_BYTES 4608u
+ * than an overrun.
+ *
+ * 4608 -> 32768 for ext4's writer (docs/filesystem-design/ext4.md step 2): two
+ * block buffers and a file's whole extent list - four leaves of 340 - live in
+ * the volume's state, so two ext4 volumes are written at once and the driver
+ * needs no allocator and no lock of its own beyond the mount's. */
+#define VIBEOS_FS_STATE_BYTES 32768u
 
 typedef struct {
     uint64_t first_lba;
