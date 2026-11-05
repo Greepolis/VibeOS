@@ -1,0 +1,12 @@
+# execve walks the robust list before the old image goes (GitHub issue #143),
+# proved at boot by musl_threads' C6_EXECROBUST, which the gate reads as
+# robust_lock_not_released_at_exec.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/issue-exec-robust-boot.txt build-gcc-Release
+
+### the robust list is forgotten at exec, not walked
+--- old
+        linux_futex_exit_robust(me);
++++ new
+        t->robust_head = 0;

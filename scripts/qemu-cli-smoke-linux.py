@@ -3475,6 +3475,9 @@ def main():
                         # and a broadcast handed on with FUTEX_REQUEUE.
                         ("C6_ROBUST", "robust_lock_not_released_at_exit",
                          "threads_c6_robust_did_not_report"),
+                        # Issue #143: the same lock, held across an execve.
+                        ("C6_EXECROBUST", "robust_lock_not_released_at_exec",
+                         "threads_c6_execrobust_did_not_report"),
                         ("C6_COND", "cond_broadcast_left_waiters",
                          "threads_c6_cond_did_not_report"),
                         # L6 step 2: a thread pinned to core 1 runs there,

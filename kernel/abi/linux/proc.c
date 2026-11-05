@@ -1244,6 +1244,22 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
 
     t = ks_id(ks_current());
 
+    /* The descriptors survive the exec - that is how a shell hands a program
+     * its redirected output - so the new process gets a copy of the table and
+     * this thread stops using the old one at the commit below. Copied here,
+     * before a sibling is touched: the copy can need a page and fail, and it
+     * used to be made after the siblings had been killed, so a failed exec
+     * returned to the old program without the threads it had (issue #142).
+     * Nothing irreversible has happened yet; a failure here or in the wait
+     * below gives nps back, and with it the copy (hw_procstate_put destroys
+     * its table). A sibling's open or close between this copy and its death
+     * is one the new image does not see, as if it had come a moment later. */
+    if (linux_fds_copy(nps, ops) != 0) {
+        ks_image_drop(&np, "exec_no_fd_page");
+        ks_procstate_put(nps);
+        return -VIBEOS_ENOMEM;
+    }
+
     /* An exec ends every other thread of the process, and the thread that
      * called it becomes the process. H-006, verified: none of that happened.
      * The siblings kept running the old image, and a thread that was not the
@@ -1413,20 +1429,6 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
             ks_unlock(&ops->files_lock);
         }
 
-        /* The descriptors survive the exec - that is how a shell hands a
-         * program its redirected output - so the new process gets a copy of
-         * the table and this thread stops using the old one. A threaded exec
-         * leaves the siblings the old table, still open; a single-threaded one
-         * was its last user and closes it, which the copy's own references
-         * balance. */
-        if (linux_fds_copy(nps, ops) != 0) {
-            /* Nothing is committed yet - the old image and process are still
-             * this task's - so the exec fails and the program carries on,
-             * without the siblings it has already been made to lose. */
-            ks_image_drop(&np, "exec_no_fd_page");
-            ks_procstate_put(nps);
-            return -VIBEOS_ENOMEM;
-        }
         /* Close-on-exec is the point of the flag: a descriptor the program
          * marked is not the new image's to inherit. On the copy, which nobody
          * else can reach yet. */
@@ -1434,6 +1436,14 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
         (void)linux_files_leave(ops);
 
         vibeos_task_stats()->execs++;
+        /* The robust list is in the old image's memory: walked now, as Linux
+         * walks it before it lets go of that memory, so a lock this thread held
+         * across the exec is marked OWNER_DIED and a waiter woken (issue #143).
+         * Here, past the last thing that can fail - a failed exec returns to a
+         * program that still owns its locks - and before ks_set_ps, after
+         * which the list's addresses would be judged against the new image.
+         * The walk clears robust_head itself. */
+        linux_futex_exit_robust(me);
         /* nps already carries the regions the loader built for the new image,
          * and the outgoing regions stay with the outgoing process. Clearing the
          * list here - which the first version did - throws away the description
@@ -1448,11 +1458,6 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
         t->clear_child_tid = 0;
         t->in_vfork = 0;   /* a vfork parent waiting on this exec goes on */
         t->did_exec = 1;   /* setpgid from the parent is EACCES from now on */
-        /* The robust list too, and for the same reason: it is in the old
-         * image's memory. Linux walks it before it lets go of that memory;
-         * here it is forgotten, which leaves a lock the thread held across
-         * an exec without its OWNER_DIED - written down, not solved. */
-        t->robust_head = 0;
         /* The new image is loaded, and the old address space goes - but only
          * if nobody else is running in there.
          *

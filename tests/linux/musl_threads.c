@@ -787,6 +787,53 @@ int main(int argc, char **argv)
         fflush(stdout);
     }
 
+    /* C6_EXECROBUST (issue #143). The same lock, held across an execve rather
+     * than an exit: the list lives in the image that goes away, and Linux
+     * walks it before letting go. It was forgotten here, so the lock stayed
+     * owned by a thread that no longer held it and the parent's timed lock ran
+     * out. The child execs this program again, which answers and exits. */
+    {
+        pthread_mutex_t *robust = mmap(0, 4096, PROT_READ | PROT_WRITE,
+                                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        pthread_mutexattr_t ma;
+        struct timespec until;
+        int r, status = 0;
+        pid_t pid;
+
+        if (robust == MAP_FAILED) {
+            printf("THREADS_C6_EXECROBUST_FAIL: mmap\n");
+        } else {
+            pthread_mutexattr_init(&ma);
+            pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
+            pthread_mutexattr_setpshared(&ma, PTHREAD_PROCESS_SHARED);
+            pthread_mutex_init(robust, &ma);
+            pid = fork();
+            if (pid == 0) {
+                char *const args[] = { (char *)"EFI/BOOT/THREADS.ELF", (char *)"exec-probe", 0 };
+
+                pthread_mutex_lock(robust);
+                execv(args[0], args);
+                _exit(99);   /* only if execv failed */
+            }
+            if (pid < 0 || waitpid(pid, &status, 0) != pid) {
+                printf("THREADS_C6_EXECROBUST_FAIL: fork or wait\n");
+            } else {
+                clock_gettime(CLOCK_REALTIME, &until);
+                until.tv_sec += 5;
+                r = pthread_mutex_timedlock(robust, &until);
+                if (r == EOWNERDEAD) {
+                    pthread_mutex_consistent(robust);
+                    pthread_mutex_unlock(robust);
+                    printf("THREADS_C6_EXECROBUST_OK\n");
+                } else {
+                    printf("THREADS_C6_EXECROBUST_FAIL: locking after the owner exec'd returned %d (status %d)\n",
+                           r, status);
+                }
+            }
+        }
+        fflush(stdout);
+    }
+
     /* C6_SCHED (docs/abi/ L6 step 2). What only the machine can say: a thread
      * pinned to core 1 ends up on core 1 - the pickers honour the mask - and
      * membarrier's barriers, which are IPIs to other cores, come back while

@@ -30,6 +30,6 @@
 
 ### exec does not copy the table
 --- old
-        if (linux_fds_copy(nps, ops) != 0) {
+    if (linux_fds_copy(nps, ops) != 0) {
 +++ new
-        if (0) {
+    if (0) {
