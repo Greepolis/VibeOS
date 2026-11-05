@@ -465,14 +465,6 @@ static int hw_fsimage_read(void *ctx, uint64_t lba, void *buf) {
          ? -1 : vibeos_blk_read((uint32_t)e->device, lba, 1u, buf);
 }
 
-/* The loop device is read-only, and says so here rather than dropping the
- * write. A device that accepts a write it does not perform tells the caller
- * its bytes are safe. */
-static int hw_fsimage_write(void *ctx, uint64_t lba, const void *buf) {
-    (void)ctx; (void)lba; (void)buf;
-    return -1;
-}
-
 /* Mounted by the driver's name, through the same table the volume scan uses
  * (C7). This used to name each driver - its state, a mount wrapper and its ops
  * - which made this file one of the four a new filesystem had to edit. */
@@ -525,7 +517,12 @@ static void hw_fsimage_bringup(hw_fsimage_t *e) {
             e->slots[i].data = e->slot_data[i];
         }
         e->dev.read = hw_fsimage_read;
-        e->dev.write = hw_fsimage_write;
+        /* The loop device is read-only, and says so by having no write at all
+         * (blockdev.h: "may be NULL: a read-only device") rather than by a
+         * write that fails: a device that accepts a write it does not perform
+         * tells the caller its bytes are safe, and ext4's mount looks here to
+         * decide whether the volume gets the writing operations. */
+        e->dev.write = 0;
         e->dev.flush = 0;
         e->dev.ctx = e;
         e->dev.sectors = sectors;

@@ -125,6 +125,7 @@ set(VIBEOS_TLS_SOURCES
 set(VIBEOS_KERNEL_DRIVER_SOURCES
     kernel/io/gui.c
     kernel/fs/ext2.c
+    kernel/fs/ext4_write.c
     kernel/fs/iso9660.c
     kernel/fs/exfat.c
     kernel/fs/ntfs.c

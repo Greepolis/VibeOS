@@ -188,6 +188,16 @@ POINTS = {
 }
 
 
+# A driver that is more than one file: the files that are the witness itself and
+# not somebody else naming it. ext4's writer (ext4_write.c) and the header the
+# reader and the writer share, and the writer's header, are the ext2 driver in four files, so they name
+# its symbols as the driver does; counting them would raise the radius for
+# splitting a file in two, which is the opposite of what the number is for.
+ALSO_OWN = {
+    "filesystem (direct)": ("kernel/fs/ext4_write.c", "kernel/fs/ext2_internal.h", "include/vibeos/ext4_write.h"),
+}
+
+
 def sources():
     out = []
     for group in SCOPE:
@@ -214,6 +224,7 @@ def main():
                 ROOT, "include", "vibeos",
                 os.path.basename(witness)[:-2] + ".h")),
         }
+        own |= {os.path.normpath(os.path.join(ROOT, x)) for x in ALSO_OWN.get(point, ())}
         pat = re.compile(r"\b(?:" + sym + r")")
 
         touched = []
