@@ -40,6 +40,16 @@ jobs:
       contents: read
 
     steps:
+      - name: Harden The Runner
+        # Every outbound connection and process this job makes, recorded:
+        # the jobs a pull request triggers run code somebody else wrote, and
+        # what that code does is the one thing a scan of its text cannot
+        # tell. Audit, not block, until a few runs say which endpoints are
+        # this build's own (2026-11-05).
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -65,6 +75,37 @@ jobs:
         with:
           sarif_file: clang-analyzer.sarif
           category: clang-analyzer
+
+  zizmor:
+    name: zizmor (workflow security)
+    # The workflows are what a pull request from a fork most easily turns
+    # against the project: an action not pinned to a commit, a script that
+    # interpolates a branch name or a title, a token with more than its job
+    # needs. Semgrep's github-actions rules see some of that; zizmor is
+    # written for nothing else. Its findings go to code scanning beside the
+    # others. The action and zizmor are pinned to releases two weeks old or
+    # more when added (2026-11-05).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    steps:
+      - name: Harden The Runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Scan The Workflows
+        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          version: 1.31.1
 
   semgrep:
     name: Semgrep

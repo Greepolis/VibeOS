@@ -34,6 +34,16 @@ jobs:
       contents: read
 
     steps:
+      - name: Harden The Runner
+        # Every outbound connection and process this job makes, recorded:
+        # the jobs a pull request triggers run code somebody else wrote, and
+        # what that code does is the one thing a scan of its text cannot
+        # tell. Audit, not block, until a few runs say which endpoints are
+        # this build's own (2026-11-05).
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
       - name: Checkout
         # Deliberately without submodules: Mbed TLS is audited upstream and
         # analysing it here would bury our own findings under third-party

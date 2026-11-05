@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Dependency Review
+
+# What a pull request adds to the project's dependencies, before it is merged:
+# a new action, a new version of one, a package a script installs - each held
+# against the advisory database, and its licence against the project's own.
+# VibeOS is GPL-3.0-or-later (2f09fc89), so a dependency it cannot carry is
+# refused here rather than found at a release. The vendored Mbed TLS is a
+# submodule, which the dependency graph does not read; it is Apache-2.0 or
+# GPL-2.0-or-later, both of which GPL-3.0 accepts.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Harden The Runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: Review The Change
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          # Licences GPL-3.0-or-later cannot be combined with: a dependency
+          # under one of these is refused, whatever else it offers.
+          deny-licenses: AGPL-1.0-only, SSPL-1.0, BUSL-1.1, CC-BY-NC-4.0, CC-BY-NC-SA-4.0
