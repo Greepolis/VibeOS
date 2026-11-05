@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The ext4 reader against volumes mkfs.ext4 made (docs/filesystem-design/ext4.md
-# step 1).
+# The ext4 driver against volumes mkfs.ext4 made (docs/filesystem-design/ext4.md
+# steps 1 and 2).
 #
 #     scripts/dev/verify-ext4.sh [build-dir]
 #
@@ -11,6 +11,22 @@
 # on the host, the driver reads all of it through vibeos_ext4_exercise, and the
 # listing is held against the tree itself. e2fsck checks the volume first: a
 # fixture nobody has checked is not believed.
+#
+# Reading. The tree has an unwritten extent (debugfs fallocate), a two-level
+# extent tree, and an htree directory; two groups are made BLOCK_UNINIT with
+# their on-disk bitmaps filled with ones, as a volume that has never allocated
+# in them looks and as mke2fs of this version no longer leaves them.
+#
+# Writing. The driver applies a scripted set of changes (create, writes at
+# offsets and past the end, appends, truncates, directories made, moved and
+# removed, links, symlinks of three kinds, a big directory, owners, modes and
+# times, 200 MiB of data that leaves the first group) to a copy of that volume.
+# Then e2fsck -fn must find it clean - every count the format keeps twice, every
+# checksum, every link count - and debugfs reads the whole volume back out
+# (rdump) to be compared with the host's own copy of the tree, to which the same
+# changes were made with the host's own calls: names, types, sizes, contents,
+# modes, link targets, and the owners and times that were set. A second, small
+# volume is filled until the driver says ENOSPC and must still be clean.
 #
 # Then the refusals, on copies damaged with debugfs: a file whose inode
 # checksum no longer matches is not read, and a volume claiming a feature the
@@ -29,7 +45,18 @@ fail() {
     exit 1
 }
 
-for tool in mkfs.ext4 e2fsck debugfs; do
+# The superblock's free counts are the sum of the groups'. e2fsck does not hold
+# the superblock to it (a mounted kernel updates them lazily, so a difference
+# there is not an error to it), and statfs reads them: so this does.
+counts_ok() {
+    dumpe2fs "$1" 2> /dev/null | awk '
+        /^Free blocks:/ { sb_b = $3 }
+        /^Free inodes:/ { sb_i = $3 }
+        /^ +[0-9]+ free blocks, [0-9]+ free inodes/ { gb += $1; gi += $4 }
+        END { exit !(sb_b == gb && sb_i == gi && gb > 0) }'
+}
+
+for tool in mkfs.ext4 e2fsck debugfs dumpe2fs; do
     if ! command -v "$tool" > /dev/null 2>&1; then
         echo "ext4=skip reason=no_$tool"
         exit 0
@@ -39,21 +66,54 @@ EX="$(cd "$B" && pwd)/vibeos_ext4_exercise"
 [ -x "$EX" ] || fail "$EX missing" exercise_not_built
 
 python3 scripts/dev/ext4-tree.py make "$T/tree" || fail "tree" tree_not_made
-# 320 MiB is three groups, and 1024 inodes is about 340 a group: the tree's 619
+# 768 MiB is six groups, and 1024 inodes is about 170 a group: the tree's 619
 # entries reach past the first group's inode table, so a descriptor other than
-# group 0's is read.
-truncate -s 320M "$T/fs.img"
+# group 0's is read. mkfs puts the journal in the middle and leaves the groups
+# nothing was allocated in BLOCK_UNINIT.
+truncate -s 768M "$T/fs.img"
 mkfs.ext4 -q -F -N 1024 -d "$T/tree" "$T/fs.img" > "$T/mkfs.log" 2>&1 || fail "$(head -1 "$T/mkfs.log")" mkfs_failed
 # mkfs.ext4 -d writes every directory linear; e2fsck -D rebuilds the large ones
 # as htree, which is what a directory Linux grew would be. Its exit code is 1
 # when it changed something, which here it must.
 e2fsck -fyD "$T/fs.img" > "$T/fsckD.log" 2>&1
 [ $? -le 1 ] || fail "$(head -3 "$T/fsckD.log" | tr '\n' ' ')" e2fsck_D_failed
+
+# An extent that is allocated and not written, which mkfs.ext4 -d never makes.
+debugfs -w -R "fallocate /prealloc.bin 0 99" "$T/fs.img" > /dev/null 2>&1
+debugfs -R "ex /prealloc.bin" "$T/fs.img" 2>/dev/null | grep -q Uninit \
+    || fail "/prealloc.bin has no unwritten extent" fixture_has_no_unwritten_extent
+# What an unwritten extent holds is whatever was on the disk before, and it must
+# read as zeros all the same: the blocks are filled with junk, so a reader that
+# treats the extent as written, or a writer that makes a block of it written
+# without zeroing the rest, shows.
+debugfs -R "ex /prealloc.bin" "$T/fs.img" 2>/dev/null | awk '/Uninit/ {print $8, $11}' | while read -r start len; do
+    head -c $((len * 4096)) /dev/zero | tr '\0' '\245' | dd of="$T/fs.img" bs=4096 seek="$start" conv=notrunc 2> /dev/null
+done
+
+# The groups nothing was allocated in are BLOCK_UNINIT, and the bitmap on the disk
+# was never written: it is overwritten here with ones, so a driver that read it
+# would find no room, and one that builds it finds the superblock copy, the
+# descriptors and the reserved blocks the groups with a backup carry (1 and 3)
+# and the ones without (4). Three such groups are the fixture; fewer and the
+# test would not reach what it is there for.
+dumpe2fs "$T/fs.img" 2> /dev/null | awk '/^Group /{g=$2; sub(":", "", g); u=($0 ~ /BLOCK_UNINIT/)} $1=="Block" && $2=="bitmap" && u {print g, $4}' > "$T/bb.txt"
+[ "$(awk '{printf "%s,", $1}' "$T/bb.txt")" = "1,3,4," ] \
+    || fail "BLOCK_UNINIT groups are $(awk '{printf "%s ", $1}' "$T/bb.txt"), wanted 1 3 4" fixture_has_no_uninit_groups
+while read -r g blk; do
+    head -c 4096 /dev/zero | tr '\0' '\377' | dd of="$T/fs.img" bs=4096 seek="$blk" conv=notrunc 2> /dev/null
+done < "$T/bb.txt"
 e2fsck -fn "$T/fs.img" > "$T/fsck.log" 2>&1 || fail "$(head -3 "$T/fsck.log" | tr '\n' ' ')" fixture_not_clean
+# And the free space the writer will take blocks from, in the first two groups,
+# is junk too: a volume mkfs just made is zeros wherever nothing was written,
+# which forgives a block that is not zeroed before part of it is used.
+python3 scripts/dev/ext4-tree.py junk "$T/fs.img" 2 > /dev/null || fail "junk" junk_not_written
 
 # The tree must have made the driver do what it is there for.
 depth="$(debugfs -R "ex /sparse-forty-extents.bin" "$T/fs.img" 2>/dev/null | awk 'NR==2 {print $2}')"
 case "$depth" in 0|"") fail "sparse file's tree has no index level (depth $depth)" fixture_has_no_index_level ;; esac
+# Two leaves under the index, so choosing between them is something a lookup does.
+leaves="$(debugfs -R "ex /sparse-400-extents.bin" "$T/fs.img" 2>/dev/null | awk 'NR==2 {print $4}')"
+[ "${leaves:-0}" -ge 2 ] || fail "the 400-extent file has $leaves leaves" fixture_has_one_leaf
 debugfs -R "htree /many" "$T/fs.img" 2>/dev/null | grep -q "Root node dump" \
     || fail "/many is not htree-indexed" fixture_has_no_htree
 
@@ -66,6 +126,74 @@ if ! diff "$T/want.txt" "$T/seen.txt" > "$T/diff.txt"; then
 fi
 entries="$(grep -c . "$T/seen.txt")"
 
+# ---- writing ----------------------------------------------------------------
+mkdir -p "$T/w"
+cp "$T/fs.img" "$T/w/fs.img"
+python3 scripts/dev/ext4-tree.py script "$T/script.txt" || fail "script" script_not_made
+(cd "$T/w" && "$EX" apply "$T/script.txt") > "$T/apply.out" 2> "$T/apply.err" \
+    || fail "$(grep -m1 FAIL "$T/apply.err" || tail -1 "$T/apply.err")" driver_apply_failed
+e2fsck -fn "$T/w/fs.img" > "$T/fsckw.log" 2>&1 \
+    || fail "$(grep -v -E '^(e2fsck|Pass)' "$T/fsckw.log" | head -4 | tr '\n' ' ')" written_volume_not_clean
+counts_ok "$T/w/fs.img" || fail "the superblock's free counts are not the groups' sum" superblock_counts_wrong
+# A file written in two hundred pieces and a file written in six hundred are a
+# few extents each, because the driver joins what runs on: merging is not a
+# requirement of the format, so e2fsck cannot ask for it, and this does.
+runs="$(debugfs -R "ex /big.bin" "$T/w/fs.img" 2>/dev/null | grep -c -E '^ *[0-9]+/ *[0-9]+ +[0-9]+/ *[0-9]+ ' )"
+[ "$runs" -le 6 ] || fail "/big.bin is $runs extents" extents_not_merged
+python3 scripts/dev/ext4-tree.py apply "$T/tree" || fail "host apply" host_apply_failed
+mkdir "$T/dump"
+debugfs -R "rdump / $T/dump" "$T/w/fs.img" > /dev/null 2> "$T/rdump.err"
+python3 scripts/dev/ext4-tree.py compare "$T/tree" "$T/dump" "$T/w/fs.img" > "$T/compare.out" \
+    || fail "$(head -3 "$T/compare.out" | tr '\n' ' ')" written_tree_differs
+# The driver's own reading of what it wrote, through the reading operations.
+python3 scripts/dev/ext4-tree.py list "$T/tree" > "$T/want2.txt"
+(cd "$T/w" && "$EX" walk) 2> "$T/walk2.err" | sort > "$T/seen2.txt"
+diff "$T/want2.txt" "$T/seen2.txt" > "$T/diff2.txt" \
+    || fail "$(head -4 "$T/diff2.txt" | tr '\n' ' ')" driver_does_not_read_what_it_wrote
+written="$(grep -c . "$T/seen2.txt")"
+
+# ---- a full volume ----------------------------------------------------------
+mkdir -p "$T/f"
+truncate -s 24M "$T/f/fs.img"
+mkfs.ext4 -q -F -N 64 "$T/f/fs.img" > "$T/mkfsf.log" 2>&1 || fail "$(head -1 "$T/mkfsf.log")" mkfs_small_failed
+printf 'create\t/fill.bin\t644\nfillup\t/fill.bin\t51\n' > "$T/full1.txt"
+(cd "$T/f" && "$EX" apply "$T/full1.txt") > "$T/full1.out" 2> "$T/full1.err" \
+    || fail "$(grep -m1 FAIL "$T/full1.err" || tail -1 "$T/full1.err")" driver_fill_failed
+e2fsck -fn "$T/f/fs.img" > "$T/fsckf.log" 2>&1 \
+    || fail "$(grep -v -E '^(e2fsck|Pass)' "$T/fsckf.log" | head -4 | tr '\n' ' ')" full_volume_not_clean
+printf 'truncate\t/fill.bin\t1000000\ncreate\t/after\t644\nwrite\t/after\t0\t200000\t52\n' > "$T/full2.txt"
+(cd "$T/f" && "$EX" apply "$T/full2.txt") > "$T/full2.out" 2> "$T/full2.err" \
+    || fail "$(grep -m1 FAIL "$T/full2.err" || tail -1 "$T/full2.err")" driver_cannot_reuse_freed_space
+e2fsck -fn "$T/f/fs.img" > "$T/fsckf2.log" 2>&1 \
+    || fail "$(grep -v -E '^(e2fsck|Pass)' "$T/fsckf2.log" | head -4 | tr '\n' ' ')" freed_volume_not_clean
+counts_ok "$T/f/fs.img" || fail "the superblock's free counts are not the groups' sum (full)" superblock_counts_wrong
+mkdir "$T/fdump"
+debugfs -R "rdump / $T/fdump" "$T/f/fs.img" > /dev/null 2>&1
+python3 scripts/dev/ext4-tree.py patcheck "$T/fdump/fill.bin" 51 > "$T/pc1.out" || fail "$(cat "$T/pc1.out")" filled_file_differs
+python3 scripts/dev/ext4-tree.py patcheck "$T/fdump/after" 52 > "$T/pc2.out" || fail "$(cat "$T/pc2.out")" reused_file_differs
+[ "$(stat -c %s "$T/fdump/fill.bin")" = 1000000 ] || fail "fill.bin is not 1000000 bytes" truncated_size_wrong
+
+# ---- a fresh volume: inodes in a group nobody has used ----------------------
+mkdir -p "$T/n" "$T/ntree"
+truncate -s 320M "$T/n/fs.img"
+mkfs.ext4 -q -F -N 1024 "$T/n/fs.img" > "$T/mkfsn.log" 2>&1 || fail "$(head -1 "$T/mkfsn.log")" mkfs_fresh_failed
+dumpe2fs "$T/n/fs.img" 2> /dev/null | grep -q INODE_UNINIT || fail "the fresh volume has no INODE_UNINIT group" fixture_has_no_inode_uninit
+python3 scripts/dev/ext4-tree.py junk "$T/n/fs.img" 2 > /dev/null || fail "junk" junk_not_written
+python3 scripts/dev/ext4-tree.py script "$T/nscript.txt" fresh
+(cd "$T/n" && "$EX" apply "$T/nscript.txt") > "$T/napply.out" 2> "$T/napply.err" \
+    || fail "$(grep -m1 FAIL "$T/napply.err" || tail -1 "$T/napply.err")" driver_fresh_apply_failed
+e2fsck -fn "$T/n/fs.img" > "$T/fsckn.log" 2>&1 \
+    || fail "$(grep -v -E '^(e2fsck|Pass)' "$T/fsckn.log" | head -4 | tr '\n' ' ')" fresh_volume_not_clean
+counts_ok "$T/n/fs.img" || fail "the superblock's free counts are not the groups' sum (fresh)" superblock_counts_wrong
+dumpe2fs "$T/n/fs.img" 2> /dev/null | grep '^Group 1' | grep -q INODE_UNINIT \
+    && fail "group 1 is still INODE_UNINIT: nothing used its inodes" fresh_volume_did_not_reach_group_1
+python3 scripts/dev/ext4-tree.py apply "$T/ntree" fresh || fail "host apply (fresh)" host_apply_failed
+mkdir "$T/ndump"
+debugfs -R "rdump / $T/ndump" "$T/n/fs.img" > /dev/null 2>&1
+python3 scripts/dev/ext4-tree.py compare "$T/ntree" "$T/ndump" "$T/n/fs.img" > "$T/ncompare.out" \
+    || fail "$(head -3 "$T/ncompare.out" | tr '\n' ' ')" fresh_tree_differs
+
+# ---- the refusals -----------------------------------------------------------
 # An inode whose checksum no longer matches: its low half set to zero.
 mkdir -p "$T/csum" "$T/feat"
 cp "$T/fs.img" "$T/csum/fs.img"
@@ -80,4 +208,4 @@ debugfs -w -R "feature inline_data" "$T/feat/fs.img" > /dev/null 2>&1
     || fail "$(cat "$T/feat.err" "$T/feat.out" | head -1)" unknown_feature_mounted
 grep -q "features=0x8000" "$T/feat.out" || fail "$(cat "$T/feat.out")" refusal_names_wrong_feature
 
-echo "ext4=ok entries=$entries"
+echo "ext4=ok entries=$entries written=$written"

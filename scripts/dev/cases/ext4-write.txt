@@ -1,0 +1,228 @@
+# The ext4 writer (kernel/fs/ext4_write.c, docs/filesystem-design/ext4.md step 2),
+# broken; caught by scripts/dev/verify-ext4.sh, which applies a script of changes
+# through the driver to volumes mkfs.ext4 made, asks e2fsck -fn whether the
+# result is clean, has debugfs read it back out and holds that against the
+# host's own copy of the tree.
+#
+# Each case takes away one thing the format keeps true, so a red result says the
+# oracle - somebody else's checker, or a tree the host built - sees it. Where the
+# driver's own reader notices first (it checks every checksum it reads), that is
+# the red; the case still proves the checksum is one the writer must produce.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release'" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-write.txt build-gcc-Release
+
+### the block bitmap's checksum is not written
+--- old
+    gd_put16x2(fs, d, 0x18u, 0x38u, c);
++++ new
+    (void)c;
+
+### the inode bitmap's checksum is not written
+--- old
+    gd_put16x2(fs, d, 0x1Au, 0x3Au, c);
++++ new
+    (void)c;
+
+### a group's free block count is not lowered by an allocation
+--- old
+    gd_put16x2(fs, d, 0x0Cu, 0x2Cu, GD_FREE_BLOCKS(fs, d) - n);
++++ new
+    (void)n;
+
+### a group's free block count is not raised by a free
+--- old
+        gd_put16x2(fs, d, 0x0Cu, 0x2Cu, GD_FREE_BLOCKS(fs, d) + freed);
++++ new
+        (void)freed;
+
+### a group's free inode count is not lowered by an inode allocation
+--- old
+        gd_put16x2(fs, d, 0x0Eu, 0x2Eu, GD_FREE_INODES(fs, d) - 1u);
++++ new
+        (void)d;
+
+### a directory is not counted in its group
+--- old
+            gd_put16x2(fs, d, 0x10u, 0x30u, GD_USED_DIRS(fs, d) + 1u);
++++ new
+            (void)d;
+
+### the unused tail of the inode table is not moved down past a new inode
+--- old
+            gd_put16x2(fs, d, 0x1Cu, 0x32u, fs->inodes_per_group - (i + 1u));
++++ new
+            (void)i;
+
+### the superblock's free block count is not kept
+--- old
+    st32(fs->sb + 0x0Cu, (uint32_t)fb);
++++ new
+    (void)fb;
+
+### the superblock's free inode count is not kept
+--- old
+    st32(fs->sb + 0x10u, le32(fs->sb + 0x10u) + (uint32_t)inodes);
++++ new
+    (void)inodes;
+
+### the superblock's checksum is not recomputed
+--- old
+    st32(fs->sb + 0x3FCu, crc32c(~0u, fs->sb, 0x3FCu));
++++ new
+    (void)fs;
+
+### a group descriptor's checksum is not recomputed
+--- old
+    st16(d + 0x1Eu, gd_csum(fs, g, d));
++++ new
+    (void)g;
+
+### an inode's checksum high half is not written
+--- old
+    st16(inode + 0x82u, c >> 16);
++++ new
+    (void)c;
+
+### an extent leaf block carries no checksum
+--- old
+        st32(leaf + at, crc32c(ext2_inode_seed(fs, ino, inode), leaf, at));
++++ new
+        st32(leaf + at, 0u);
+
+### an extent that runs on from its neighbour is not joined to it
+--- old
+    if (i + 1u < fs->ext_n && !e_uninit(fs, i) == !e_uninit(fs, i + 1u) &&
++++ new
+    if (0 && i + 1u < fs->ext_n && !e_uninit(fs, i) == !e_uninit(fs, i + 1u) &&
+
+### a file of more than four extents keeps them all in one leaf
+--- old
+        nleaves = (n + per - 1u) / per;
++++ new
+        nleaves = 1u;
+
+### i_blocks leaves out the tree's own blocks
+--- old
+    blocks = (data + nleaves + (le32(inode + 0x68u) != 0u ? 1u : 0u)) * (bs / VIBEOS_BLOCK_SIZE);
++++ new
+    blocks = (data + (le32(inode + 0x68u) != 0u ? 1u : 0u)) * (bs / VIBEOS_BLOCK_SIZE);
+
+### a directory block's checksum entry holds no checksum
+--- old
+    st32(t + 8u, crc32c(ext2_inode_seed(fs, dir_ino, dir), b, fs->block_size - DIR_TAIL));
++++ new
+    st32(t + 8u, 0u);
+
+### an htree directory keeps its index flag when it is changed
+--- old
+    st32(dir + 0x20u, le32(dir + 0x20u) & ~INODE_FLAG_INDEX);
++++ new
+    (void)dir;
+
+### a removed entry is not merged into the one before it
+--- old
+                        st16(b + prev + 4u, le16(b + prev + 4u) + reclen);
++++ new
+                        (void)prev;
+
+### a new directory does not count in its parent's links
+--- old
+        rc = dir_links_adjust(fs, pino, 1);
++++ new
+        rc = 0;
+
+### a directory moved to another parent keeps its old ".."
+--- old
+        rc = dir_dotdot(fs, sino, pino2, &scratch);
++++ new
+        rc = 0;
+
+### a new directory's ".." names itself
+--- old
+                st32(b + 12u, pino);
++++ new
+                st32(b + 12u, ino);
+
+### unlink drops a file with another name
+--- old
+    if (links > 1u) {
+        st16(inode + 0x1Au, links - 1u);
+        touch_c(inode);
+        return inode_put(fs, ino, inode);
+    }
+    return inode_release(fs, ino, inode);
++++ new
+    if (0) {
+        st16(inode + 0x1Au, links - 1u);
+        touch_c(inode);
+        return inode_put(fs, ino, inode);
+    }
+    return inode_release(fs, ino, inode);
+
+### rename over an existing name replaces it despite NOREPLACE
+--- old
+    if (have_dst && (flags & VIBEOS_RENAME_NOREPLACE) != 0u) {
++++ new
+    if (have_dst && (flags & 0u) != 0u) {
+
+### a group nobody allocated in is read from its bitmap on the disk
+--- old
+    if ((le16(d + 0x12u) & BG_BLOCK_UNINIT) != 0u) {
+        return build_block_bitmap(fs, g, buf);
++++ new
+    if ((le16(d + 0x12u) & 0u) != 0u) {
+        return build_block_bitmap(fs, g, buf);
+
+### the bitmap built for such a group leaves out the superblock copy and descriptors
+--- old
+        for (i = 0; i < n && i < nb; i++) {
++++ new
+        for (i = 0; i < 0u; i++) {
+
+### the first allocation in such a group leaves it marked unallocated
+--- old
+    st16(d + 0x12u, le16(d + 0x12u) & ~BG_BLOCK_UNINIT);
++++ new
+    st16(d + 0x12u, le16(d + 0x12u));
+
+### the first inode in an unused group leaves it marked unused
+--- old
+        st16(d + 0x12u, le16(d + 0x12u) & ~BG_INODE_UNINIT);
++++ new
+        st16(d + 0x12u, le16(d + 0x12u));
+
+### the inode bitmap made for an unused group is not padded
+--- old
+        buf[i] = 0xFFu;
++++ new
+        buf[i] = 0u;
+
+### a write into an unwritten extent leaves it unwritten
+--- old
+            rc = ext_make_init(fs, bi);
++++ new
+            rc = 0;
+
+### the part of a new block a write does not cover is not zeroed
+--- old
+            if (fresh) {
+                memset(fs->wbuf, 0, bs);
++++ new
+            if (0 && fresh) {
+                memset(fs->wbuf, 0, bs);
+
+### shrinking a file leaves the end of its last block as it was
+--- old
+                memset(fs->wbuf + new_size % bs, 0, bs - (uint32_t)(new_size % bs));
++++ new
+                memset(fs->wbuf + new_size % bs, 0xA5, bs - (uint32_t)(new_size % bs));
+
+### a directory that fills up does not grow
+--- old
+    /* Every block is full: the directory grows by one. */
+    rc = ext_load(fs, dir_ino, dir);
++++ new
+    /* Every block is full: the directory grows by one. */
+    return -VIBEOS_ENOSPC;
+    rc = ext_load(fs, dir_ino, dir);
