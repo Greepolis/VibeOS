@@ -291,7 +291,9 @@ int ext2_inode_table(vibeos_ext2_t *fs, uint32_t group, uint64_t *out) {
     uint8_t d[1024];
     uint64_t at = (uint64_t)group * fs->desc_size;
 
-    if (fs->desc_size > sizeof(d) ||
+    /* The mount makes it 32 or a power of two from 64; said here as well, so
+     * that no path reads a descriptor of which nothing was copied. */
+    if (fs->desc_size < 32u || fs->desc_size > sizeof(d) ||
         ext2_read_part(fs, fs->group_desc_block + at / fs->block_size, (uint32_t)(at % fs->block_size), d,
                        fs->desc_size) != 0) {
         return -1;

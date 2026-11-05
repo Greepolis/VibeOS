@@ -292,7 +292,9 @@ def apply_one(root, cmd, meta):
         os.truncate(hp(cmd[1]), cmd[2])
     elif name == "mkdir":
         os.mkdir(hp(cmd[1]))
-        os.chmod(hp(cmd[1]), 0o755)
+        # The mode the driver gives a directory it makes, so that the two trees
+        # compare: 0755 is what mkdir means here, not a widening.
+        os.chmod(hp(cmd[1]), 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
     elif name == "rmdir":
         os.rmdir(hp(cmd[1]))
     elif name == "unlink":

@@ -130,7 +130,7 @@ entries="$(grep -c . "$T/seen.txt")"
 mkdir -p "$T/w"
 cp "$T/fs.img" "$T/w/fs.img"
 python3 scripts/dev/ext4-tree.py script "$T/script.txt" || fail "script" script_not_made
-(cd "$T/w" && "$EX" apply "$T/script.txt") > "$T/apply.out" 2> "$T/apply.err" \
+(cd "$T/w" && cp "$T/script.txt" script.txt && "$EX" apply) > "$T/apply.out" 2> "$T/apply.err" \
     || fail "$(grep -m1 FAIL "$T/apply.err" || tail -1 "$T/apply.err")" driver_apply_failed
 e2fsck -fn "$T/w/fs.img" > "$T/fsckw.log" 2>&1 \
     || fail "$(grep -v -E '^(e2fsck|Pass)' "$T/fsckw.log" | head -4 | tr '\n' ' ')" written_volume_not_clean
@@ -157,12 +157,12 @@ mkdir -p "$T/f"
 truncate -s 24M "$T/f/fs.img"
 mkfs.ext4 -q -F -N 64 "$T/f/fs.img" > "$T/mkfsf.log" 2>&1 || fail "$(head -1 "$T/mkfsf.log")" mkfs_small_failed
 printf 'create\t/fill.bin\t644\nfillup\t/fill.bin\t51\n' > "$T/full1.txt"
-(cd "$T/f" && "$EX" apply "$T/full1.txt") > "$T/full1.out" 2> "$T/full1.err" \
+(cd "$T/f" && cp "$T/full1.txt" script.txt && "$EX" apply) > "$T/full1.out" 2> "$T/full1.err" \
     || fail "$(grep -m1 FAIL "$T/full1.err" || tail -1 "$T/full1.err")" driver_fill_failed
 e2fsck -fn "$T/f/fs.img" > "$T/fsckf.log" 2>&1 \
     || fail "$(grep -v -E '^(e2fsck|Pass)' "$T/fsckf.log" | head -4 | tr '\n' ' ')" full_volume_not_clean
 printf 'truncate\t/fill.bin\t1000000\ncreate\t/after\t644\nwrite\t/after\t0\t200000\t52\n' > "$T/full2.txt"
-(cd "$T/f" && "$EX" apply "$T/full2.txt") > "$T/full2.out" 2> "$T/full2.err" \
+(cd "$T/f" && cp "$T/full2.txt" script.txt && "$EX" apply) > "$T/full2.out" 2> "$T/full2.err" \
     || fail "$(grep -m1 FAIL "$T/full2.err" || tail -1 "$T/full2.err")" driver_cannot_reuse_freed_space
 e2fsck -fn "$T/f/fs.img" > "$T/fsckf2.log" 2>&1 \
     || fail "$(grep -v -E '^(e2fsck|Pass)' "$T/fsckf2.log" | head -4 | tr '\n' ' ')" freed_volume_not_clean
@@ -180,7 +180,7 @@ mkfs.ext4 -q -F -N 1024 "$T/n/fs.img" > "$T/mkfsn.log" 2>&1 || fail "$(head -1 "
 dumpe2fs "$T/n/fs.img" 2> /dev/null | grep -q INODE_UNINIT || fail "the fresh volume has no INODE_UNINIT group" fixture_has_no_inode_uninit
 python3 scripts/dev/ext4-tree.py junk "$T/n/fs.img" 2 > /dev/null || fail "junk" junk_not_written
 python3 scripts/dev/ext4-tree.py script "$T/nscript.txt" fresh
-(cd "$T/n" && "$EX" apply "$T/nscript.txt") > "$T/napply.out" 2> "$T/napply.err" \
+(cd "$T/n" && cp "$T/nscript.txt" script.txt && "$EX" apply) > "$T/napply.out" 2> "$T/napply.err" \
     || fail "$(grep -m1 FAIL "$T/napply.err" || tail -1 "$T/napply.err")" driver_fresh_apply_failed
 e2fsck -fn "$T/n/fs.img" > "$T/fsckn.log" 2>&1 \
     || fail "$(grep -v -E '^(e2fsck|Pass)' "$T/fsckn.log" | head -4 | tr '\n' ' ')" fresh_volume_not_clean

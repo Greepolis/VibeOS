@@ -440,8 +440,11 @@ static int run(char **a, int n) {
     return -1;
 }
 
-static int apply(const char *script) {
-    FILE *f = fopen(script, "r");
+/* The script is script.txt beside fs.img, as the image is: a program that opens
+ * a path from its arguments is a path-injection finding for code scanning
+ * (CodeQL #322, again as #358), and a test has no reason to take one. */
+static int apply(void) {
+    FILE *f = fopen("script.txt", "r");
     char line[4400];
     unsigned lines = 0;
     vibeos_fs_statfs_t sf;
@@ -482,7 +485,9 @@ static int apply(const char *script) {
                 (unsigned long long)vibeos_ext2_csum_failures());
         return 1;
     }
-    f = fopen("fs.img", "wb");
+    /* Written over the image that is there, never created: "w" would make one
+     * with mode 0666 if it were gone, which code scanning reports (#357). */
+    f = fopen("fs.img", "r+b");
     if (!f || fwrite(g_img, 1, (size_t)(g_sectors * 512u), f) != (size_t)(g_sectors * 512u)) {
         fprintf(stderr, "FAIL:ext4_exercise cannot write fs.img back\n");
         return 1;
@@ -500,7 +505,7 @@ int main(int argc, char **argv) {
      * code scanning, and a test has no reason to take one. */
     g_writable_dev = argc >= 2 && strcmp(argv[1], "apply") == 0;
     if (argc < 2 || load("fs.img") != 0) {
-        fprintf(stderr, "usage: vibeos_ext4_exercise walk|apply <script>|refused-file <path>|refused-mount, beside fs.img\n");
+        fprintf(stderr, "usage: vibeos_ext4_exercise walk|apply|refused-file <path>|refused-mount, beside fs.img (and script.txt for apply)\n");
         return 2;
     }
     if (strcmp(argv[1], "refused-mount") == 0) {
@@ -520,8 +525,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "FAIL:ext4_exercise the volume has no metadata_csum: nothing would be checked\n");
         return 1;
     }
-    if (strcmp(argv[1], "apply") == 0 && argc == 3) {
-        return apply(argv[2]);
+    if (strcmp(argv[1], "apply") == 0 && argc == 2) {
+        return apply();
     }
     if (g_fs.writable) {
         fprintf(stderr, "FAIL:ext4_exercise a device that takes no writes was given the writing operations\n");

@@ -844,8 +844,10 @@ static int ext_store(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
         int rc = balloc(fs, goal, 1u, &newl[k], &got);
 
         if (rc != 0) {
-            while (k-- > 0u) {
-                (void)bfree(fs, newl[k], 1u);
+            uint32_t j;
+
+            for (j = 0; j < k; j++) {   /* the leaves already taken go back */
+                (void)bfree(fs, newl[j], 1u);
             }
             return rc;
         }
@@ -1717,6 +1719,22 @@ static int file_check(const uint8_t *inode) {
     return 0;
 }
 
+/* write_at: `len` bytes at `off`, the file growing as needed.
+ *
+ * The file's extents are loaded into the volume's list once, and each block of
+ * the write is mapped through it:
+ *  - a hole takes, in one allocation, as many blocks as the rest of the write
+ *    reaches before the next extent, asked for right after the extent before -
+ *    so a large or appending write stays one extent instead of one per block;
+ *  - a block inside an unwritten extent is split out of it and made written,
+ *    and only that block - the rest still reads as zeros;
+ *  - a block the write covers whole is written straight from the caller; a
+ *    part of one is read, patched and written back, or zero-filled first when
+ *    the block is new, since a fresh block holds whatever its last owner left.
+ * The tree is written back only if the list changed, and the inode last, so it
+ * never names a block that is not there yet. A failure part-way returns the
+ * bytes done, as write(2) does; the blocks taken for the part not written stay
+ * the file's (E4-009). */
 static long w_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, const void *buf, uint32_t len) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
