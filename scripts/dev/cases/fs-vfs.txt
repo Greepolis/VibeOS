@@ -20,8 +20,10 @@
 ### the node is not cleared before the driver is asked
 --- old
     fs_node_clear(out);
+    fs_enter(mnt);
     r = mnt->ops->lookup(mnt->fs, path, out);
 +++ new
+    fs_enter(mnt);
     r = mnt->ops->lookup(mnt->fs, path, out);
 
 ### a read-only filesystem answers EPERM

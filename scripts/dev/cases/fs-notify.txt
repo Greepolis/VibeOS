@@ -28,11 +28,13 @@
 ### a mkdir is not told
 --- old
     r = mnt->ops->mkdir(mnt->fs, path);
+    fs_leave(mnt);
     if (r == 0) {
         fs_notify_made(mnt, path);
     }
 +++ new
     r = mnt->ops->mkdir(mnt->fs, path);
+    fs_leave(mnt);
 
 ### chmod is not told
 --- old
