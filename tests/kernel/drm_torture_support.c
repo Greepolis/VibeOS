@@ -125,7 +125,7 @@ void ks_page_free(void *page, const char *why) {
     ks_page_unhold(page);
 }
 
-__attribute__((destructor)) static void support_no_page_leaks(void) {
+void drm_torture_support_check(void) {
     uint32_t i;
 
     for (i = 0; i < SUPPORT_PAGES; i++) {

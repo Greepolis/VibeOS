@@ -603,6 +603,8 @@ static void final_checks(void) {
     vibeos_file_put(fresh);
 }
 
+void drm_torture_support_check(void);
+
 int main(int argc, char **argv) {
     long rounds = argc > 2 ? strtol(argv[2], 0, 0) : 2000;
     int i;
@@ -646,6 +648,7 @@ int main(int argc, char **argv) {
     }
     g_op = "final";
     final_checks();
+    drm_torture_support_check();
     printf("drm_torture ok seed=%llu rounds=%ld\n", (unsigned long long)g_seed, rounds);
     return 0;
 }
