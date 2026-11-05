@@ -9,6 +9,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # A release has a week to be found broken or compromised before it is
+    # proposed here (zizmor, dependabot-cooldown).
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]

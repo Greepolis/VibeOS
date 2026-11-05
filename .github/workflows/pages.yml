@@ -21,8 +21,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deployment at a time, and never cancel one half-done: a cancelled deploy
 # can leave the site serving a partial build.
@@ -35,6 +33,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install mdBook
         run: |
@@ -84,6 +84,11 @@ jobs:
 
   deploy:
     needs: build
+    # Publishing is this job's alone: the build job reads the tree and nothing
+    # more (zizmor, excessive-permissions).
+    permissions:
+      pages: write
+      id-token: write
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
