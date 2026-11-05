@@ -1322,6 +1322,7 @@ void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out) {
     }
 }
 void *ks_page_alloc(void) { return malloc(4096); }
+void ks_page_hold(void *page) { (void)page; }
 void ks_page_free(void *page, const char *why) { (void)why; free(page); }
 uint64_t ks_heap_base(void) { return 0x10000000ull; }
 uint64_t ks_mmap_base(void) { return 0x20000000ull; }

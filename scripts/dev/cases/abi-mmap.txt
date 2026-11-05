@@ -117,9 +117,11 @@
 ### anything with a descriptor can be mapped
 --- old
         if (f->ops != &vibeos_fops_regular) {
-            /* A directory, a pipe, a socket, the console: nothing to map. */
-            vibeos_file_put(f);
-            return -VIBEOS_ENODEV;
+            if ((flags & LINUX_MAP_TYPE) == LINUX_MAP_PRIVATE || !f->ops->share_page) {
+                /* A directory, a pipe, a socket, the console: nothing to map. */
+                vibeos_file_put(f);
+                return -VIBEOS_ENODEV;
+            }
         }
 +++ new
 

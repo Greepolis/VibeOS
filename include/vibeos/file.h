@@ -218,6 +218,7 @@ struct vibeos_file {
      * others do (W4 step 7), each VIBEOS_SHARE_*; meaningful when nt_shared
      * is set, which vibeos_file_share_claim decides. */
     uint8_t nt_shared, nt_access, nt_share;
+    void *drv;
 };
 
 #define VIBEOS_SHARE_READ   1u

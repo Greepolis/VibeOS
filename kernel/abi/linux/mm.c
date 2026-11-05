@@ -362,9 +362,11 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
             return -VIBEOS_EBADF;
         }
         if (f->ops != &vibeos_fops_regular) {
-            /* A directory, a pipe, a socket, the console: nothing to map. */
-            vibeos_file_put(f);
-            return -VIBEOS_ENODEV;
+            if ((flags & LINUX_MAP_TYPE) == LINUX_MAP_PRIVATE || !f->ops->share_page) {
+                /* A directory, a pipe, a socket, the console: nothing to map. */
+                vibeos_file_put(f);
+                return -VIBEOS_ENODEV;
+            }
         }
         if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY) {
             vibeos_file_put(f);

@@ -10,6 +10,7 @@
 
 #include "files_internal.h"
 #include "vibeos/devfs.h"
+#include "vibeos/drm.h"
 #include "vibeos/random.h"
 
 #define CHR_CHUNK 256u
@@ -137,6 +138,8 @@ vibeos_file_t *vibeos_open_chrdev(uint32_t rdev, uint32_t flags, long *err) {
     vibeos_file_t *f;
 
     switch (rdev) {
+        case VIBEOS_DEV_DRM_CARD0:
+            return vibeos_drm_open(flags, err);
         case VIBEOS_DEV_NULL:
         case VIBEOS_DEV_ZERO:
         case VIBEOS_DEV_FULL:

@@ -174,6 +174,7 @@ void ks_tlb_drain(void);
 void ks_tlb_flush_page(uint64_t va);
 void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out);
 void *ks_page_alloc(void);
+void ks_page_hold(void *page);
 void ks_page_free(void *page, const char *why);
 /* The layout's fixed points, which brk and prlimit report. */
 uint64_t ks_heap_base(void);

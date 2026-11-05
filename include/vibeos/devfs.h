@@ -35,6 +35,7 @@
 #define VIBEOS_DEV_URANDOM VIBEOS_MKDEV(1, 9)
 #define VIBEOS_DEV_TTY     VIBEOS_MKDEV(5, 0)
 #define VIBEOS_DEV_CONSOLE VIBEOS_MKDEV(5, 1)
+#define VIBEOS_DEV_DRM_CARD0 VIBEOS_MKDEV(226, 0)
 
 /* The operations, for vibeos_fs_mount. No state: `fs` is unused. */
 const vibeos_fs_ops_t *vibeos_devfs_ops(void);
