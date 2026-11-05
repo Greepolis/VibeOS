@@ -7145,6 +7145,84 @@ static int test_ext2_mount_and_lookup(void) {
     return 0;
 }
 
+/* ---- the VFS's own lock, for drivers that ask for it ------------------------
+ *
+ * A driver that sets `serialize` is entered holding its mount's lock, so it
+ * needs none of its own. The fake driver below asserts the lock is held in
+ * every operation it is asked; the counts say every call was bracketed, and a
+ * driver that does not ask is entered without it. */
+
+static int g_vl_held;
+static int g_vl_taken;
+static int g_vl_unheld_calls;
+
+static void vl_lock(volatile uint32_t *w) { *w = 1u; g_vl_held++; g_vl_taken++; }
+static void vl_unlock(volatile uint32_t *w) { *w = 0u; g_vl_held--; }
+
+static void vl_check(void) {
+    if (g_vl_held != 1) {
+        g_vl_unheld_calls++;
+    }
+}
+
+static int vl_lookup(void *fs, const char *p, vibeos_fs_node_t *o) { (void)fs; (void)p; vl_check(); o->id = 1; return 0; }
+static long vl_read_at(void *fs, const vibeos_fs_node_t *n, uint64_t off, void *b, uint32_t l) {
+    (void)fs; (void)n; (void)off; (void)b; vl_check(); return (long)l;
+}
+static long vl_write_at(void *fs, const vibeos_fs_node_t *n, uint64_t off, const void *b, uint32_t l) {
+    (void)fs; (void)n; (void)off; (void)b; vl_check(); return (long)l;
+}
+static int vl_path(void *fs, const char *p) { (void)fs; (void)p; vl_check(); return 0; }
+static int vl_create(void *fs, const char *p, uint32_t m, vibeos_fs_node_t *o) {
+    (void)fs; (void)p; (void)m; vl_check(); o->id = 2; return 0;
+}
+static int vl_rename(void *fs, const char *a, const char *b, uint32_t f) { (void)fs; (void)a; (void)b; (void)f; vl_check(); return 0; }
+static int vl_truncate(void *fs, const vibeos_fs_node_t *n, uint64_t s) { (void)fs; (void)n; (void)s; vl_check(); return 0; }
+static int vl_statfs(void *fs, vibeos_fs_statfs_t *o) { (void)fs; (void)o; vl_check(); return 0; }
+static int vl_sync(void *fs) { (void)fs; vl_check(); return 0; }
+
+static int test_vfs_serializes(void) {
+    static vibeos_fs_ops_t ops = {
+        .lookup = vl_lookup, .read_at = vl_read_at, .write_at = vl_write_at, .unlink = vl_path,
+        .mkdir = vl_path, .rmdir = vl_path, .create = vl_create, .rename = vl_rename,
+        .truncate = vl_truncate, .statfs = vl_statfs, .sync = vl_sync, .serialize = 1,
+    };
+    vibeos_fsmount_t m;
+    vibeos_fs_node_t n;
+    vibeos_fs_statfs_t st;
+    char buf[8];
+    int ok = 1;
+
+    vibeos_fs_set_mount_lock(vl_lock, vl_unlock);
+    g_vl_held = g_vl_taken = g_vl_unheld_calls = 0;
+    ok &= vibeos_fs_mount(&m, &ops, 0, "serialised") == 0;
+    ok &= vibeos_fs_lookup(&m, "/a", &n) == 0;
+    ok &= vibeos_fs_read_at(&m, &n, 0, buf, 4) == 4;
+    ok &= vibeos_fs_write_at(&m, &n, 0, buf, 4) == 4;
+    ok &= vibeos_fs_create(&m, "/b", 0644u, &n) == 0;
+    ok &= vibeos_fs_mkdir(&m, "/d") == 0 && vibeos_fs_rmdir(&m, "/d") == 0;
+    ok &= vibeos_fs_rename(&m, "/b", "/c", 0) == 0 && vibeos_fs_unlink(&m, "/c") == 0;
+    ok &= vibeos_fs_truncate(&m, &n, 0) == 0 && vibeos_fs_statfs(&m, &st) == 0 && vibeos_fs_sync(&m) == 0;
+    ok &= vibeos_fs_read_file(&m, "/a", buf, sizeof(buf)) >= 0;
+    if (!ok || g_vl_unheld_calls != 0 || g_vl_held != 0 || g_vl_taken != 12) {   /* read_file of an empty file is a lookup alone */
+        fprintf(stderr, "FAIL:vfs_serializes ok=%d unheld=%d held=%d taken=%d\n", ok, g_vl_unheld_calls,
+                g_vl_held, g_vl_taken);
+        vibeos_fs_set_mount_lock(0, 0);
+        return 1;
+    }
+    /* A driver that does not ask is not locked by the VFS: a device's read
+     * may wait for input, and must not hold its volume meanwhile. */
+    ops.serialize = 0;
+    g_vl_taken = 0;
+    (void)vibeos_fs_lookup(&m, "/a", &n);
+    vibeos_fs_set_mount_lock(0, 0);
+    if (g_vl_taken != 0) {
+        fprintf(stderr, "FAIL:vfs_serializes a driver that did not ask was locked\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int test_ext2_read(void) {
     vibeos_ext2_t fs;
     vibeos_blockcache_t bc;
@@ -10263,6 +10341,7 @@ int main(void) {
     RUN_TEST(test_partition_gpt_refusals);
     RUN_TEST(test_ext2_mount_and_lookup);
     RUN_TEST(test_ext2_read);
+    RUN_TEST(test_vfs_serializes);
     RUN_TEST(test_ext2_list);
     RUN_TEST(test_ext2_list_name_bounded);
     RUN_TEST(test_ext2_dir_size_wrap);

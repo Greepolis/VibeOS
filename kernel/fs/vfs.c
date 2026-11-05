@@ -12,6 +12,28 @@
 #include "vibeos/mbz.h"
 #include "vibeos/abi_linux.h"
 
+/* A driver that asked to be serialised is entered holding its mount's lock;
+ * the VFS takes it, so the driver needs none of its own. */
+static void (*g_mlock)(volatile uint32_t *word);
+static void (*g_munlock)(volatile uint32_t *word);
+
+void vibeos_fs_set_mount_lock(void (*lock)(volatile uint32_t *word), void (*unlock)(volatile uint32_t *word)) {
+    g_mlock = lock;
+    g_munlock = unlock;
+}
+
+static void fs_enter(vibeos_fsmount_t *mnt) {
+    if (mnt->ops->serialize && g_mlock) {
+        g_mlock(&mnt->lock_word);
+    }
+}
+
+static void fs_leave(vibeos_fsmount_t *mnt) {
+    if (mnt->ops->serialize && g_munlock) {
+        g_munlock(&mnt->lock_word);
+    }
+}
+
 int vibeos_fs_mount(vibeos_fsmount_t *mnt, const vibeos_fs_ops_t *ops,
                      void *fs, const char *type) {
     if (!mnt || !ops || !ops->lookup || !ops->read_at) {
@@ -23,6 +45,7 @@ int vibeos_fs_mount(vibeos_fsmount_t *mnt, const vibeos_fs_ops_t *ops,
     mnt->ops = ops;
     mnt->fs = fs;
     mnt->type = type;
+    mnt->lock_word = 0;
     mnt->mounted = 1;
     return 0;
 }
@@ -76,7 +99,9 @@ int vibeos_fs_lookup(vibeos_fsmount_t *mnt, const char *path,
         return -1;
     }
     fs_node_clear(out);
+    fs_enter(mnt);
     r = mnt->ops->lookup(mnt->fs, path, out);
+    fs_leave(mnt);
     if (r == 0) {
         fs_node_complete(out);
     }
@@ -88,7 +113,14 @@ long vibeos_fs_read_at(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node,
     if (!vibeos_fs_is_mounted(mnt) || !node || !buf) {
         return -1;
     }
-    return mnt->ops->read_at(mnt->fs, node, offset, buf, len);
+    {
+        long r_;
+
+        fs_enter(mnt);
+        r_ = mnt->ops->read_at(mnt->fs, node, offset, buf, len);
+        fs_leave(mnt);
+        return r_;
+    }
 }
 
 long vibeos_fs_write_file(vibeos_fsmount_t *mnt, const char *path,
@@ -99,7 +131,14 @@ long vibeos_fs_write_file(vibeos_fsmount_t *mnt, const char *path,
     if (!mnt->ops->write_file) {
         return -1;   /* a read-only filesystem, and saying so is the answer */
     }
-    return mnt->ops->write_file(mnt->fs, path, buf, len);
+    {
+        long r_;
+
+        fs_enter(mnt);
+        r_ = mnt->ops->write_file(mnt->fs, path, buf, len);
+        fs_leave(mnt);
+        return r_;
+    }
 }
 
 int vibeos_fs_list(vibeos_fsmount_t *mnt, const char *path, uint32_t index,
@@ -111,7 +150,14 @@ int vibeos_fs_list(vibeos_fsmount_t *mnt, const char *path, uint32_t index,
     if (!mnt->ops->list) {
         return -1;
     }
-    return mnt->ops->list(mnt->fs, path, index, name, name_cap, out_size, out_is_dir);
+    {
+        int r_;
+
+        fs_enter(mnt);
+        r_ = mnt->ops->list(mnt->fs, path, index, name, name_cap, out_size, out_is_dir);
+        fs_leave(mnt);
+        return r_;
+    }
 }
 
 /* ---- what happened, for whoever listens (docs/abi/ L4 step 6) ------------------- */
@@ -171,7 +217,9 @@ int vibeos_fs_unlink(vibeos_fsmount_t *mnt, const char *path) {
         return -1;
     }
     had = fs_peek(mnt, path, &n);
+    fs_enter(mnt);
     r = mnt->ops->unlink(mnt->fs, path);
+    fs_leave(mnt);
     if (r == 0 && had) {
         fs_notify_gone(mnt, path, &n);
     }
@@ -184,7 +232,9 @@ int vibeos_fs_mkdir(vibeos_fsmount_t *mnt, const char *path) {
     if (!vibeos_fs_is_mounted(mnt) || !path || !mnt->ops->mkdir) {
         return -1;
     }
+    fs_enter(mnt);
     r = mnt->ops->mkdir(mnt->fs, path);
+    fs_leave(mnt);
     if (r == 0) {
         fs_notify_made(mnt, path);
     }
@@ -212,7 +262,14 @@ long vibeos_fs_write_at(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node,
     if (!mnt->ops->write_at) {
         return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
     }
-    return mnt->ops->write_at(mnt->fs, node, offset, buf, len);
+    {
+        long r_;
+
+        fs_enter(mnt);
+        r_ = mnt->ops->write_at(mnt->fs, node, offset, buf, len);
+        fs_leave(mnt);
+        return r_;
+    }
 }
 
 int vibeos_fs_truncate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint64_t size) {
@@ -222,7 +279,14 @@ int vibeos_fs_truncate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint
     if (!mnt->ops->truncate) {
         return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
     }
-    return mnt->ops->truncate(mnt->fs, node, size);
+    {
+        int r_;
+
+        fs_enter(mnt);
+        r_ = mnt->ops->truncate(mnt->fs, node, size);
+        fs_leave(mnt);
+        return r_;
+    }
 }
 
 int vibeos_fs_share_page(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint64_t offset,
@@ -233,7 +297,14 @@ int vibeos_fs_share_page(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, ui
     if (!mnt->ops->share_page) {
         return -VIBEOS_ENODEV;
     }
-    return mnt->ops->share_page(mnt->fs, node, offset, page);
+    {
+        int r_;
+
+        fs_enter(mnt);
+        r_ = mnt->ops->share_page(mnt->fs, node, offset, page);
+        fs_leave(mnt);
+        return r_;
+    }
 }
 
 int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
@@ -247,7 +318,9 @@ int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
         return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
     }
     fs_node_clear(out);
+    fs_enter(mnt);
     r = mnt->ops->create(mnt->fs, path, mode, out);
+    fs_leave(mnt);
     if (r == 0) {
         fs_node_complete(out);
         vibeos_fs_notify(mnt, path, out->id, VIBEOS_FSN_CREATE, 0, out->is_dir);
@@ -265,7 +338,9 @@ int vibeos_fs_mknod(vibeos_fsmount_t *mnt, const char *path, uint32_t mode, vibe
         return vibeos_fs_writable(mnt) ? -VIBEOS_EPERM : -VIBEOS_EROFS;
     }
     fs_node_clear(out);
+    fs_enter(mnt);
     r = mnt->ops->mknod(mnt->fs, path, mode, out);
+    fs_leave(mnt);
     if (r == 0) {
         fs_node_complete(out);
         vibeos_fs_notify(mnt, path, out->id, VIBEOS_FSN_CREATE, 0, 0);
@@ -284,7 +359,9 @@ int vibeos_fs_rmdir(vibeos_fsmount_t *mnt, const char *path) {
         return fs_missing(mnt);
     }
     had = fs_peek(mnt, path, &n);
+    fs_enter(mnt);
     r = mnt->ops->rmdir(mnt->fs, path);
+    fs_leave(mnt);
     if (r == 0 && had) {
         fs_notify_gone(mnt, path, &n);
     }
@@ -305,7 +382,9 @@ int vibeos_fs_rename(vibeos_fsmount_t *mnt, const char *from, const char *to, ui
     }
     had = fs_peek(mnt, from, &n);
     had_old = fs_peek(mnt, to, &old);
+    fs_enter(mnt);
     r = mnt->ops->rename(mnt->fs, from, to, flags);
+    fs_leave(mnt);
     if (r == 0 && had) {
         uint32_t cookie = __atomic_add_fetch(&g_notify_cookie, 1u, __ATOMIC_ACQ_REL);
 
@@ -331,7 +410,9 @@ int vibeos_fs_link(vibeos_fsmount_t *mnt, const char *existing, const char *path
     if (!mnt->ops->link) {
         return fs_missing(mnt);
     }
+    fs_enter(mnt);
     r = mnt->ops->link(mnt->fs, existing, path);
+    fs_leave(mnt);
     if (r == 0 && vibeos_fs_notify_active()) {
         vibeos_fs_node_t n;
 
@@ -352,7 +433,9 @@ int vibeos_fs_symlink(vibeos_fsmount_t *mnt, const char *target, const char *pat
     if (!mnt->ops->symlink) {
         return fs_missing(mnt);
     }
+    fs_enter(mnt);
     r = mnt->ops->symlink(mnt->fs, target, path);
+    fs_leave(mnt);
     if (r == 0) {
         fs_notify_made(mnt, path);
     }
@@ -363,7 +446,17 @@ long vibeos_fs_readlink(vibeos_fsmount_t *mnt, const char *path, char *buf, uint
     if (!vibeos_fs_is_mounted(mnt) || !path || !buf) {
         return -VIBEOS_EINVAL;
     }
-    return mnt->ops->readlink ? mnt->ops->readlink(mnt->fs, path, buf, cap) : -VIBEOS_EINVAL;
+    if (!mnt->ops->readlink) {
+        return -VIBEOS_EINVAL;
+    }
+    {
+        long r;
+
+        fs_enter(mnt);
+        r = mnt->ops->readlink(mnt->fs, path, buf, cap);
+        fs_leave(mnt);
+        return r;
+    }
 }
 
 int vibeos_fs_setattr(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_attr_t *attr) {
@@ -376,7 +469,9 @@ int vibeos_fs_setattr(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_a
     if (!mnt->ops->setattr) {
         return fs_missing(mnt);
     }
+    fs_enter(mnt);
     r = mnt->ops->setattr(mnt->fs, path, attr);
+    fs_leave(mnt);
     if (r == 0 && fs_peek(mnt, path, &n)) {
         vibeos_fs_notify(mnt, path, n.id, VIBEOS_FSN_ATTRIB, 0, n.is_dir);
     }
@@ -393,7 +488,9 @@ int vibeos_fs_getattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, vibeo
         return -VIBEOS_ENOSYS;
     }
     fs_node_clear(out);
+    fs_enter(mnt);
     r = mnt->ops->getattr(mnt->fs, node, out);
+    fs_leave(mnt);
     if (r == 0) {
         fs_node_complete(out);
     }
@@ -410,7 +507,9 @@ int vibeos_fs_setattr_node(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, 
     if (!mnt->ops->setattr_node) {
         return -VIBEOS_ENOSYS;
     }
+    fs_enter(mnt);
     r = mnt->ops->setattr_node(mnt->fs, node, attr);
+    fs_leave(mnt);
     if (r == 0 && path) {
         vibeos_fs_notify(mnt, path, node->id, VIBEOS_FSN_ATTRIB, 0, node->is_dir);
     }
@@ -430,14 +529,34 @@ int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out) {
     out->block_size = 512u;
     out->name_max = 255u;
     out->read_only = !vibeos_fs_writable(mnt);
-    return mnt->ops->statfs ? mnt->ops->statfs(mnt->fs, out) : 0;
+    if (!mnt->ops->statfs) {
+        return 0;
+    }
+    {
+        int r;
+
+        fs_enter(mnt);
+        r = mnt->ops->statfs(mnt->fs, out);
+        fs_leave(mnt);
+        return r;
+    }
 }
 
 int vibeos_fs_sync(vibeos_fsmount_t *mnt) {
     if (!vibeos_fs_is_mounted(mnt)) {
         return -VIBEOS_EINVAL;
     }
-    return mnt->ops->sync ? mnt->ops->sync(mnt->fs) : 0;
+    if (!mnt->ops->sync) {
+        return 0;
+    }
+    {
+        int r;
+
+        fs_enter(mnt);
+        r = mnt->ops->sync(mnt->fs);
+        fs_leave(mnt);
+        return r;
+    }
 }
 
 static uint64_t (*g_now_ns)(void);
@@ -458,7 +577,9 @@ long vibeos_fs_read_file(vibeos_fsmount_t *mnt, const char *path,
     if (!vibeos_fs_is_mounted(mnt) || !path || !buf) {
         return -1;
     }
-    if (mnt->ops->lookup(mnt->fs, path, &node) != 0) {
+    /* Through the wrappers, so a serialised driver is entered with its lock;
+     * one lock per call, not across the whole file. */
+    if (vibeos_fs_lookup(mnt, path, &node) != 0) {
         return -1;
     }
     if (node.is_dir || node.size > (uint64_t)cap) {
@@ -470,8 +591,7 @@ long vibeos_fs_read_file(vibeos_fsmount_t *mnt, const char *path,
         if (want > 0xFFFFFFFFull) {
             want = 0xFFFFFFFFull;
         }
-        got = mnt->ops->read_at(mnt->fs, &node, done, (uint8_t *)buf + done,
-                                (uint32_t)want);
+        got = vibeos_fs_read_at(mnt, &node, done, (uint8_t *)buf + done, (uint32_t)want);
         if (got <= 0) {
             /* Short of the declared size is a failure, not a smaller file.
              * Returning what was copied here is precisely how a truncated

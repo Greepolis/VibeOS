@@ -179,6 +179,13 @@ typedef struct {
      * one that keeps it in clusters on a disk has no page to give, and a
      * mapping of its files is private or refused. */
     int (*share_page)(void *fs, const vibeos_fs_node_t *node, uint64_t offset, void **page);
+
+    /* Set by a driver that wants the VFS to serialise it: every call into it
+     * is made holding its mount's lock, so a driver with shared state needs
+     * no lock of its own. Not for a driver whose calls can wait - a device's
+     * read that waits for input would hold the volume meanwhile - nor needed
+     * by one that locks itself. */
+    int serialize;
 } vibeos_fs_ops_t;
 
 typedef struct {
@@ -186,6 +193,7 @@ typedef struct {
     void *fs;             /* driver state, passed back to every operation */
     const char *type;     /* "fat", "ext2", ... - for reporting, not dispatch */
     int mounted;
+    volatile uint32_t lock_word;   /* the mount's lock, when its ops ask to be serialised */
 } vibeos_fsmount_t;
 
 /* There is one volume. A mount table with paths belongs with partition support
@@ -332,6 +340,11 @@ uint64_t vibeos_fs_now_ns(void);
  * gate asserts is zero: a lock that is configured by nobody is caught rather
  * than trusted. */
 void vibeos_fs_set_lock(void (*lock)(void), void (*unlock)(void));
+
+/* The architecture's lock for one mount's word, for drivers that ask to be
+ * serialised (vibeos_fs_ops_t.serialize). With none registered - the host
+ * tests, one thread - calls run unlocked. */
+void vibeos_fs_set_mount_lock(void (*lock)(volatile uint32_t *word), void (*unlock)(volatile uint32_t *word));
 
 /* Attach a mounted volume at `path`. `path` must start with '/'.
  *

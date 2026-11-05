@@ -1625,6 +1625,21 @@ static void hw_fat_unlock(void) {
     __sync_lock_release(&g_fat_lock);
 }
 
+/* A mount's lock, for the drivers that ask the VFS to serialise them
+ * (vibeos_fs_ops_t.serialize): the same spin, on the mount's own word, so two
+ * volumes are entered at once. */
+static void hw_vfs_mount_lock(volatile uint32_t *word) {
+    while (__sync_lock_test_and_set(word, 1u)) {
+        while (*word) {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+}
+
+static void hw_vfs_mount_unlock(volatile uint32_t *word) {
+    __sync_lock_release(word);
+}
+
 /* One line per mounted volume, bracketed: six console calls are six critical
  * sections otherwise. */
 static void hw_fat_mounted(int is_fat32, uint32_t part_lba, uint32_t data_lba) {
@@ -1938,6 +1953,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
      * So each adapter is tried until one carries a mountable volume. The cost
      * is one sector read per rejected disk, once. */
     vibeos_fat_set_lock(hw_fat_lock, hw_fat_unlock);
+    vibeos_fs_set_mount_lock(hw_vfs_mount_lock, hw_vfs_mount_unlock);
     vibeos_fat_set_mount_hook(hw_fat_mounted);
     vibeos_fat_set_boot_device(vibeos_x86_64_blk_read, vibeos_x86_64_blk_write,
                                vibeos_x86_64_blk_read_many);

@@ -1,0 +1,20 @@
+# The VFS's per-mount lock for drivers that ask to be serialised
+# (vibeos_fs_ops_t.serialize), proved by test_vfs_serializes in
+# tests/kernel/kernel_tests.c with a driver that checks the lock in every
+# operation.
+#
+# Target source: kernel/fs/vfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/fs/vfs.c scripts/dev/cases/vfs-lock.txt
+
+### a read is made without the mount's lock
+--- old
+        fs_enter(mnt);
+        r_ = mnt->ops->read_at(mnt->fs, node, offset, buf, len);
++++ new
+        r_ = mnt->ops->read_at(mnt->fs, node, offset, buf, len);
+
+### every driver is locked, whether it asked or not
+--- old
+    if (mnt->ops->serialize && g_mlock) {
++++ new
+    if (g_mlock) {
