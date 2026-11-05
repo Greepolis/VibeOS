@@ -17,8 +17,8 @@ is the argument for a check rather than a ninth fix.
 
 ## The rule
 
-In every .c file under kernel/abi/ - the personalities and the file types they
-share - every conversion of an integer to a pointer - a cast to
+In every .c file under kernel/ but the architecture's - the personalities, the
+file types they share, and every driver a program can reach - every conversion of an integer to a pointer - a cast to
 a pointer type applied to `(uintptr_t)...` - is on a line that hands it straight
 to one of the calls that copy fault-safely:
 
@@ -46,6 +46,12 @@ read()'s user buffer to the filesystem went NOT RED when it was next run, which
 is how this was found. A check scoped by directory follows the code only if
 somebody moves the scope with it.
 
+The second time was a contribution: a DRM driver under kernel/drm/ that a
+program reaches through ioctl, outside the directory this looked in and so
+outside its sight (external PR #165, 2026-11-05). It looks at the whole of
+kernel/ now, but for kernel/arch/, whose casts are MMIO and the identity map:
+the scope is no longer a directory a file can be put beside.
+
 Usage: check-user-access.py [--list]
 """
 
@@ -54,7 +60,8 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-AREA = os.path.join(ROOT, "kernel", "abi")
+AREA = os.path.join(ROOT, "kernel")
+SKIP = os.path.join(ROOT, "kernel", "arch")
 
 CAST = re.compile(r"\(\s*(?:const\s+)?(?:volatile\s+)?[A-Za-z_][A-Za-z0-9_ ]*\*+\s*\)\s*\(uintptr_t\)")
 SAFE = ("vibeos_uaccess_copy(", "hw_copy_user_string(", "vibeos_pipe_read(",
@@ -65,6 +72,12 @@ EXCEPT = {
     "mm.c": [("(uintptr_t)phys",
               "pageinfo reads the first word of a physical frame through the "
               "kernel's identity map - kernel memory, not the caller's")],
+    "gui.c": [("(uintptr_t)fb_base",
+               "the framebuffer's physical base, from the bootloader's boot "
+               "information - device memory, not the caller's")],
+    "blkdev.c": [("req.buf = (void *)(uintptr_t)buf;",
+                  "a kernel buffer's const taken away so read and write share "
+                  "one request - the caller's own kernel memory")],
 }
 
 
@@ -98,6 +111,8 @@ def main():
     seen = 0
     sources = []
     for base, _, names in os.walk(AREA):
+        if base == SKIP or base.startswith(SKIP + os.sep):
+            continue
         sources += [os.path.join(base, n) for n in names if n.endswith(".c")]
     for path in sorted(sources):
         name = os.path.basename(path)

@@ -8,6 +8,7 @@
 
 #include "vibeos/account.h"
 
+/* quota: none - one entry per task slot, which the task table bounds. */
 static vibeos_task_account_t g_task[VIBEOS_ACCOUNT_MAX_SLOTS];
 static uint64_t g_idle[VIBEOS_ACCOUNT_MAX_CPUS];
 static uint64_t g_seen;          /* ticks this layer was told about */

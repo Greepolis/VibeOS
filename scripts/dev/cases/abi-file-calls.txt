@@ -93,3 +93,9 @@ static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t 
     if ((uint32_t)flags & ~known) {
 +++ new
     if (0) {
+
+### a file type's ioctl gets an encoded request's argument unjudged (PR #165)
+--- old
+                if (dir != 0u && size != 0u && !linux_ioctl_arg(arg, size, (dir & 2u) != 0u)) {
++++ new
+                if (0 && dir != 0u && size != 0u && !linux_ioctl_arg(arg, size, (dir & 2u) != 0u)) {

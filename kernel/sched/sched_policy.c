@@ -20,6 +20,7 @@ typedef struct {
     uint8_t rt_prio;        /* REALTIME's order inside the class; 0 elsewhere */
 } policy_task_t;
 
+/* quota: none - one entry per task slot, which the task table bounds. */
 static policy_task_t g_task[VIBEOS_SCHED_MAX_SLOTS];
 static uint64_t g_charged;
 static uint32_t g_slots;

@@ -2165,8 +2165,25 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
             break;
         default:
             r = f->ops == &vibeos_fops_console ? linux_tty_ioctl(r32, arg) : 1;
-            if (r == 1) {
-                r = f->ops->ioctl ? f->ops->ioctl(f, req, arg) : -VIBEOS_ENOTTY;
+            if (r == 1 && f->ops->ioctl) {
+                /* A request built with _IOR, _IOW or _IOWR says in its own
+                 * number which way its argument goes and how large it is, and
+                 * the argument is judged here before the file type sees it.
+                 * A type's ioctl was handed the raw pointer, and a driver that
+                 * copied through it wrote wherever it pointed - kernel memory
+                 * included: vibeos_uaccess_copy survives a fault and asks no
+                 * permission (M-082; external PR #165's DRM driver). Pointers
+                 * inside the argument's structure are still the type's to
+                 * judge. */
+                const uint32_t dir = r32 >> 30, size = (r32 >> 16) & 0x3FFFu;
+
+                if (dir != 0u && size != 0u && !linux_ioctl_arg(arg, size, (dir & 2u) != 0u)) {
+                    r = -VIBEOS_EFAULT;
+                } else {
+                    r = f->ops->ioctl(f, req, arg);
+                }
+            } else if (r == 1) {
+                r = -VIBEOS_ENOTTY;
             }
             break;
     }

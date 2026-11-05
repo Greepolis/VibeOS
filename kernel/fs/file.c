@@ -6,6 +6,9 @@
 #include "vibeos/filelock.h"
 #include "vibeos/abi_linux.h"   /* the kernel's errno values */
 
+/* quota: RLIMIT_NOFILE descriptions a process, through its descriptor table
+ * (vibeos_fdtable_t.limit): a description exists only while a descriptor or a
+ * call holds it. */
 static vibeos_file_t g_files[VIBEOS_FILE_MAX];
 /* Where the next search starts: past the last slot handed out. From zero
  * every time, the long-lived descriptions at the front of the table - a

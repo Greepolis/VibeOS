@@ -12,7 +12,8 @@ APC table and the thread slots in that state, the family M-110 and M-127
 had been before them (M-134). The reviewer asked for the rule to be a gate
 rather than a sentence: a table declares its quota where it is defined.
 
-A table is a non-const file-scope array under kernel/abi/ whose elements are
+A table is a non-const file-scope array under kernel/, but for the
+architecture's, whose elements are
 a type of the file's own (`..._t`). Its declaration, or the comment block right
 above it, says `quota:` - how much one process, thread or user may hold, and
 where that is enforced - or `quota: none - <why>` when sharing it out is not
@@ -29,16 +30,19 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TOP = os.path.join(ROOT, "kernel", "abi")
+TOP = os.path.join(ROOT, "kernel")
+SKIP = os.path.join(ROOT, "kernel", "arch")
 TABLE = re.compile(r"^static\s+(?!const\b)(?:volatile\s+)?([a-z_0-9]+_t)\s+\**g_[a-z0-9_]+\s*\[")
 
 # The baseline may only go down.
-BASELINE = 9
+BASELINE = 11
 
 
 def tables():
     found = []
     for d, _, files in os.walk(TOP):
+        if d == SKIP or d.startswith(SKIP + os.sep):
+            continue
         for name in sorted(files):
             if not name.endswith(".c"):
                 continue

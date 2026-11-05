@@ -27,6 +27,7 @@
  * image's was refused, reported by the gate as io_register_refused=1. */
 #define BLK_MAX_DEVICES 12u
 
+/* quota: none - devices drivers register; no program adds one. */
 static vibeos_blk_driver_t g_dev[BLK_MAX_DEVICES];
 static uint32_t g_count;
 

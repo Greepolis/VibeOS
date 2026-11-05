@@ -6,6 +6,7 @@
 static void (*g_lock)(void);
 static void (*g_unlock)(void);
 
+/* quota: none - a ring that keeps the last records and overwrites the oldest. */
 static vibeos_crash_t g_ring[VIBEOS_CRASH_RECORDS];
 static uint32_t g_next;
 static uint64_t g_count;

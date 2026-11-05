@@ -105,6 +105,7 @@ typedef struct {
  */
 #define FAT_MAX_VOLUMES 4u
 
+/* quota: none - volumes the kernel mounts; no program adds one. */
 static fat_fs_t g_volumes[FAT_MAX_VOLUMES];
 static uint32_t g_volume_count;
 static fat_fs_t *g_fat_cur = &g_volumes[0];
@@ -161,6 +162,7 @@ static void fat_select(void *vol) {
 #define FAT_CACHE_SLOTS 64u
 
 static uint8_t g_bc_data[FAT_CACHE_SLOTS][VIBEOS_BLOCK_SIZE];
+/* quota: none - a cache: a slot is reused, never held for a program. */
 static vibeos_block_slot_t g_bc_slots[FAT_CACHE_SLOTS];
 static vibeos_blockdev_t g_bc_dev;
 static vibeos_blockcache_t g_bc;

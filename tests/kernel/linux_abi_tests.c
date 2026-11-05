@@ -6719,6 +6719,22 @@ static uint32_t mode_of(const char *path) {
     return tmp_stat(path, 1, &st) == 0 ? (st.st_mode & 07777u) : ~0u;
 }
 
+/* An ioctl whose number encodes a size has its argument judged before the
+ * file type sees it (external PR #165): a driver's ioctl was handed the raw
+ * pointer. A request the console does not know, _IOWR('d', 0x7f, 16): with a
+ * kernel address it is refused before it reaches the console, with a buffer
+ * of the program's it reaches it and is ENOTTY there. */
+static void t_ioctl_judged(void) {
+    static uint8_t not_users[64];
+    const uint64_t req = (3ull << 30) | (16ull << 16) | ((uint64_t)'d' << 8) | 0x7Fu;
+
+    fresh(74);
+    expect(SYS3(16, 0, req, (uint64_t)(uintptr_t)not_users) == -VIBEOS_EFAULT,
+           "an encoded ioctl's argument outside the program is EFAULT before the file type");
+    expect(SYS3(16, 0, req, kf_ualloc(16)) == -VIBEOS_ENOTTY,
+           "and one inside it reaches the type, which does not know the request");
+}
+
 static void t_credentials(void) {
     uint64_t ids = kf_ualloc(16), list = kf_ualloc(16), buf = kf_ualloc(8);
     uint32_t *idp, *lp;
@@ -6906,6 +6922,7 @@ int test_linux_handlers(void) {
     t_description_node();
     t_mlockall_future();
     t_credentials();
+    t_ioctl_judged();
     t_fork_snapshot_and_groups();
     t_procfs();
     t_sa_restart();

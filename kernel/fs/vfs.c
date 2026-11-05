@@ -616,6 +616,7 @@ typedef struct {
     vibeos_fsmount_t *mnt;
 } fs_attach_t;
 
+/* quota: none - the kernel's own mounts; no program attaches one. */
 static fs_attach_t g_mounts[VIBEOS_FS_MOUNTS_MAX];
 static uint32_t g_mount_count;
 static void (*g_lock)(void);

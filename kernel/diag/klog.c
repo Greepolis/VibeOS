@@ -11,6 +11,7 @@ static uint32_t (*g_context)(void);
 
 static vibeos_log_t g_ring;
 
+/* quota: none - sinks the kernel registers at boot; no program adds one. */
 static vibeos_klog_sink_t g_sinks[VIBEOS_KLOG_MAX_SINKS];
 /* Published after the slot is filled, read before a slot is used: a sink added
  * while another core is logging is either seen whole or not at all. */

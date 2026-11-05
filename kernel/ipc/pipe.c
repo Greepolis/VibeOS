@@ -25,6 +25,8 @@ typedef struct {
     uint8_t *page[VIBEOS_PIPE_PAGES];
 } pipe_t;
 
+/* quota: RLIMIT_NOFILE a process, through its descriptors: a pipe exists only
+ * while a descriptor holds one of its ends. */
 static pipe_t g_pipes[VIBEOS_PIPE_MAX];
 static void (*g_lock)(void);
 static void (*g_unlock)(void);
