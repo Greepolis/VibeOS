@@ -22,7 +22,7 @@
 
 ### a receive buffer smaller than mq_msgsize is taken
 --- old
-    r = (int64_t)len < g_mq[s.q].msgsize ? -VIBEOS_EMSGSIZE : 0;   /* before anything waits */
+    r = len < (uint64_t)g_mq[s.q].msgsize ? -VIBEOS_EMSGSIZE : 0;   /* before anything waits */
 +++ new
     r = 0;
 

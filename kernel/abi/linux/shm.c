@@ -159,6 +159,13 @@ static long linux_sys_shmget(uint64_t key, uint64_t size, uint64_t flg) {
     s = linux_ipc_lookup(g_shm_obj, LINUX_IPC_SLOTS, (int32_t)(uint32_t)key);
     if (s >= 0) {
         r = shm_existing(s, size, flg, &c);
+    } else if (shm_pages_in_use() > g_shmall ||
+               (size + 4095u) / 4096u > g_shmall - shm_pages_in_use()) {
+        /* SHMALL asked again, beside the publication and under its lock: the
+         * first look let go of the lock while the file was made, so two
+         * creators could both pass it and together go past the limit (issue
+         * #151). Subtracted, not added, so no sum can wrap. */
+        r = -VIBEOS_ENOSPC;
     } else {
         r = linux_ipc_new(&g_shm_ns, g_shm_obj, LINUX_IPC_SLOTS, (int32_t)(uint32_t)key, flg, &c);
         if (r >= 0) {
