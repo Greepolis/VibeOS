@@ -6735,6 +6735,37 @@ static void t_ioctl_judged(void) {
            "and one inside it reaches the type, which does not know the request");
 }
 
+/* Three credential checks from GitHub issues #171, #180 and #193. */
+static void t_issue_creds(void) {
+    int me, other, thread;
+    uint64_t head = kf_ualloc(8), len = kf_ualloc(8);
+
+    /* #180: a name for what a descriptor holds needs CAP_DAC_READ_SEARCH. */
+    me = fresh(75);
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 1000u;
+    expect(SYS5(265 /* linkat */, 0, ustr(""), (uint64_t)-100, ustr("/linked"), 0x1000u /* AT_EMPTY_PATH */) ==
+               -VIBEOS_ENOENT,
+           "linkat AT_EMPTY_PATH is refused to an unprivileged caller, ENOENT as Linux");
+
+    /* #193: get_robust_list asks the groups too. */
+    other = kf_spawn(76, 76);
+    ks_ps(other)->cred = ks_ps(me)->cred;
+    ks_ps(other)->cred.gid = ks_ps(other)->cred.egid = ks_ps(other)->cred.sgid = 2000u;
+    expect(SYS3(274 /* get_robust_list */, 76, head, len) == -VIBEOS_EPERM,
+           "get_robust_list of a process of the same user and another group is EPERM");
+
+    /* #171: a leader that has ended does not make its process anybody's. */
+    other = kf_spawn(78, 78);
+    thread = kf_spawn(79, 78);
+    ks_id(thread)->tgid = 78u;
+    ks_ps(other)->cred.uid = ks_ps(other)->cred.euid = ks_ps(other)->cred.suid = 2000u;
+    ks_set_ps(thread, ks_ps(other));
+    ks_set_ps(other, 0);
+    (void)ks_set_state(other, VIBEOS_TASK_ZOMBIE, "test");
+    expect(SYS2(62 /* kill */, 78, 9) == -VIBEOS_EPERM,
+           "kill of another user's process whose leader has ended is EPERM");
+}
+
 static void t_credentials(void) {
     uint64_t ids = kf_ualloc(16), list = kf_ualloc(16), buf = kf_ualloc(8);
     uint32_t *idp, *lp;
@@ -6923,6 +6954,7 @@ int test_linux_handlers(void) {
     t_mlockall_future();
     t_credentials();
     t_ioctl_judged();
+    t_issue_creds();
     t_fork_snapshot_and_groups();
     t_procfs();
     t_sa_restart();

@@ -55,10 +55,20 @@ static int linux_signal_permitted(int target, uint32_t sig) {
     {
         vibeos_cred_t mine;
         const vibeos_procstate_t *tp = ks_ps(target);
+        uint32_t i;
 
+        /* A leader that has ended has let its process state go while its
+         * threads still hold it, and a missing state was taken as leave to
+         * signal: anybody could kill such a process (issue #171). Its
+         * credentials are the process's, held by any thread still running. */
+        for (i = 0; !tp && i < ks_slots(); i++) {
+            if (ks_id((int)i)->tgid == ks_id(target)->tgid && ks_ps((int)i)) {
+                tp = ks_ps((int)i);
+            }
+        }
         linux_cred(&mine);
         if (mine.euid == 0u || !tp) {
-            return 1;
+            return 1;   /* no thread left: nothing a signal could reach */
         }
         return mine.uid == tp->cred.uid || mine.uid == tp->cred.suid ||
                mine.euid == tp->cred.uid || mine.euid == tp->cred.suid;

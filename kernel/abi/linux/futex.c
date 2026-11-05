@@ -794,7 +794,10 @@ static long linux_sys_get_robust_list(uint64_t tid, uint64_t uhead, uint64_t ule
             return -VIBEOS_ESRCH;
         }
         them = ps->cred;
-        if (me.euid != 0u && (me.uid != them.euid || me.uid != them.suid || me.uid != them.uid)) {
+        /* Linux's PTRACE_MODE_READ_REALCREDS: the shared rule with the real
+         * ids, user and group. It compared the user's alone and asked nothing
+         * of the groups (issue #193). */
+        if (vibeos_cred_may_inspect(&me, me.uid, me.gid, &them) != 0) {
             return -VIBEOS_EPERM;
         }
     }

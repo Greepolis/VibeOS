@@ -1,0 +1,11 @@
+# A leader that has ended does not make its process anybody's to signal
+# (GitHub issue #171), proved by t_issue_creds in tests/kernel/linux_abi_tests.c.
+#
+# Target source: kernel/abi/linux/sig.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/sig.c scripts/dev/cases/issue-kill-zombie-leader.txt
+
+### a missing process state is leave to signal
+--- old
+        for (i = 0; !tp && i < ks_slots(); i++) {
++++ new
+        for (i = 0; 0 && !tp && i < ks_slots(); i++) {

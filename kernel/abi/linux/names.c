@@ -331,6 +331,18 @@ static long linux_link_at(uint64_t olddir, uint64_t old_uptr, uint64_t newdir, u
     if (flags & ~(uint64_t)(LINUX_AT_SYMLINK_FOLLOW | LINUX_AT_EMPTY_PATH)) {
         return -VIBEOS_EINVAL;
     }
+    /* A name for what a descriptor holds is CAP_DAC_READ_SEARCH's, as Linux
+     * has it: a descriptor passed on, or one opened before a directory above
+     * it was closed off, would otherwise give the file a new name anybody can
+     * reach (issue #180). Linux answers ENOENT. */
+    if ((flags & LINUX_AT_EMPTY_PATH) != 0u) {
+        vibeos_cred_t me;
+
+        linux_cred(&me);
+        if (me.euid != 0u) {
+            return -VIBEOS_ENOENT;
+        }
+    }
     r = linux_walk_at_empty(olddir, old_uptr, flags,
                             (flags & LINUX_AT_SYMLINK_FOLLOW) ? 0u : VIBEOS_PATH_NOFOLLOW, &a);
     if (r != 0) {
