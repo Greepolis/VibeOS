@@ -1,0 +1,12 @@
+# int $0x80 from a 64-bit program is a #GP and SIGSEGV, as on a Linux without
+# IA32 emulation (GitHub issue #145), proved at boot by musl_signal, which the
+# gate reads through its SIG_FAIL lines.
+#
+# Target source: kernel/arch/x86_64/arch_hw.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/issue-int80-boot.txt build-gcc-Release
+
+### the 0x80 gate is ring 3's again
+--- old
+    hw_set_gate_attr(0x80u, (uint64_t)(uintptr_t)vibeos_isr_128, 0x8Eu);
++++ new
+    hw_set_gate_attr(0x80u, (uint64_t)(uintptr_t)vibeos_isr_128, 0xEEu);

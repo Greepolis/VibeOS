@@ -563,7 +563,13 @@ static void hw_load_idt(void) {
         hw_set_gate(i, vibeos_isr_stub_table[i]);
     }
     /* Syscall gate: DPL=3 so ring-3 `int 0x80` is permitted (0xEE). */
-    hw_set_gate_attr(0x80u, (uint64_t)(uintptr_t)vibeos_isr_128, 0xEEu);
+    /* Not ring 3's (DPL 0): a 64-bit program's `int $0x80` is a general
+     * protection fault and SIGSEGV, as on a Linux built without IA32
+     * emulation. It was open to ring 3 and dispatched with the 64-bit
+     * registers, where Linux's int $0x80 is the i386 ABI - another table and
+     * EBX, ECX, EDX, ESI, EDI, EBP - so a 32-bit call ran as some other call
+     * (issue #145). Every program here enters through `syscall`. */
+    hw_set_gate_attr(0x80u, (uint64_t)(uintptr_t)vibeos_isr_128, 0x8Eu);
     /* Local-APIC spurious interrupt: must be handled, and must not be EOI'd. */
     hw_set_gate(0xFFu, (uint64_t)(uintptr_t)vibeos_isr_255);
     /* TLB shootdown. See hw_tlb_shootdown for why a kernel with more than one

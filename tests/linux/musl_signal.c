@@ -103,6 +103,19 @@ static void on_segv(int sig, siginfo_t *si, void *ctx) {
 
 static volatile int g_info_signo, g_info_code, g_info_pid, g_info_value, g_fx_stale;
 
+/* int $0x80 from a 64-bit process, as a Linux built without IA32 emulation
+ * answers it: a general protection fault, SIGSEGV (issue #145). The handler
+ * steps over the two-byte instruction. */
+static volatile int g_int80_signo;
+
+static void on_int80(int sig, siginfo_t *si, void *ctx) {
+    ucontext_t *uc = (ucontext_t *)ctx;
+
+    (void)si;
+    g_int80_signo = sig;
+    uc->uc_mcontext.gregs[REG_RIP] += 2;
+}
+
 /* The RLIMIT_STACK child's SIGSEGV, taken on the alternate stack: the fault is
  * the proof, and a handler keeps it from being a third ring-3 kill the boot
  * gate would have to excuse. */
@@ -167,6 +180,20 @@ static int l2_checks(void) {
     if (fault_try((void *)0x48) != 1 || g_seg_addr != 0x48) {
         printf("SIG_FAIL: a second fault was not handled the same way\n");
         ok = 0;
+    }
+    /* getpid through int $0x80 must not run: the vector is not a 64-bit
+     * process's to use, and was read with the 64-bit registers (#145). */
+    sa.sa_sigaction = on_int80;
+    sa.sa_flags = SA_SIGINFO;
+    if (sigaction(SIGSEGV, &sa, NULL) == 0) {
+        long r = 39;   /* getpid's x86-64 number */
+
+        g_int80_signo = 0;
+        __asm__ __volatile__("int $0x80" : "+a"(r) : : "rcx", "r11", "memory");
+        if (g_int80_signo != SIGSEGV) {
+            printf("SIG_FAIL: int $0x80 ran as a syscall (got %ld, signal %d)\n", r, g_int80_signo);
+            ok = 0;
+        }
     }
     signal(SIGSEGV, SIG_DFL);
 
