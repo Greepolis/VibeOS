@@ -251,6 +251,23 @@ static const char *check_linux_abi(void) {
     if (un[4 * 65] != 'x' || un[4 * 65 + 1] != '8' || un[4 * 65 + 2] != '6') {
         return abi_uname;   /* machine field must be x86_64 */
     }
+    /* Again with the direction flag set, as any program may set it: the
+     * kernel's copy ran backwards from the first byte, so uname came back with
+     * its first letter and wrote the rest below the buffer (issue #183). */
+    {
+        int i;
+        long r;
+
+        for (i = 0; i < 8; i++) {
+            un[i] = 0;
+        }
+        __asm__ __volatile__("std" ::: "memory");
+        r = user_syscall3(SYS_uname, (long)(unsigned long)un, 0, 0);
+        __asm__ __volatile__("cld" ::: "memory");
+        if (r != 0 || un[0] != 'L' || un[1] != 'i' || un[4] != 'x' || un[5] != 0) {
+            return abi_uname;
+        }
+    }
 
     if (user_syscall3(SYS_clock_gettime, 1 /*CLOCK_MONOTONIC*/,
                       (long)(unsigned long)ts, 0) != 0) {

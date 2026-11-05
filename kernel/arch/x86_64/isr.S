@@ -110,6 +110,10 @@ vibeos_isr_\num:
     ISR_NOERR 255  /* 0xFF local-APIC spurious    */
 
 vibeos_isr_common:
+    /* An interrupt or exception from ring 3 keeps the program's DF, and the C
+     * below is compiled for DF clear (issue #183): cleared first. Nothing
+     * before this line is a string instruction. */
+    cld
     /* Save general-purpose registers. Order matters: the last one pushed
      * (r15) is at the lowest address == first field of the frame struct. */
     push %rax

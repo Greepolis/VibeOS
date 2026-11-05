@@ -1176,7 +1176,13 @@ void hw_enable_syscall(void) {
     hw_wrmsr(MSR_EFER, hw_rdmsr(MSR_EFER) | 1ull | (1ull << 11));     /* SCE | NXE */
     hw_wrmsr(MSR_STAR, ((uint64_t)0x10 << 48) | ((uint64_t)0x08 << 32));
     hw_wrmsr(MSR_LSTAR, (uint64_t)(uintptr_t)vibeos_x86_64_syscall_entry);
-    hw_wrmsr(MSR_SFMASK, 0x200ull);                                /* clear IF on entry */
+    /* The flags `syscall` clears: IF, and every one the program could set to
+     * change what the kernel's first instructions do - Linux's own mask. It was
+     * IF alone: a program's DF ran the kernel's copies backwards over memory
+     * before their buffers (issue #183), and its TF raised #DB on the
+     * program's stack before the entry had switched off it (#184). TF 0x100,
+     * IF 0x200, DF 0x400, IOPL 0x3000, NT 0x4000, AC 0x40000. */
+    hw_wrmsr(MSR_SFMASK, 0x47700ull);
     if (hw_this_cpu()->index == 0u) {
         vibeos_x86_64_serial_puts("[HW] syscall/sysret enabled (LSTAR set)\n");
     }

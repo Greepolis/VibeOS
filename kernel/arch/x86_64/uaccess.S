@@ -26,6 +26,9 @@
     .globl vibeos_uaccess_copy
     .type vibeos_uaccess_copy, @function
 vibeos_uaccess_copy:
+    /* Forwards, whatever the caller's DF: a program's DF reaching this copy
+     * wrote before the kernel's buffer (issue #183). */
+    cld
     movq %rdx, %rcx
     .globl vibeos_uaccess_copy_begin
 vibeos_uaccess_copy_begin:
