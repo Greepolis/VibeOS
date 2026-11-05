@@ -559,7 +559,10 @@ static long linux_sys_mq_timedsend(uint64_t fd, uint64_t uptr, uint64_t len, uin
     }
     s.q = mq_of(f);
     linux_ipc_lock();
-    r = (int64_t)len > g_mq[s.q].msgsize ? -VIBEOS_EMSGSIZE : 0;
+    /* Unsigned, as Linux compares a size_t: narrowed to int64_t a length past
+     * INT64_MAX came out negative and passed (issue #152). msgsize is positive,
+     * checked when the queue was made. */
+    r = len > (uint64_t)g_mq[s.q].msgsize ? -VIBEOS_EMSGSIZE : 0;
     linux_ipc_unlock();
     if (r == 0 && len != 0u && !linux_user_ok(uptr, len, 0)) {
         r = -VIBEOS_EFAULT;
@@ -667,7 +670,7 @@ static long linux_sys_mq_timedreceive(uint64_t fd, uint64_t uptr, uint64_t len, 
     }
     s.q = mq_of(f);
     linux_ipc_lock();
-    r = (int64_t)len < g_mq[s.q].msgsize ? -VIBEOS_EMSGSIZE : 0;   /* before anything waits */
+    r = len < (uint64_t)g_mq[s.q].msgsize ? -VIBEOS_EMSGSIZE : 0;   /* before anything waits */
     linux_ipc_unlock();
     if (r != 0) {
         vibeos_file_put(f);

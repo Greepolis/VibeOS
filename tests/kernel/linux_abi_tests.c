@@ -6735,6 +6735,22 @@ static void t_ioctl_judged(void) {
            "and one inside it reaches the type, which does not know the request");
 }
 
+/* A message length is a size_t, compared as one (issue #152): narrowed to
+ * int64_t, UINT64_MAX was -1 and passed the "longer than the queue's messages"
+ * test. */
+static void t_mq_len_unsigned(void) {
+    long q;
+    uint64_t buf = kf_ualloc(64);
+
+    fresh(81);
+    q = SYS4(240 /* mq_open */, ustr("lenq"), 0x42u /* O_CREAT | O_RDWR */, 0600u, 0);
+    expect(q >= 0, "a POSIX queue");
+    expect(sys(242 /* mq_timedsend */, (uint64_t)q, buf, ~0ull, 0, 0, 0, 0) == -VIBEOS_EMSGSIZE,
+           "a send of UINT64_MAX bytes is EMSGSIZE");
+    expect(sys(242, (uint64_t)q, buf, 1ull << 63, 0, 0, 0, 0) == -VIBEOS_EMSGSIZE,
+           "and one of 2^63, which int64_t made negative, too");
+}
+
 /* Three credential checks from GitHub issues #171, #180 and #193. */
 static void t_issue_creds(void) {
     int me, other, thread;
@@ -6955,6 +6971,7 @@ int test_linux_handlers(void) {
     t_credentials();
     t_ioctl_judged();
     t_issue_creds();
+    t_mq_len_unsigned();
     t_fork_snapshot_and_groups();
     t_procfs();
     t_sa_restart();
