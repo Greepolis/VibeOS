@@ -324,7 +324,10 @@ static int vblk_dev_init(void) {
 
     vb_outw(g_io_base + VIRTIO_QUEUE_SELECT, 0);
     g_qsz = vb_inw(g_io_base + VIRTIO_QUEUE_SIZE);
-    if (g_qsz == 0 || g_qsz > 256u) {
+    /* A request is a chain of three descriptors - header, data, status - so a
+     * queue shorter than that put the third past the table, onto the
+     * available ring the device reads (issue #185). */
+    if (g_qsz < 3u || g_qsz > 256u) {
         vibeos_x86_64_serial_puts("[VIRTIO] unsupported queue size\n");
         return -1;
     }
@@ -471,6 +474,25 @@ static int vblk_dev_init(void) {
  * sector. */
 #define VIRTIO_BLK_MAX_SECTORS 128u
 
+/* The completion of the one request in flight, taken off the used ring. The
+ * index moving said only that the device added something: it must have added
+ * exactly one element, and that element must name chain 0, the only chain this
+ * driver submits. Anything else is not this request's completion, and the
+ * status byte and bounce buffer are not its result (issue #187). The index is
+ * taken whatever it says, so a bad completion is not consumed again by the
+ * next request. Returns 1 for a completion of this request. */
+static int vblk_take_completion(void) {
+    uint16_t idx = g_used->idx;
+    uint16_t slot = (uint16_t)(g_last_used % g_qsz);
+    int ok = (uint16_t)(idx - g_last_used) == 1u && g_used->ring[slot].id == 0u;
+
+    g_last_used = idx;
+    if (!ok) {
+        vibeos_x86_64_serial_puts("[VIRTIO] completion for no request in flight\n");
+    }
+    return ok;
+}
+
 static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int write) {
     uint16_t head;
 
@@ -553,11 +575,10 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
             g_poll_completions++;
         }
     }
-    g_last_used = g_used->idx;
-    (void)vb_inb(g_io_base + VIRTIO_ISR); /* ack */
-
     {
-        int rc = (g_status == 0) ? 0 : -1;
+        int rc = vblk_take_completion() && g_status == 0 ? 0 : -1;
+
+        (void)vb_inb(g_io_base + VIRTIO_ISR); /* ack */
         blk_unlock();
         return rc;
     }
@@ -675,10 +696,10 @@ static int vblk_dev_barrier(void) {
             __asm__ __volatile__("pause" ::: "memory");
         }
     }
-    g_last_used = g_used->idx;
-    (void)vb_inb(g_io_base + VIRTIO_ISR);
     {
-        int rc = (g_status == 0) ? 0 : -1;
+        int rc = vblk_take_completion() && g_status == 0 ? 0 : -1;
+
+        (void)vb_inb(g_io_base + VIRTIO_ISR);
         blk_unlock();
         return rc;
     }
