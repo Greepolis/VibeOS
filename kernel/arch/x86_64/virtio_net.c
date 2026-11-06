@@ -365,8 +365,23 @@ static int vnet_send(const void *frame, uint32_t len) {
         }
         __asm__ __volatile__("pause" ::: "memory");
     }
-    g_tx.last_used = g_tx.used->idx;
-    (void)vn_inb(g_net_io + VIRTIO_ISR);
+    /* One frame is in flight, chain 0: the device must have added exactly one
+     * element and it must name that chain. A completion for anything else is
+     * not this frame's, and the buffer may still be the device's (issue #186).
+     * The index is taken either way, so the next frame does not wait on it. */
+    {
+        uint16_t idx = g_tx.used->idx;
+        uint16_t at = (uint16_t)(g_tx.last_used % g_tx.size);
+        int ok = (uint16_t)(idx - g_tx.last_used) == 1u && g_tx.used->ring[at].id == 0u;
+
+        g_tx.last_used = idx;
+        (void)vn_inb(g_net_io + VIRTIO_ISR);
+        if (!ok) {
+            tx_unlock();
+            vibeos_x86_64_serial_puts("[VNET] transmit completion for no frame in flight\n");
+            return -1;
+        }
+    }
     g_tx_frames++;
     tx_unlock();
     return 0;
@@ -385,13 +400,30 @@ static int vnet_recv(void *out, uint32_t cap) {
     if (g_rx.used->idx == g_rx.last_used) {
         return 0;
     }
+    /* No more can be waiting than were published. An index further ahead is
+     * not frames, it is a device to stop believing: the timer's pump would
+     * have walked up to 65535 elements of it (issue #186). Dropped whole. */
+    if ((uint16_t)(g_rx.used->idx - g_rx.last_used) >
+        (g_rx.size < VNET_RX_BUFS ? g_rx.size : VNET_RX_BUFS)) {
+        g_rx.last_used = g_rx.used->idx;
+        vibeos_x86_64_serial_puts("[VNET] receive ring ran past what was published\n");
+        return 0;
+    }
     slot = (uint16_t)(g_rx.last_used % g_rx.size);
     e = &g_rx.used->ring[slot];
+    /* Judged as the device wrote it, 32 bits, and against both the buffers
+     * and the queue: 0x10000 narrowed first aliased buffer 0, and an id under
+     * VNET_RX_BUFS but past a short queue republished a descriptor outside
+     * its table. Such an id is not handed back. */
+    if (e->id >= VNET_RX_BUFS || e->id >= g_rx.size) {
+        g_rx.last_used++;
+        return 0;
+    }
     id = (uint16_t)e->id;
     len = e->len;
     g_rx.last_used++;
 
-    if (id >= VNET_RX_BUFS || len <= VNET_HDR) {
+    if (len <= VNET_HDR) {
         len = 0;
     } else {
         len -= VNET_HDR;
@@ -405,11 +437,9 @@ static int vnet_recv(void *out, uint32_t cap) {
     }
 
     /* Hand the buffer straight back to the device. */
-    if (id < VNET_RX_BUFS) {
-        vnet_rx_publish(id);
-        __asm__ __volatile__("sfence" ::: "memory");
-        vn_outw(g_net_io + VIRTIO_QUEUE_NOTIFY, 0);
-    }
+    vnet_rx_publish(id);
+    __asm__ __volatile__("sfence" ::: "memory");
+    vn_outw(g_net_io + VIRTIO_QUEUE_NOTIFY, 0);
     return (int)len;
 }
 
