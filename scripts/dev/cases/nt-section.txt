@@ -146,3 +146,9 @@
             t.prot = (vibeos_prot_t)(t.prot | VIBEOS_PROT_NOWRITE);
 +++ new
             (void)0;
+
+### an execute-only section takes a read-only view (#149)
+--- old
+        return s_read ? 0u : VIBEOS_STATUS_SECTION_PROTECTION;
++++ new
+        return 0u;

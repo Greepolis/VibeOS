@@ -412,7 +412,7 @@ static void t_mutants(void) {
     uint64_t m, other;
     int32_t prev = 7;
     int owned = 0;
-    int a;
+    int a, b;
 
     a = fresh(50);
     expect(create_mutant(&m, oattr("\\BaseNamedObjects\\mu", 0), 1) == ST(VIBEOS_STATUS_SUCCESS),
@@ -430,7 +430,8 @@ static void t_mutants(void) {
            "a wait on a free mutant takes it");
 
     /* Another process, the same name: a different owner. */
-    kf_set_current(kf_spawn(51, 51));
+    b = kf_spawn(51, 51);
+    kf_set_current(b);
     expect(nt(VIBEOS_NT_NR_NtOpenMutant, kf_ualloc(8), VIBEOS_MUTANT_ALL_ACCESS,
               oattr("\\BaseNamedObjects\\mu", 0), 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
            "opened by name from another process");
@@ -442,6 +443,16 @@ static void t_mutants(void) {
            "only the owner releases");
     kf_set_current(a);
     expect(release_mutant(m, &prev) == ST(VIBEOS_STATUS_SUCCESS), "the owner releases it");
+
+    /* #147: the owner ends holding it - the next waiter takes it, abandoned. */
+    expect(wait1(m, 0) == ST(VIBEOS_STATUS_WAIT_0), "taken again by its creator");
+    vibeos_nt_thread_exit(a);
+    kf_set_current(b);
+    expect(wait1(other, 0) == ST(VIBEOS_STATUS_ABANDONED_WAIT_0),
+           "its owner ended: the waiter gets it, told it was abandoned");
+    expect(mutant_count(other, &owned) == 0 && owned == 1, "and owns it");
+    expect(release_mutant(other, &prev) == ST(VIBEOS_STATUS_SUCCESS), "and can release it");
+    kf_set_current(a);
 }
 
 static long create_semaphore(uint64_t *h, int32_t initial, int32_t maximum) {
@@ -743,6 +754,15 @@ static void t_file_information(void) {
                (*(uint32_t *)(b + 32) & ~1u) == 0x20u &&
                (*(uint64_t *)(b + 16) == 0u || *(uint64_t *)(b + 16) >= 116444736000000000ull),
            "FileBasicInformation: an archive file, its write time since 1601");
+    /* #150: -1 and 0 leave a time alone; any other negative time is refused. */
+    memset(b, 0, 40);
+    *(int64_t *)(b + 16) = -1;
+    expect(file_info(1, h, buf, 40, 4, &n) == ST(VIBEOS_STATUS_SUCCESS),
+           "FileBasicInformation: -1 leaves the write time as it is");
+    *(int64_t *)(b + 16) = -2;
+    expect(file_info(1, h, buf, 40, 4, &n) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "and a negative time is not a time");
+    memset(b, 0xEE, 256);
     expect(file_info(0, h, buf, 8, 9, &n) == ST(VIBEOS_STATUS_BUFFER_OVERFLOW) && n == 8u &&
                *(uint32_t *)b == 2u * 13u,
            "FileNameInformation too small: the length, the start, and BUFFER_OVERFLOW");
@@ -954,8 +974,8 @@ static void t_query_directory(void) {
         rest[5] = us;
         rest[6] = 1;
         kf_next_sp(stack_args(rest, 7));
-        expect(nt(VIBEOS_NT_NR_NtQueryDirectoryFile, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
-               "a mask in memory that is not the program's is not read");
+        expect(nt(VIBEOS_NT_NR_NtQueryDirectoryFile, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_ACCESS_VIOLATION),
+               "a mask in memory that is not the program's is not read, and is an access violation, not every name (#162)");
     }
     expect(query_dir(h, buf, 512, 12, 1, "*.TXT", 1, &n) == ST(VIBEOS_STATUS_SUCCESS) && *(uint32_t *)b == 0u &&
                (names[0] = (char)b[12], query_dir(h, buf, 512, 12, 0, 0, 0, &n) == ST(VIBEOS_STATUS_SUCCESS)) &&
@@ -3314,6 +3334,16 @@ static void t_data_sections(void) {
                    sec_map(sr, &br, ~0ull, &zr, VIBEOS_NT_PAGE_READWRITE) ==
                    ST(VIBEOS_STATUS_SECTION_PROTECTION),
                "a writable view of a read-only section, through a handle with every right");
+    }
+    /* #149: an execute-only section has nothing to read. */
+    {
+        uint64_t se = 0, be = 0, ze = 0;
+
+        expect(sec_create(&se, 0, 0x1000u, VIBEOS_NT_PAGE_EXECUTE, 0x08000000u, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS) &&
+                   sec_map(se, &be, ~0ull, &ze, VIBEOS_NT_PAGE_READONLY) ==
+                   ST(VIBEOS_STATUS_SECTION_PROTECTION),
+               "a read-only view of an execute-only section");
     }
     /* A view in two regions - a protection changed on part of it - still goes
      * whole; private memory is no view. */

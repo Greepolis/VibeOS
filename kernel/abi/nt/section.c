@@ -105,12 +105,17 @@ static uint32_t view_allowed(uint32_t section, uint32_t view, uint32_t *need) {
                              VIBEOS_NT_PAGE_EXECUTE_READWRITE | VIBEOS_NT_PAGE_EXECUTE_WRITECOPY)) != 0u;
     const int s_write = (s & (VIBEOS_NT_PAGE_READWRITE | VIBEOS_NT_PAGE_EXECUTE_READWRITE)) != 0u;
     const int s_copy = s_write || (s & (VIBEOS_NT_PAGE_WRITECOPY | VIBEOS_NT_PAGE_EXECUTE_WRITECOPY)) != 0u;
+    /* Every protection but execute-only and no-access lets the section be
+     * read. A read-only view of an execute-only section was granted, which
+     * the section's own protection refuses (issue #149). */
+    const int s_read = (s & ~(VIBEOS_NT_PAGE_EXECUTE | VIBEOS_NT_PAGE_NOACCESS)) != 0u;
 
     *need = NT_SECTION_MAP_READ;
     switch (v) {
     case VIBEOS_NT_PAGE_NOACCESS:
-    case VIBEOS_NT_PAGE_READONLY:
         return 0;
+    case VIBEOS_NT_PAGE_READONLY:
+        return s_read ? 0u : VIBEOS_STATUS_SECTION_PROTECTION;
     case VIBEOS_NT_PAGE_READWRITE:
         *need |= NT_SECTION_MAP_WRITE;
         return s_write ? 0u : VIBEOS_STATUS_SECTION_PROTECTION;

@@ -111,3 +111,9 @@
            (__atomic_load_n(&ks_id(me)->sig_pending, __ATOMIC_ACQUIRE) & ~quiet) != 0u;
 +++ new
            1;
+
+### a thread that ends holding a mutant leaves it owned (#147)
+--- old
+    if (o->u.mu.owner == tid && tid != 0u) {
++++ new
+    if (0) {

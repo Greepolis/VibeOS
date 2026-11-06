@@ -35,6 +35,7 @@ static const hw_personality_t g_hw_nt = {
     vibeos_pe_is_pe,
     hw_pe_map_images,
     hw_pe_start_blocks,
+    vibeos_nt_thread_exit,
 };
 
 static hw_personality_t g_hw_nt_live;

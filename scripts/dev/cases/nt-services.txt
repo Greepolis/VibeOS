@@ -22,3 +22,9 @@
     iosb.information = n < 0 ? 0u : (uint64_t)n;
 +++ new
     iosb.information = 0u;
+
+### a negative file time is taken as no time (#150)
+--- old
+    if ((int64_t)t < 0 || (t >= NT_EPOCH_1601_100NS && t - NT_EPOCH_1601_100NS > ~0ull / 100u)) {
++++ new
+    if (0) {

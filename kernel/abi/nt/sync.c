@@ -208,8 +208,8 @@ static long nt_query_event(uint64_t h, uint64_t cls, uint64_t buf, uint64_t len,
  *
  * A mutex in NT's word: owned by a thread, taken again by the same thread as
  * many times as it likes, released as many times. "Abandoned" - its owner
- * ended holding it - needs the exit path to say so, which is W5's with
- * threads; the state and the status it gives a waiter are here already. */
+ * ended holding it - is said by vibeos_nt_thread_exit, which every exit
+ * path reaches through the personality's exit hook. */
 
 
 static int mutant_signaled(nt_ob_t *o, uint32_t tid) {
@@ -250,6 +250,31 @@ static void mutant_init(nt_ob_t *o, const void *ctx) {
 static uint32_t my_tid(void) {
     int me = ks_current();
     return me >= 0 ? ks_id(me)->pid : 0u;
+}
+
+/* Its owner ended holding it: free, and the next to take it is told. The
+ * owner is a thread id, which a later thread may be given, so leaving it
+ * set would hand the mutant to a stranger as well as starve every waiter. */
+static void mutant_abandon(nt_ob_t *o, void *ctx) {
+    uint32_t tid = *(const uint32_t *)ctx;
+
+    if (o->u.mu.owner == tid && tid != 0u) {
+        o->u.mu.owner = 0;
+        o->u.mu.count = 0;
+        o->u.mu.abandoned = 1;
+    }
+}
+
+void vibeos_nt_thread_exit(int slot) {
+    uint32_t tid;
+
+    if (slot < 0) {
+        return;
+    }
+    tid = ks_id(slot)->pid;
+    nt_ob_lock();
+    nt_ob_each(&g_nt_mutant_ops, mutant_abandon, &tid);
+    nt_ob_unlock();
 }
 
 /* NtCreateMutant(MutantHandle, DesiredAccess, ObjectAttributes, InitialOwner). */

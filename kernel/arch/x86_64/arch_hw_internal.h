@@ -579,6 +579,10 @@ typedef struct hw_personality {
                       uint64_t staged, const char *path, uint32_t file_id, uint64_t *exe_base);
     int (*start_blocks)(hw_proc_t *p, hw_procstate_t *ps, uint64_t exe_base,
                         const char *const *argv, const char *path);
+    /* A task of this personality is ending, by any path, while its address
+     * space is still loaded: what it owned is let go (an NT mutant is
+     * abandoned, #147). May be null. */
+    void (*exit)(int slot);
 } hw_personality_t;
 void hw_personality_register(const hw_personality_t *p);
 const hw_personality_t *hw_personality_of_abi(const vibeos_abi_t *abi);

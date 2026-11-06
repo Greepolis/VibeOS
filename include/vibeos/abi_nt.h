@@ -107,4 +107,8 @@ struct ks_regs;
 struct vibeos_siginfo;
 int vibeos_nt_fault(struct ks_regs *frame, const struct vibeos_siginfo *why);
 
+/* A thread of an NT task is ending, by whatever path: every mutant it owns
+ * is abandoned, so the next waiter gets it with STATUS_ABANDONED (#147). */
+void vibeos_nt_thread_exit(int slot);
+
 #endif

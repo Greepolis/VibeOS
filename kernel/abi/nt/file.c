@@ -674,6 +674,25 @@ static uint64_t nt_time_of(uint64_t ns) {
     return ns == 0u ? 0u : ns / 100u + NT_EPOCH_1601_100NS;
 }
 
+/* A FILETIME a caller set, as the VFS's nanoseconds: 0 and -1 leave the time
+ * alone, as Windows reads them, and so does a time before 1970, which the
+ * VFS's clock cannot hold. A negative LARGE_INTEGER or one whose distance from
+ * 1970 overflows in nanoseconds is refused: it was multiplied by 100 as it
+ * came, and wrapped into some other date (issue #150). 0, or -1 refused. */
+static int filetime_ns(uint64_t t, uint32_t bit, uint64_t *ns, uint32_t *valid) {
+    if (t == 0u || t == ~0ull) {
+        return 0;
+    }
+    if ((int64_t)t < 0 || (t >= NT_EPOCH_1601_100NS && t - NT_EPOCH_1601_100NS > ~0ull / 100u)) {
+        return -1;
+    }
+    if (t >= NT_EPOCH_1601_100NS) {
+        *ns = (t - NT_EPOCH_1601_100NS) * 100u;
+        *valid |= bit;
+    }
+    return 0;
+}
+
 static void put64(uint8_t *b, uint32_t at, uint64_t v) {
     uint32_t i;
     for (i = 0; i < 8u; i++) {
@@ -979,13 +998,10 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
 
             a.valid = 0;
             a.atime_ns = a.mtime_ns = 0;
-            if (at != 0u && at != ~0ull && at >= NT_EPOCH_1601_100NS) {
-                a.valid |= VIBEOS_ATTR_ATIME;
-                a.atime_ns = (at - NT_EPOCH_1601_100NS) * 100u;
-            }
-            if (wt != 0u && wt != ~0ull && wt >= NT_EPOCH_1601_100NS) {
-                a.valid |= VIBEOS_ATTR_MTIME;
-                a.mtime_ns = (wt - NT_EPOCH_1601_100NS) * 100u;
+            if (filetime_ns(at, VIBEOS_ATTR_ATIME, &a.atime_ns, &a.valid) != 0 ||
+                filetime_ns(wt, VIBEOS_ATTR_MTIME, &a.mtime_ns, &a.valid) != 0) {
+                st = VIBEOS_STATUS_INVALID_PARAMETER;
+                break;
             }
             if (a.valid != 0u && (vibeos_fs_resolve(f->path, &m, &tail) != 0 ||
                                   vibeos_fs_setattr(m, *tail ? tail : "/", &a) != 0)) {
@@ -1374,28 +1390,39 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
         return NT_STATUS(st);
     }
     vibeos_file_pos_take(f);
+    first = restart || f->pos == 0u;
+    if (first && mask_u != 0u) {
+        /* UNICODE_STRING: Length (bytes) at 0, Buffer at 8. Read whole into
+         * a buffer of its own before anything is changed: a mask whose
+         * string or buffer could not be read was taken as no mask - every
+         * name - and the cursor had already been reset (issue #162). */
+        uint8_t us[16];
+        uint16_t chars[63];
+        uint32_t n = 0, k;
+
+        if (nt_copy_in(us, mask_u, sizeof(us)) != 0) {
+            st = VIBEOS_STATUS_ACCESS_VIOLATION;
+        } else {
+            n = ((uint32_t)us[0] | (uint32_t)us[1] << 8) / 2u;
+            n = n < 63u ? n : 63u;
+            if (n != 0u && nt_copy_in(chars, get64(us, 8), 2u * n) != 0) {
+                st = VIBEOS_STATUS_ACCESS_VIOLATION;
+            }
+        }
+        if (st == VIBEOS_STATUS_ACCESS_VIOLATION) {
+            vibeos_file_pos_give(f);
+            vibeos_file_put(f);
+            return NT_STATUS(st);
+        }
+        for (k = 0; k < n; k++) {
+            f->nt_mask[k] = chars[k] < 0x80u ? (char)chars[k] : '?';
+        }
+        f->nt_mask[n] = 0;
+    }
     if (restart) {
         f->pos = 0;
     }
-    first = f->pos == 0u;
-    if (first && mask_u != 0u) {
-        /* UNICODE_STRING: Length (bytes) at 0, Buffer at 8. */
-        uint8_t us[16];
-        uint16_t chars[63];
-        uint32_t n, k;
-
-        f->nt_mask[0] = 0;
-        if (nt_copy_in(us, mask_u, sizeof(us)) == 0) {
-            n = ((uint32_t)us[0] | (uint32_t)us[1] << 8) / 2u;
-            n = n < 63u ? n : 63u;
-            if (n != 0u && nt_copy_in(chars, get64(us, 8), 2u * n) == 0) {
-                for (k = 0; k < n; k++) {
-                    f->nt_mask[k] = chars[k] < 0x80u ? (char)chars[k] : '?';
-                }
-                f->nt_mask[n] = 0;
-            }
-        }
-    } else if (first) {
+    if (first && mask_u == 0u) {
         f->nt_mask[0] = 0;
     }
     cap = len < sizeof(b) ? (uint32_t)len : (uint32_t)sizeof(b);

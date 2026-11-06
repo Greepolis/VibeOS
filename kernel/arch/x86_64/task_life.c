@@ -1576,6 +1576,10 @@ void hw_task_exit(uint64_t code) {
     /* The robust locks it still holds first (docs/abi/ L6), in the same
      * address space for the same reason: Linux walks the list before it
      * clears the join word, so a joiner that wakes finds the locks marked. */
+    if (dying >= 0 && g_tasks[dying].id.is_user && hw_personality_of_abi(g_tasks[dying].abi) &&
+        hw_personality_of_abi(g_tasks[dying].abi)->exit) {
+        hw_personality_of_abi(g_tasks[dying].abi)->exit(dying);
+    }
     if (dying >= 0 && g_tasks[dying].id.is_user) {
         linux_futex_exit_robust(dying);
     }
