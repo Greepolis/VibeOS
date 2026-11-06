@@ -469,11 +469,19 @@ static long console_ioctl(vibeos_file_t *f, uint64_t req, uint64_t arg) {
         if (vibeos_uaccess_copy(&pgid, (const void *)(uintptr_t)arg, sizeof(pgid)) != 0) {
             return -VIBEOS_EFAULT;   /* H-025 */
         }
+        /* Found, judged and used in one hold of the scheduler's lock: an
+         * index from ks_task_by_pid is the slot's for only as long as that
+         * lock is held. Released between the session check and the read of
+         * the group, a reaped target's slot could be another session's task
+         * by then, and Control-C would go to it (issue #191). */
+        ks_lock(ks_sched_lock(), __func__);
         group = ks_task_by_pid(pgid);
         if (group < 0 || ks_id(group)->sid != ks_id(me)->sid) {
+            ks_unlock(ks_sched_lock());
             return -VIBEOS_EPERM;
         }
         ks_set_foreground_pgid(ks_id(group)->pgid);
+        ks_unlock(ks_sched_lock());
         return 0;
     }
     return -VIBEOS_ENOTTY;

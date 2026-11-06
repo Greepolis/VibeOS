@@ -777,31 +777,45 @@ static long linux_sys_get_robust_list(uint64_t tid, uint64_t uhead, uint64_t ule
 
     if (VIBEOS_ARG_INT(tid) == 0) {
         t = ks_current();
-    } else {
-        ks_lock(ks_sched_lock(), __func__);
-        t = ks_task_by_tid((uint32_t)tid);
-        ks_unlock(ks_sched_lock());
-    }
-    if (t < 0 || !ks_id(t)->is_user) {
-        return -VIBEOS_ESRCH;
-    }
-    if (t != ks_current()) {
-        vibeos_cred_t me, them;
-        const vibeos_procstate_t *ps = ks_ps(t);
-
-        linux_cred(&me);
-        if (!ps) {
+        if (t < 0 || !ks_id(t)->is_user) {
             return -VIBEOS_ESRCH;
         }
-        them = ps->cred;
-        /* Linux's PTRACE_MODE_READ_REALCREDS: the shared rule with the real
-         * ids, user and group. It compared the user's alone and asked nothing
-         * of the groups (issue #193). */
-        if (vibeos_cred_may_inspect(&me, me.uid, me.gid, &them) != 0) {
-            return -VIBEOS_EPERM;
+        head = ks_id(t)->robust_head;
+    } else {
+        vibeos_cred_t me, them;
+        vibeos_procstate_t *ps;
+
+        /* The thread, its list head and a reference to its state, all taken
+         * while the slot cannot change hands; the credentials read under
+         * the lock they are written under. Taken apart, an exit between the
+         * lookup and the reads let the slot's next tenant answer for the
+         * thread that was asked about (issue #192). */
+        ks_lock(ks_sched_lock(), __func__);
+        t = ks_task_by_tid((uint32_t)tid);
+        if (t < 0 || !ks_id(t)->is_user) {
+            ks_unlock(ks_sched_lock());
+            return -VIBEOS_ESRCH;
+        }
+        head = ks_id(t)->robust_head;
+        ps = t != ks_current() ? linux_ps_hold(t) : 0;
+        ks_unlock(ks_sched_lock());
+        if (t != ks_current()) {
+            if (!ps) {
+                return -VIBEOS_ESRCH;
+            }
+            linux_cred(&me);
+            ks_lock(&ps->files_lock, __func__);
+            them = ps->cred;
+            ks_unlock(&ps->files_lock);
+            ks_procstate_put(ps);
+            /* Linux's PTRACE_MODE_READ_REALCREDS: the shared rule with the
+             * real ids, user and group. It compared the user's alone and
+             * asked nothing of the groups (issue #193). */
+            if (vibeos_cred_may_inspect(&me, me.uid, me.gid, &them) != 0) {
+                return -VIBEOS_EPERM;
+            }
         }
     }
-    head = ks_id(t)->robust_head;
     if (vibeos_uaccess_copy((void *)(uintptr_t)ulen, &len, sizeof(len)) != 0 ||
         vibeos_uaccess_copy((void *)(uintptr_t)uhead, &head, sizeof(head)) != 0) {
         return -VIBEOS_EFAULT;

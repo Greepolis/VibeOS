@@ -45,3 +45,11 @@
     if ((a.flags & LINUX_CLONE_PIDFD) && !linux_user_ok(a.pidfd, sizeof(int), 1)) {
 +++ new
     if (0 && (a.flags & LINUX_CLONE_PIDFD) && !linux_user_ok(a.pidfd, sizeof(int), 1)) {
+
+### a thread made while its process ends is published without the kill (#190)
+--- old
+    ks_lock(ks_sched_lock(), __func__);
+    if (__atomic_load_n(&ks_ps(idx)->exit_group, __ATOMIC_ACQUIRE) != 0u) {
++++ new
+    ks_lock(ks_sched_lock(), __func__);
+    if (0) {

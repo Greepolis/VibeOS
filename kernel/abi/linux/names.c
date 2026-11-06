@@ -257,8 +257,16 @@ void linux_paths_moved(const char *from, const char *to) {
     uint32_t s;
 
     for (s = 0; s < ks_slots(); s++) {
-        vibeos_procstate_t *ps = ks_ps((int)s);
+        vibeos_procstate_t *ps;
 
+        /* A reference taken where the slot cannot change hands, as every
+         * other reader of another task's state does: a bare ks_ps() could be
+         * a state whose last thread has since gone and whose slot a new
+         * process now holds - and this would rewrite that process's cwd
+         * under a lock its creation was initialising (issue #196). */
+        ks_lock(ks_sched_lock(), __func__);
+        ps = linux_ps_hold((int)s);
+        ks_unlock(ks_sched_lock());
         if (!ps) {
             continue;
         }
@@ -266,6 +274,7 @@ void linux_paths_moved(const char *from, const char *to) {
         (void)linux_path_moved(ps->cwd, sizeof(ps->cwd), from, to);
         (void)linux_path_moved(ps->root, sizeof(ps->root), from, to);
         ks_unlock(&ps->files_lock);
+        ks_procstate_put(ps);
     }
     vibeos_file_paths_moved(from, to);
 }

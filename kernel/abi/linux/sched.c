@@ -58,6 +58,32 @@ static int sched_may_change(int t) {
     return me.euid == 0u || (ps && (ps->cred.uid == me.euid || ps->cred.euid == me.euid));
 }
 
+/* The same question for a slot found earlier and let go of since: asked of
+ * the thread `tid` only if the slot still holds it, and of its state through
+ * a reference - the bare pointer could be a state freed by the target's exit,
+ * or a new process's in the same slot (issue #192). Under the scheduler's
+ * lock the callers above that hold it need neither. */
+static int sched_may_change_tid(int t, uint32_t tid) {
+    vibeos_cred_t me, them;
+    vibeos_procstate_t *ps;
+
+    linux_cred(&me);
+    if (me.euid == 0u) {
+        return 1;
+    }
+    ks_lock(ks_sched_lock(), __func__);
+    ps = ks_id(t)->pid == tid ? linux_ps_hold(t) : 0;
+    ks_unlock(ks_sched_lock());
+    if (!ps) {
+        return 0;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    them = ps->cred;
+    ks_unlock(&ps->files_lock);
+    ks_procstate_put(ps);
+    return them.uid == me.euid || them.euid == me.euid;
+}
+
 static int sched_policy_ok(uint32_t policy) {
     return policy == LINUX_SCHED_NORMAL || policy == LINUX_SCHED_FIFO ||
            policy == LINUX_SCHED_RR || policy == LINUX_SCHED_BATCH ||
@@ -83,7 +109,7 @@ static long sched_apply(int t, uint32_t tid, uint32_t policy, uint32_t prio, int
     if (sched_is_rt(policy) ? (prio < 1u || prio > 99u) : prio != 0u) {
         return -VIBEOS_EINVAL;
     }
-    if (!sched_may_change(t)) {
+    if (!sched_may_change_tid(t, tid)) {
         return -VIBEOS_EPERM;
     }
     linux_cred(&me);
@@ -351,7 +377,7 @@ static long linux_sys_sched_setaffinity(uint64_t pid, uint64_t len, uint64_t uma
     if ((t = sched_target(pid, &err)) < 0) {
         return err;
     }
-    if (!sched_may_change(t)) {
+    if (!sched_may_change_tid(t, sched_tid(pid, t))) {
         return -VIBEOS_EPERM;
     }
     mask &= ks_cpus_online_mask();

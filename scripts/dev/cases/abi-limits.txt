@@ -55,12 +55,12 @@
     if (me.euid == 0u || !ps) {
         return 0;
     }
-    lim = ps->rlim_cur[LINUX_RLIMIT_NPROC];
+    ks_lock(&ps->files_lock, __func__);   /* where setrlimit writes it */
 +++ new
     if (!ps) {
         return 0;
     }
-    lim = ps->rlim_cur[LINUX_RLIMIT_NPROC];
+    ks_lock(&ps->files_lock, __func__);   /* where setrlimit writes it */
 
 ### RLIMIT_NPROC counts nothing
 --- old
@@ -107,3 +107,9 @@
     if ((uint32_t)persona != 0xFFFFFFFFu) {
 +++ new
     if (1) {
+
+### RLIMIT_NPROC counts no creation under way (#188)
+--- old
+    if (i < NPROC_PENDING && n + g_nproc_pending[i].n < lim) {
++++ new
+    if (i < NPROC_PENDING && n < lim) {

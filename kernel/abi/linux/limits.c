@@ -65,23 +65,45 @@ void linux_rlimit_cpu_arm(uint32_t tgid, const vibeos_procstate_t *ps, uint64_t 
 /* May the caller have one more task? RLIMIT_NPROC counts every task a user
  * has, threads included, as Linux counts them; the superuser is not counted
  * against it (Linux exempts CAP_SYS_RESOURCE). 0, or -EAGAIN. */
-long linux_nproc_check(void) {
-    vibeos_cred_t me;
-    const vibeos_procstate_t *ps = ks_ps(ks_current());
-    uint64_t lim, n = 0;
-    uint32_t i;
+/* Creations under way, by user: counted with the tasks that exist. The
+ * count used to be taken and let go before the slot was reserved, so two
+ * threads of one user at the limit's edge both saw room and both made a task
+ * (issue #188). Each creation that passes the check holds a place here until
+ * its task is either visible to the count or given up, so a second check
+ * meanwhile sees the first one's task coming. Too many users creating at once
+ * for the table is a refusal, temporary like the rest. */
+#define NPROC_PENDING 16u
 
+static struct {
+    uint32_t uid, n;
+} g_nproc_pending[NPROC_PENDING];
+static vibeos_lock_t g_nproc_pending_lock;
+
+long linux_nproc_take(uint32_t *ticket) {
+    vibeos_cred_t me;
+    vibeos_procstate_t *ps = ks_ps(ks_current());
+    uint64_t lim, n = 0;
+    uint32_t i, free_at = NPROC_PENDING;
+    long r = -VIBEOS_EAGAIN;
+
+    *ticket = 0;
     linux_cred(&me);
     if (me.euid == 0u || !ps) {
         return 0;
     }
+    ks_lock(&ps->files_lock, __func__);   /* where setrlimit writes it */
     lim = ps->rlim_cur[LINUX_RLIMIT_NPROC];
+    ks_unlock(&ps->files_lock);
     ks_lock(ks_sched_lock(), __func__);
     for (i = 0; i < ks_slots(); i++) {
         const vibeos_procstate_t *tp;
         vibeos_task_state_t st = vibeos_task_state(i);
 
-        if (st == VIBEOS_TASK_FREE || st == VIBEOS_TASK_SETUP || !ks_id((int)i)->is_user) {
+        /* A task being built counts once it says whose it is: an NT thread
+         * created suspended stays SETUP until it is resumed, and Linux counts
+         * a stopped or not-yet-started thread like any other. The creation's
+         * place below covers the moments before it says so. */
+        if (st == VIBEOS_TASK_FREE || !ks_id((int)i)->is_user) {
             continue;
         }
         tp = ks_ps((int)i);
@@ -90,11 +112,47 @@ long linux_nproc_check(void) {
         }
     }
     ks_unlock(ks_sched_lock());
-    return n >= lim ? -VIBEOS_EAGAIN : 0;
+    ks_lock(&g_nproc_pending_lock, __func__);
+    for (i = 0; i < NPROC_PENDING; i++) {
+        if (g_nproc_pending[i].n != 0u && g_nproc_pending[i].uid == me.uid) {
+            break;
+        }
+        if (g_nproc_pending[i].n == 0u && free_at == NPROC_PENDING) {
+            free_at = i;
+        }
+    }
+    if (i == NPROC_PENDING) {
+        i = free_at;
+    }
+    if (i < NPROC_PENDING && n + g_nproc_pending[i].n < lim) {
+        g_nproc_pending[i].uid = me.uid;
+        g_nproc_pending[i].n++;
+        *ticket = i + 1u;
+        r = 0;
+    }
+    ks_unlock(&g_nproc_pending_lock);
+    return r;
 }
 
-long vibeos_linux_nproc_check(void) {
-    return linux_nproc_check();
+/* The creation that took `ticket` is over: its task is counted with the
+ * others now, or there is none. */
+void linux_nproc_give(uint32_t ticket) {
+    if (ticket == 0u || ticket > NPROC_PENDING) {
+        return;
+    }
+    ks_lock(&g_nproc_pending_lock, __func__);
+    if (g_nproc_pending[ticket - 1u].n != 0u) {
+        g_nproc_pending[ticket - 1u].n--;
+    }
+    ks_unlock(&g_nproc_pending_lock);
+}
+
+long vibeos_linux_nproc_take(uint32_t *ticket) {
+    return linux_nproc_take(ticket);
+}
+
+void vibeos_linux_nproc_give(uint32_t ticket) {
+    linux_nproc_give(ticket);
 }
 
 /* ---- getrlimit, setrlimit, prlimit64 ---------------------------------------------- */

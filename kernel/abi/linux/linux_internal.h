@@ -95,7 +95,8 @@ uint32_t linux_entropy_avail(void);
 /* Limits (limits.c, L2 step 4): RLIMIT_CPU's two timers for a process that has
  * run `ran` ticks, and whether the caller may have one more task. */
 void linux_rlimit_cpu_arm(uint32_t tgid, const vibeos_procstate_t *ps, uint64_t ran);
-long linux_nproc_check(void);
+long linux_nproc_take(uint32_t *ticket);
+void linux_nproc_give(uint32_t ticket);
 
 /* The process a pidfd names, by pid (sig.c, L2 step 5); EBADF if not one. */
 long linux_pidfd_pid(uint64_t fd);

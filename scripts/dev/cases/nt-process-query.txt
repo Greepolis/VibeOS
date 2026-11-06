@@ -36,3 +36,9 @@
             if (lo >= 0xDC00u && lo <= 0xDFFFu) {
 +++ new
             if (0) {
+
+### an opened process handle names whoever holds the slot by then (#189)
+--- old
+    return nt_create_common(&g_nt_process_ops, out, want, 0, 0, process_init_seen, &seen);
++++ new
+    return nt_create_common(&g_nt_process_ops, out, want, 0, 0, process_init, &slot);

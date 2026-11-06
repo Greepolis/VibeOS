@@ -19,3 +19,13 @@
     return ps && ps->mm ? (const void *)ps->mm : (const void *)ps;
 +++ new
     return (const void *)ps;
+
+### get_robust_list reads the thread after letting its slot go (#192)
+--- old
+        head = ks_id(t)->robust_head;
+        ps = t != ks_current() ? linux_ps_hold(t) : 0;
+        ks_unlock(ks_sched_lock());
++++ new
+        ks_unlock(ks_sched_lock());
+        head = ks_id(t)->robust_head;
+        ps = t != ks_current() ? linux_ps_hold(t) : 0;

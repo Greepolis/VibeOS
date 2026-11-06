@@ -34,7 +34,6 @@ static void expect(int cond, const char *what) {
 
 extern int g_kf_aspace_pins;   /* ksvc_fake.c: address spaces held for a call */
 extern int g_kf_lock_reentry;  /* ksvc_fake.c: a preemptible lock taken again by its holder */
-void kf_retire(int slot);       /* ksvc_fake.c: a slot's tenancy moves on */
 
 static long nt(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                kf_outcome_t *out) {
@@ -1462,6 +1461,13 @@ static void t_thread_nproc(void) {
 /* W5 step 1: a thread is a task of the process, started at ntdll's entry with
  * (0, routine, parameter), on a stack and with a TEB of its own; its handle is
  * signalled when it ends; the last thread's end is the process's. */
+static int g_recycle_slot;
+
+static void recycle_slot(void) {
+    kf_retire(g_recycle_slot);
+    ks_id(g_recycle_slot)->pid = ks_id(g_recycle_slot)->tgid = 99u;
+}
+
 static void t_create_thread(void) {
     uint64_t h = 0, routine = kf_ualloc(16), peb = kf_ualloc(64), ntdll_entry = kf_ualloc(16);
     uint64_t teb, sp, v = 0;
@@ -2486,6 +2492,57 @@ static void t_open_process_cred(void) {
     expect(open_pid(72, &h) == ST(VIBEOS_STATUS_SUCCESS), "and the superuser opens anybody's");
 }
 
+/* #189: the handle names the process that was judged. Between the check and
+ * the handle the target ends and its slot goes to another process; the handle
+ * must not name the newcomer. */
+/* #189 for NtOpenThread: chosen as this process's thread, then its slot goes
+ * to another process before the handle exists. The handle names the thread
+ * that was chosen, not the one that came after. */
+static void t_open_thread_recycled(void) {
+    uint64_t cid = kf_ualloc(16), out = kf_ualloc(8), tb = kf_ualloc(48);
+    int me = fresh(78), th = kf_spawn(79, 79);
+
+    ks_id(th)->tgid = ks_id(me)->tgid;   /* a second thread of this process */
+    ((uint64_t *)kf_uptr(cid))[0] = 0;
+    ((uint64_t *)kf_uptr(cid))[1] = 79u;
+    g_recycle_slot = th;
+    kf_on_sched_unlock(recycle_slot);
+    expect(nt(VIBEOS_NT_NR_NtOpenThread, out, 0x001FFFFFu, 0, cid, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a thread of this process, opened");
+    kf_on_sched_unlock(0);
+    {
+        long r;
+
+        kf_next_sp(stack_args_(&g_zero5, 1));   /* ReturnLength, the fifth: from the stack */
+        r = nt(VIBEOS_NT_NR_NtQueryInformationThread, *(uint64_t *)kf_uptr(out), 0, tb, 48, 0);
+
+        expect(r == ST(VIBEOS_STATUS_SUCCESS) && *(uint64_t *)((uint8_t *)kf_uptr(tb) + 16) == 78u,
+               "its slot recycled meanwhile: the handle still names this process, not the newcomer's");
+    }
+}
+
+static void t_open_process_recycled(void) {
+    uint64_t h = 0, buf = kf_ualloc(48);
+    const vibeos_nt_process_basic_t *pbi = (const vibeos_nt_process_basic_t *)kf_uptr(buf);
+    int me = fresh(74), mine = kf_spawn(75, 75);
+    vibeos_cred_t user;
+    long r;
+
+    vibeos_cred_root(&user);
+    user.uid = user.euid = user.suid = user.fsuid = 1000u;
+    user.gid = user.egid = user.sgid = user.fsgid = 1000u;
+    ks_ps(me)->cred = user;
+    ks_ps(mine)->cred = user;
+    g_recycle_slot = mine;
+    kf_on_sched_unlock(recycle_slot);
+    expect(open_pid(75, &h) == ST(VIBEOS_STATUS_SUCCESS), "a process of one's own, opened");
+    kf_on_sched_unlock(0);
+    kf_next_sp(stack_args_(&g_zero5, 1));
+    r = nt(VIBEOS_NT_NR_NtQueryInformationProcess, h, 0, buf, 48, 0);
+    expect(r == ST(VIBEOS_STATUS_SUCCESS) && pbi->unique_process_id == 75u,
+           "its slot recycled meanwhile: the handle still names 75, not 99");
+}
+
 /* Who may change a key (v8 review, M-137): a handle that names a parent must
  * hold KEY_CREATE_SUB_KEY for a key to be made under it, and machine keys are
  * the superuser's to change - anybody else reads them. */
@@ -3498,6 +3555,8 @@ int test_nt_abi(void) {
     t_blocks();
     t_events();
     t_spawn_utf8();
+    t_open_process_recycled();
+    t_open_thread_recycled();
     t_dup_other_fault();
     t_mutants();
     t_semaphores();

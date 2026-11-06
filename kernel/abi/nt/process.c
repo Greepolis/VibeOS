@@ -134,6 +134,25 @@ static void process_init(nt_ob_t *o, const void *ctx) {
     o->u.pr.ended = 0;
 }
 
+/* A process as it was when it was judged: its slot, which tenancy of the
+ * slot and its id. A handle made from this names that process even if it has
+ * ended and the slot is somebody else's by the time the handle exists - the
+ * object then says it ended, rather than naming the newcomer (issue #189). */
+typedef struct {
+    int slot;
+    uint32_t seq, pid;
+} process_seen_t;
+
+static void process_init_seen(nt_ob_t *o, const void *ctx) {
+    const process_seen_t *p = (const process_seen_t *)ctx;
+
+    o->u.pr.slot = p->slot;
+    o->u.pr.seq = p->seq;
+    o->u.pr.pid = p->pid;
+    o->u.pr.exit_code = NT_STILL_ACTIVE;
+    o->u.pr.ended = 0;
+}
+
 typedef struct {
     int self;
     int slot;
@@ -296,6 +315,7 @@ static long nt_terminate_process(uint64_t process, uint64_t status) {
 static long nt_open_process(uint64_t out, uint32_t want, uint64_t cid) {
     vibeos_cred_t me, them;
     vibeos_procstate_t *ps = 0;
+    process_seen_t seen;
     uint64_t pid = 0;
     int slot;
 
@@ -320,6 +340,11 @@ static long nt_open_process(uint64_t out, uint32_t want, uint64_t cid) {
             ps = 0;
         }
     }
+    if (slot >= 0) {
+        seen.slot = slot;
+        seen.seq = ks_seq(slot);
+        seen.pid = ks_id(slot)->tgid;
+    }
     ks_unlock(ks_sched_lock());
     ks_irq_on();
     if (slot < 0 || !ps) {
@@ -338,7 +363,7 @@ static long nt_open_process(uint64_t out, uint32_t want, uint64_t cid) {
     if (vibeos_cred_may_inspect(&me, me.euid, me.egid, &them) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
-    return nt_create_common(&g_nt_process_ops, out, want, 0, 0, process_init, &slot);
+    return nt_create_common(&g_nt_process_ops, out, want, 0, 0, process_init_seen, &seen);
 }
 
 /* ---- creating one ----------------------------------------------------------------------- */

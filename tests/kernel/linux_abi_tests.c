@@ -6751,6 +6751,87 @@ static void t_mq_len_unsigned(void) {
            "and one of 2^63, which int64_t made negative, too");
 }
 
+/* #188: RLIMIT_NPROC's check and the reservation are one step. With room for
+ * one more task, a second creation that runs right after the first has
+ * counted - before it has a task to be counted by - must not also get room. */
+static uint32_t g_nproc_b;
+static long g_nproc_b_r;
+
+static void nproc_second_creation(void) {
+    g_nproc_b_r = vibeos_linux_nproc_take(&g_nproc_b);
+}
+
+static void t_nproc_concurrent(void) {
+    uint32_t a = 0;
+    long ra;
+    int me = fresh(85);
+
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.suid = ks_ps(me)->cred.fsuid = 1000u;
+    ks_ps(me)->rlim_cur[LINUX_RLIMIT_NPROC] = 2u;   /* itself, and one more */
+    g_nproc_b = 0;
+    g_nproc_b_r = 1;
+    kf_on_sched_unlock(nproc_second_creation);
+    ra = vibeos_linux_nproc_take(&a);
+    kf_on_sched_unlock(0);
+    expect(g_nproc_b_r != 1, "the second creation ran inside the first one's check");
+    expect((ra == 0) + (g_nproc_b_r == 0) == 1,
+           "of two creations with room for one, exactly one is let through");
+    vibeos_linux_nproc_give(a);
+    vibeos_linux_nproc_give(g_nproc_b);
+    expect(vibeos_linux_nproc_take(&a) == 0, "and the place comes back when the creation is over");
+    vibeos_linux_nproc_give(a);
+}
+
+/* #190: a thread created while its process is already ending is published
+ * with the kill the sweep would have given it - not left to run past the end. */
+static void t_clone_during_exit_group(void) {
+    const uint64_t fl = LINUX_CLONE_VM | LINUX_CLONE_SIGHAND | LINUX_CLONE_THREAD;
+    int me = fresh(86), t;
+    uint64_t stack = kf_ualloc(4096) + 4096u;   /* its top, in the caller's memory */
+    long tid;
+
+    ks_ps(me)->exit_group = 1u;
+    tid = sys(56, fl, stack, 0, 0, 0, 0, 0);
+    expect(tid > 0, "a thread created while the process is ending");
+    t = tid > 0 ? ks_task_by_tid((uint32_t)tid) : -1;
+    expect(t >= 0 && (ks_id(t)->sig_pending & (1ull << VIBEOS_SIGKILL)) != 0u,
+           "is published with SIGKILL pending, as exit_group's sweep gives a held one");
+    ks_ps(me)->exit_group = 0u;
+    tid = sys(56, fl, stack, 0, 0, 0, 0, 0);
+    t = tid > 0 ? ks_task_by_tid((uint32_t)tid) : -1;
+    expect(t >= 0 && (ks_id(t)->sig_pending & (1ull << VIBEOS_SIGKILL)) == 0u,
+           "and one created otherwise is not");
+}
+
+/* #192: get_robust_list answers for the thread that was found. Right after
+ * the lookup lets the scheduler's lock go, the thread ends and its slot goes
+ * to a root process with a list of its own; what comes back must be the
+ * first thread's head, judged by the first thread's credentials. */
+static int g_robust_slot, g_robust_root;
+
+static void robust_recycle(void) {
+    kf_retire(g_robust_slot);
+    ks_id(g_robust_slot)->robust_head = 0xBADull;
+    ks_set_ps(g_robust_slot, ks_ps(g_robust_root));
+}
+
+static void t_robust_list_recycled(void) {
+    uint64_t head = kf_ualloc(8), len = kf_ualloc(8);
+    int me = fresh(82), them = kf_spawn(83, 83);
+
+    g_robust_root = kf_spawn(84, 84);   /* root's credentials: the fake's default */
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.suid = ks_ps(me)->cred.fsuid = 1000u;
+    ks_ps(me)->cred.gid = ks_ps(me)->cred.egid = ks_ps(me)->cred.sgid = ks_ps(me)->cred.fsgid = 1000u;
+    ks_ps(them)->cred = ks_ps(me)->cred;
+    ks_id(them)->robust_head = 0x1234ull;
+    g_robust_slot = them;
+    kf_on_sched_unlock(robust_recycle);
+    expect(SYS3(274 /* get_robust_list */, 83, head, len) == 0 &&
+               *(uint64_t *)kf_uptr(head) == 0x1234ull,
+           "get_robust_list of a thread whose slot changed hands: that thread's head, its own judge");
+    kf_on_sched_unlock(0);
+}
+
 /* Three credential checks from GitHub issues #171, #180 and #193. */
 static void t_issue_creds(void) {
     int me, other, thread;
@@ -6971,6 +7052,9 @@ int test_linux_handlers(void) {
     t_credentials();
     t_ioctl_judged();
     t_issue_creds();
+    t_robust_list_recycled();
+    t_clone_during_exit_group();
+    t_nproc_concurrent();
     t_mq_len_unsigned();
     t_fork_snapshot_and_groups();
     t_procfs();

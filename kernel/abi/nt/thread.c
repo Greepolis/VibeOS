@@ -205,7 +205,7 @@ static void thread_unwind(int idx, int with_ps) {
  * a task of it, whose tenancy is asked again as the registers are taken
  * (ks_thread_regs_of): a process that ended meanwhile gets no thread. Its slot
  * and tenancy in *slot and *seq, its id in *tid. A status. */
-static uint32_t thread_spawn(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint64_t param,
+static uint32_t thread_spawn_body(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint64_t param,
                              uint64_t stack_top, uint64_t teb, int suspended, int *slot,
                              uint32_t *seq, uint32_t *tid) {
     int me = ks_current(), idx;
@@ -218,11 +218,8 @@ static uint32_t thread_spawn(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint6
     if (!ps || entry == 0u) {
         return VIBEOS_STATUS_INVALID_PARAMETER;
     }
-    /* RLIMIT_NPROC, as Linux's clone asks it before a slot is taken: an NT
-     * thread is a task of the user's like any other (v8 review, M-134). */
-    if (vibeos_linux_nproc_check() != 0) {
-        return VIBEOS_STATUS_INSUFFICIENT_RESOURCES;
-    }
+    /* RLIMIT_NPROC is asked by the caller, thread_spawn below, which holds
+     * a place for the whole creation (issue #188). */
     idx = ks_task_alloc_for_user("NtCreateThreadEx");
     if (idx < 0) {
         return VIBEOS_STATUS_INSUFFICIENT_RESOURCES;
@@ -244,10 +241,21 @@ static uint32_t thread_spawn(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint6
     }
     child = ks_id(idx);
     child->pid = ks_next_pid();
+    /* The process's ids from the task they were taken through, while that
+     * task is still the one asked for: ks_thread_regs_of checked its tenancy
+     * and let the lock go, and an exit and a reuse after it would give the
+     * new thread this process's memory under another process's ids (#190). */
+    ks_lock(ks_sched_lock(), __func__);
+    if (ks_seq(m->slot) != m->seq) {
+        ks_unlock(ks_sched_lock());
+        thread_unwind(idx, 1);
+        return VIBEOS_STATUS_PROCESS_IS_TERMINATING;
+    }
     child->tgid = parent->tgid;
     child->ppid = parent->ppid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
+    ks_unlock(ks_sched_lock());
     child->is_thread = 1;
     child->is_user = 1;
     child->signal_stopped = 0;
@@ -275,6 +283,22 @@ static uint32_t thread_spawn(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint6
     *tid = child->pid;
     child->held = suspended ? 1u : 0u;   /* whole now: an exit_group may start it to end it */
     return VIBEOS_STATUS_SUCCESS;
+}
+
+/* RLIMIT_NPROC, as Linux's clone asks it: an NT thread is a task of the
+ * user's like any other (v8 review, M-134), and the place is held from the
+ * check until the thread is counted or gone (issue #188). */
+static uint32_t thread_spawn(nt_mm_t *m, ks_regs_t *frame, uint64_t start, uint64_t param,
+                             uint64_t stack_top, uint64_t teb, int suspended, int *slot,
+                             uint32_t *seq, uint32_t *tid) {
+    uint32_t ticket, st;
+
+    if (vibeos_linux_nproc_take(&ticket) != 0) {
+        return VIBEOS_STATUS_INSUFFICIENT_RESOURCES;
+    }
+    st = thread_spawn_body(m, frame, start, param, stack_top, teb, suspended, slot, seq, tid);
+    vibeos_linux_nproc_give(ticket);
+    return st;
 }
 
 /* The work both create services share, once their arguments are read. The
@@ -348,8 +372,15 @@ static long thread_create(ks_regs_t *frame, uint64_t out, uint32_t want, uint64_
             (void)nt_copy_out(client_u, cid, sizeof(cid));
         }
         if (!suspended) {
+            /* Under the scheduler's lock, against an exit already sweeping
+             * the process (issue #190): as clone_thread publishes. */
+            ks_lock(ks_sched_lock(), __func__);
+            if (__atomic_load_n(&ks_ps(idx)->exit_group, __ATOMIC_ACQUIRE) != 0u) {
+                (void)ks_signal_raise(idx, VIBEOS_SIGKILL);
+            }
             (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
             ks_mark_ready(idx, "NtCreateThreadEx");
+            ks_unlock(ks_sched_lock());
         }
     } else {
         if (stack) {
@@ -488,9 +519,29 @@ static int thread_live(const thread_view_t *v) {
     return !v->ended && v->slot >= 0 && ks_seq(v->slot) == v->seq;
 }
 
-/* A new handle to the thread in `slot`: an object of its own, as NtOpenThread
- * and NtGetNextThread give, with what is known of the thread. */
-static long thread_open_slot(int slot, uint64_t out, uint32_t want, uint64_t oa) {
+/* A thread as it was when it was chosen, read under the scheduler's lock:
+ * the handle is made of this and not of whatever holds the slot by the time
+ * the object exists. Read afterwards, an exit and a spawn between the choice
+ * and the handle gave a handle to the slot's next tenant - another
+ * process's thread, past the check that it was this process's (issue #189).
+ * A handle to a thread that has gone since says so. */
+typedef struct {
+    int slot;
+    uint32_t seq, tid, pid;
+    uint64_t teb;
+} thread_seen_t;
+
+static void thread_seen_fill(int slot, thread_seen_t *t) {
+    t->slot = slot;
+    t->seq = ks_seq(slot);
+    t->tid = ks_id(slot)->pid;
+    t->pid = ks_id(slot)->tgid;
+    t->teb = ks_gs_get(slot);
+}
+
+/* A new handle to the thread `t` describes: an object of its own, as
+ * NtOpenThread and NtGetNextThread give, with what is known of the thread. */
+static long thread_open_slot(const thread_seen_t *t, uint64_t out, uint32_t want, uint64_t oa) {
     vibeos_file_t *f = 0;
     nt_ob_t *o;
     uint64_t h = 0;
@@ -505,18 +556,19 @@ static long thread_open_slot(int slot, uint64_t out, uint32_t want, uint64_t oa)
     }
     nt_ob_lock();
     o = nt_ob_of(f);
-    o->u.th.slot = slot;
-    o->u.th.seq = ks_seq(slot);
-    o->u.th.tid = ks_id(slot)->pid;
-    o->u.th.pid = ks_id(slot)->tgid;
-    o->u.th.teb = ks_gs_get(slot);
+    o->u.th.slot = t->slot;
+    o->u.th.seq = t->seq;
+    o->u.th.tid = t->tid;
+    o->u.th.pid = t->pid;
+    o->u.th.teb = t->teb;
     nt_ob_unlock();
     vibeos_file_put(f);
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
 }
 
-/* A live thread of the calling process, by its id; -1 for none. */
-static int thread_by_tid(uint32_t tid) {
+/* A live thread of the calling process, by its id, described into `t`; -1
+ * for none. */
+static int thread_by_tid(uint32_t tid, thread_seen_t *t) {
     int me = ks_current(), slot;
 
     ks_lock(ks_sched_lock(), __func__);
@@ -527,6 +579,8 @@ static int thread_by_tid(uint32_t tid) {
         if (ks_id(slot)->tgid != ks_id(me)->tgid || !ks_id(slot)->is_user || s == VIBEOS_TASK_ZOMBIE ||
             s == VIBEOS_TASK_FREE) {
             slot = -1;
+        } else {
+            thread_seen_fill(slot, t);
         }
     }
     ks_unlock(ks_sched_lock());
@@ -537,6 +591,7 @@ static int thread_by_tid(uint32_t tid) {
  * thread of this process, by its id; another process's is W6's. */
 static long nt_open_thread(uint64_t out, uint64_t want, uint64_t oa, uint64_t client_u) {
     uint64_t cid[2];
+    thread_seen_t t;
     int slot;
 
     if (client_u == 0u || nt_copy_in(cid, client_u, sizeof(cid)) != 0) {
@@ -545,11 +600,11 @@ static long nt_open_thread(uint64_t out, uint64_t want, uint64_t oa, uint64_t cl
     if (cid[0] != 0u && cid[0] != ks_id(ks_current())->tgid) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_CID);
     }
-    slot = thread_by_tid((uint32_t)cid[1]);
+    slot = thread_by_tid((uint32_t)cid[1], &t);
     if (slot < 0) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_CID);
     }
-    return thread_open_slot(slot, out, (uint32_t)want, oa);
+    return thread_open_slot(&t, out, (uint32_t)want, oa);
 }
 
 /* NtGetNextThread(ProcessHandle, ThreadHandle, DesiredAccess, HandleAttributes,
@@ -572,14 +627,20 @@ static long nt_get_next_thread(uint64_t process, uint64_t prev, uint64_t want, u
         start = v.slot < 0 ? 0u : (uint32_t)v.slot + 1u;
         thread_unview(&v);
     }
+    ks_lock(ks_sched_lock(), __func__);
     for (i = start; i < ks_slots(); i++) {
         vibeos_task_state_t s = vibeos_task_state(i);
 
         if (s != VIBEOS_TASK_FREE && s != VIBEOS_TASK_ZOMBIE && ks_id((int)i)->is_user &&
             ks_id((int)i)->tgid == tgid) {
-            return thread_open_slot((int)i, out, (uint32_t)want, 0u);
+            thread_seen_t t;
+
+            thread_seen_fill((int)i, &t);
+            ks_unlock(ks_sched_lock());
+            return thread_open_slot(&t, out, (uint32_t)want, 0u);
         }
     }
+    ks_unlock(ks_sched_lock());
     return NT_STATUS(VIBEOS_STATUS_NO_MORE_ENTRIES);
 }
 

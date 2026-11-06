@@ -168,7 +168,11 @@ void vibeos_linux_reap(uint32_t pid);
  * ask it - every task the user has, threads included, the superuser exempt -
  * for NtCreateThreadEx, which made threads past it (v8 review, M-134). 0, or
  * -EAGAIN. */
-long vibeos_linux_nproc_check(void);
+/* RLIMIT_NPROC for a creation: 0 with a place held in *ticket, or a
+ * negative errno. The place is given back once the new task is visible or
+ * the creation failed (issue #188). */
+long vibeos_linux_nproc_take(uint32_t *ticket);
+void vibeos_linux_nproc_give(uint32_t ticket);
 
 /* The line for a number, or NULL for a number Linux does not have. */
 const vibeos_sys_entry_t *vibeos_linux_syscall(uint64_t nr);

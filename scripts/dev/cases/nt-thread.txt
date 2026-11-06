@@ -59,10 +59,10 @@
 ### a thread made suspended starts at once (W5 step 3)
 --- old
         if (!suspended) {
-            (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
+            /* Under the scheduler's lock, against an exit already sweeping
 +++ new
         if (1) {
-            (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
+            /* Under the scheduler's lock, against an exit already sweeping
 
 ### the suspend count is not counted (W5 step 3)
 --- old
@@ -125,6 +125,12 @@
 
 ### an NT thread is made past RLIMIT_NPROC (M-134)
 --- old
-    if (vibeos_linux_nproc_check() != 0) {
+    if (vibeos_linux_nproc_take(&ticket) != 0) {
 +++ new
-    if (0 && vibeos_linux_nproc_check() != 0) {
+    if (0 && vibeos_linux_nproc_take(&ticket) != 0) {
+
+### an opened thread handle names whoever holds the slot by then (#189)
+--- old
+    o->u.th.pid = t->pid;
++++ new
+    o->u.th.pid = ks_id(t->slot)->tgid;

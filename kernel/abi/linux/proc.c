@@ -53,7 +53,7 @@ static void linux_fork_unwind_aspace(int idx, int shared) {
  * here until the child execs or ends; CLONE_PARENT gives the child the
  * caller's parent; the tid words are written where they ask. `stack` and `tls`
  * are the child's when nonzero (or SETTLS). */
-static long linux_fork_core(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
+static long linux_fork_body(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
                             uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls,
                             uint64_t pidfd_at, const uint64_t *win64) {
     int share = (flags & LINUX_CLONE_VM) != 0u;
@@ -71,13 +71,8 @@ static long linux_fork_core(const ks_regs_t *frame, uint32_t exit_sig, uint64_t 
      * ENOMEM: the refusal is temporary by nature, since a child exiting undoes
      * it, and that is what a C library turns into "resource temporarily
      * unavailable" and what a shell retries on. */
-    /* RLIMIT_NPROC (L2 step 4), before a slot is taken. */
-    {
-        long lim = linux_nproc_check();
-        if (lim != 0) {
-            return lim;
-        }
-    }
+    /* RLIMIT_NPROC (L2 step 4) is the caller's, linux_fork_core below: it
+     * holds a place for this creation for as long as this runs. */
     idx = ks_task_alloc_for_user("fork");
     if (idx < 0) {
         /* DEBUG, not WARN. ks_task_alloc_for_user already prints a line
@@ -342,6 +337,22 @@ static long linux_fork_core(const ks_regs_t *frame, uint32_t exit_sig, uint64_t 
     }
 }
 
+/* fork and clone without CLONE_THREAD, holding a place against RLIMIT_NPROC
+ * from the check until the child is counted or gone (issue #188). */
+static long linux_fork_core(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
+                            uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls,
+                            uint64_t pidfd_at, const uint64_t *win64) {
+    uint32_t ticket;
+    long r = linux_nproc_take(&ticket);
+
+    if (r != 0) {
+        return r;
+    }
+    r = linux_fork_body(frame, exit_sig, flags, stack, ptid, ctid, tls, pidfd_at, win64);
+    linux_nproc_give(ticket);
+    return r;
+}
+
 static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
                           uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls,
                           uint64_t pidfd_at) {
@@ -373,7 +384,7 @@ static long linux_sys_fork(const ks_regs_t *frame) {
  * the same trick fork uses - so the C library's clone wrapper sees a return of
  * 0 in the child and the tid in the parent, and branches on that.
  */
-static long linux_sys_clone_thread(const ks_regs_t *frame,
+static long linux_clone_body(const ks_regs_t *frame,
                                    uint64_t flags, uint64_t child_stack,
                                    uint64_t ptid, uint64_t ctid, uint64_t tls) {
     vibeos_task_t *parent, *child;
@@ -400,13 +411,8 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
      * reserve that was supposed to keep the machine administrable. The guard
      * was written for fork and clone was left open beside it, which is why
      * there is now one entry point rather than a rule to remember. */
-    /* Threads count against RLIMIT_NPROC too, as Linux counts them. */
-    {
-        long lim = linux_nproc_check();
-        if (lim != 0) {
-            return lim;
-        }
-    }
+    /* Threads count against RLIMIT_NPROC too, as Linux counts them: the
+     * place is held by linux_sys_clone_thread below. */
     idx = ks_task_alloc_for_user("clone");
     if (idx < 0) {
         ks_log(VIBEOS_LOG_WARN, 7u, flags, 0,
@@ -506,11 +512,37 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
         vibeos_task_state((uint32_t)idx) != VIBEOS_TASK_SETUP) {
         ks_panic("two owners filled one task slot");
     }
+    /* Published under the scheduler's lock, asking whether the process is
+     * already ending. exit_group raises the flag and then sweeps the process's
+     * tasks under this lock, and a thread still being built is not one it can
+     * kill - so one made meanwhile became READY after the sweep and ran on
+     * past its process's end (issue #190). Published before the sweep, the
+     * sweep kills it; after, it is told here, as the sweep tells a held one. */
+    ks_lock(ks_sched_lock(), __func__);
+    if (__atomic_load_n(&ks_ps(idx)->exit_group, __ATOMIC_ACQUIRE) != 0u) {
+        (void)ks_signal_raise(idx, VIBEOS_SIGKILL);
+    }
     (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
     ks_mark_ready(idx, "clone_thread");
+    ks_unlock(ks_sched_lock());
     ks_log(VIBEOS_LOG_DEBUG, 8u, (uint64_t)child->pid, ks_tls_get(idx),
            "thread created (a1 = its TLS base)");
     return (long)child->pid;
+}
+
+/* A thread, holding a place against RLIMIT_NPROC in the same way. */
+static long linux_sys_clone_thread(const ks_regs_t *frame,
+                                   uint64_t flags, uint64_t child_stack,
+                                   uint64_t ptid, uint64_t ctid, uint64_t tls) {
+    uint32_t ticket;
+    long r = linux_nproc_take(&ticket);
+
+    if (r != 0) {
+        return r;
+    }
+    r = linux_clone_body(frame, flags, child_stack, ptid, ctid, tls);
+    linux_nproc_give(ticket);
+    return r;
 }
 
 /* ---- waiting for a child (docs/abi/ L2 step 5) -------------------------------------
