@@ -171,6 +171,7 @@ long linux_may_add(const vibeos_path_t *w);
 long linux_may_remove(const vibeos_path_t *w);
 long linux_may_own(const vibeos_fs_node_t *node);
 void linux_own_new(const vibeos_path_t *w);
+void linux_own_node(const vibeos_path_t *w, const vibeos_fs_node_t *node);
 long linux_rmdir_at(uint64_t dirfd, uint64_t path_uptr);
 /* A directory renamed from `from` to `to` (absolute): working directories, roots
  * and open descriptions under it follow (names.c). */

@@ -29,8 +29,20 @@ static const char *linux_tail(const vibeos_path_t *w) {
 /* A change of attributes, to the node a descriptor holds when the walk came
  * from one (M-080), to the name otherwise. */
 static long linux_setattr_walked(const vibeos_path_t *w, const vibeos_fs_attr_t *attr) {
+    long r;
+
     if (w->by_node) {
         return vibeos_fs_setattr_node(w->mnt, &w->node, linux_tail(w), attr);
+    }
+    /* The node the walk found and the permission was judged on, not what
+     * the name holds by the time this runs: a chmod of one's own file
+     * landed on a file swapped in under its name (issue #195). Only a
+     * filesystem that cannot be asked by node is asked by name. */
+    if (w->exists) {
+        r = vibeos_fs_setattr_node(w->mnt, &w->node, linux_tail(w), attr);
+        if (r != -VIBEOS_ENOSYS) {
+            return r;
+        }
     }
     return vibeos_fs_setattr(w->mnt, linux_tail(w), attr);
 }
@@ -373,6 +385,11 @@ static long linux_link_at(uint64_t olddir, uint64_t old_uptr, uint64_t newdir, u
     if ((r = linux_may_add(&b)) != 0) {
         return r;
     }
+    /* A link is made by name. A descriptor whose name now reaches something
+     * else would link that instead (issue #182). */
+    if (a.by_node && a.name_stale) {
+        return -VIBEOS_ENOENT;
+    }
     return vibeos_fs_link(a.mnt, a.tail, b.tail);
 }
 
@@ -451,7 +468,7 @@ static long linux_mknod_at(uint64_t dirfd, uint64_t path_uptr, uint64_t mode) {
             ? vibeos_fs_mknod(w.mnt, w.tail, VIBEOS_S_IFSOCK | ((uint32_t)mode & 07777u & ~linux_umask()), &node)
             : vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
     if (r == 0) {
-        linux_own_new(&w);
+        linux_own_node(&w, &node);
     }
     return r;
 }

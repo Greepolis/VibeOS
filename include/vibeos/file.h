@@ -255,6 +255,12 @@ uint32_t vibeos_file_change_flags(vibeos_file_t *f, uint32_t clear, uint32_t set
  * that read would hand it a different file from the one opened and checked
  * (M-106). */
 int vibeos_file_still_at_path(const vibeos_file_t *f);
+/* A directory description whose path no longer reaches its directory: it was
+ * removed, or moved further than the path follows, and another may stand at
+ * the name. A directory is used by its path here, so a relative walk, fchdir
+ * and a listing through it must refuse rather than serve the other one
+ * (issue #181). 0 for a description with no identity to compare. */
+int vibeos_file_dir_moved(const vibeos_file_t *f);
 
 /* The node a regular file's description holds, as the filesystem says it is
  * now (getattr) - or as the description last saw it, from a filesystem that

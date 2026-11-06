@@ -65,3 +65,15 @@
         r = vibeos_path_walk_as(root, base, raw, flags, &c, w);
 +++ new
         r = vibeos_path_walk(root, base, raw, flags, w);
+
+### a parent that cannot be found again allows the creation (#195)
+--- old
+    if ((r = linux_parent_of(w, &dir)) != 0) {
+        return r;
+    }
+    return vibeos_cred_may_add(&c, dir.mode, dir.uid, dir.gid);
++++ new
+    if ((r = linux_parent_of(w, &dir)) != 0) {
+        return 0;
+    }
+    return vibeos_cred_may_add(&c, dir.mode, dir.uid, dir.gid);

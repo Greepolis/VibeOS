@@ -57,6 +57,12 @@ typedef struct {
      * rather than found at `path` (M-080): a change goes to the node, which
      * the name may no longer reach. Never set by the walk. */
     int by_node;
+    /* With by_node: `path` no longer names `node` - the file was moved
+     * further than a description's path can follow, or something else now
+     * stands at the old name. What can be done by node still can; what can
+     * only be done by name must refuse rather than act on the stranger
+     * (issue #182). */
+    int name_stale;
 } vibeos_path_t;
 
 #define VIBEOS_PATH_NOFOLLOW 0x1u /* a last component that is a link is the answer */

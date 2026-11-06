@@ -266,8 +266,8 @@
 
 ### an NT open for DELETE asks nothing of the directory (v7 review)
 --- old
-            if (who.fsuid != 0u && nt_parent_of(&w, &dir) == 0 &&
-                vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0) {
+            if (who.fsuid != 0u && (nt_parent_of(&w, &dir) != 0 ||
+                vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0)) {
                 return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
             }
         }

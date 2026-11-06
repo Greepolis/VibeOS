@@ -551,8 +551,10 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
         if (access & VIBEOS_DELETE) {
             vibeos_fs_node_t dir;
 
-            if (who.fsuid != 0u && nt_parent_of(&w, &dir) == 0 &&
-                vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0) {
+            /* A directory that cannot be found again refuses: it was read
+             * as permission, as the Linux handlers did (issue #195). */
+            if (who.fsuid != 0u && (nt_parent_of(&w, &dir) != 0 ||
+                vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0)) {
                 return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
             }
         }
@@ -565,7 +567,7 @@ static long nt_file_open_or_create(uint64_t out, uint32_t want, uint64_t oa, uin
          * which the walk's parent carries. */
         vibeos_fs_node_t dir;
 
-        if (nt_parent_of(&w, &dir) == 0 &&
+        if (nt_parent_of(&w, &dir) != 0 ||
             vibeos_cred_may(&who, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC) != 0) {
             return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
         }
@@ -1050,8 +1052,8 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
                     st = VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND;
                     break;
                 }
-                if (who.fsuid != 0u && nt_parent_of(&tw, &dir) == 0 &&
-                    (vibeos_cred_may_add(&who, dir.mode, dir.uid, dir.gid) != 0 ||
+                if (who.fsuid != 0u && (nt_parent_of(&tw, &dir) != 0 ||
+                    vibeos_cred_may_add(&who, dir.mode, dir.uid, dir.gid) != 0 ||
                      (tw.exists && vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, tw.node.uid) != 0))) {
                     st = VIBEOS_STATUS_ACCESS_DENIED;
                     break;
@@ -1150,7 +1152,7 @@ static long nt_delete_file(uint64_t oa) {
         return NT_STATUS(st);
     }
     nt_cred(&who);
-    if (nt_parent_of(&w, &dir) == 0 &&
+    if (nt_parent_of(&w, &dir) != 0 ||
         vibeos_cred_may_remove(&who, dir.mode, dir.uid, dir.gid, w.node.uid) != 0) {
         return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);   /* the sticky bit too: /tmp */
     }

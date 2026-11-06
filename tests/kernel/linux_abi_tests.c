@@ -6803,6 +6803,82 @@ static void t_clone_during_exit_group(void) {
            "and one created otherwise is not");
 }
 
+/* #195: the parent of a name is found again to judge it; one that cannot be
+ * found again - swapped out from under the walk - is not a parent that
+ * allows. Both questions answered "yes" to that. */
+long linux_may_add(const vibeos_path_t *w);
+long linux_may_remove(const vibeos_path_t *w);
+
+static void t_parent_gone(void) {
+    vibeos_path_t w;
+    int me = fresh(87);
+
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 1000u;
+    memset(&w, 0, sizeof(w));
+    strcpy(w.path, "/no-such-directory/name");
+    w.tail = w.path;
+    expect(linux_may_add(&w) < 0, "a name whose parent cannot be found again is not one to create");
+    expect(linux_may_remove(&w) < 0, "nor one to remove");
+}
+
+/* #181: a directory descriptor whose directory was removed and another made
+ * at its name. A relative walk through the descriptor used its path, and so
+ * created in the newcomer. */
+static void t_dirfd_replaced(void) {
+    vibeos_fsmount_t *m = 0;
+    const char *tail = 0;
+    vibeos_fs_node_t n;
+    long dfd;
+
+    fresh(89);
+    expect(SYS2(83 /* mkdir */, ustr("/tmp/dirfd-old"), 0755u) == 0, "a directory");
+    dfd = SYS4(257 /* openat */, (uint64_t)-100, ustr("/tmp/dirfd-old"), 0x10000u /* O_DIRECTORY */, 0);
+    expect(dfd >= 0, "and a descriptor for it");
+    expect(SYS1(84 /* rmdir */, ustr("/tmp/dirfd-old")) == 0 &&
+               SYS2(83, ustr("/tmp/dirfd-old"), 0755u) == 0,
+           "removed, and another made at the name");
+    expect(SYS4(257, (uint64_t)dfd, ustr("made-here"), 0x42u /* O_CREAT | O_RDWR */, 0600u) ==
+               -VIBEOS_ENOENT,
+           "a creation through the old descriptor is ENOENT, as Linux says of a removed directory");
+    expect(vibeos_fs_resolve("/tmp/dirfd-old/made-here", &m, &tail) != 0 ||
+               vibeos_fs_lookup(m, tail[0] == '/' ? tail + 1 : tail, &n) != 0,
+           "and nothing was made in the new directory");
+    expect(SYS1(81 /* fchdir */, (uint64_t)dfd) == -VIBEOS_ENOENT, "nor does fchdir go to the new one");
+}
+
+/* #182: a descriptor whose file moved where its path does not follow, with
+ * another file put at the old name. linkat(AT_EMPTY_PATH) links by name, and
+ * must refuse rather than link the stranger. The move is made below the
+ * descriptors, as one too long for a description's path is. */
+static void t_link_stale_name(void) {
+    vibeos_fsmount_t *m = 0;
+    const char *tail = 0;
+    vibeos_fs_node_t n;
+    long fd, other;
+
+    fresh(88);
+    fd = SYS4(257 /* openat */, (uint64_t)-100, ustr("/tmp/stale-a"), 0x42u /* O_CREAT | O_RDWR */, 0600u);
+    expect(fd >= 0, "a file, and a descriptor for it");
+    expect(vibeos_fs_resolve("/tmp/stale-a", &m, &tail) == 0, "its mount");
+    while (*tail == '/') {
+        tail++;
+    }
+    expect(vibeos_fs_rename(m, tail, "stale-moved", 0) == 0, "moved where the descriptor does not follow");
+    other = SYS4(257, (uint64_t)-100, ustr("/tmp/stale-a"), 0x42u, 0600u);
+    expect(other >= 0, "and somebody else's file at the old name");
+    expect(SYS5(265 /* linkat */, (uint64_t)fd, ustr(""), (uint64_t)-100, ustr("/tmp/stale-link"),
+                0x1000u /* AT_EMPTY_PATH */) == -VIBEOS_ENOENT,
+           "linkat AT_EMPTY_PATH of that descriptor refuses, rather than linking the stranger");
+    expect(vibeos_fs_lookup(m, "stale-link", &n) != 0, "and no link was made");
+    {
+        uint64_t sb = kf_ualloc(sizeof(linux_stat_t)), ob = kf_ualloc(sizeof(linux_stat_t));
+
+        expect(SYS2(5 /* fstat */, (uint64_t)fd, sb) == 0 && SYS2(5, (uint64_t)other, ob) == 0 &&
+                   ((linux_stat_t *)kf_uptr(sb))->st_ino != ((linux_stat_t *)kf_uptr(ob))->st_ino,
+               "fstat of the descriptor reports its own file, not the one now at its old name");
+    }
+}
+
 /* #192: get_robust_list answers for the thread that was found. Right after
  * the lookup lets the scheduler's lock go, the thread ends and its slot goes
  * to a root process with a list of its own; what comes back must be the
@@ -7053,6 +7129,9 @@ int test_linux_handlers(void) {
     t_ioctl_judged();
     t_issue_creds();
     t_robust_list_recycled();
+    t_link_stale_name();
+    t_dirfd_replaced();
+    t_parent_gone();
     t_clone_during_exit_group();
     t_nproc_concurrent();
     t_mq_len_unsigned();

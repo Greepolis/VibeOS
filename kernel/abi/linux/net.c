@@ -384,7 +384,7 @@ static long linux_sys_bind(uint64_t fd, uint64_t addr, uint64_t len) {
             if ((r = vibeos_fs_mknod(w.mnt, w.tail, VIBEOS_S_IFSOCK | (0777u & ~linux_umask()), &node)) != 0) {
                 goto out;
             }
-            linux_own_new(&w);
+            linux_own_node(&w, &node);
         }
     }
     r = f->ops->sockops->bind(f, &a);

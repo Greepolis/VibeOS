@@ -2,17 +2,32 @@
 # its old name now leads to. Host test: t_fork_snapshot_and_groups in
 # tests/kernel/linux_abi_tests.c.
 #
-#  1. fstat asks the name. Expect "fstat reports the descriptor's file, not the
-#     one now at its old name".
+#  1. fstat asks the name. Expect "fstat of the descriptor reports its own file,
+#     not the one now at its old name" (t_link_stale_name, #182).
 #
 # Target source: kernel/abi/files/regular.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/files/regular.c scripts/dev/cases/abi-fd-identity-stat.txt
 
 ### fstat asks the name
+# Since #182 the name is asked only if it still reaches the descriptor's
+# file, which by itself makes asking it safe: the case breaks both, or the
+# second defence absorbs the first one's removal.
 --- old
+static int regular_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
+    vibeos_fs_node_t node, held = node_of(f);
     int r = vibeos_fs_getattr(f->mnt, &held, &node);
+
+    if (r == -VIBEOS_ENOSYS) {
+        r = vibeos_fs_lookup(f->mnt, tail_of(f), &node);
+        if (r == 0 && f->node != 0u && node.id != f->node) {
 +++ new
+static int regular_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
+    vibeos_fs_node_t node, held = node_of(f);
     int r = -VIBEOS_ENOSYS;
+
+    if (r == -VIBEOS_ENOSYS) {
+        r = vibeos_fs_lookup(f->mnt, tail_of(f), &node);
+        if (0) {
 
 ### a delete-on-close removes whatever is at the path now (v7 review)
 --- old

@@ -99,3 +99,13 @@ static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t 
                 if (dir != 0u && size != 0u && !linux_ioctl_arg(arg, size, (dir & 2u) != 0u)) {
 +++ new
                 if (0 && dir != 0u && size != 0u && !linux_ioctl_arg(arg, size, (dir & 2u) != 0u)) {
+
+### a relative walk goes through a directory descriptor whose directory is gone (#181)
+--- old
+        if (vibeos_file_dir_moved(f)) {
+            vibeos_file_put(f);
+            return -VIBEOS_ENOENT;   /* its directory is not at its path now (#181) */
++++ new
+        if (0) {
+            vibeos_file_put(f);
+            return -VIBEOS_ENOENT;   /* its directory is not at its path now (#181) */

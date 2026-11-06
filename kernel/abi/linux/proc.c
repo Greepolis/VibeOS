@@ -1051,6 +1051,11 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
         if (pr == 0 && (w.node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK) {
             pr = -VIBEOS_ELOOP;   /* AT_SYMLINK_NOFOLLOW, and the name is a link */
         }
+        /* The program is loaded by name, so a descriptor's file must still be
+         * the one there: the name could be another program now (#182). */
+        if (pr == 0 && w.by_node && w.name_stale) {
+            pr = -VIBEOS_ENOENT;
+        }
         if (pr != 0) {
             (void)ks_exec_refuse(pr == -VIBEOS_ENOENT ? VIBEOS_EXEC_NOT_FOUND
                                                       : VIBEOS_EXEC_BAD_ARGS, name, "path");

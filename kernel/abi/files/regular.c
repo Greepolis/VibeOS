@@ -147,8 +147,20 @@ static long regular_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
 /* The file's size as the filesystem has it now: another description, or
  * another process, may have written since this one was opened. */
 static uint64_t regular_size(vibeos_file_t *f) {
-    vibeos_fs_node_t node;
-    if (vibeos_fs_lookup(f->mnt, tail_of(f), &node) == 0) {
+    vibeos_fs_node_t node, held = node_of(f);
+    int r = vibeos_fs_getattr(f->mnt, &held, &node);
+
+    /* Asked of the file, and of its name only where the filesystem cannot be
+     * asked otherwise - and then only if the name still reaches this file:
+     * a description moved further than its path can follow reported the
+     * size of whatever was put at the old name (issue #182). */
+    if (r == -VIBEOS_ENOSYS) {
+        r = vibeos_fs_lookup(f->mnt, tail_of(f), &node);
+        if (r == 0 && f->node != 0u && node.id != f->node) {
+            r = -VIBEOS_ENOENT;
+        }
+    }
+    if (r == 0) {
         f->size = node.size;
     }
     return f->size;
@@ -357,6 +369,9 @@ static int regular_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
 
     if (r == -VIBEOS_ENOSYS) {
         r = vibeos_fs_lookup(f->mnt, tail_of(f), &node);
+        if (r == 0 && f->node != 0u && node.id != f->node) {
+            r = -VIBEOS_ENOENT;   /* another file at the name now (#182) */
+        }
     }
     if (r == 0) {
         vibeos_file_stat_from_node(out, &node);
@@ -438,6 +453,12 @@ static int dir_readdir(vibeos_file_t *f, uint64_t index, vibeos_dirent_t *out) {
 
     if (index >= (1u << 20)) {
         return VIBEOS_READDIR_END;   /* no directory here is this long: a cursor gone wrong */
+    }
+    /* A listing starts from the directory this description opened, or not at
+     * all: listed by its path, a removed or moved one was served the
+     * entries of whatever stood at the name next (issue #181). */
+    if (index == 0u && vibeos_file_dir_moved(f)) {
+        return VIBEOS_READDIR_END;
     }
     vibeos_file_stat_clear(&st);
     if (index < 2u) {

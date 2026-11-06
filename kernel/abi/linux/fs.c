@@ -244,6 +244,10 @@ static long linux_walk_inputs(uint64_t dirfd, uint64_t upath, char *raw, char *r
             vibeos_file_put(f);
             return -VIBEOS_ENOTDIR;
         }
+        if (vibeos_file_dir_moved(f)) {
+            vibeos_file_put(f);
+            return -VIBEOS_ENOENT;   /* its directory is not at its path now (#181) */
+        }
         for (i = 0; i + 1u < VIBEOS_PATH_MAX && f->path[i]; i++) {
             base[i] = f->path[i];
         }
@@ -328,6 +332,7 @@ long linux_walk_fd(uint64_t fd, vibeos_path_t *w) {
                 w->exists = 1;
                 w->trailing_slash = 0;
                 w->by_node = 1;
+                w->name_stale = !vibeos_file_still_at_path(f);
             } else if (r != -VIBEOS_EIO) {
                 r = -VIBEOS_ENOENT;
             }
@@ -716,9 +721,17 @@ long linux_may_add(const vibeos_path_t *w) {
     vibeos_fs_node_t dir;
     vibeos_cred_t c;
 
+    long r;
+
     linux_cred(&c);
-    if (c.fsuid == 0u || linux_parent_of(w, &dir) != 0) {
+    if (c.fsuid == 0u) {
         return 0;
+    }
+    /* A parent that cannot be found again is not a parent that allows: it
+     * was answered as permission, so a directory swapped out from under the
+     * walk let anybody create in whatever stood there next (issue #195). */
+    if ((r = linux_parent_of(w, &dir)) != 0) {
+        return r;
     }
     return vibeos_cred_may_add(&c, dir.mode, dir.uid, dir.gid);
 }
@@ -727,14 +740,24 @@ long linux_may_remove(const vibeos_path_t *w) {
     vibeos_fs_node_t dir;
     vibeos_cred_t c;
 
+    long r;
+
     linux_cred(&c);
-    if (c.fsuid == 0u || linux_parent_of(w, &dir) != 0) {
+    if (c.fsuid == 0u) {
         return 0;
+    }
+    if ((r = linux_parent_of(w, &dir)) != 0) {
+        return r;   /* not a yes: see linux_may_add (issue #195) */
     }
     return vibeos_cred_may_remove(&c, dir.mode, dir.uid, dir.gid, w->node.uid);
 }
 
-void linux_own_new(const vibeos_path_t *w) {
+/* The new file `node` - the one the creation made, when the filesystem said
+ * which - is the caller's. Given to whatever stood at the name by now, the
+ * caller was handed a replacement somebody else had put there (issue #195);
+ * by node, the file that was made. A filesystem that cannot be asked by node,
+ * or a creation that did not say, falls back to the name. */
+void linux_own_node(const vibeos_path_t *w, const vibeos_fs_node_t *node) {
     vibeos_fs_attr_t attr;
     vibeos_cred_t c;
 
@@ -745,7 +768,14 @@ void linux_own_new(const vibeos_path_t *w) {
     attr.valid = VIBEOS_ATTR_UID | VIBEOS_ATTR_GID;
     attr.uid = c.fsuid;
     attr.gid = c.fsgid;
+    if (node && vibeos_fs_setattr_node(w->mnt, node, *w->tail ? w->tail : "/", &attr) != -VIBEOS_ENOSYS) {
+        return;
+    }
     (void)vibeos_fs_setattr(w->mnt, *w->tail ? w->tail : "/", &attr);
+}
+
+void linux_own_new(const vibeos_path_t *w) {
+    linux_own_node(w, 0);
 }
 
 long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode) {
@@ -782,7 +812,10 @@ long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64
         return err;
     }
     if (!w.exists) {
-        linux_own_new(&w);
+        vibeos_fs_node_t made = { 0 };
+
+        made.id = f->node;   /* the description holds the file it made */
+        linux_own_node(&w, f->node != 0u ? &made : 0);
     }
     return linux_fd_install(f, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
 }
@@ -2305,7 +2338,12 @@ static long linux_sys_fchdir(uint64_t fd) {
         return -VIBEOS_ENOTDIR;
     }
     /* Walked again from its path: the directory may have gone since it was
-     * opened, and a working directory is only set to one that exists. */
+     * opened, and a working directory is only set to one that exists - and
+     * is this descriptor's, not another put at its name (#181). */
+    if (vibeos_file_dir_moved(f)) {
+        vibeos_file_put(f);
+        return -VIBEOS_ENOENT;
+    }
     r = vibeos_path_walk("/", "/", f->path, 0u, &w);
     vibeos_file_put(f);
     return r != 0 ? r : linux_set_cwd(&w);

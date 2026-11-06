@@ -224,3 +224,9 @@
         return -VIBEOS_ENOSYS;
     }
 +++ new
+
+### linkat AT_EMPTY_PATH links whatever the stale name reaches now (#182)
+--- old
+    if (a.by_node && a.name_stale) {
++++ new
+    if (0) {
