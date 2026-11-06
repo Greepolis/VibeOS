@@ -84,6 +84,25 @@ static int drm_devfs(void) {
     return 0;
 }
 
+/*
+ * test_drm - kernel self-test for the DRM device and its ioctl surface.
+ *
+ * Coverage:
+ *   - devfs wiring: /dev/dri is a directory and /dev/dri/card0 is the DRM
+ *     character device (drm_devfs, called first);
+ *   - capabilities: GET_CAP reports dumb-buffer support and preferred depth,
+ *     and rejects unknown capabilities;
+ *   - dumb buffers: MODE_CREATE_DUMB returns a handle and geometry,
+ *     MODE_MAP_DUMB a page-aligned offset, and share_page hands back the
+ *     backing page;
+ *   - per-file GEM names (review M-082): GEM_FLINK mints a name scoped to the
+ *     opening file, another file cannot open it, the owning file can reopen it,
+ *     and the name disappears with the buffer;
+ *   - error paths: unknown handles and name zero are refused on every ioctl;
+ *   - boot path: vibeos_drm_boot_smoke walks /dev/dri/card0 open/ioctl/mmap
+ *     end to end, proving the path the real boot will use (reviewer note on
+ *     PR #165).
+ */
 int test_drm(void) {
     struct vibeos_drm_get_cap cap;
     struct vibeos_drm_mode_create_dumb create;
@@ -119,6 +138,7 @@ int test_drm(void) {
         return -1;
     }
 
+    /* Capabilities: GET_CAP reports what the driver supports. */
     memset(&cap, 0, sizeof(cap));
     cap.capability = VIBEOS_DRM_CAP_DUMB_BUFFER;
     if (!expect(drm_call(f1, VIBEOS_DRM_IOCTL_GET_CAP, &cap) == 0 && cap.value == 1u,
@@ -138,6 +158,7 @@ int test_drm(void) {
         return -1;
     }
 
+    /* Allocate and map a dumb buffer; the handle is local to this open file. */
     memset(&create, 0, sizeof(create));
     create.width = 4;
     create.height = 4;
@@ -164,6 +185,7 @@ int test_drm(void) {
     }
     ((uint32_t *)page1)[0] = 0x5a5a5a5au;
 
+    /* GEM names are per-file (M-082): flink a handle, then prove the boundary. */
     memset(&flink, 0, sizeof(flink));
     flink.handle = create.handle;
     if (!expect(drm_call(f1, VIBEOS_DRM_IOCTL_GEM_FLINK, &flink) == 0 &&
@@ -301,5 +323,13 @@ int test_drm(void) {
         return -1;
     }
     vibeos_file_put(f3);
+
+    /* Boot path: walk /dev/dri/card0 open/ioctl/mmap end to end through the
+     * exported smoke routine, so the in-kernel path the machine boot uses is
+     * covered even on the fake harness (reviewer note on PR #165). */
+    if (!expect(vibeos_drm_boot_smoke() == 0,
+                "vibeos_drm_boot_smoke walks /dev/dri/card0 end to end")) {
+        return -1;
+    }
     return 0;
 }

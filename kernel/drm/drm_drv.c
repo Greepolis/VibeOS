@@ -615,3 +615,79 @@ vibeos_file_t *vibeos_drm_open(uint32_t flags, long *err) {
     *err = 0;
     return f;
 }
+
+/*
+ * Boot-time smoke test for the DRM path.
+ *
+ * Reviewer note on PR #165: prove the open/ioctl/mmap path works on the
+ * machine, not only under the fake harness. This drives the device the way a
+ * real client does - through the /dev/dri/card0 devfs node - and round-trips a
+ * byte through a mapped dumb buffer, so a bad wiring of chrdev, devfs or the
+ * ioctl table fails loudly at boot instead of only under the test build.
+ *
+ * Call once during bring-up, after devfs is populated and /dev/dri/card0
+ * exists; it runs from the boot task and is side-effect free apart from the
+ * file it opens and closes. Returns 0 on success, a negative errno otherwise.
+ */
+int vibeos_drm_boot_smoke(void) {
+    vibeos_path_t walk;
+    vibeos_file_t *f;
+    long err = 0;
+    struct vibeos_drm_get_cap cap;
+    struct vibeos_drm_mode_create_dumb create;
+    struct vibeos_drm_mode_map_dumb map;
+    void *page = 0;
+    uint32_t *p;
+
+    if (vibeos_path_walk("/", "/", "/dev/dri/card0", 0, &walk) != 0 ||
+        walk.node.rdev != VIBEOS_DEV_DRM_CARD0) {
+        return -VIBEOS_ENODEV;
+    }
+    f = vibeos_open_path(&walk, VIBEOS_O_RDWR, 0, &err);
+    if (!f || err != 0) {
+        if (f) {
+            vibeos_file_put(f);
+        }
+        return (int)err ? (int)err : -VIBEOS_ENODEV;
+    }
+
+    drm_zero(&cap, sizeof(cap));
+    cap.capability = VIBEOS_DRM_CAP_DUMB_BUFFER;
+    if (f->ops->ioctl(f, VIBEOS_DRM_IOCTL_GET_CAP, (uint64_t)(uintptr_t)&cap) != 0 ||
+        cap.value != 1u) {
+        vibeos_file_put(f);
+        return -VIBEOS_EINVAL;
+    }
+
+    drm_zero(&create, sizeof(create));
+    create.width = 4;
+    create.height = 4;
+    create.bpp = 32;
+    if (f->ops->ioctl(f, VIBEOS_DRM_IOCTL_MODE_CREATE_DUMB, (uint64_t)(uintptr_t)&create) != 0 ||
+        create.handle == 0u) {
+        vibeos_file_put(f);
+        return -VIBEOS_EINVAL;
+    }
+
+    drm_zero(&map, sizeof(map));
+    map.handle = create.handle;
+    if (f->ops->ioctl(f, VIBEOS_DRM_IOCTL_MODE_MAP_DUMB, (uint64_t)(uintptr_t)&map) != 0 ||
+        map.offset == 0u) {
+        vibeos_file_put(f);
+        return -VIBEOS_EINVAL;
+    }
+
+    if (f->ops->share_page(f, map.offset, &page) != 0 || !page) {
+        vibeos_file_put(f);
+        return -VIBEOS_EINVAL;
+    }
+    p = (uint32_t *)page;
+    p[0] = 0x12345678u;
+    if (p[0] != 0x12345678u) {
+        vibeos_file_put(f);
+        return -VIBEOS_EIO;
+    }
+
+    vibeos_file_put(f);
+    return 0;
+}
