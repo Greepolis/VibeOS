@@ -900,6 +900,10 @@ uint32_t kf_kill_group_signal(void) {
 }
 
 void ks_lock(vibeos_lock_t *l, const char *fn) { (void)fn; l->locked++; g_lock_depth++; }
+static void (*g_sched_unlock_hook)(void);
+
+void kf_on_sched_unlock(void (*fn)(void)) { g_sched_unlock_hook = fn; }
+
 void ks_unlock(vibeos_lock_t *l) {
     if (l->locked <= 0) {
         g_lock_bad++;
@@ -907,6 +911,12 @@ void ks_unlock(vibeos_lock_t *l) {
     }
     l->locked--;
     g_lock_depth--;
+    if (l == ks_sched_lock() && l->locked == 0 && g_sched_unlock_hook) {
+        void (*fn)(void) = g_sched_unlock_hook;
+
+        g_sched_unlock_hook = 0;   /* once, and not again from inside it */
+        fn();
+    }
 }
 /* A preemptible lock is not recursive on the machine: taking it again from
  * the task that holds it spins for ever. The fake's lock is a count and would

@@ -113,6 +113,11 @@ int kf_lock_imbalance(void);
 uint32_t kf_uaccess_under_mm(void);
 /* Run `fn` once, right after the next release of an address-space lock. */
 void kf_on_mm_unlock(void (*fn)(vibeos_procstate_t *ps));
+/* Run `fn` once, right after the next release of the scheduler's lock: the
+ * moment a slot found under that lock can change hands on the machine. */
+void kf_on_sched_unlock(void (*fn)(void));
+/* A slot's tenancy moves on: what an exit and a reuse do to its sequence. */
+void kf_retire(int slot);
 uint64_t kf_exit_code(void);
 /* The current task runs for `ticks`, in user mode (user != 0) or in the kernel. */
 void kf_cpu(uint32_t ticks, int user);
