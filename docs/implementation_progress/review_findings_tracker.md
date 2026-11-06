@@ -298,6 +298,26 @@ global pools: every new table declares its per-process quota.
 | M-138 | L | Registry hives, four notes (agent): a hive past 1 MiB + 64 KiB is never saved and every later call serialises it again under `g_io`; a hive loaded deeper than the limit leaves unwritten bytes in NtQueryKey's buffer; hives are written with the kernel's authority to fixed paths; `find_child` is linear in siblings | **fixed** (2026-11-04), three of four. A hive's depth is bounded along the whole path at load, and the path NtQueryKey builds is measured with the bound it is written with (`t_deep_load`). A hive too large to save is tried again after a minute, not every second, and said once. Lookups compare a hash of the folded name before reading one (`nt-registry.txt`, two cases red). Saving and loading a hive past the 1 MiB staging buffer needs both to stream: WO-093. The fixed paths written with the kernel's authority are not a hole while the root is FAT, which has no permissions to bypass; they move to `/var/lib/windows` with the hierarchy (F1) | `kernel/abi/nt/key.c`, `registry/reg.c` |
 | M-139 | L | CONTEXT_FULL includes FLOATING_POINT, and the FP/XMM state is neither saved nor restored by APCs, exceptions or NtContinue (agent). Correctness, not security | **fixed** (2026-11-04): an APC's context, a fault's, and NtGetContextThread with FLOATING_POINT take the x87/SSE state into FltSave and MxCsr; NtContinue and NtSetContextThread put it back through `ks_fpu_restore`, which clears what FXRSTOR would fault on. A raised exception keeps the FltSave its caller captured. `t_apc_fpu`; two cases in `nt-apc.txt` red | `kernel/abi/nt/thread.c`, `apc.c`, `except.c` |
 
+## Sixteenth review (2026-11-06, v9, of HEAD ec70dbac)
+
+Static reading, no build; score 8/10 (from 7.5). H-040 and H-041 read back as
+correct. M-134..M-139 not re-read one by one. The new findings are in the ext4
+reader (`kernel/fs/ext2.c`), and each repeats a class already seen on ext2: an
+unbounded index, a partition bound that is not applied, a directory scan whose
+limit is not a limit. Each was checked against the current tree before being
+recorded - none had been closed by ext4 step 2. The reviewer would go to 8.5
+with the three ext4 points closed and the per-process pool-quota gate (M-134)
+made automatic.
+
+| ID | Sev | Finding | Status | Evidence / next step |
+|---|---|---|---|---|
+| H-042 | H | `ext2_map_indirect`'s triple-indirect branch has no `n < per^3`: the index into the 4 KiB pointer block on the stack reaches ~16 KiB with 4 KiB blocks and 256 KB with 1 KiB blocks - through the guard page, a ring-0 fault - and the value read is used as a block number, an oracle on stack bytes. Reachable by `read()` on a volume with a large `i_size_high` (#19's guard lets `bi` reach 0xFFFFFFFF) | **fixed** (2026-11-06): refused before anything is read. `test_ext2_triple_indirect_bound` asserts no off-volume read is even attempted; case in `fs-ext2-names.txt` red | `kernel/fs/ext2.c` |
+| M-140 | M | Neither ext2's nor ext4's mount applies the partition length (`(void)sectors`): reads are bounded by the superblock's own `blocks_count`, so a partition whose superblock claims more reads the next one - H-029's ext2 half, still open; and `part_lba + block * spb` can wrap for a 64-bit block number past 2^61 | **fixed** (2026-11-06): `ext2_fits_partition`, by division, in both descriptors' mounts; with no length known the product is kept inside 64 bits. `test_ext2_partition_bound` (one sector short refused, exact fit mounted); case in `fs-ext2-names.txt` red | `kernel/fs/ext2.c` |
+| M-141 | M | `ext2_dir_nblocks` bounds `n` by `blocks_count`, 64-bit with ext4, then casts to 32 bits: a count of 2^32 becomes 0 and the directory scans as empty (M-022 in 64 bits); just below it, 2^32 iterations in ring 0 (M-098's class) | **fixed in part** (2026-11-06): capped at 0xFFFFFFFF, so it can no longer wrap to empty. `test_ext2_dir_nblocks_64`; case red. The time a corrupt size can make a lookup spend is still bounded only by the volume's own block count: **open** | `kernel/fs/ext2.c` |
+| M-142 | L | Kernel stack depth (agent, uncertain): `ext2_read_inode` and `ext2_inode_table` each hold a 4 KiB block and nest - about 12.6 KB of locals on a 16 KiB stack before the syscall, VFS and an interrupt. A guard-page panic rather than corruption; `regular.c:50` still says "8 KiB or less" | **open**: measure with `-fstack-usage` before changing anything | `kernel/fs/ext2.c`, `kernel/abi/files/regular.c` |
+| M-143 | M | An inode's mode, uid and gid are not read: `ext2_op_stat` fills id, size and is_dir, and `fs_node_complete` synthesises 0644/0755 and uid 0 - a root 0600 file on ext2/ext4 is readable by everyone, and FIFOs, sockets and symlinks appear as regular files. Already step 2 of ext4.md; blocking now that the plan makes ext4 the native root | **open**, before ext4 serves real data | `kernel/fs/ext2.c`, `kernel/fs/vfs.c` |
+| M-144 | L | Minor (agent): a directory block's checksum is skipped when the last dirent covers the tail's position; mapping errors swallowed in listing and lookup (ENOENT or a short list instead of EIO); unsorted or overlapping extents not refused (memory-safe) | **open** | `kernel/fs/ext2.c` |
+
 ## Found internally while verifying the above
 
 | What | Status | Evidence / next step |
