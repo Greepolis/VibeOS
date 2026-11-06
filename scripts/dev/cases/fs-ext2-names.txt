@@ -38,3 +38,21 @@
 +++ new
     __atomic_store_n(slot_key, 0u, __ATOMIC_RELAXED);
     __atomic_store_n(seq, s + 2u, __ATOMIC_RELEASE);
+
+### an index past the triple-indirect tree is looked up in it (review v9 point 1)
+--- old
+    if ((uint64_t)n >= (uint64_t)per * per * per) {
++++ new
+    if (0) {
+
+### a volume larger than its partition is mounted (review v9 point 2)
+--- old
+        return fs->blocks_count <= sectors / spb;
++++ new
+        return 1;
+
+### a directory of 2^32 blocks counts as none (review v9 point 3)
+--- old
+    if (n > 0xFFFFFFFFull) {
++++ new
+    if (0) {

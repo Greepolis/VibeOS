@@ -541,6 +541,13 @@ static int ext2_map_indirect(vibeos_ext2_t *fs, const uint8_t *inode, uint32_t n
         return 0;
     }
     n -= per * per;
+    /* The triple-indirect tree holds per^3 blocks and no more. Without this
+     * an index past it read the pointer block's neighbours on the stack -
+     * 256 KB past it with 1 KiB blocks, through the guard page - and used
+     * what it found as a block number (review v9, point 1). */
+    if ((uint64_t)n >= (uint64_t)per * per * per) {
+        return -1;
+    }
     {
         uint32_t tind = rd32(inode + 40u + 14u * 4u);
         uint32_t a, b;
@@ -600,6 +607,12 @@ uint32_t ext2_dir_nblocks(const vibeos_ext2_t *fs, uint64_t size) {
     uint64_t n = size / fs->block_size + ((size % fs->block_size) != 0u ? 1u : 0u);
     if (n > fs->blocks_count) {
         n = fs->blocks_count;
+    }
+    /* blocks_count is 64-bit with ext4: a count of 2^32 cast to 32 bits was
+     * 0, a directory that scanned as empty (M-022 again, review v9 point 3).
+     * The largest the scan can say is the largest it can count. */
+    if (n > 0xFFFFFFFFull) {
+        n = 0xFFFFFFFFull;
     }
     return (uint32_t)n;
 }
@@ -902,13 +915,35 @@ const vibeos_fs_ops_t *vibeos_ext2_ops(void) {
 _Static_assert(sizeof(vibeos_ext2_t) <= VIBEOS_FS_STATE_BYTES,
                "ext2's state must fit the storage a volume supplies");
 
+/* The volume must fit the partition it was found in. Reads are bounded by the
+ * superblock's blocks_count, which is the volume's own claim: a 100 MiB
+ * partition whose superblock says more read the next partition (review v9
+ * point 2, H-029's ext2 half). Checked by division, so a 64-bit
+ * blocks_count cannot wrap the product. With no partition length known
+ * (`sectors` 0) the product is still kept inside 64 bits, or part_lba +
+ * block * sectors_per_block wraps for a block number past 2^61. */
+static int ext2_fits_partition(const vibeos_ext2_t *fs, uint64_t sectors) {
+    uint64_t spb = fs->block_size / VIBEOS_BLOCK_SIZE;
+
+    if (spb == 0u) {
+        return 0;
+    }
+    if (sectors != 0u) {
+        return fs->blocks_count <= sectors / spb;
+    }
+    return fs->blocks_count <= (0xFFFFFFFFFFFFFFFFull - fs->part_lba) / spb;
+}
+
 static int ext2_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
                               uint64_t first_lba, uint64_t sectors, void *state)
 {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)state;
 
-    (void)sectors;
     if (fs == 0 || vibeos_ext2_mount(fs, bc, first_lba) != 0) {
+        return -1;
+    }
+    if (!ext2_fits_partition(fs, sectors)) {
+        fs->mounted = 0;
         return -1;
     }
     /* Under its own name only: a volume with extents or 64-bit numbers is
@@ -926,8 +961,11 @@ static int ext4_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
 {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)state;
 
-    (void)sectors;
     if (fs == 0 || vibeos_ext2_mount(fs, bc, first_lba) != 0) {
+        return -1;
+    }
+    if (!ext2_fits_partition(fs, sectors)) {
+        fs->mounted = 0;
         return -1;
     }
     /* The writer decides here, once, whether this volume is one it keeps true:

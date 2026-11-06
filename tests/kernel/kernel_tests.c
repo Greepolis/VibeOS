@@ -7419,6 +7419,90 @@ static int test_ext2_dir_size_wrap(void) {
     return 0;
 }
 
+/* Review v9, points 1-3, on the ext2/ext4 reader. */
+uint32_t ext2_dir_nblocks(const vibeos_ext2_t *fs, uint64_t size);
+const vibeos_fs_driver_t *vibeos_ext2_fs_driver(void);
+
+/* Point 1: an index past the triple-indirect tree is refused before anything
+ * is read. "big" gets a size far past per^3 blocks and a triple-indirect
+ * pointer off the volume: a walker that goes into the tree for such an index
+ * asks for that block, and the off-volume read is counted; one that knows the
+ * tree's size asks for nothing. */
+static int test_ext2_triple_indirect_bound(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fs_node_t node;
+    vibeos_fsmount_t mnt;
+    uint8_t buf[16];
+    uint64_t before, at;
+
+    if (e2_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    e2_w32(e2_inode(12) + 108, 0x00100000u);           /* i_size_high: 2^52 bytes */
+    e2_w32(e2_inode(12) + 40 + 14u * 4u, 0x00FFFFF0u); /* triple indirect, off the volume */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ext2_ops(), &fs, "ext2") != 0 ||
+        vibeos_fs_lookup(&mnt, "big", &node) != 0) {
+        return -1;
+    }
+    /* 1 KiB blocks: per = 256, the tree ends at 12 + 256 + 256^2 + 256^3. */
+    at = (12ull + 256u + 65536u + 16777216u + 5u) * E2_BLOCK;
+    before = vibeos_mbz_count(VIBEOS_MBZ_EXT2_BAD_METADATA);
+    if (vibeos_fs_read_at(&mnt, &node, at, buf, sizeof(buf)) > 0) {
+        return -1;
+    }
+    if (vibeos_mbz_count(VIBEOS_MBZ_EXT2_BAD_METADATA) != before) {
+        printf("FAIL:ext2 an index past the triple-indirect tree was looked up in it\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Point 2: a superblock that claims more blocks than its partition holds is
+ * not mounted - reads are bounded by that claim, so they would reach the next
+ * partition. */
+static int test_ext2_partition_bound(void) {
+    vibeos_ext2_t fs, state;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    const uint64_t sectors = (uint64_t)E2_BLOCKS * (E2_BLOCK / VIBEOS_BLOCK_SIZE);
+
+    if (e2_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    memset(&state, 0, sizeof(state));
+    if (vibeos_ext2_fs_driver()->mount(&mnt, &bc, 0, sectors - 1u, &state) == 0) {
+        printf("FAIL:ext2 a volume larger than its partition was mounted\n");
+        return -1;
+    }
+    memset(&state, 0, sizeof(state));
+    if (vibeos_ext2_fs_driver()->mount(&mnt, &bc, 0, sectors, &state) != 0) {
+        printf("FAIL:ext2 a volume that fits its partition exactly was refused\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Point 3: a directory count of 2^32 blocks, possible once blocks_count is
+ * 64-bit, does not become 0 - a directory that scans as empty. */
+static int test_ext2_dir_nblocks_64(void) {
+    vibeos_ext2_t fs;
+
+    memset(&fs, 0, sizeof(fs));
+    fs.block_size = 1024u;
+    fs.blocks_count = 1ull << 40;
+    if (ext2_dir_nblocks(&fs, (1ull << 32) * 1024u) != 0xFFFFFFFFu) {
+        printf("FAIL:ext2 a directory of 2^32 blocks counted as %u\n",
+               ext2_dir_nblocks(&fs, (1ull << 32) * 1024u));
+        return -1;
+    }
+    return 0;
+}
+
 static int test_ext2_refusals(void) {
     vibeos_ext2_t fs;
     vibeos_blockcache_t bc;
@@ -10434,6 +10518,9 @@ int main(void) {
     RUN_TEST(test_ext2_list_name_bounded);
     RUN_TEST(test_ext2_dir_size_wrap);
     RUN_TEST(test_ext2_refusals);
+    RUN_TEST(test_ext2_triple_indirect_bound);
+    RUN_TEST(test_ext2_partition_bound);
+    RUN_TEST(test_ext2_dir_nblocks_64);
     RUN_TEST(test_ext2_block_pointer_outside_volume);
     RUN_TEST(test_iso_lookup_and_read);
     RUN_TEST(test_iso_dir_length_wrap);
