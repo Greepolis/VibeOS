@@ -8210,6 +8210,54 @@ static int test_exfat_list(void) {
     return 0;
 }
 
+/* #159: a set that starts at the end of one cluster and ends in the next is
+ * legal exFAT. The scan read it as the end of the directory, so that file and
+ * every one after it disappeared from lookup and listing. The root goes on in
+ * cluster 50; SPLIT.TXT has two entries in cluster 2 and its name in 50, and
+ * AFTER.TXT follows it there. */
+static int test_exfat_split_set(void) {
+    vibeos_exfat_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    char name[VIBEOS_FS_NAME_MAX];
+    uint64_t size = 0;
+    int is_dir = 0;
+    uint8_t set[96];
+    uint8_t *root, *more;
+
+    if (xf_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_exfat_ops(), &fs, "exfat") != 0) {
+        return -1;
+    }
+    root = xf_cluster(2);
+    more = xf_cluster(50);
+    root[384] = 0x05u;   /* deleted entries between the malformed set and the split one */
+    root[416] = 0x05u;
+    memset(set, 0, sizeof(set));
+    if (xf_entry(set, "SPLIT.TXT", 40u, 10u, 0, 0) != 96u) {
+        return -1;
+    }
+    memcpy(root + 448, set, 64);
+    memcpy(more, set + 64, 32);
+    (void)xf_entry(more + 32, "AFTER.TXT", 40u, 10u, 0, 0);
+    xf_fat_set(2u, 50u);
+    xf_fat_set(50u, 0xFFFFFFFFu);
+
+    if (vibeos_fs_lookup(&mnt, "split.txt", &node) != 0 || node.size != 10u ||
+        vibeos_fs_lookup(&mnt, "after.txt", &node) != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 3, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "SPLIT.TXT") != 0 ||
+        vibeos_fs_list(&mnt, "/", 4, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "AFTER.TXT") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_exfat_refusals(void) {
     vibeos_exfat_t fs;
     vibeos_blockcache_t bc;
@@ -8855,6 +8903,46 @@ static int test_ntfs_index_offset_wrap(void) {
     }
     if (vibeos_mbz_count(VIBEOS_MBZ_NTFS_BAD_METADATA) == before) {
         printf("FAIL:ntfs an impossible index offset was refused without being counted\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* #160: an index entry's name is bounded by the entry's own length. The root's
+ * first entry, RESIDENT.TXT, is 112 bytes - room for fifteen characters after
+ * its fixed part; claiming twenty takes the last ten bytes from BIG.BIN's
+ * entry. Bounded only by the node, that was accepted and the walk went on.
+ * It is a malformed index, refused and counted. */
+static int test_ntfs_index_name_in_entry(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint64_t before;
+    uint8_t *first;
+
+    if (nt_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    first = nt_record(5) + 64 + 32 + 32;
+    if (nt_r16(first + 8) != 112u) {
+        printf("FAIL:ntfs the fixture's first index entry is not the 112 bytes this test assumes\n");
+        return -1;
+    }
+    first[80] = 20u;
+    vibeos_blockcache_invalidate(&bc);
+    before = vibeos_mbz_count(VIBEOS_MBZ_NTFS_BAD_METADATA);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "BIG.BIN", &node) == 0) {
+        printf("FAIL:ntfs an entry whose name outruns it was walked past\n");
+        return -1;
+    }
+    if (vibeos_mbz_count(VIBEOS_MBZ_NTFS_BAD_METADATA) == before) {
+        printf("FAIL:ntfs a name past its entry was refused without being counted\n");
         return -1;
     }
     return 0;
@@ -10355,6 +10443,7 @@ int main(void) {
     RUN_TEST(test_exfat_cyclic_directory);
     RUN_TEST(test_exfat_list);
     RUN_TEST(test_exfat_refusals);
+    RUN_TEST(test_exfat_split_set);
     RUN_TEST(test_exfat_cluster_arithmetic_bounds);
     RUN_TEST(test_exfat_partition_bound);
     RUN_TEST(test_ntfs_mount_and_read);
@@ -10364,6 +10453,7 @@ int main(void) {
     RUN_TEST(test_ntfs_index_root_wrap);
     RUN_TEST(test_ntfs_read_bounded_by_volume);
     RUN_TEST(test_ntfs_index_offset_wrap);
+    RUN_TEST(test_ntfs_index_name_in_entry);
     RUN_TEST(test_ntfs_run_header_sizes);
     RUN_TEST(test_journal_commit);
     RUN_TEST(test_journal_power_cut);

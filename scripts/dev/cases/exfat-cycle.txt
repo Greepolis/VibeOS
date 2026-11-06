@@ -73,3 +73,12 @@
             f == first && first != 0u && at <= index && cl != 0u) {
 +++ new
             first != 0u && at <= index && cl != 0u) {
+
+### a set across a cluster boundary ends the directory (#159)
+--- old
+            have++;
++++ new
+            have++;
+            if (off + 32u >= fs->cluster_bytes && need > 1u) {
+                return 0;
+            }

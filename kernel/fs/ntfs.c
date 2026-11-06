@@ -546,12 +546,17 @@ static int ntfs_index_walk(const uint8_t *base, uint32_t value_len,
         if (flags & 0x02u) {
             break;
         }
-        if (value_len - off < 82u) {
+        /* The key is the entry's own: bounded by the length it declares, not
+         * by the node. Against the node, an entry too short for its name
+         * borrowed the next entry's bytes for it, and a lookup of the next
+         * entry's name returned this one's reference (issue #160).
+         * entry_len <= value_len - off was checked above. */
+        if (entry_len < 82u) {
             vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, off);
             return -1;
         }
         name_chars = entry[80];
-        if ((uint32_t)name_chars * 2u > value_len - off - 82u) {
+        if ((uint32_t)name_chars * 2u > (uint32_t)entry_len - 82u) {
             vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, name_chars);
             return -1;
         }

@@ -64,3 +64,9 @@
     if ((s1 & 1u) != 0u || __atomic_load_n(&fs->cur_id, __ATOMIC_RELAXED) != id || id == 0u) {
 +++ new
     if ((s1 & 1u) != 0u || id == 0u) {
+
+### an index entry name is bounded by the node, not by its entry (#160)
+--- old
+        if ((uint32_t)name_chars * 2u > (uint32_t)entry_len - 82u) {
++++ new
+        if ((uint32_t)name_chars * 2u > value_len - off - 82u) {

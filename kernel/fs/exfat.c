@@ -274,14 +274,71 @@ typedef struct {
     char name[VIBEOS_FS_NAME_MAX + 1];
 } exfat_dirent_t;
 
+static uint32_t exfat_name_len(const char *n) {
+    uint32_t i = 0;
+
+    while (n[i]) {
+        i++;
+    }
+    return i;
+}
+
+/* The most entries a file's set can have that this driver decodes: the file
+ * entry, its stream entry and the seventeen name entries 255 characters take.
+ * A longer set - vendor extensions after the name - is skipped whole. */
+#define EXFAT_SET_MAX 19u
+
+/* A complete set, `n` entries starting with the file entry, into `out`; 0 if
+ * it is not one this driver can name (no stream entry second). */
+static int exfat_set_decode(const uint8_t *set, uint32_t n, exfat_dirent_t *out) {
+    const uint8_t *stream = set + 32u;
+    uint32_t name_pos = 0, k;
+    uint8_t name_len;
+
+    if (n < 2u || stream[0] != EXFAT_ENTRY_STREAM) {
+        return 0;
+    }
+    name_len = stream[3];
+    out->is_dir = (rd16(set + 4) & EXFAT_ATTR_DIRECTORY) ? 1 : 0;
+    out->contiguous = (stream[1] & EXFAT_FLAG_NO_FAT_CHAIN) ? 1 : 0;
+    out->first_cluster = rd32(stream + 20);
+    out->size = rd64(stream + 24);
+    /* The name entries are the set's third onwards, and no further: the
+     * entry after the set is somebody else's. */
+    for (k = 2; k < n && name_pos < VIBEOS_FS_NAME_MAX; k++) {
+        const uint8_t *ne = set + 32u * k;
+        uint32_t j;
+
+        if (ne[0] != EXFAT_ENTRY_NAME) {
+            continue;
+        }
+        for (j = 0; j < 15u && name_pos < name_len && name_pos < VIBEOS_FS_NAME_MAX; j++) {
+            uint16_t wc = rd16(ne + 2u + j * 2u);
+            /* Names are UTF-16. Anything outside ASCII becomes a marker
+             * rather than being truncated at the first wide character: half
+             * a name is worse than a marked one. */
+            out->name[name_pos++] = (wc < 0x80u) ? (char)wc : '?';
+        }
+    }
+    out->name[name_pos] = 0;
+    return 1;
+}
+
 /* Walk a directory's clusters, decoding entry sets. Returns 1 when the entry
  * at `want_index` was decoded, or when `want_name` matched; 0 when the
- * directory ended first; -1 when its chain loops or outruns the volume. */
+ * directory ended first; -1 when its chain loops or outruns the volume.
+ *
+ * The directory is one stream of 32-byte entries, and a set may begin near
+ * the end of one cluster and finish in the next - legal exFAT, which this
+ * scan used to read as the end of the directory, hiding that file and every
+ * one after it (issue #159). A set is gathered entry by entry, whichever
+ * cluster each comes from, and decoded once it is whole. */
 static int exfat_dir_scan(vibeos_exfat_t *fs, uint32_t dir_cluster, int dir_contig,
                           const char *want_name, uint32_t want_name_len,
                           uint32_t want_index, exfat_dirent_t *out) {
     uint8_t cluster[EXFAT_MAX_CLUSTER_BYTES];
-    uint32_t seen = 0;
+    uint8_t set[EXFAT_SET_MAX * 32u];
+    uint32_t seen = 0, have = 0, need = 0, skip = 0;
     exfat_walk_t walk;
     int more = 1;
 
@@ -299,76 +356,60 @@ static int exfat_dir_scan(vibeos_exfat_t *fs, uint32_t dir_cluster, int dir_cont
         }
         for (off = 0; off + 32u <= fs->cluster_bytes; off += 32u) {
             const uint8_t *e = cluster + off;
-            uint8_t type = e[0];
-            uint8_t secondary;
-            uint32_t name_pos = 0;
-            uint32_t k;
+            uint32_t i;
 
-            if (type == 0x00u) {
-                return 0;   /* end of the directory */
+            if (e[0] == 0x00u) {
+                return 0;   /* end of the directory, a set left half-read with it */
             }
-            if (type != EXFAT_ENTRY_FILE) {
-                continue;   /* deleted, or a bitmap/upcase entry */
+            if (skip != 0u) {
+                skip--;     /* the rest of a set too long to decode */
+                continue;
             }
-            /* A file is a set: this entry, a stream entry, and name entries.
-             * They must be read together or the file has no name and no size. */
-            secondary = e[1];
-            if (secondary < 1u || off + 32u * (secondary + 1u) > fs->cluster_bytes) {
-                /* A set straddling the end of a cluster is legal exFAT; this
-                 * driver does not handle it, and stopping is better than
-                 * decoding half a set into a plausible wrong file. */
-                return 0;
-            }
-            {
-                const uint8_t *stream = cluster + off + 32u;
-                uint16_t attrs = rd16(e + 4);
-                uint8_t name_len;
-
-                if (stream[0] != EXFAT_ENTRY_STREAM) {
+            if (need == 0u) {
+                if (e[0] != EXFAT_ENTRY_FILE) {
+                    continue;   /* deleted, or a bitmap/upcase entry */
+                }
+                /* A file is a set: this entry, a stream entry, and name
+                 * entries. They must be read together or the file has no
+                 * name and no size. */
+                if (e[1] < 1u) {
                     continue;
                 }
-                name_len = stream[3];
-                out->is_dir = (attrs & EXFAT_ATTR_DIRECTORY) ? 1 : 0;
-                out->contiguous = (stream[1] & EXFAT_FLAG_NO_FAT_CHAIN) ? 1 : 0;
-                out->first_cluster = rd32(stream + 20);
-                out->size = rd64(stream + 24);
-
-                for (k = 1; k <= secondary && name_pos < VIBEOS_FS_NAME_MAX; k++) {
-                    const uint8_t *ne = cluster + off + 32u * (k + 1u);
-                    uint32_t j;
-                    if (ne[0] != EXFAT_ENTRY_NAME) {
-                        continue;
-                    }
-                    for (j = 0; j < 15u && name_pos < name_len &&
-                                name_pos < VIBEOS_FS_NAME_MAX; j++) {
-                        uint16_t wc = rd16(ne + 2u + j * 2u);
-                        /* Names are UTF-16. Anything outside ASCII becomes a
-                         * marker rather than being truncated at the first wide
-                         * character: half a name is worse than a marked one. */
-                        out->name[name_pos++] = (wc < 0x80u) ? (char)wc : '?';
-                    }
+                if ((uint32_t)e[1] + 1u > EXFAT_SET_MAX) {
+                    skip = e[1];
+                    continue;
                 }
-                out->name[name_pos] = 0;
+                have = 0;
+                need = (uint32_t)e[1] + 1u;
             }
-            off += 32u * secondary;   /* skip the rest of the set */
-
+            for (i = 0; i < 32u; i++) {
+                set[32u * have + i] = e[i];
+            }
+            have++;
+            if (--need != 0u) {
+                continue;
+            }
+            if (!exfat_set_decode(set, have, out)) {
+                continue;
+            }
             if (want_name) {
-                uint32_t i;
-                if (name_pos != want_name_len) {
-                    goto next;
+                if (exfat_name_len(out->name) != want_name_len) {
+                    continue;
                 }
-                for (i = 0; i < name_pos; i++) {
+                for (i = 0; i < want_name_len; i++) {
                     if (exfat_upper(out->name[i]) != exfat_upper(want_name[i])) {
-                        goto next;
+                        break;
                     }
                 }
-                return 1;
-            } else if (seen == want_index) {
+                if (i == want_name_len) {
+                    return 1;
+                }
+                continue;
+            }
+            if (seen == want_index) {
                 return 1;
             }
             seen++;
-        next:
-            continue;
         }
         more = exfat_walk_next(fs, &walk, dir_contig);
     }
