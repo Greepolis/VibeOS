@@ -526,19 +526,26 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
         ((uint8_t *)tbl)[i] = 0;
     }
 
-    hdr->flags = (uint16_t)((5u & 0x1Fu) |          /* H2D FIS is 5 dwords */
-                            (write ? 0x40u : 0u));  /* W: guest -> device  */
-    hdr->prdtl = 1;
+    /* A command that moves no data - FLUSH CACHE EXT - has no PRDT entry at
+     * all, and no direction. It used to get one regardless, with a count of
+     * 0 - 1: 0xFFFFFFFF, reserved bits set, on the command the block layer
+     * trusts as its durability barrier. QEMU ignores the table for a no-data
+     * command; a controller may reject it (issue #178). */
+    hdr->flags = (uint16_t)((5u & 0x1Fu) |                      /* H2D FIS is 5 dwords */
+                            ((write && bytes != 0u) ? 0x40u : 0u)); /* W: guest -> device */
+    hdr->prdtl = bytes != 0u ? 1u : 0u;
     hdr->prdbc = 0;
     hdr->ctba = (uint32_t)(uintptr_t)tbl;
     hdr->ctbau = 0;
 
-    tbl->prdt[0].dba = (uint32_t)(uintptr_t)g_bounce;
-    tbl->prdt[0].dbau = 0;
-    /* The count is bytes minus one, and a driver that writes the plain byte
-     * count transfers one byte too many - which on a 512-byte read means the
-     * sector after it, silently. */
-    tbl->prdt[0].dbc = bytes - 1u;
+    if (bytes != 0u) {
+        tbl->prdt[0].dba = (uint32_t)(uintptr_t)g_bounce;
+        tbl->prdt[0].dbau = 0;
+        /* The count is bytes minus one, and a driver that writes the plain
+         * byte count transfers one byte too many - which on a 512-byte read
+         * means the sector after it, silently. 22 bits: 4 MiB at most. */
+        tbl->prdt[0].dbc = (bytes - 1u) & 0x003FFFFFu;
+    }
 
     fis[0] = 0x27;                       /* register FIS, host to device */
     fis[1] = 0x80;                       /* C: this is a command         */

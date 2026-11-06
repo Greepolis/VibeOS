@@ -41,3 +41,9 @@
 # So these lines are correct, load-bearing on metal, and unverifiable here.
 # The only evidence beyond the specification is that the same code also works
 # under VirtualBox's ICH8, which is a second implementation and not a test.
+
+# FLUSH CACHE EXT carries no data, and its command header has PRDTL 0 and no
+# PRDT entry (#178); it used to get one with a count of 0 - 1. No case was
+# written for it: on QEMU the boot passes either way as far as anything here
+# can observe, and the requirement is the specification's, not this
+# environment's.
