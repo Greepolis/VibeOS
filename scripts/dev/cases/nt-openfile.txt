@@ -123,13 +123,9 @@
 
 ### a directory listing forgets the mask after the first call (W4 step 5)
 --- old
-    } else if (first) {
-        f->nt_mask[0] = 0;
-    }
+    if (first && mask_u == 0u) {
 +++ new
-    } else {
-        f->nt_mask[0] = 0;
-    }
+    if (mask_u == 0u) {
 
 ### a restarted listing keeps its place (W4 step 5)
 --- old

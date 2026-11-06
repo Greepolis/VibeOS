@@ -30,3 +30,9 @@
 +++ new
         if (0 && vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_ZOMBIE) {
             target = -1;
+
+### a surrogate pair is spawned as two three-byte halves (#144)
+--- old
+            if (lo >= 0xDC00u && lo <= 0xDFFFu) {
++++ new
+            if (0) {

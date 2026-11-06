@@ -74,3 +74,9 @@
     if (h == 0u || (h & 3u) != 0u || h / 4u > (uint64_t)VIBEOS_FD_MAX) {
 +++ new
     if (h == 0u || h / 4u > (uint64_t)VIBEOS_FD_MAX) {
+
+### a duplicate into another process is left there when its number cannot be told (#158)
+--- old
+                nt_handle_uninstall_in(other, h, f);
++++ new
+                (void)0;

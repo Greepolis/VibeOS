@@ -449,6 +449,26 @@ static uint32_t nt_handle_install_in(vibeos_procstate_t *ps, vibeos_file_t *f, u
     return VIBEOS_STATUS_SUCCESS;
 }
 
+/* Undo nt_handle_install_in: handle `h` out of `ps`'s table, if it still
+ * holds `f` - the process may have closed it and had the number reused in
+ * between, and then the slot is its own. */
+static void nt_handle_uninstall_in(vibeos_procstate_t *ps, uint64_t h, const vibeos_file_t *f) {
+    vibeos_file_t *g = 0;
+    uint32_t fd;
+
+    if (!fd_of_handle(h, &fd)) {
+        return;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    if (vibeos_fdtable_get(&ps->files, fd) == f) {
+        g = vibeos_fdtable_remove(&ps->files, fd);
+    }
+    ks_unlock(&ps->files_lock);
+    if (g) {
+        vibeos_file_put(g);   /* after the lock: the last reference may do work */
+    }
+}
+
 /* NtDuplicateObject: from this process, into it or into another one a
  * process handle names with PROCESS_DUP_HANDLE (W6). The source is always the
  * caller's: taking a handle out of another process is not offered. */
@@ -489,8 +509,14 @@ static long nt_duplicate_object(uint64_t src_proc, uint64_t src, uint64_t dst_pr
                    : nt_handle_install(f, access, (uint32_t)attributes, &h);
         if (st == VIBEOS_STATUS_SUCCESS &&
             nt_copy_out(dst_u, &h, sizeof(h)) != 0) {
-            if (!other) {
-                (void)nt_close_handle(h);   /* in another process it is that process's now */
+            /* A handle nobody was told the number of is one nobody closes:
+             * taken back from the table it went into, which in another
+             * process is that process's - the caller's nt_close_handle would
+             * close an unrelated handle of its own (issue #158). */
+            if (other) {
+                nt_handle_uninstall_in(other, h, f);
+            } else {
+                (void)nt_close_handle(h);
             }
             st = VIBEOS_STATUS_ACCESS_VIOLATION;
         }

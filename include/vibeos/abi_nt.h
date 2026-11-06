@@ -111,4 +111,9 @@ int vibeos_nt_fault(struct ks_regs *frame, const struct vibeos_siginfo *why);
  * is abandoned, so the next waiter gets it with STATUS_ABANDONED (#147). */
 void vibeos_nt_thread_exit(int slot);
 
+/* The command line's and environment's conversion to UTF-8 in process
+ * creation, alone: bytes written to `out`, the NUL included, or -1. For the
+ * host tests (#144). */
+long vibeos_nt_spawn_utf8(uint64_t u, uint32_t n, uint8_t *out, uint32_t cap);
+
 #endif

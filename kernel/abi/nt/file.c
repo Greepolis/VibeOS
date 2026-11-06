@@ -1367,6 +1367,8 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
     uint32_t name_at = nt_dir_name_at((uint32_t)cls), used = 0, last = 0, st, cap, entries = 0, k0;
     vibeos_file_t *f;
     int first, short_of = 0;
+    uint64_t pos0;
+    char mask0[sizeof(((vibeos_file_t *)0)->nt_mask)];
 
     if (apc != 0u) {
         return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);   /* W5's */
@@ -1390,6 +1392,11 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
         return NT_STATUS(st);
     }
     vibeos_file_pos_take(f);
+    /* Where the stream stood, for a result the caller never received. */
+    pos0 = f->pos;
+    for (k0 = 0; k0 < sizeof(mask0); k0++) {
+        mask0[k0] = f->nt_mask[k0];
+    }
     first = restart || f->pos == 0u;
     if (first && mask_u != 0u) {
         /* UNICODE_STRING: Length (bytes) at 0, Buffer at 8. Read whole into
@@ -1516,11 +1523,21 @@ static long nt_query_directory_file(uint64_t file, uint64_t event, uint64_t apc,
     st = short_of ? VIBEOS_STATUS_BUFFER_OVERFLOW
        : entries != 0u ? VIBEOS_STATUS_SUCCESS
        : first ? VIBEOS_STATUS_NO_SUCH_FILE : VIBEOS_STATUS_NO_MORE_FILES;
-    vibeos_file_pos_give(f);
-    vibeos_file_put(f);
+    /* Copied out while the position is still ours: a buffer that faults
+     * puts the stream back where it was, or the entries it held would be
+     * skipped by the retry (issue #161) - and the lock is what keeps that
+     * from undoing a concurrent query's progress. */
     if (used != 0u && nt_copy_out(out, b, used) != 0) {
+        f->pos = pos0;
+        for (k0 = 0; k0 < sizeof(mask0); k0++) {
+            f->nt_mask[k0] = mask0[k0];
+        }
+        vibeos_file_pos_give(f);
+        vibeos_file_put(f);
         return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
     }
+    vibeos_file_pos_give(f);
+    vibeos_file_put(f);
     if (event != 0u) {
         (void)nt_io_event(event, 1);
     }

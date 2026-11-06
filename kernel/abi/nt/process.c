@@ -362,10 +362,31 @@ static long spawn_utf8(spawn_blk_t *k, uint64_t u, uint32_t n) {
             return -1;
         }
         c = c16;
-        if (k->at + 4u >= k->cap) {
+        /* A high surrogate followed by a low one is one character past
+         * U+FFFF: each half was encoded on its own, six bytes no reader takes
+         * for the character (issue #144). A half without its pair is kept as
+         * it was, three bytes: Windows accepts ill-formed UTF-16, and a process
+         * should not fail to start over a name. */
+        if (c16 >= 0xD800u && c16 <= 0xDBFFu && i + 1u < n) {
+            uint16_t lo;
+
+            if (nt_copy_in(&lo, u + 2u * (i + 1u), 2u) != 0) {
+                return -1;
+            }
+            if (lo >= 0xDC00u && lo <= 0xDFFFu) {
+                c = 0x10000u + (((uint32_t)c16 - 0xD800u) << 10) + ((uint32_t)lo - 0xDC00u);
+                i++;
+            }
+        }
+        if (k->at + 5u >= k->cap) {   /* four bytes at most, and the terminator */
             return -1;
         }
-        if (c < 0x80u) {
+        if (c >= 0x10000u) {
+            k->b[k->at++] = (uint8_t)(0xF0u | (c >> 18));
+            k->b[k->at++] = (uint8_t)(0x80u | ((c >> 12) & 0x3Fu));
+            k->b[k->at++] = (uint8_t)(0x80u | ((c >> 6) & 0x3Fu));
+            k->b[k->at++] = (uint8_t)(0x80u | (c & 0x3Fu));
+        } else if (c < 0x80u) {
             k->b[k->at++] = (uint8_t)c;
         } else if (c < 0x800u) {
             k->b[k->at++] = (uint8_t)(0xC0u | (c >> 6));
@@ -379,6 +400,19 @@ static long spawn_utf8(spawn_blk_t *k, uint64_t u, uint32_t n) {
     k->b[k->at++] = 0;
     return (long)start;
 }
+/* spawn_utf8 alone, for the host tests: the bytes it writes for `n` units at
+ * `u`, terminator included, or -1. */
+long vibeos_nt_spawn_utf8(uint64_t u, uint32_t n, uint8_t *out, uint32_t cap) {
+    spawn_blk_t k;
+    long o;
+
+    k.b = out;
+    k.at = 0;
+    k.cap = cap;
+    o = spawn_utf8(&k, u, n);
+    return o < 0 ? -1 : (long)k.at;
+}
+
 
 /* A UNICODE_STRING of the parameters, its buffer made absolute if they are not
  * normalised. 0, or -1. */

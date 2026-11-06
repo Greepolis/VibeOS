@@ -408,6 +408,63 @@ static long release_mutant(uint64_t h, int32_t *prev) {
     return r;
 }
 
+static uint32_t fds_open(int slot) {
+    uint32_t fd, n = 0;
+
+    for (fd = 0; fd < VIBEOS_FD_MAX; fd++) {
+        n += vibeos_fdtable_get(&ks_ps(slot)->files, fd) != 0;
+    }
+    return n;
+}
+
+/* #158: a duplicate into another process whose number cannot be told to the
+ * caller is taken back out of that process's table, not left there. */
+static void t_dup_other_fault(void) {
+    uint64_t cid = kf_ualloc(16), out = kf_ualloc(8), bad = kf_ualloc(8), e = 0, ph;
+    int me = fresh(62), other = kf_spawn(63, 63);
+    uint32_t before;
+
+    (void)me;
+    ((uint64_t *)kf_uptr(cid))[0] = 63u;
+    ((uint64_t *)kf_uptr(cid))[1] = 0u;
+    expect(nt(VIBEOS_NT_NR_NtOpenProcess, out, 0x0040u /* DUP_HANDLE */, 0, cid, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) &&
+               create_event(&e, VIBEOS_EVENT_ALL_ACCESS, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a process to duplicate into, and an event to duplicate");
+    ph = *(uint64_t *)kf_uptr(out);
+    before = fds_open(other);
+    kf_next_sp(stack_args_((const uint64_t[3]){ 0, 0, VIBEOS_DUPLICATE_SAME_ACCESS }, 3));
+    kf_fault(bad, 8);   /* a user address the dispatcher accepts and the copy does not */
+    expect(nt(VIBEOS_NT_NR_NtDuplicateObject, VIBEOS_NT_CURRENT_PROCESS, e, ph, bad, 0) ==
+               ST(VIBEOS_STATUS_ACCESS_VIOLATION),
+           "TargetHandle that faults: ACCESS_VIOLATION");
+    expect(fds_open(other) == before, "and the other process has no handle nobody knows of");
+    kf_next_sp(stack_args_((const uint64_t[3]){ 0, 0, VIBEOS_DUPLICATE_SAME_ACCESS }, 3));
+    expect(nt(VIBEOS_NT_NR_NtDuplicateObject, VIBEOS_NT_CURRENT_PROCESS, e, ph, out, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) && fds_open(other) == before + 1u,
+           "with somewhere to put the number, the handle goes into the other process");
+}
+
+/* #144: a surrogate pair is one four-byte character; a lone half stays three. */
+static void t_spawn_utf8(void) {
+    uint64_t u = kf_ualloc(16);
+    uint16_t *w = (uint16_t *)kf_uptr(u);
+    uint8_t out[32];
+    static const uint8_t pair[] = { 'a', 0xF0, 0x9F, 0x98, 0x80, 0 };
+    static const uint8_t lone[] = { 0xED, 0xA0, 0xBD, 'b', 0 };
+
+    fresh(52);
+    w[0] = 'a';
+    w[1] = 0xD83Du;
+    w[2] = 0xDE00u;
+    expect(vibeos_nt_spawn_utf8(u, 3, out, sizeof(out)) == 6 && memcmp(out, pair, 6) == 0,
+           "U+1F600 as a pair: four bytes of UTF-8, not two halves of three");
+    w[0] = 0xD83Du;
+    w[1] = 'b';
+    expect(vibeos_nt_spawn_utf8(u, 2, out, sizeof(out)) == 5 && memcmp(out, lone, 5) == 0,
+           "a high half with no low one: kept as it was");
+}
+
 static void t_mutants(void) {
     uint64_t m, other;
     int32_t prev = 7;
@@ -956,6 +1013,18 @@ static void t_query_directory(void) {
            "FileDirectoryInformation: its size, its name at 64, a file");
     expect(query_dir(h, buf, 512, 12, 0, "zz*", 1, &n) == ST(VIBEOS_STATUS_NO_SUCH_FILE),
            "a mask nothing matches, at the start: no such file");
+    {
+        /* #161: a result the caller never received is not consumed. */
+        uint64_t bad = kf_ualloc(512);
+
+        kf_fault(bad, 512);
+        expect(query_dir(h, buf, 512, 12, 1, "*.txt", 1, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   b[12] == 'a', "one at a time from the start: a.txt");
+        expect(query_dir(h, bad, 512, 12, 1, 0, 0, &n) == ST(VIBEOS_STATUS_ACCESS_VIOLATION),
+               "the next into a buffer that faults: ACCESS_VIOLATION");
+        expect(query_dir(h, buf, 512, 12, 1, 0, 0, &n) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   b[12] == 'c', "and the retry still gets c.TXT");
+    }
     {
         /* v7 review: a mask whose buffer is not the program's is not read -
          * the same "zz*" from the host's own memory, which matched nothing
@@ -3428,6 +3497,8 @@ int test_nt_abi(void) {
     t_system();
     t_blocks();
     t_events();
+    t_spawn_utf8();
+    t_dup_other_fault();
     t_mutants();
     t_semaphores();
     t_delay();

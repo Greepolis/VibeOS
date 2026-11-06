@@ -28,3 +28,9 @@
     if ((int64_t)t < 0 || (t >= NT_EPOCH_1601_100NS && t - NT_EPOCH_1601_100NS > ~0ull / 100u)) {
 +++ new
     if (0) {
+
+### a directory result that faulted on its way out is still consumed (#161)
+--- old
+        f->pos = pos0;
++++ new
+        (void)pos0;
