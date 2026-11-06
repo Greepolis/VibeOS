@@ -29,3 +29,9 @@
     r = 0;
     (void)e;
     out->id = node->id;
+
+### a partition past 32-bit sector numbers is mounted at its low half (#174)
+--- old
+    if (first_lba > 0xFFFFFFFFull) {
++++ new
+    if (0) {

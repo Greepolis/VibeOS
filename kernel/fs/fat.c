@@ -425,6 +425,11 @@ static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
     if (total_sectors == 0) {
         total_sectors = rd32(&g_secbuf[32]);
     }
+    /* Its last sector must have a 32-bit number too, or the sums below wrap
+     * to the start of the disk (issue #174). */
+    if (total_sectors > 0xFFFFFFFFu - part_lba) {
+        return -1;
+    }
     root_dir_sectors = ((uint32_t)g_fat_cur->root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
     g_fat_cur->fat_lba = part_lba + reserved;
     g_fat_cur->root_lba = g_fat_cur->fat_lba + 2u * g_fat_cur->sectors_per_fat;         /* FAT16 root */
@@ -3149,6 +3154,14 @@ static int fat_scan_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
 
     if (first_lba == 0ull) {
         return fat_vfs_mount_boot(out);
+    }
+    /* Every sector number in this driver is 32 bits. A partition that starts
+     * past them was truncated to its low half, so the probe judged the real
+     * volume and the mount read whatever lay at the alias - another
+     * partition's sectors, read and written (issue #174). Refused, not
+     * truncated; the mount below refuses one that ends past them. */
+    if (first_lba > 0xFFFFFFFFull) {
+        return -1;
     }
     vol = vibeos_fat_mount_volume(cache, (uint32_t)first_lba, sectors);
     if (!vol) {

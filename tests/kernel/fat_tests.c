@@ -158,6 +158,10 @@ int test_fat(void) {
         expect(vibeos_fat_fs_driver()->mount(&m2, &g_bc, FIRST, SECTORS - 8u, 0) != 0,
                "a volume whose boot sector claims more than its partition is not mounted");
         expect(vibeos_fat_out_of_volume() == before, "and nothing was asked for outside a volume");
+        /* #174: a partition past 2^32 sectors whose low half names this
+         * volume - a decoy - is refused, not mounted at the alias. */
+        expect(vibeos_fat_fs_driver()->mount(&m2, &g_bc, (1ull << 32) + FIRST, SECTORS, 0) != 0,
+               "a partition starting past 32-bit sector numbers is not mounted at its low half");
     }
     for (i = 0; i < sizeof(big); i++) {
         big[i] = (uint8_t)(i * 11u + 7u);
