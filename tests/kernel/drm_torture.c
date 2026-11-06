@@ -147,23 +147,64 @@ static int pick_file(void) {
     return live[rnd() % (uint32_t)n];
 }
 
-static uint32_t named_count(void) {
-    uint32_t n = 0;
+static int pick_other_file(int notthis) {
+    int live[T_FILES];
+    int n = 0;
     int i;
 
-    for (i = 0; i < T_OBJS; i++) {
-        if (g_obj[i].live && g_obj[i].name) {
+    for (i = 0; i < T_FILES; i++) {
+        if (g_file[i].f && i != notthis) {
+            live[n++] = i;
+        }
+    }
+    if (n == 0) {
+        return -1;
+    }
+    return live[rnd() % (uint32_t)n];
+}
+
+/* A per-file GEM name lives in the namespace of the file that minted it, so
+ * the only file that can resolve a named object is the one that already holds
+ * a handle to it (review M-082). These helpers track that owner. */
+static int owner_of(int oid) {
+    int j;
+
+    for (j = 0; j < T_FILES; j++) {
+        int k;
+
+        if (!g_file[j].f) {
+            continue;
+        }
+        for (k = 0; k < T_GEMS; k++) {
+            if (g_file[j].handle[k] == oid + 1) {
+                return j;
+            }
+        }
+    }
+    return -1;
+}
+
+static int file_named_count(int fi) {
+    uint32_t n = 0;
+    int k;
+
+    for (k = 0; k < T_GEMS; k++) {
+        int oid = g_file[fi].handle[k] - 1;
+
+        if (oid >= 0 && g_obj[oid].name) {
             n++;
         }
     }
     return n;
 }
 
-static int name_used(uint32_t name) {
-    int i;
+static int file_name_used(int fi, uint32_t name) {
+    int k;
 
-    for (i = 0; i < T_OBJS; i++) {
-        if (g_obj[i].live && g_obj[i].name == name) {
+    for (k = 0; k < T_GEMS; k++) {
+        int oid = g_file[fi].handle[k] - 1;
+
+        if (oid >= 0 && g_obj[oid].name == name) {
             return 1;
         }
     }
@@ -264,13 +305,26 @@ static void check_all(void) {
             }
         }
     }
-    for (i = 0; i < T_OBJS; i++) {
-        if (!g_obj[i].live) {
+    for (i = 0; i < T_FILES; i++) {
+        int k;
+
+        if (!g_file[i].f) {
             continue;
         }
-        for (j = 0; j < T_OBJS; j++) {
-            if (i != j && g_obj[j].live && g_obj[i].name && g_obj[i].name == g_obj[j].name) {
-                fail("two objects share a name", (long)g_obj[i].name, (long)g_obj[j].name);
+        for (j = 0; j < T_GEMS; j++) {
+            int oa = g_file[i].handle[j] - 1;
+            int m;
+
+            if (oa < 0 || !g_obj[oa].name) {
+                continue;
+            }
+            for (m = j + 1; m < T_GEMS; m++) {
+                int ob = g_file[i].handle[m] - 1;
+
+                if (ob >= 0 && g_obj[oa].name == g_obj[ob].name) {
+                    fail("two objects in one file share a name", (long)g_obj[oa].name,
+                         (long)g_obj[ob].name);
+                }
             }
         }
     }
@@ -406,25 +460,25 @@ static void op_flink(void) {
         expect(req.name, g_obj[oid].name, "flink is idempotent");
         return;
     }
-    if (named_count() >= T_OBJS) {
-        expect(r, -VIBEOS_ENOSPC, "flink with every name taken");
+    if (file_named_count(fi) >= T_GEMS) {
+        expect(r, -VIBEOS_ENOSPC, "flink with every per-file name taken");
         return;
     }
     expect(r, 0, "flink a live object");
     expect(req.name != 0u, 1, "flink returns a name");
-    expect(name_used(req.name), 0, "flink returns an unused name");
+    expect(file_name_used(fi, req.name), 0, "flink returns an unused per-file name");
     g_obj[oid].name = req.name;
     remember_name(req.name);
 }
 
 static void op_open(void) {
-    int fi = pick_file();
-    t_file_t *mf = &g_file[fi];
-    int slot = first_slot(mf);
     int named[T_OBJS];
     int n = 0;
     int i;
     int oid = -1;
+    int ofi;
+    t_file_t *mf;
+    int slot;
     struct vibeos_drm_gem_open req;
     long r;
 
@@ -434,22 +488,58 @@ static void op_open(void) {
         }
     }
     memset(&req, 0, sizeof(req));
-    if (n > 0 && (rnd() & 1u)) {
-        oid = named[rnd() % (uint32_t)n];
-        req.name = g_obj[oid].name;
-    } else {
+
+    if (n == 0 || (rnd() & 1u)) {
+        /* No name, or we exercise rejection. A truly bogus name (and a real
+         * name opened from a different file) must both be refused: a GEM name
+         * is private to its owning file (review M-082), so it only resolves
+         * against the file that minted it. */
+        if (n > 0 && (rnd() & 1u)) {
+            oid = named[rnd() % (uint32_t)n];
+            {
+                int owner = owner_of(oid);
+
+                if (owner >= 0) {
+                    int wrong = pick_other_file(owner);
+
+                    if (wrong >= 0) {
+                        req.name = g_obj[oid].name;
+                        r = call(g_file[wrong].f, VIBEOS_DRM_IOCTL_GEM_OPEN, &req);
+                        expect(r, -VIBEOS_ENOENT, "open a per-file name from the wrong file");
+                        return;
+                    }
+                }
+            }
+        }
         req.name = (rnd() & 1u) ? 0u : 0xdead0000u + (rnd() % 64u);
-    }
-    r = call(mf->f, VIBEOS_DRM_IOCTL_GEM_OPEN, &req);
-    if (oid < 0) {
+        {
+            int fi = pick_file();
+
+            r = call(g_file[fi].f, VIBEOS_DRM_IOCTL_GEM_OPEN, &req);
+        }
         expect(r, -VIBEOS_ENOENT, "open an unknown name");
         return;
     }
+
+    oid = named[rnd() % (uint32_t)n];
+    ofi = owner_of(oid);
+    if (ofi < 0) {
+        int fi = pick_file();
+
+        req.name = g_obj[oid].name;
+        r = call(g_file[fi].f, VIBEOS_DRM_IOCTL_GEM_OPEN, &req);
+        expect(r, -VIBEOS_ENOENT, "open an orphaned name");
+        return;
+    }
+    mf = &g_file[ofi];
+    slot = first_slot(mf);
+    req.name = g_obj[oid].name;
+    r = call(mf->f, VIBEOS_DRM_IOCTL_GEM_OPEN, &req);
     if (slot < 0) {
         expect(r, -VIBEOS_ENFILE, "open into a full file");
         return;
     }
-    expect(r, 0, "open a live name");
+    expect(r, 0, "open a per-file name in its owning file");
     expect(req.handle, slot + 1, "open uses the first free handle");
     expect(req.size, g_obj[oid].size, "open reports the object size");
     g_obj[oid].refs++;

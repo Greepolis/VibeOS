@@ -14,7 +14,6 @@
 #define VIBEOS_DRM_FILE_MAGIC 0x44524d46u
 #define VIBEOS_DRM_MAX_GEM 16u
 #define VIBEOS_DRM_MAX_PAGES 504u
-#define VIBEOS_DRM_MAX_NAMES 64u
 #define VIBEOS_DRM_MAP_STRIDE (1ull << 32)
 
 struct vibeos_drm_gem {
@@ -29,21 +28,19 @@ struct vibeos_drm_gem {
 struct vibeos_drm_file {
     uint32_t magic;
     uint32_t ngem;
+    uint32_t next_name;     /* per-file GEM name generator (M-082) */
     struct vibeos_drm_gem *gem[VIBEOS_DRM_MAX_GEM];
 };
 
-struct vibeos_drm_name {
-    struct vibeos_drm_gem *gem;
-    uint32_t name;
-};
-
+/* A GEM name is the handle GEM_FLINK/GEM_OPEN share. It is scoped to the open
+ * device file (struct vibeos_drm_file), never global: a name minted in one
+ * file cannot be opened from another, so one process cannot reach another's
+ * buffer through the FLINK/OPEN pair. See docs/abi review M-082. */
 _Static_assert(sizeof(struct vibeos_drm_gem) <= 4096u, "drm gem fits one page");
 _Static_assert(sizeof(struct vibeos_drm_file) <= 4096u, "drm file fits one page");
 
 static const vibeos_file_ops_t vibeos_fops_drm;
 static vibeos_lock_t g_drm_lock;
-static struct vibeos_drm_name g_drm_names[VIBEOS_DRM_MAX_NAMES];
-static uint32_t g_drm_next_name = 1u;
 static uint64_t g_drm_next_offset = VIBEOS_DRM_MAP_STRIDE;
 
 static void drm_zero(void *p, size_t n) {
@@ -64,6 +61,41 @@ static size_t drm_strlen(const char *s) {
     return n;
 }
 
+/* Every pointer a DRM ioctl reads or writes is a user address. Judge it with
+ * linux_user_ok before the fault-safe copy, exactly as the rest of the ABI
+ * does (kernel/abi/linux/*.c), so a 0666 /dev/dri/card0 cannot be made to
+ * read or write kernel memory at an address it supplies. A null argument is
+ * refused up front; a bad range is refused by the check. */
+static int drm_copy_from_user(void *dst, uint64_t arg, size_t n) {
+    if (arg == 0u) {
+        return -VIBEOS_EFAULT;
+    }
+    /* In a task (the real kernel, or a faked one in a test) the pointer must be
+     * a user address, judged as every handler under kernel/abi/ does. A host
+     * test with no current task runs in one address space and skips the
+     * judgement, which is safe there (review M-082). */
+    if (ks_current() >= 0 && !linux_user_ok(arg, (uint64_t)n, 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    if (vibeos_uaccess_copy(dst, (const void *)(uintptr_t)arg, n) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return 0;
+}
+
+static int drm_copy_to_user(uint64_t arg, const void *src, size_t n) {
+    if (arg == 0u) {
+        return -VIBEOS_EFAULT;
+    }
+    if (ks_current() >= 0 && !linux_user_ok(arg, (uint64_t)n, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    if (vibeos_uaccess_copy((void *)(uintptr_t)arg, src, n) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return 0;
+}
+
 static int drm_copy_string(char *dst, size_t cap, size_t *len, const char *src) {
     size_t n = drm_strlen(src);
     size_t c;
@@ -73,6 +105,11 @@ static int drm_copy_string(char *dst, size_t cap, size_t *len, const char *src) 
         return 0;
     }
     if (!dst) {
+        return -VIBEOS_EFAULT;
+    }
+    /* `dst` came from the user's struct and points at user memory we write
+     * into; judge it before the copy (only while a task owns the pointer). */
+    if (ks_current() >= 0 && !linux_user_ok((uint64_t)(uintptr_t)dst, cap, 1)) {
         return -VIBEOS_EFAULT;
     }
     c = n < cap ? n : cap;
@@ -86,7 +123,7 @@ static int drm_version(uint64_t arg) {
     struct vibeos_drm_version v;
     int r;
 
-    if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)arg, sizeof(v)) != 0) {
+    if (drm_copy_from_user(&v, arg, sizeof(v)) != 0) {
         return -VIBEOS_EFAULT;
     }
     v.version_major = 1;
@@ -97,7 +134,7 @@ static int drm_version(uint64_t arg) {
         (r = drm_copy_string(v.desc, v.desc_len, &v.desc_len, "VibeOS DRM/KMS")) != 0) {
         return r;
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0) {
+    if (drm_copy_to_user(arg, &v, sizeof(v)) != 0) {
         return -VIBEOS_EFAULT;
     }
     return 0;
@@ -121,67 +158,49 @@ static int drm_gem_slot(struct vibeos_drm_file *df) {
     return -1;
 }
 
-static struct vibeos_drm_gem *drm_gem_find_by_name(uint32_t name) {
+static struct vibeos_drm_gem *drm_gem_find_by_name(struct vibeos_drm_file *df, uint32_t name) {
     uint32_t i;
 
     if (name == 0u) {
         return 0;
     }
-    for (i = 0; i < VIBEOS_DRM_MAX_NAMES; i++) {
-        if (g_drm_names[i].gem && g_drm_names[i].name == name) {
-            return g_drm_names[i].gem;
+    /* Names are private to this open file (review M-082): only a buffer this
+     * file itself named can be opened back through GEM_OPEN, so one process
+     * cannot reach another's buffer through the FLINK/OPEN pair. */
+    for (i = 0; i < VIBEOS_DRM_MAX_GEM; i++) {
+        struct vibeos_drm_gem *g = df->gem[i];
+        if (g && g->name == name) {
+            return g;
         }
     }
     return 0;
 }
 
 static void drm_name_remove(struct vibeos_drm_gem *g) {
-    uint32_t i;
-
-    if (!g->name) {
-        return;
-    }
-    for (i = 0; i < VIBEOS_DRM_MAX_NAMES; i++) {
-        if (g_drm_names[i].gem == g && g_drm_names[i].name == g->name) {
-            g_drm_names[i].gem = 0;
-            g_drm_names[i].name = 0;
-            break;
-        }
-    }
     g->name = 0;
 }
 
-static int drm_name_add(struct vibeos_drm_gem *g, uint32_t *name) {
-    uint32_t slot;
+static int drm_name_add(struct vibeos_drm_file *df, struct vibeos_drm_gem *g, uint32_t *name) {
     uint32_t tries;
-    uint32_t i;
 
     if (g->name) {
         *name = g->name;
         return 0;
     }
-    for (slot = 0; slot < VIBEOS_DRM_MAX_NAMES; slot++) {
-        if (!g_drm_names[slot].gem) {
-            break;
-        }
-    }
-    if (slot == VIBEOS_DRM_MAX_NAMES) {
-        return -VIBEOS_ENOSPC;
-    }
-    for (tries = 0; tries <= VIBEOS_DRM_MAX_NAMES; tries++) {
-        uint32_t candidate = g_drm_next_name++;
+    for (tries = 0; tries < 1024u; tries++) {
+        uint32_t candidate = df->next_name++;
+        uint32_t i;
 
         if (candidate == 0u) {
             continue;
         }
-        for (i = 0; i < VIBEOS_DRM_MAX_NAMES; i++) {
-            if (g_drm_names[i].gem && g_drm_names[i].name == candidate) {
+        for (i = 0; i < VIBEOS_DRM_MAX_GEM; i++) {
+            struct vibeos_drm_gem *o = df->gem[i];
+            if (o && o->name == candidate) {
                 break;
             }
         }
-        if (i == VIBEOS_DRM_MAX_NAMES) {
-            g_drm_names[slot].gem = g;
-            g_drm_names[slot].name = candidate;
+        if (i == VIBEOS_DRM_MAX_GEM) {
             g->name = candidate;
             *name = candidate;
             return 0;
@@ -242,7 +261,7 @@ static int drm_gem_create(vibeos_file_t *f, uint64_t arg) {
     uint32_t slot;
     uint32_t i;
 
-    if (vibeos_uaccess_copy(&req, (const void *)(uintptr_t)arg, sizeof(req)) != 0) {
+    if (drm_copy_from_user(&req, arg, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     if (req.width == 0u || req.height == 0u || req.width > 16384u || req.height > 16384u ||
@@ -298,7 +317,7 @@ static int drm_gem_create(vibeos_file_t *f, uint64_t arg) {
     req.handle = slot + 1u;
     req.pitch = (uint32_t)pitch;
     req.size = size;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &req, sizeof(req)) != 0) {
+    if (drm_copy_to_user(arg, &req, sizeof(req)) != 0) {
         (void)drm_gem_close_handle(df, req.handle);
         return -VIBEOS_EFAULT;
     }
@@ -309,7 +328,7 @@ static int drm_gem_close(vibeos_file_t *f, uint64_t arg) {
     struct vibeos_drm_file *df = (struct vibeos_drm_file *)f->drv;
     struct vibeos_drm_gem_close req;
 
-    if (vibeos_uaccess_copy(&req, (const void *)(uintptr_t)arg, sizeof(req)) != 0) {
+    if (drm_copy_from_user(&req, arg, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     return drm_gem_close_handle(df, req.handle);
@@ -319,7 +338,7 @@ static int drm_gem_destroy_dumb(vibeos_file_t *f, uint64_t arg) {
     struct vibeos_drm_file *df = (struct vibeos_drm_file *)f->drv;
     struct vibeos_drm_mode_destroy_dumb req;
 
-    if (vibeos_uaccess_copy(&req, (const void *)(uintptr_t)arg, sizeof(req)) != 0) {
+    if (drm_copy_from_user(&req, arg, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     return drm_gem_close_handle(df, req.handle);
@@ -330,7 +349,7 @@ static int drm_gem_map_dumb(vibeos_file_t *f, uint64_t arg) {
     struct vibeos_drm_mode_map_dumb req;
     struct vibeos_drm_gem *g;
 
-    if (vibeos_uaccess_copy(&req, (const void *)(uintptr_t)arg, sizeof(req)) != 0) {
+    if (drm_copy_from_user(&req, arg, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     ks_lock(&g_drm_lock, __func__);
@@ -342,7 +361,7 @@ static int drm_gem_map_dumb(vibeos_file_t *f, uint64_t arg) {
     req.pad = 0;
     req.offset = g->map_offset;
     ks_unlock(&g_drm_lock);
-    if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &req, sizeof(req)) != 0) {
+    if (drm_copy_to_user(arg, &req, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     return 0;
@@ -354,7 +373,7 @@ static int drm_gem_flink(vibeos_file_t *f, uint64_t arg) {
     struct vibeos_drm_gem *g;
     int r;
 
-    if (vibeos_uaccess_copy(&req, (const void *)(uintptr_t)arg, sizeof(req)) != 0) {
+    if (drm_copy_from_user(&req, arg, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     ks_lock(&g_drm_lock, __func__);
@@ -363,12 +382,12 @@ static int drm_gem_flink(vibeos_file_t *f, uint64_t arg) {
         ks_unlock(&g_drm_lock);
         return -VIBEOS_ENOENT;
     }
-    r = drm_name_add(g, &req.name);
+    r = drm_name_add(df, g, &req.name);
     ks_unlock(&g_drm_lock);
     if (r != 0) {
         return r;
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &req, sizeof(req)) != 0) {
+    if (drm_copy_to_user(arg, &req, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     return 0;
@@ -380,11 +399,11 @@ static int drm_gem_open(vibeos_file_t *f, uint64_t arg) {
     struct vibeos_drm_gem *g;
     uint32_t slot;
 
-    if (vibeos_uaccess_copy(&req, (const void *)(uintptr_t)arg, sizeof(req)) != 0) {
+    if (drm_copy_from_user(&req, arg, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     ks_lock(&g_drm_lock, __func__);
-    g = drm_gem_find_by_name(req.name);
+    g = drm_gem_find_by_name(df, req.name);
     if (!g) {
         ks_unlock(&g_drm_lock);
         return -VIBEOS_ENOENT;
@@ -403,7 +422,7 @@ static int drm_gem_open(vibeos_file_t *f, uint64_t arg) {
     req.handle = slot + 1u;
     req.size = g->size;
     ks_unlock(&g_drm_lock);
-    if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &req, sizeof(req)) != 0) {
+    if (drm_copy_to_user(arg, &req, sizeof(req)) != 0) {
         (void)drm_gem_close_handle(df, req.handle);
         return -VIBEOS_EFAULT;
     }
@@ -413,7 +432,7 @@ static int drm_gem_open(vibeos_file_t *f, uint64_t arg) {
 static int drm_get_cap(uint64_t arg) {
     struct vibeos_drm_get_cap req;
 
-    if (vibeos_uaccess_copy(&req, (const void *)(uintptr_t)arg, sizeof(req)) != 0) {
+    if (drm_copy_from_user(&req, arg, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     switch (req.capability) {
@@ -450,7 +469,7 @@ static int drm_get_cap(uint64_t arg) {
         default:
             return -VIBEOS_EINVAL;
     }
-    if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &req, sizeof(req)) != 0) {
+    if (drm_copy_to_user(arg, &req, sizeof(req)) != 0) {
         return -VIBEOS_EFAULT;
     }
     return 0;
@@ -583,6 +602,7 @@ vibeos_file_t *vibeos_drm_open(uint32_t flags, long *err) {
     }
     drm_zero(df, sizeof(*df));
     df->magic = VIBEOS_DRM_FILE_MAGIC;
+    df->next_name = 1u;
     f = vibeos_file_alloc(&vibeos_fops_drm, flags & ~(VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_TRUNC |
                                                       VIBEOS_O_DIRECTORY | VIBEOS_O_NOFOLLOW));
     if (!f) {

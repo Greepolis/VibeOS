@@ -99,7 +99,6 @@ int test_drm(void) {
     uint32_t name;
     uint32_t first_handle;
     uint32_t second_handle;
-    uint32_t other_handle;
     uint32_t imported_handle;
     void *page1 = 0;
     void *page2 = 0;
@@ -169,7 +168,7 @@ int test_drm(void) {
     flink.handle = create.handle;
     if (!expect(drm_call(f1, VIBEOS_DRM_IOCTL_GEM_FLINK, &flink) == 0 &&
                 flink.name != 0u,
-                "GEM_FLINK gives the buffer a global name")) {
+                "GEM_FLINK gives the buffer a per-file name")) {
         return -1;
     }
     name = flink.name;
@@ -180,23 +179,36 @@ int test_drm(void) {
         return -1;
     }
 
+    /* A GEM name is private to the file that minted it (review M-082): another
+     * open of the same device cannot open a name it did not create, so one
+     * process cannot reach another's buffer through FLINK/OPEN. */
     memset(&open, 0, sizeof(open));
     open.name = name;
-    if (!expect(drm_call(f2, VIBEOS_DRM_IOCTL_GEM_OPEN, &open) == 0 &&
-                open.handle != 0u && open.size == 256u,
-                "GEM_OPEN imports the buffer into another file")) {
+    if (!expect(drm_call(f2, VIBEOS_DRM_IOCTL_GEM_OPEN, &open) == -VIBEOS_ENOENT,
+                "GEM_OPEN in another file cannot see a per-file name")) {
         return -1;
     }
-    other_handle = open.handle;
+
+    /* The owning file can reopen its own name, proving the name still resolves
+     * locally and points at the same backing pages. */
+    memset(&open, 0, sizeof(open));
+    open.name = name;
+    if (!expect(drm_call(f1, VIBEOS_DRM_IOCTL_GEM_OPEN, &open) == 0 &&
+                open.handle == 2u && open.size == 256u,
+                "GEM_OPEN reopens the buffer within its owning file")) {
+        return -1;
+    }
+    imported_handle = open.handle;
+
     memset(&map, 0, sizeof(map));
     map.handle = open.handle;
-    if (!expect(drm_call(f2, VIBEOS_DRM_IOCTL_MODE_MAP_DUMB, &map) == 0 &&
+    if (!expect(drm_call(f1, VIBEOS_DRM_IOCTL_MODE_MAP_DUMB, &map) == 0 &&
                 map.offset == offset1,
-                "an imported buffer maps at the same fake offset")) {
+                "the reopened buffer maps at the same fake offset")) {
         return -1;
     }
-    if (!expect(f2->ops->share_page(f2, offset1, &page2) == 0 && page2 == page1,
-                "both files share the same GEM pages")) {
+    if (!expect(f1->ops->share_page(f1, offset1, &page2) == 0 && page2 == page1,
+                "the owning file reaches the same GEM pages")) {
         return -1;
     }
 
@@ -207,8 +219,8 @@ int test_drm(void) {
         return -1;
     }
     page2 = 0;
-    if (!expect(f2->ops->share_page(f2, offset1, &page2) == 0 && page2 == page1,
-                "the name keeps the buffer alive while another file holds it")) {
+    if (!expect(f1->ops->share_page(f1, offset1, &page2) == 0 && page2 == page1,
+                "a name keeps the buffer alive while the owning file holds it")) {
         return -1;
     }
 
@@ -229,15 +241,6 @@ int test_drm(void) {
                 "a new GEM object gets a fresh fake offset")) {
         return -1;
     }
-    memset(&open, 0, sizeof(open));
-    open.name = name;
-    if (!expect(drm_call(f1, VIBEOS_DRM_IOCTL_GEM_OPEN, &open) == 0 &&
-                open.handle == 2u && open.size == 256u,
-                "GEM_OPEN assigns a file-local handle")) {
-        return -1;
-    }
-    imported_handle = open.handle;
-
     memset(&flink, 0, sizeof(flink));
     flink.handle = 99u;
     if (!expect(drm_call(f1, VIBEOS_DRM_IOCTL_GEM_FLINK, &flink) == -VIBEOS_ENOENT,
@@ -279,11 +282,6 @@ int test_drm(void) {
                 "the imported handle closes")) {
         return -1;
     }
-    close.handle = other_handle;
-    if (!expect(drm_call(f2, VIBEOS_DRM_IOCTL_GEM_CLOSE, &close) == 0,
-                "the other file's handle closes")) {
-        return -1;
-    }
 
     vibeos_file_put(f1);
     vibeos_file_put(f2);
@@ -299,7 +297,7 @@ int test_drm(void) {
     memset(&open, 0, sizeof(open));
     open.name = name;
     if (!expect(drm_call(f3, VIBEOS_DRM_IOCTL_GEM_OPEN, &open) == -VIBEOS_ENOENT,
-                "the name goes when the last handle does")) {
+                "a name is gone once its owning file frees the buffer")) {
         return -1;
     }
     vibeos_file_put(f3);
