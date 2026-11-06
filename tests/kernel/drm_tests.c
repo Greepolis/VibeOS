@@ -99,9 +99,9 @@ static int drm_devfs(void) {
  *     opening file, another file cannot open it, the owning file can reopen it,
  *     and the name disappears with the buffer;
  *   - error paths: unknown handles and name zero are refused on every ioctl;
- *   - boot path: vibeos_drm_boot_smoke walks /dev/dri/card0 open/ioctl/mmap
- *     end to end, proving the path the real boot will use (reviewer note on
- *     PR #165).
+ *   - boot path: vibeos_drm_boot_smoke exercises the DRM open/ioctl/mmap
+ *     sequence through the chrdev entry, proving the path the real boot will
+ *     use (reviewer note on PR #165); the devfs node is checked by drm_devfs().
  */
 int test_drm(void) {
     struct vibeos_drm_get_cap cap;
@@ -324,11 +324,11 @@ int test_drm(void) {
     }
     vibeos_file_put(f3);
 
-    /* Boot path: walk /dev/dri/card0 open/ioctl/mmap end to end through the
-     * exported smoke routine, so the in-kernel path the machine boot uses is
-     * covered even on the fake harness (reviewer note on PR #165). */
+    /* Boot path: exercise the open/ioctl/mmap sequence through the exported
+     * smoke routine, so the in-kernel path the machine boot uses is covered
+     * even on the fake harness (reviewer note on PR #165). */
     if (!expect(vibeos_drm_boot_smoke() == 0,
-                "vibeos_drm_boot_smoke walks /dev/dri/card0 end to end")) {
+                "vibeos_drm_boot_smoke exercises the DRM open/ioctl/mmap path")) {
         return -1;
     }
     return 0;

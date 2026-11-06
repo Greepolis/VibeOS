@@ -305,9 +305,10 @@ static void check_all(void) {
             }
         }
     }
+    /* A name is unique within one open file, but the same GEM object may be
+     * held under several handles there (GEM_OPEN reopens the object's own
+     * name). Skip those duplicate handles: they are one object, not two. */
     for (i = 0; i < T_FILES; i++) {
-        int k;
-
         if (!g_file[i].f) {
             continue;
         }
@@ -321,7 +322,7 @@ static void check_all(void) {
             for (m = j + 1; m < T_GEMS; m++) {
                 int ob = g_file[i].handle[m] - 1;
 
-                if (ob >= 0 && g_obj[oa].name == g_obj[ob].name) {
+                if (ob >= 0 && ob != oa && g_obj[oa].name == g_obj[ob].name) {
                     fail("two objects in one file share a name", (long)g_obj[oa].name,
                          (long)g_obj[ob].name);
                 }

@@ -10,6 +10,7 @@
 #include "vibeos/drm.h"
 #include "vibeos/drm_uapi.h"
 #include "vibeos/ksvc.h"
+#include "vibeos/linux_exports.h"   /* linux_user_ok: user-range judgement */
 
 #define VIBEOS_DRM_FILE_MAGIC 0x44524d46u
 #define VIBEOS_DRM_MAX_GEM 16u
@@ -62,9 +63,9 @@ static size_t drm_strlen(const char *s) {
 }
 
 /* Every pointer a DRM ioctl reads or writes is a user address. Judge it with
- * linux_user_ok before the fault-safe copy, exactly as the rest of the ABI
- * does (kernel/abi/linux/*.c), so a 0666 /dev/dri/card0 cannot be made to
- * read or write kernel memory at an address it supplies. A null argument is
+ * linux_user_ok before the fault-safe copy, exactly as the Linux ABI handlers
+ * do, so a 0666 /dev/dri/card0 cannot be made to read or write kernel memory
+ * at an address it supplies. A null argument is
  * refused up front; a bad range is refused by the check. */
 static int drm_copy_from_user(void *dst, uint64_t arg, size_t n) {
     if (arg == 0u) {
@@ -620,17 +621,18 @@ vibeos_file_t *vibeos_drm_open(uint32_t flags, long *err) {
  * Boot-time smoke test for the DRM path.
  *
  * Reviewer note on PR #165: prove the open/ioctl/mmap path works on the
- * machine, not only under the fake harness. This drives the device the way a
- * real client does - through the /dev/dri/card0 devfs node - and round-trips a
- * byte through a mapped dumb buffer, so a bad wiring of chrdev, devfs or the
- * ioctl table fails loudly at boot instead of only under the test build.
+ * machine, not only under the fake harness. This drives the driver through the
+ * same entry the /dev/dri/card0 chrdev dispatch reaches (vibeos_drm_open),
+ * fires the minimal ioctl sequence a client uses and round-trips a byte
+ * through a mapped dumb buffer. The devfs node and the chrdev dispatch table
+ * are covered by drm_devfs(), so this stays free of VFS dependencies and still
+ * links into the minimal, three-file DRM torture target.
  *
- * Call once during bring-up, after devfs is populated and /dev/dri/card0
- * exists; it runs from the boot task and is side-effect free apart from the
- * file it opens and closes. Returns 0 on success, a negative errno otherwise.
+ * Call once during bring-up; it runs from the boot task and is side-effect
+ * free apart from the file it opens and closes. Returns 0 on success, a
+ * negative errno otherwise.
  */
 int vibeos_drm_boot_smoke(void) {
-    vibeos_path_t walk;
     vibeos_file_t *f;
     long err = 0;
     struct vibeos_drm_get_cap cap;
@@ -639,11 +641,7 @@ int vibeos_drm_boot_smoke(void) {
     void *page = 0;
     uint32_t *p;
 
-    if (vibeos_path_walk("/", "/", "/dev/dri/card0", 0, &walk) != 0 ||
-        walk.node.rdev != VIBEOS_DEV_DRM_CARD0) {
-        return -VIBEOS_ENODEV;
-    }
-    f = vibeos_open_path(&walk, VIBEOS_O_RDWR, 0, &err);
+    f = vibeos_drm_open(VIBEOS_O_RDWR, &err);
     if (!f || err != 0) {
         if (f) {
             vibeos_file_put(f);

@@ -10,6 +10,7 @@
 
 #include "vibeos/file.h"
 #include "vibeos/ksvc.h"
+#include "vibeos/linux_exports.h"
 
 #define SUPPORT_FILES 8u
 #define SUPPORT_PAGES 2048u
@@ -70,6 +71,20 @@ void vibeos_file_stat_clear(vibeos_file_stat_t *st) {
 int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len) {
     memmove(dst, src, (size_t)len);
     return 0;
+}
+
+/* The driver judges user pointers only when there is a current task. This
+ * minimal machine has no tasks, so ks_current() reports none and the judgement
+ * is skipped; linux_user_ok is then a link-time stub, never called. */
+int ks_current(void) {
+    return -1;
+}
+
+int linux_user_ok(uint64_t base, uint64_t len, int write) {
+    (void)base;
+    (void)len;
+    (void)write;
+    return 1;
 }
 
 void ks_lock(vibeos_lock_t *l, const char *name) {
