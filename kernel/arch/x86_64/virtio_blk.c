@@ -485,6 +485,17 @@ static int vblk_dev_init(void) {
  * sector. */
 #define VIRTIO_BLK_MAX_SECTORS 128u
 
+/* The data descriptor names this, never the caller's buffer.
+ *
+ * A request that times out is still the device's (#176), and the device may
+ * yet follow its descriptors - but the caller has had -1 back and reuses its
+ * buffer, which may be a stack frame or a page that has gone back to the
+ * allocator. A late DMA would then write a disk sector into whatever lives
+ * there now. The driver owns this buffer, and while a request is outstanding
+ * nothing else is submitted, so a late transfer lands here and nowhere else.
+ * Under the disk lock; one copy per request is the price. */
+static uint8_t g_bounce[VIRTIO_BLK_MAX_SECTORS * 512u] __attribute__((aligned(4096)));
+
 /* The completion of the one request in flight, taken off the used ring. The
  * index moving said only that the device added something: it must have added
  * exactly one element, and that element must name chain 0, the only chain this
@@ -544,7 +555,10 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
     g_desc[0].len = sizeof(struct virtio_blk_req);
     g_desc[0].flags = VRING_DESC_F_NEXT;
     g_desc[0].next = 1;
-    g_desc[1].addr = (uint64_t)(uintptr_t)buf;
+    if (write) {
+        __builtin_memcpy(g_bounce, buf, 512u * sectors);
+    }
+    g_desc[1].addr = (uint64_t)(uintptr_t)g_bounce;
     g_desc[1].len = 512u * sectors;
     g_desc[1].flags = write ? VRING_DESC_F_NEXT
                             : (VRING_DESC_F_NEXT | VRING_DESC_F_WRITE);
@@ -593,7 +607,8 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
                 g_blk_outstanding = 1;
                 /* Leaving the lock held here would turn one timed-out request
                  * into a machine that never reads a sector again. */
-                vibeos_x86_64_serial_puts("[VIRTIO] read timeout\n");
+                vibeos_x86_64_serial_puts(write ? "[VIRTIO] write timeout\n"
+                                                : "[VIRTIO] read timeout\n");
                 blk_unlock();
                 return -1;
             }
@@ -615,6 +630,9 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
     {
         int rc = vblk_take_completion() && g_status == 0 ? 0 : -1;
 
+        if (rc == 0 && !write) {
+            __builtin_memcpy(buf, g_bounce, 512u * sectors);
+        }
         (void)vb_inb(g_io_base + VIRTIO_ISR); /* ack */
         blk_unlock();
         return rc;
@@ -689,6 +707,7 @@ static int vblk_dev_write_many(uint64_t sector, const void *buf,
 static int vblk_dev_barrier(void) {
     uint16_t head;
     uint64_t spins = 0;
+    uint64_t t0;
 
     if (!g_ready) {
         return -1;
@@ -719,13 +738,16 @@ static int vblk_dev_barrier(void) {
     __asm__ __volatile__("sfence" ::: "memory");
     vb_outw(g_io_base + VIRTIO_QUEUE_NOTIFY, 0);
 
+    t0 = g_timer_ticks;
     while (g_used->idx == g_last_used) {
-        if (++spins > 100000000ull) {
+        if (++spins > 100000000ull || g_timer_ticks - t0 > VBLK_REQ_TICKS) {
             /* Bounded like every other wait here, and counted in the same
              * place: a barrier that hung would stop the machine at exactly the
-             * moment somebody was trying to make data durable. */
+             * moment somebody was trying to make data durable. In time, for
+             * the reason at VBLK_REQ_TICKS. */
             g_timeouts++;
             g_blk_outstanding = 1;
+            vibeos_x86_64_serial_puts("[VIRTIO] flush timeout\n");
             blk_unlock();
             return -1;
         }
