@@ -12,6 +12,17 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/device.h"
 #include "vibeos/blockdev.h"
+#include "arch_hw_internal.h"   /* g_timer_ticks, VIBEOS_HW_TIMER_HZ */
+
+/* How long a request may take, in time rather than in turns of the wait.
+ *
+ * The bound used to be a hundred million turns, written when every turn was a
+ * `pause`. Since the wait halts, a turn lasts until the next interrupt - a
+ * tick - so the bound was eleven days, and a request QEMU never completed
+ * left the core in the wait holding the disk: one clang Debug boot of PR #203
+ * wedged in hw_swap_bringup with every other core idle behind it. AHCI had
+ * exactly this and was fixed as M-124; this driver kept the old bound. */
+#define VBLK_REQ_TICKS (5u * VIBEOS_HW_TIMER_HZ)
 
 /* ---- port I/O ------------------------------------------------------------ */
 
@@ -554,6 +565,7 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
     /* Poll for completion. */
     {
         uint64_t spins = 0;
+        uint64_t t0 = g_timer_ticks;
         uint32_t irq_before = g_irq_count;
 
         /* Waits rather than spins.
@@ -572,7 +584,7 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
          * not a hang. The bound stays exactly as it was: a wait that can end
          * for two reasons still needs one that ends it for certain. */
         while (g_used->idx == g_last_used) {
-            if (++spins > 100000000ull) {
+            if (++spins > 100000000ull || g_timer_ticks - t0 > VBLK_REQ_TICKS) {
                 /* Counted, not only printed. The bound existing is half of
                  * P7's latency property; the other half is a number a gate can
                  * assert, and a serial line is not one - this project has a
