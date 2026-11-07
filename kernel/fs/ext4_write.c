@@ -342,6 +342,17 @@ static int build_block_bitmap(vibeos_ext2_t *fs, uint32_t g, uint8_t *buf) {
     return 0;
 }
 
+#ifdef VIBEOS_EXT2_FUZZ_CANARY
+/* Test hook for the exact production helper used when an ext4 group bitmap
+ * is marked BLOCK_UNINIT. It is compiled only into the libFuzzer target. */
+int vibeos_ext4_fuzz_build_block_bitmap(vibeos_ext2_t *fs, uint32_t group) {
+    if (!fs || group >= fs->group_count) {
+        return -1;
+    }
+    return build_block_bitmap(fs, group, fs->wbuf2);
+}
+#endif
+
 static uint32_t bitmap_csum_get(const vibeos_ext2_t *fs, const uint8_t *d, uint32_t lo, uint32_t hi) {
     return gd_get16x2(fs, d, lo, hi);
 }

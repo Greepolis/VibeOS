@@ -28,8 +28,8 @@ option(VIBEOS_PERSONALITY_NT "Build the NT (Windows) personality" ON)
 # rather than refusing to configure at all. Builds that must ship TLS (release
 # gates, the Linux CI matrix) set VIBEOS_REQUIRE_TLS and fail loudly instead.
 option(VIBEOS_REQUIRE_TLS "Fail configuration when the TLS dependency is unavailable" OFF)
-# libFuzzer target over the network receive path. Clang only.
-option(VIBEOS_BUILD_FUZZERS "Build the protocol fuzz targets (clang + libFuzzer)" OFF)
+# libFuzzer targets for network, filesystem and executable-image parsers. Clang only.
+option(VIBEOS_BUILD_FUZZERS "Build the parser/protocol fuzz targets (clang + libFuzzer)" OFF)
 
 # Artifact directories
 set(VIBEOS_ARTIFACTS_DIR "${CMAKE_BINARY_DIR}/artifacts" CACHE PATH "Artifacts output directory")
@@ -152,15 +152,34 @@ if(VIBEOS_TLS_ACTIVE)
 endif()
 
 if(VIBEOS_BUILD_FUZZERS)
-    # The receive path is the only code fed bytes an attacker chooses, so it is
-    # the one place a fuzzer earns its keep.
-    add_executable(fuzz_inet_input ${VIBEOS_FUZZ_INET_SOURCES})
-    target_include_directories(fuzz_inet_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_compile_options(fuzz_inet_input PRIVATE
-        -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -g
-        -Wall -Wextra -Wpedantic
+    # Build the real portable parser sources with instrumentation. Instrumenting
+    # only the harness would miss out-of-bounds accesses inside the kernel code.
+    function(vibeos_add_fuzzer target)
+        add_executable(${target} ${ARGN})
+        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=fuzzer,address,undefined -fsanitize-address-field-padding=2 -fno-omit-frame-pointer -g
+            -Wall -Wextra -Wpedantic
+        )
+        target_link_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined)
+    endfunction()
+
+    vibeos_add_fuzzer(fuzz_inet_input ${VIBEOS_FUZZ_INET_SOURCES})
+    vibeos_add_fuzzer(fuzz_exec_images
+        tests/fuzz/fuzz_exec_images.c
+        kernel/core/elf.c
+        kernel/core/pe.c
+        kernel/core/mbz.c
     )
-    target_link_options(fuzz_inet_input PRIVATE -fsanitize=fuzzer,address,undefined)
+    vibeos_add_fuzzer(fuzz_ext2_image
+        tests/fuzz/fuzz_ext2_image.c
+        kernel/fs/ext2.c
+        kernel/fs/ext4_write.c
+        kernel/fs/blockcache.c
+        kernel/fs/vfs.c
+        kernel/core/mbz.c
+    )
+    target_compile_definitions(fuzz_ext2_image PRIVATE VIBEOS_EXT2_FUZZ_CANARY=1)
 endif()
 
 # The Rtl runtime of our ntdll (docs/abi/windows.md W2): the files that are
