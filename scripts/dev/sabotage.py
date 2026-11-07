@@ -124,7 +124,7 @@ def build_and_test(build_dir, verify=None):
             # from "every case working", which is how eight cases once passed
             # having proved nothing.
             if 'BUILD_FAILED' in r.stdout or 'BUILD_FAILED' in r.stderr:
-                return 'nobuild', ''
+                return 'nobuild', (r.stdout + "\n" + r.stderr).strip()
             return 'red', r.stdout.strip()
         r = run_bounded(["./%s/vibeos_kernel_tests" % build_dir], 120)
     except subprocess.TimeoutExpired:
@@ -196,9 +196,16 @@ def main():
                       "than failing it, which is itself the reason it exists")
             elif verdict == 'nobuild':
                 print("    did not compile; this case proves nothing")
+                for line in detail.splitlines():
+                    print("      " + line)
                 weak.append(label)
             else:
                 print("    NOT RED - no test covers this")
+                # Keep custom-verifier output on a green verdict: it often
+                # explains whether the guest marker was absent or the test
+                # path was never reached.
+                for line in detail.splitlines():
+                    print("      " + line)
                 weak.append(label)
             with open(src, 'w', encoding='utf-8', newline='') as fh:
                 fh.write(original)

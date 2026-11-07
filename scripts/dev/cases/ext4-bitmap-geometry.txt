@@ -1,0 +1,7 @@
+# Target source: kernel/fs/ext2.c
+### ext4 writer rejects bitmap geometry larger than one block
+--- old
+    if (fs->blocks_per_group > fs->block_size * 8u || fs->inodes_per_group > fs->block_size * 8u) {
+        return -1;
+    }
++++ new
