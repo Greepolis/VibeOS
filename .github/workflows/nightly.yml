@@ -21,6 +21,57 @@ permissions:
   contents: read
 
 jobs:
+  timer-torture:
+    name: Kernel Timekeeping Torture (model + sanitizers)
+    # module: time
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build (ASan + UBSan)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          cmake --build build-asan --parallel --target vibeos_timer_torture
+      - name: Torture timekeeping (200 replayable seeds)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -uo pipefail
+          failures=0
+          for seed in $(seq 1 200); do
+            if ! ./build-asan/vibeos_timer_torture "$seed" 10000 > /tmp/timer-torture.log 2>&1; then
+              failures=$((failures + 1))
+              echo "::group::timer seed $seed"
+              cat /tmp/timer-torture.log
+              echo "::endgroup::"
+            fi
+          done
+          echo "failing timer seeds: $failures of 200"
+          test "$failures" -eq 0
+      - name: Prove timer torture detects production regressions
+        env:
+          SABOTAGE_VERIFY: bash scripts/dev/verify-timer-torture.sh build-asan
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: python3 scripts/dev/sabotage.py kernel/time/timer.c scripts/dev/cases/time-timer.txt build-asan
+
+      - name: Long randomized state-transition runs
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-asan/vibeos_timer_torture "$seed" 500000
+          done
+
   boot-repeatability:
     name: Boot Smoke x5 (flakiness gate)
     # module: arch core platform
