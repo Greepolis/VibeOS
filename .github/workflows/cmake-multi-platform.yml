@@ -318,3 +318,67 @@ jobs:
             artifacts/**
             build/artifacts/**
           if-no-files-found: warn
+
+  parser-fuzz-build:
+    name: Build and smoke parser fuzzers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64
+
+      - name: Configure host tests for production sabotage verification
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF
+          cmake --build build --parallel --target vibeos_kernel_tests
+
+      - name: Configure and build instrumented fuzzers
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-fuzz -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DVIBEOS_BUILD_FUZZERS=ON \
+            -DVIBEOS_BUILD_TESTS=OFF \
+            -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF
+          cmake --build build-fuzz --parallel --target fuzz_exec_images fuzz_ext2_image
+
+      - name: Verify sanitizer negative control
+        run: python3 tests/fuzz/verify_sanitizer.py clang
+
+      - name: Generate real-tool parser seed corpora
+        run: python3 tests/fuzz/make_seed_corpus.py fuzz-corpus
+
+      - name: Prove the ext4 bitmap guard with a production-source sabotage
+        env:
+          SABOTAGE_VERIFY: bash tests/fuzz/verify_ext4_bitmap_bound.sh build-fuzz
+        run: python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/ext4-bitmap-geometry.txt build
+
+      - name: Show ext4 negative-control diagnostics
+        if: always()
+        run: |
+          if [ -f ext4-bitmap-negative-control.log ]; then
+            cat ext4-bitmap-negative-control.log
+          else
+            echo "No ext4 negative-control log was produced."
+          fi
+
+      - name: Rebuild the restored production parser
+        run: cmake --build build-fuzz --parallel --target fuzz_ext2_image
+
+      - name: Smoke ELF/PE fuzzer
+        run: ./build-fuzz/fuzz_exec_images fuzz-corpus/exec_images -max_total_time=20 -max_len=1048576
+
+      - name: Smoke ext2 fuzzer
+        run: ./build-fuzz/fuzz_ext2_image fuzz-corpus/ext2 fuzz-corpus/ext4 -max_total_time=20 -max_len=8388608
