@@ -364,6 +364,16 @@ try {
             throw $_.Exception.Message
         }
 
+        # The fallback is for a CMake that cannot configure here at all, and
+        # nothing else (issue #197). It caught every failure of the block
+        # above - a failed build, a failed test executable, a failed boot
+        # smoke - then compiled and ran the kernel tests alone, and a pass of
+        # that subset turned the real failure into a green job. And not in
+        # CI at all: a configure that fails there is the failure to report.
+        if ($Profile -eq "ci" -or -not ($_.Exception.Message -like "cmake configure failed*")) {
+            throw $_.Exception.Message
+        }
+
         if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
             throw "INFRA_GCC_MISSING: gcc command not found for manual fallback"
         }
@@ -414,6 +424,10 @@ try {
             throw "manual gcc kernel tests execution failed"
         }
         Add-Content -Path $logPath -Value ("manual_fallback_exe={0}" -f $manualExe)
+        # Said where the result is read: the kernel tests alone ran, not the
+        # bootloader's nor anything ctest registers.
+        Write-Host "[BUILD] manual fallback: kernel tests only - the rest of the suite did not run"
+        Add-Content -Path $logPath -Value "manual_fallback=kernel_tests_only"
     }
 } catch {
     $status = "fail"
