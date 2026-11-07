@@ -301,6 +301,13 @@ static void tx_unlock(void) {
 
 /* Transmit one Ethernet frame. Blocks until the device consumes the descriptor,
  * which under QEMU is immediate. */
+/* A frame that timed out is still the device's: descriptor 0 names g_tx_buf,
+ * and the device may read it yet. A later frame written over it could go out
+ * as the earlier one, or a mixture (issue #177). So until the earlier
+ * completion appears, sending is refused; when it does it is dropped and
+ * sending resumes. Under the transmit lock. */
+static int g_tx_outstanding;
+
 static int vnet_send(const void *frame, uint32_t len) {
     uint16_t slot;
     uint32_t i;
@@ -310,6 +317,14 @@ static int vnet_send(const void *frame, uint32_t len) {
         return -1;
     }
     tx_lock();
+    if (g_tx_outstanding) {
+        if (g_tx.used->idx == g_tx.last_used) {
+            tx_unlock();
+            return -1;   /* the timed-out frame is still being read */
+        }
+        g_tx.last_used = g_tx.used->idx;
+        g_tx_outstanding = 0;
+    }
     for (i = 0; i < VNET_HDR; i++) {
         g_tx_buf[i] = 0;                 /* no offload flags, no GSO */
     }
@@ -355,6 +370,7 @@ static int vnet_send(const void *frame, uint32_t len) {
          * proceed. */
         if (++spins > 20000000ull) {
             g_tx_timeouts++;
+            g_tx_outstanding = 1;
             /* Giving the lock back matters more than the frame does: holding it
              * here would turn one timed-out transmit into a permanently dead
              * network, which is the shape of failure this whole change exists

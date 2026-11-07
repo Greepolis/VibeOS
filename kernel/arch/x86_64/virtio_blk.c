@@ -493,6 +493,26 @@ static int vblk_take_completion(void) {
     return ok;
 }
 
+/* A request that timed out is still the device's: its descriptors name
+ * g_req, g_status and the caller's buffer, and the device may yet follow
+ * them. Until its completion appears on the used ring, nothing here may be
+ * rewritten, so a request meanwhile is refused (issue #176). When it does
+ * appear, it is taken off and dropped - it answers nobody now - and the
+ * driver goes on. Under the lock. 0 when the queue is the driver's again. */
+static int g_blk_outstanding;
+
+static int vblk_quiesced(void) {
+    if (!g_blk_outstanding) {
+        return 0;
+    }
+    if (g_used->idx == g_last_used) {
+        return -1;
+    }
+    g_last_used = g_used->idx;
+    g_blk_outstanding = 0;
+    return 0;
+}
+
 static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int write) {
     uint16_t head;
 
@@ -500,6 +520,10 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
         return -1;
     }
     blk_lock();
+    if (vblk_quiesced() != 0) {
+        blk_unlock();
+        return -1;
+    }
     g_req.type = write ? 1u : 0u;   /* OUT (write) / IN (read) */
     g_req.reserved = 0;
     g_req.sector = sector;
@@ -554,6 +578,7 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
                  * assert, and a serial line is not one - this project has a
                  * rule about that. */
                 g_timeouts++;
+                g_blk_outstanding = 1;
                 /* Leaving the lock held here would turn one timed-out request
                  * into a machine that never reads a sector again. */
                 vibeos_x86_64_serial_puts("[VIRTIO] read timeout\n");
@@ -657,6 +682,10 @@ static int vblk_dev_barrier(void) {
         return -1;
     }
     blk_lock();
+    if (vblk_quiesced() != 0) {
+        blk_unlock();
+        return -1;
+    }
     g_req.type = 4u;             /* VIRTIO_BLK_T_FLUSH */
     g_req.reserved = 0;
     g_req.sector = 0;
@@ -684,6 +713,7 @@ static int vblk_dev_barrier(void) {
              * place: a barrier that hung would stop the machine at exactly the
              * moment somebody was trying to make data durable. */
             g_timeouts++;
+            g_blk_outstanding = 1;
             blk_unlock();
             return -1;
         }

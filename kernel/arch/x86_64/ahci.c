@@ -514,6 +514,13 @@ static uint64_t ahci_dev_timeouts(void) {
  * learned the hard way are in that construction - the PRDT byte count is one
  * less than the bytes, and the error bit has to be checked inside the wait
  * rather than after it - and a second copy would have to learn them again. */
+/* A command that timed out is still the HBA's: slot 0's bit in PxCI stays
+ * set for as long as the controller may be reading its table and moving its
+ * data. Until it clears, the command list, table, FIS area and bounce buffer
+ * are not this driver's to rewrite, so a request meanwhile is refused rather
+ * than built over a command still running (issue #176). */
+static int g_ahci_outstanding;
+
 static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
                     int write, uint32_t bytes) {
     hba_cmd_header_t *hdr = &g_cmd_list[0];
@@ -521,6 +528,13 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
     uint8_t *fis = tbl->cfis;
     uint32_t i, spin;
     uint64_t t0;
+
+    if (g_ahci_outstanding) {
+        if ((port_read(PxCI) & 1u) != 0u) {
+            return -1;   /* the timed-out command still runs */
+        }
+        g_ahci_outstanding = 0;   /* it finished late; its result is nobody's */
+    }
 
     for (i = 0; i < sizeof(g_cmd_table); i++) {
         ((uint8_t *)tbl)[i] = 0;
@@ -587,6 +601,7 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
         if (++spin > 20000000u || g_timer_ticks - t0 > AHCI_CMD_TICKS) {
             ahci_report_timeout(command, lba, g_timer_ticks - t0);
             g_timeouts++;
+            g_ahci_outstanding = 1;
             return -1;
         }
         if (ahci_may_halt(spin)) {
