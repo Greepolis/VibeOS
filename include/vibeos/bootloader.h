@@ -51,6 +51,9 @@ int vibeos_bootloader_max_physical_address(const vibeos_boot_info_t *boot_info, 
 int vibeos_bootloader_set_firmware_tables(vibeos_boot_info_t *boot_info, uint64_t acpi_rsdp, uint64_t smbios_entry);
 int vibeos_bootloader_set_initrd(vibeos_boot_info_t *boot_info, uint64_t initrd_base, uint64_t initrd_size);
 int vibeos_bootloader_set_framebuffer(vibeos_boot_info_t *boot_info, uint64_t framebuffer_base, uint32_t width, uint32_t height);
+/* Does a 32-bit surface of width x height fit the `fb_size` bytes the
+ * firmware says the framebuffer at `base` has? 1 if it does (issue #167). */
+int vibeos_bootloader_fb_fits(uint64_t base, uint64_t fb_size, uint32_t width, uint32_t height);
 int vibeos_bootloader_find_region_type_for_range(const vibeos_boot_info_t *boot_info, uint64_t base, uint64_t size, uint32_t *out_region_type);
 int vibeos_bootloader_extract_firmware_tags(const vibeos_firmware_tag_t *tags, uint32_t tag_count, uint64_t *out_acpi_rsdp, uint64_t *out_smbios_entry, uint32_t *out_secure_boot, uint32_t *out_measured_boot);
 int vibeos_bootloader_apply_firmware_tags(vibeos_boot_info_t *boot_info, const vibeos_firmware_tag_t *tags, uint32_t tag_count);

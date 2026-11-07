@@ -649,6 +649,25 @@ static int test_file_read_all_short_read(void) {
     return 0;
 }
 
+/* #167: a GOP mode whose surface is larger than its framebuffer is not used. */
+static int test_framebuffer_fits(void) {
+    if (!vibeos_bootloader_fb_fits(0x80000000ull, 1920u * 1080u * 4u, 1920u, 1080u)) {
+        return -1;   /* exactly enough */
+    }
+    if (vibeos_bootloader_fb_fits(0x80000000ull, 4096u, 1920u, 1080u)) {
+        return -1;   /* the issue's example: a page for 8 MiB of pixels */
+    }
+    if (vibeos_bootloader_fb_fits(0x80000000ull, ~0ull, 0xFFFFFFFFu, 0xFFFFFFFFu) ||
+        vibeos_bootloader_fb_fits(0x80000000ull, 4096u, 0u, 1080u) ||
+        vibeos_bootloader_fb_fits(0u, 1u << 30, 1024u, 768u)) {
+        return -1;   /* absurd sizes, no width, no base */
+    }
+    if (vibeos_bootloader_fb_fits(0xFFFFFFFFFFFFF000ull, 0x10000u, 64u, 64u)) {
+        return -1;   /* a range that wraps */
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 
@@ -663,6 +682,7 @@ int main(void) {
     RUN_TEST(test_file_read_all_empty_file);
     RUN_TEST(test_file_read_all_alloc_failure);
     RUN_TEST(test_file_read_all_short_read);
+    RUN_TEST(test_framebuffer_fits);
 #undef RUN_TEST
 
     if (failures != 0) {

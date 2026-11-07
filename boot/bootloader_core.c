@@ -413,6 +413,23 @@ int vibeos_bootloader_set_initrd(vibeos_boot_info_t *boot_info, uint64_t initrd_
     return 0;
 }
 
+/* The kernel writes width * height 32-bit pixels from the base, and nothing
+ * else bounds it: a mode that reports a surface larger than its framebuffer
+ * had the early console write past it into whatever lay beyond (issue #167).
+ * Products in 64 bits; dimensions past 16384 a side are no display. */
+int vibeos_bootloader_fb_fits(uint64_t base, uint64_t fb_size, uint32_t width, uint32_t height) {
+    uint64_t need;
+
+    if (base == 0u || width == 0u || height == 0u || width > 16384u || height > 16384u) {
+        return 0;
+    }
+    need = (uint64_t)width * (uint64_t)height * 4u;
+    if (need > fb_size || base + fb_size < base) {
+        return 0;
+    }
+    return 1;
+}
+
 int vibeos_bootloader_set_framebuffer(vibeos_boot_info_t *boot_info, uint64_t framebuffer_base, uint32_t width, uint32_t height) {
     if (!boot_info) {
         return -1;

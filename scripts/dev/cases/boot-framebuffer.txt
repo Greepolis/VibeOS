@@ -1,0 +1,14 @@
+# Target source: boot/bootloader_core.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_bootloader_tests > /dev/null && ./build-gcc-Release/vibeos_bootloader_tests'" python3 scripts/dev/sabotage.py boot/bootloader_core.c scripts/dev/cases/boot-framebuffer.txt build-gcc-Release
+#
+# Issue #167, proved by test_framebuffer_fits in the bootloader's host tests.
+#
+#  1. the surface is not compared with the framebuffer's size: a GOP mode of
+#     1920x1080 over one page is used, and the early console writes 8 MiB past
+#     it. Expect FAIL:test_framebuffer_fits.
+
+### a framebuffer smaller than its surface is used
+--- old
+    if (need > fb_size || base + fb_size < base) {
++++ new
+    if (base + fb_size < base) {

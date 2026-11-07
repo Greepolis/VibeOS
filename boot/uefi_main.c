@@ -216,6 +216,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         if (SystemTable->BootServices->LocateProtocol(&gop_guid, 0, (void **)&gop) == EFI_SUCCESS &&
             gop && gop->Mode && gop->Mode->Info &&
             gop->Mode->Info->PixelsPerScanLine == gop->Mode->Info->HorizontalResolution &&
+            vibeos_bootloader_fb_fits(gop->Mode->FrameBufferBase, gop->Mode->FrameBufferSize,
+                                      gop->Mode->Info->HorizontalResolution,
+                                      gop->Mode->Info->VerticalResolution) &&
             memory_count < BOOT_INFO_MAX_REGIONS) {
             fb_base = gop->Mode->FrameBufferBase;
             fb_width = gop->Mode->Info->HorizontalResolution;
