@@ -345,7 +345,7 @@ static int run_proc(unsigned rounds) {
     vibeos_process_state_t process_model[13];
     vibeos_thread_state_t thread_model[64];
     uint64_t expected_proc_transitions = 0, expected_thread_transitions = 0;
-    uint32_t expected_thread_exits = 0;
+    uint32_t expected_thread_exits = 0, expected_terminations = 0;
     unsigned r;
 
     memset(&pt, 0, sizeof(pt));
@@ -461,7 +461,7 @@ static int run_proc(unsigned rounds) {
                     &got_thread_transitions, &got_terminations, &got_exits) != 0 ||
                 got_proc_transitions != expected_proc_transitions ||
                 got_thread_transitions != expected_thread_transitions ||
-                got_terminations != 0u || got_exits != expected_thread_exits) {
+                got_terminations != expected_terminations || got_exits != expected_thread_exits) {
                 return fail("proc", "lifecycle counters differ from independent ledger", r);
             }
         }
@@ -472,7 +472,10 @@ static int run_proc(unsigned rounds) {
     if (vibeos_proc_terminate(&pt, child[0]) != 0) {
         return fail("proc", "child termination", rounds);
     }
-    if (process_model[1] != VIBEOS_PROCESS_STATE_TERMINATED) expected_proc_transitions++;
+    if (process_model[1] != VIBEOS_PROCESS_STATE_TERMINATED) {
+        expected_proc_transitions++;
+        expected_terminations++;
+    }
     process_model[1] = VIBEOS_PROCESS_STATE_TERMINATED;
     for (i = 0; i < 13u; i++) {
         if (parent[i] == child[0]) parent[i] = root;
@@ -493,7 +496,10 @@ static int run_proc(unsigned rounds) {
     if (vibeos_proc_terminate(&pt, root) != 0) {
         return fail("proc", "root termination", rounds + 1u);
     }
-    if (process_model[0] != VIBEOS_PROCESS_STATE_TERMINATED) expected_proc_transitions++;
+    if (process_model[0] != VIBEOS_PROCESS_STATE_TERMINATED) {
+        expected_proc_transitions++;
+        expected_terminations++;
+    }
     process_model[0] = VIBEOS_PROCESS_STATE_TERMINATED;
     for (i = 0; i < 13u; i++) {
         if (parent[i] == root) parent[i] = 0;
@@ -519,7 +525,7 @@ static int run_proc(unsigned rounds) {
                 &got_thread_transitions, &got_terminations, &got_exits) != 0 ||
             got_proc_transitions != expected_proc_transitions ||
             got_thread_transitions != expected_thread_transitions ||
-            got_terminations != 2u || got_exits != expected_thread_exits) {
+            got_terminations != expected_terminations || got_exits != expected_thread_exits) {
             return fail("proc", "final teardown counters differ from ledger", rounds + 3u);
         }
     }
