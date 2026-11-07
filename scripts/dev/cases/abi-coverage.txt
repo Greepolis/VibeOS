@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Target: kernel/abi/abi_linux.c
+# Target source: kernel/abi/abi_linux.c
 
 ### binary lookup stops recognizing exact syscall numbers
 --- old

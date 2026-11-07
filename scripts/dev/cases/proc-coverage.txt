@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Target: kernel/proc/process.c
+# Target source: kernel/proc/process.c
 
 ### terminating a non-init parent reparents children to the wrong process
 --- old
