@@ -121,6 +121,9 @@ static int run_ipc(unsigned rounds) {
 
     for (r = 0; r < rounds; r++) {
         uint64_t x = rnd64();
+        /* The reference FIFO owns its own head and count. It never reads the
+         * production channel's ring indices, so a shared indexing defect is
+         * observable instead of being reproduced by the oracle. */
         if ((x & 3u) != 0u) {
             vibeos_message_t msg;
             int rc;
@@ -153,8 +156,10 @@ static int run_ipc(unsigned rounds) {
             return fail("ipc", "channel count differs from model", r);
         }
 
-        /* Exercise the four selection policies against a simple independent
-         * candidate ordering. Registration order is intentionally stable. */
+        /* Rebuild the expected event ordering from the public event state.
+         * The oracle does not call the waitset's collection helper or reuse
+         * its round-robin cursor. Registration order is intentionally stable.
+         * Priority ties are resolved by the first registered event. */
         {
             size_t got[16], got_count = 0, want[16], want_count = 0;
             uint32_t policy = (uint32_t)(rnd64() % 4u);

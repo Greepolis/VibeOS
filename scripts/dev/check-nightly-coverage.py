@@ -9,8 +9,12 @@ An intensive test is long, randomised, and checked against something other
 than the code under test: many seeds against a reference model, a soak whose
 length is the point, or a fuzzer. The memory manager compares every frame's
 owner count against a plain-array model; the scheduler does the same for its
-picker. Timekeeping now has an independent event-count model, boundary probes
-and production-source mutation checks.
+picker. Timekeeping has an independent event-count model, boundary probes and
+production-source mutation checks. The ABI registry is compared with a linear
+lookup oracle; IPC channels and waitset policies with queue/selection models;
+object handles with a seeded ledger; the portable process/thread model with a
+lifecycle ledger; and journal recovery with separate durable and volatile disk
+images plus an interrupted-checkpoint replay.
 
 The reason is that a subsystem asked whether it is correct answers from the
 numbers it used to decide, so self-consistent defects survive. The model must
@@ -23,10 +27,13 @@ rejects unknown keys; a separate manifest would be a second source of truth.
 Step-level annotations do not count.
 
 The number may only go down. Eleven of thirteen modules had nothing when this
-rule was introduced. The journal torture was removed after three independent
+rule was introduced. The earlier journal tortures were removed after their
 sabotages were caught on zero of thirty seeds; see
-scripts/dev/cases/io-journal.txt. A test that cannot fail is not evidence of
-coverage, and lowering the baseline requires a test that discriminates.
+scripts/dev/cases/io-journal.txt. The replacement txn model creates a
+committed-but-uncheckpointed transaction by failing a target write after the
+commit record is durable, then reboots with an empty cache and requires a full
+replay. A test that cannot fail is not evidence of coverage, and lowering the
+baseline requires a test that discriminates.
 """
 
 import argparse
