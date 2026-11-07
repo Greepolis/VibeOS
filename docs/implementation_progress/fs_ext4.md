@@ -22,7 +22,7 @@ writes an `ext4` volume it can keep true (the table below the step), and
 - **Features**: the incompat word is checked against what the driver reads; a
   volume with any other bit is refused and the bits are kept for the caller
   (`vibeos_ext2_last_refused_features`). A volume whose journal needs replay
-  (`RECOVER`) is refused until step 3 replays it.
+  (`RECOVER`) was refused; step 3 replays it.
 - **The oracle**: `scripts/dev/verify-ext4.sh`, run by `check.sh`. The host
   builds a tree (`scripts/dev/ext4-tree.py`), `mkfs.ext4 -d` puts it on a
   320 MiB volume with three groups, `e2fsck -D` indexes the large directory,
@@ -178,11 +178,89 @@ writes an `ext4` volume it can keep true (the table below the step), and
   the `a && b` form that `ext4-read.txt` documented scored every case red with
   no output. The lines say `bash -c '...'` now.
 
+## Step 3: the journal (jbd2, ordered mode) - done 2026-11-07
+
+- **What it does** (`kernel/fs/ext4_journal.c`): every operation that changes
+  the volume is one transaction. A metadata block it changes is copied into the
+  next block of the log on its first write, and every later read and write of
+  it - the writer's and the reader's helpers' - is answered there
+  (`ext2_sec_read`, `ext4_j_meta_write`): the block cache is write-back, so a
+  block written in place can reach the disk before the commit. A file's data is
+  written in place first (ordered mode), except over a block this transaction
+  freed, which the last commit may still call metadata: that is logged
+  (`ext4_j_freed`). At the end, five flushes: RECOVER and the descriptors and
+  logged copies; the commit block and the journal superblock pointing at it;
+  the checkpoint; the journal emptied; RECOVER cleared. jbd2's format with v3
+  checksums, which the driver turns on (and 64-bit tags) the first time it
+  writes a journal mkfs made with none, as Linux does.
+- **Replay** at mount, for a volume that says RECOVER, on a device that takes
+  writes (one that does not is still refused): the scan, revoke and replay
+  passes jbd2 has, the log wrapping, 64-bit and 32-bit tags with and without
+  checksums, escaped blocks; a tag whose checksum does not match is skipped and
+  counted (`bad_tags`, as jbd2 does), a commit whose checksum does not match
+  ends the log. **E4-006 and E4-007 closed.**
+- **The oracle**, by tools that are not ours:
+  - `scripts/dev/verify-ext4-powercut.sh`: a 16 MiB volume `mkfs.ext4` made,
+    a script of 29 single operations (create, append, mkdir, rename, link,
+    symlink, chmod, unlink, truncate into a block, rmdir, whole-file replace of
+    a file with an extent leaf, which frees a leaf and writes data in one
+    transaction) run on a device that takes the first n sector writes and drops
+    the rest silently. For every n: the driver replays what is left and
+    `e2fsck -fn` must call it clean; `e2fsck -fy` replays the same image from
+    the format alone and `e2fsck -fn` must call that clean; both trees, listed
+    with every file's crc, must be the same, and must be the state before or
+    after the operation the cut fell in - never a mixture, never a state
+    undone. 4,600 writes; `check.sh` runs every 23rd, the nightly
+    (`ext4-powercut`) every one.
+  - `verify-ext4.sh` replays journals debugfs wrote (`jo`, `jw`, `jc`), with
+    the tags it writes by default and with v3 checksums: a transaction of two
+    blocks, one revoking the second, one never committed. The replay must write
+    the first block, leave the revoked one and the uncommitted one, be clean,
+    and agree with `e2fsck -fy` on the same image.
+- **What the sweep found**, each before it was written down:
+  - the logged copy of the superblock went home without RECOVER, so the
+    checkpoint cleared the flag under a full journal and e2fsck refused it
+    ("needs_recovery flag is clear, but journal has data"); setting the flag
+    again after the checkpoint was not enough, because the cache evicts the
+    checkpoint's sectors when it likes. The logged copy carries RECOVER now;
+  - the superblock's two sectors reached the disk in slot order, not together,
+    and a cut between them left a superblock with a checksum neither half
+    matches. The cache flushes in order of sector now, and the superblock is
+    written last before every flush;
+  - a truncate zeroed the tail of the block it keeps in place, ahead of the
+    commit, so a cut left the old size over zeros. It goes through the log.
+- **The device model**: what a disk writes whole is its physical sector, 4 KiB
+  on anything current, so a cut finishes the 4 KiB run the last write was in.
+  With 512-byte atomicity the superblock could be torn by any writer - E4-017.
+- **Not atomic, by design**: an overwrite in place. Ordered mode writes data
+  where it lives, so a cut in the middle of one leaves some of each, as on
+  Linux; the sweep's script appends and replaces and never overwrites, and
+  that is said in the script.
+- **Sabotage**: `scripts/dev/cases/ext4-journal.txt` (8) and
+  `ext4-journal-writer.txt` (2), all red - data over a freed block in place,
+  a read not answered from the log, a block logged without its contents, a
+  revoke ignored, a tag checksum wrong, the logged superblock without RECOVER,
+  the journal emptied before the checkpoint is durable, the commit before the
+  log, a free not told to the journal, the truncate's tail in place. One more,
+  the superblock put home among the other blocks rather than last, went NOT
+  RED: the sorted flush already covers it at this size, and it is kept in the
+  case file as a comment saying so.
+
+## Open after step 3
+
+| ID | What | Status |
+|---|---|---|
+| E4-016 | One operation is one transaction with five flushes, emptied at once: no group commit, no asynchronous checkpoint, no reuse of the log across transactions. Correct and slow; a write-heavy load pays a flush per call | open (perf phase) |
+| E4-017 | The block layer writes one 512-byte sector at a time, so a structure across two sectors (the superblock, whose checksum is in the second) is atomic only if the device writes a 4 KiB run whole. The flush's order makes it one run; a multi-sector write in the blockdev interface would make it one command | open |
+| E4-018 | A transaction logs at most 384 blocks (the volume state's table). An operation that needs more is refused with ENOSPC part-way, and what it had done is committed, as a failed operation was left before the journal (counted, `log_full`). Nothing in the script or the boot reaches it | open |
+| E4-019 | No orphan list: a file whose last name is removed while it is open, and a truncate cut short, are completed by nothing after a crash. The truncate is one transaction, so it is never half done; the open-unlinked file is the gap | open |
+| E4-020 | An external journal, a block-mapped one (ext3's), v2 checksums and fast commits are not written - the volume is mounted read-only - and a volume needing a replay of one is refused | open |
+
 ## Open after step 2
 
 | ID | What | Status |
 |---|---|---|
-| E4-007 | No journal: a power cut between the steps of an operation (inode before entry, entry before count) leaves a volume e2fsck must repair; the order is chosen so that the damage is a leak or a count, not a dangling name | open (step 3) |
+| E4-007 | No journal: a power cut between the steps of an operation (inode before entry, entry before count) leaves a volume e2fsck must repair; the order is chosen so that the damage is a leak or a count, not a dangling name | **closed in step 3** |
 | E4-008 | A tree Linux grew to depth 2 (more than 1360 extents) is read, and a write that would change it is `EFBIG`; a block-mapped file on an ext4 volume is read, and writing or removing one is `EOPNOTSUPP` | open |
 | E4-009 | An `ext_store` that finds no room for a leaf after the data blocks were written leaks those blocks (the tree is not updated); a write that fails half-way through an allocated run leaves the unwritten rest of that run reading as stale data. Both only on ENOSPC or an I/O error | open |
 | E4-010 | The rule that a `BLOCK_UNINIT` group's bitmap holds other groups' tables that lie inside it (flex_bg) is coded and untested: this mke2fs puts every table in group 0, which is never `BLOCK_UNINIT`. Block sizes below 4 KiB and 128-byte inodes are refused or untested (1 KiB blocks are coded for, the extent cap there is 336) | open |
@@ -201,4 +279,4 @@ writes an `ext4` volume it can keep true (the table below the step), and
 | E4-003 | Uninitialised extents read as zeros, and no fixture has one: mkfs.ext4 -d never writes them | **closed in step 2** |
 | E4-004 | The high 16 bits of an extent's start are read, and no fixture is past 2^32 blocks to need them | open |
 | E4-005 | htree is read linearly: a lookup in a directory of a million entries reads all of it | open (perf phase) |
-| E4-006 | A volume with RECOVER set is refused, not replayed | open (step 3) |
+| E4-006 | A volume with RECOVER set is refused, not replayed | **closed in step 3** |

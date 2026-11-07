@@ -72,3 +72,11 @@ first use. Proved by `scripts/dev/verify-ext4.sh` on volumes `mkfs.ext4` made:
 a scripted set of changes through the driver, then `e2fsck -fn` clean and the
 whole volume read back by `debugfs rdump` and held against the host's own copy
 of the tree. Open items E4-007 onward in the same file.
+
+Step 3, the journal, done 2026-11-07 (`kernel/fs/ext4_journal.c`): one
+operation to a transaction in jbd2's format with v3 checksums, ordered mode,
+replay at mount including revoke records and journals Linux tools wrote.
+Proved by `scripts/dev/verify-ext4-powercut.sh`, which stops the device after
+every write of a script of 29 operations and has both the driver and
+`e2fsck` replay what is left: clean, the same, and the state before or after
+the operation the cut fell in. Open items E4-016 onward.
