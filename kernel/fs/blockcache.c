@@ -215,10 +215,38 @@ int vibeos_blockcache_flush(vibeos_blockcache_t *bc) {
     /* Every dirty block is attempted even after one fails. Stopping at the
      * first error would leave later blocks dirty with no record of why, and
      * the caller cannot act on a partial result it cannot see. */
+    /* In ascending order of sector, not of slot: a structure that spans two
+     * sectors - ext4's superblock, whose checksum is in the second - then
+     * reaches the device as one run, which a disk with 4 KiB physical sectors
+     * writes whole. In slot order its halves went out wherever their slots
+     * happened to be, and ext4's power-cut sweep (verify-ext4-powercut.sh)
+     * stopped the machine between them: a superblock nobody could read.
+     * Quadratic in the slots, once per flush. */
     bc_lock();
-    for (i = 0; i < bc->slot_count; i++) {
-        if (writeback(bc, &bc->slots[i]) != 0) {
-            rc = -1;
+    {
+        uint64_t after = 0;
+        int first = 1;
+
+        for (;;) {
+            vibeos_block_slot_t *next = 0;
+
+            /* The next dirty sector above the last one attempted, so that a
+             * block whose write failed stays dirty and the loop still ends. */
+            for (i = 0; i < bc->slot_count; i++) {
+                vibeos_block_slot_t *s = &bc->slots[i];
+
+                if (s->valid && s->dirty && (first || s->lba > after) && (next == 0 || s->lba < next->lba)) {
+                    next = s;
+                }
+            }
+            if (next == 0) {
+                break;
+            }
+            first = 0;
+            after = next->lba;
+            if (writeback(bc, next) != 0) {
+                rc = -1;
+            }
         }
     }
     /* Handing the blocks to the device is not the same as the device having
