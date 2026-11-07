@@ -509,10 +509,15 @@ static int run_proc(unsigned rounds) {
     process_model[1] = VIBEOS_PROCESS_STATE_TERMINATED;
     for (i = 0; i < 13u; i++) {
         if (parent[i] == child[0]) parent[i] = root;
-        if (pt.entries[i].in_use &&
-            (pt.entries[i].pid != pid[i] || pt.entries[i].parent_pid != parent[i] ||
-             pt.entries[i].state != process_model[i])) {
-            return fail("proc", "reparented process table differs from parent/state ledger", rounds);
+        {
+            vibeos_process_state_t got_state;
+            if (!pt.entries[i].in_use || pt.entries[i].pid != pid[i] ||
+                pt.entries[i].parent_pid != parent[i] ||
+                pt.entries[i].state != process_model[i] ||
+                vibeos_proc_state(&pt, pid[i], &got_state) != 0 ||
+                got_state != process_model[i]) {
+                return fail("proc", "reparented process missing or differs from parent/state ledger", rounds);
+            }
         }
     }
     for (i = 0; i < nt; i++) {
@@ -533,10 +538,15 @@ static int run_proc(unsigned rounds) {
     process_model[0] = VIBEOS_PROCESS_STATE_TERMINATED;
     for (i = 0; i < 13u; i++) {
         if (parent[i] == root) parent[i] = 0;
-        if (pt.entries[i].in_use &&
-            (pt.entries[i].pid != pid[i] || pt.entries[i].parent_pid != parent[i] ||
-             pt.entries[i].state != process_model[i])) {
-            return fail("proc", "init teardown differs from parent/state ledger", rounds + 2u);
+        {
+            vibeos_process_state_t got_state;
+            if (!pt.entries[i].in_use || pt.entries[i].pid != pid[i] ||
+                pt.entries[i].parent_pid != parent[i] ||
+                pt.entries[i].state != process_model[i] ||
+                vibeos_proc_state(&pt, pid[i], &got_state) != 0 ||
+                got_state != process_model[i]) {
+                return fail("proc", "init teardown process missing or differs from parent/state ledger", rounds + 2u);
+            }
         }
     }
     for (i = 0; i < nt; i++) {
