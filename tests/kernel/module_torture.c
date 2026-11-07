@@ -341,7 +341,11 @@ static int run_proc(unsigned rounds) {
     uint32_t root = 0, child[8], grandchild[4], tids[64], owners[64];
     uint32_t nt = 0, i;
     uint8_t thread_live[64] = {0};
-    uint32_t pid[13];
+    uint32_t pid[13], parent[13];
+    vibeos_process_state_t process_model[13];
+    vibeos_thread_state_t thread_model[64];
+    uint64_t expected_proc_transitions = 0, expected_thread_transitions = 0;
+    uint32_t expected_thread_exits = 0;
     unsigned r;
 
     memset(&pt, 0, sizeof(pt));
@@ -349,18 +353,24 @@ static int run_proc(unsigned rounds) {
         return fail("proc", "root creation", 0);
     }
     pid[0] = root;
+    parent[0] = 0;
+    process_model[0] = VIBEOS_PROCESS_STATE_NEW;
     for (i = 0; i < 8u; i++) {
         if (vibeos_proc_spawn(&pt, root, &child[i]) != 0) {
             return fail("proc", "child creation", i);
         }
         pid[i + 1u] = child[i];
+        parent[i + 1u] = root;
+        process_model[i + 1u] = VIBEOS_PROCESS_STATE_NEW;
     }
     for (i = 0; i < 4u; i++) {
-        uint32_t parent = child[i & 1u];
-        if (vibeos_proc_spawn(&pt, parent, &grandchild[i]) != 0) {
+        uint32_t parent_index = (i & 1u) + 1u;
+        if (vibeos_proc_spawn(&pt, child[i & 1u], &grandchild[i]) != 0) {
             return fail("proc", "grandchild creation", i);
         }
         pid[i + 9u] = grandchild[i];
+        parent[i + 9u] = pid[parent_index];
+        process_model[i + 9u] = VIBEOS_PROCESS_STATE_NEW;
     }
     if (pt.process_count != 13u) return fail("proc", "process count after spawn", 0);
 
@@ -375,6 +385,7 @@ static int run_proc(unsigned rounds) {
             tids[nt] = tid;
             owners[nt] = pid[i];
             thread_live[nt] = 1;
+            thread_model[nt] = VIBEOS_THREAD_STATE_NEW;
             nt++;
         }
     }
@@ -385,74 +396,135 @@ static int run_proc(unsigned rounds) {
             uint32_t p = (uint32_t)((x >> 8) % 13u);
             vibeos_process_state_t next = (vibeos_process_state_t)((x >> 16) % 4u);
             vibeos_process_state_t got;
-            if (vibeos_proc_set_state(&pt, pid[p], next) != 0 ||
-                vibeos_proc_state(&pt, pid[p], &got) != 0 || got != next) {
-                return fail("proc", "process state transition differs from model", r);
+            if (vibeos_proc_set_state(&pt, pid[p], next) != 0) {
+                return fail("proc", "process state update refused", r);
+            }
+            if (process_model[p] != next) expected_proc_transitions++;
+            process_model[p] = next;
+            if (vibeos_proc_state(&pt, pid[p], &got) != 0 || got != process_model[p]) {
+                return fail("proc", "process state differs from independent ledger", r);
             }
         } else {
             uint32_t t = (uint32_t)((x >> 8) % nt);
             if (thread_live[t]) {
                 if ((x & 0x10000u) != 0u) {
-                    vibeos_thread_state_t next = (vibeos_thread_state_t)((x >> 24) % 4u);
+                    vibeos_thread_state_t next = (vibeos_thread_state_t)((x >> 24) % 3u);
                     vibeos_thread_state_t got;
-                    if (vibeos_thread_set_state(&pt, tids[t], next) != 0 ||
-                        vibeos_thread_state(&pt, tids[t], &got) != 0 || got != next) {
-                        return fail("proc", "thread state transition differs from model", r);
+                    if (vibeos_thread_set_state(&pt, tids[t], next) != 0) {
+                        return fail("proc", "thread state update refused", r);
                     }
-                } else if (vibeos_thread_exit(&pt, tids[t]) == 0) {
-                    uint32_t owner = 0;
-                    if (vibeos_thread_owner(&pt, tids[t], &owner) == 0) {
+                    if (thread_model[t] != next) expected_thread_transitions++;
+                    thread_model[t] = next;
+                    if (vibeos_thread_state(&pt, tids[t], &got) != 0 || got != thread_model[t]) {
+                        return fail("proc", "thread state differs from independent ledger", r);
+                    }
+                } else {
+                    if (vibeos_thread_exit(&pt, tids[t]) != 0) {
+                        return fail("proc", "live thread exit refused", r);
+                    }
+                    if (thread_model[t] != VIBEOS_THREAD_STATE_EXITED) expected_thread_transitions++;
+                    thread_model[t] = VIBEOS_THREAD_STATE_EXITED;
+                    thread_live[t] = 0;
+                    expected_thread_exits++;
+                    if (vibeos_thread_owner(&pt, tids[t], &i) == 0) {
                         return fail("proc", "exited thread remained resolvable", r);
                     }
-                    thread_live[t] = 0;
-                } else {
-                    return fail("proc", "live thread exit refused", r);
                 }
             }
         }
         if ((r % 97u) == 0u) {
-            uint32_t live = 0;
-            for (i = 0; i < nt; i++) live += thread_live[i] ? 1u : 0u;
-            if (pt.thread_count != live) {
-                return fail("proc", "thread count differs from ledger", r);
+            uint32_t live = 0, p;
+            uint64_t got_proc_transitions = 0, got_thread_transitions = 0;
+            uint64_t got_terminations = 0, got_exits = 0;
+            for (i = 0; i < nt; i++) {
+                live += thread_live[i] ? 1u : 0u;
+                if (thread_live[i]) {
+                    vibeos_thread_state_t got;
+                    uint32_t owner = 0;
+                    if (vibeos_thread_state(&pt, tids[i], &got) != 0 ||
+                        got != thread_model[i] ||
+                        vibeos_thread_owner(&pt, tids[i], &owner) != 0 ||
+                        owner != owners[i]) {
+                        return fail("proc", "thread state or owner differs from ledger", r);
+                    }
+                }
+            }
+            for (p = 0; p < 13u; p++) {
+                vibeos_process_state_t got;
+                if (vibeos_proc_state(&pt, pid[p], &got) != 0 ||
+                    got != process_model[p]) {
+                    return fail("proc", "process state differs from ledger", r);
+                }
+            }
+            if (pt.thread_count != live ||
+                vibeos_proc_transition_counters(&pt, &got_proc_transitions,
+                    &got_thread_transitions, &got_terminations, &got_exits) != 0 ||
+                got_proc_transitions != expected_proc_transitions ||
+                got_thread_transitions != expected_thread_transitions ||
+                got_terminations != 0u || got_exits != expected_thread_exits) {
+                return fail("proc", "lifecycle counters differ from independent ledger", r);
             }
         }
     }
 
-    /* Reparenting and teardown are checked against the independent parent
-     * ledger. The portable process model is not the live x86-64 syscall path. */
+    /* Reparent every child of child[0] to init in the reference parent map,
+     * then compare every live entry, not just one selected grandchild. */
     if (vibeos_proc_terminate(&pt, child[0]) != 0) {
         return fail("proc", "child termination", rounds);
     }
-    for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
-        if (pt.entries[i].in_use && pt.entries[i].pid == grandchild[0] &&
-            pt.entries[i].parent_pid != root) {
-            return fail("proc", "child of terminated process was not adopted by init", rounds);
+    if (process_model[1] != VIBEOS_PROCESS_STATE_TERMINATED) expected_proc_transitions++;
+    process_model[1] = VIBEOS_PROCESS_STATE_TERMINATED;
+    for (i = 0; i < 13u; i++) {
+        if (parent[i] == child[0]) parent[i] = root;
+        if (pt.entries[i].in_use &&
+            (pt.entries[i].pid != pid[i] || pt.entries[i].parent_pid != parent[i] ||
+             pt.entries[i].state != process_model[i])) {
+            return fail("proc", "reparented process table differs from parent/state ledger", rounds);
         }
     }
     for (i = 0; i < nt; i++) {
-        if (owners[i] == child[0]) thread_live[i] = 0;
+        if (owners[i] == child[0] && thread_live[i]) {
+            if (thread_model[i] != VIBEOS_THREAD_STATE_EXITED) expected_thread_transitions++;
+            thread_model[i] = VIBEOS_THREAD_STATE_EXITED;
+            thread_live[i] = 0;
+            expected_thread_exits++;
+        }
     }
     if (vibeos_proc_terminate(&pt, root) != 0) {
         return fail("proc", "root termination", rounds + 1u);
     }
-    for (i = 0; i < nt; i++) thread_live[i] = 0;
-    for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
-        if (pt.entries[i].in_use && pt.entries[i].pid != root &&
-            pt.entries[i].parent_pid == root) {
-            return fail("proc", "child remained attached to terminated init", rounds + 2u);
+    if (process_model[0] != VIBEOS_PROCESS_STATE_TERMINATED) expected_proc_transitions++;
+    process_model[0] = VIBEOS_PROCESS_STATE_TERMINATED;
+    for (i = 0; i < 13u; i++) {
+        if (parent[i] == root) parent[i] = 0;
+        if (pt.entries[i].in_use &&
+            (pt.entries[i].pid != pid[i] || pt.entries[i].parent_pid != parent[i] ||
+             pt.entries[i].state != process_model[i])) {
+            return fail("proc", "init teardown differs from parent/state ledger", rounds + 2u);
+        }
+    }
+    for (i = 0; i < nt; i++) {
+        if (thread_live[i]) {
+            if (thread_model[i] != VIBEOS_THREAD_STATE_EXITED) expected_thread_transitions++;
+            thread_model[i] = VIBEOS_THREAD_STATE_EXITED;
+            thread_live[i] = 0;
+            expected_thread_exits++;
         }
     }
     {
-        uint32_t live = 0;
-        for (i = 0; i < nt; i++) live += thread_live[i] ? 1u : 0u;
-        /* Root termination also releases every remaining thread. */
-        if (pt.thread_count != 0u || live != 0u) {
-            return fail("proc", "termination did not release every thread", rounds + 3u);
+        uint64_t got_proc_transitions = 0, got_thread_transitions = 0;
+        uint64_t got_terminations = 0, got_exits = 0;
+        if (pt.thread_count != 0u ||
+            vibeos_proc_transition_counters(&pt, &got_proc_transitions,
+                &got_thread_transitions, &got_terminations, &got_exits) != 0 ||
+            got_proc_transitions != expected_proc_transitions ||
+            got_thread_transitions != expected_thread_transitions ||
+            got_terminations != 2u || got_exits != expected_thread_exits) {
+            return fail("proc", "final teardown counters differ from ledger", rounds + 3u);
         }
     }
     printf("PROC_TORTURE_OK seed=%llu rounds=%u processes=%u threads=%u\n",
-           (unsigned long long)g_rng, rounds, pt.process_count, pt.thread_count);
+           (unsigned long long)g_seed, rounds, pt.process_count, pt.thread_count);
     return 0;
 }
 
