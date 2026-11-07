@@ -26,7 +26,7 @@ ASAN_OPTIONS="abort_on_error=1:halt_on_error=1:detect_leaks=0" \
   >"$log" 2>&1
 rc=$?
 set -e
-if grep -q "BITMAP_REDZONE_CORRUPTION:" "$log"; then
+if grep -q "^BITMAP_REDZONE_CORRUPTION$" "$log"; then
   echo "DETECTED: write_file() corrupted the bitmap scratch red zone"
   exit 1
 fi
