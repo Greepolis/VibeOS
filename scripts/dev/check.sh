@@ -12,11 +12,23 @@
 # Defaults to everything against build-gcc-Release. Prints only what matters:
 # the return code, the count of real warnings, the test verdict, and the boot
 # reason plus every ring-3 self-check line the guest produced.
+#
+# Exits 1 when any step failed and 0 only when all of them passed, with a last
+# line check=ok or check=FAIL naming the steps (issue #198). It printed its
+# verdicts and exited 0 whatever they said, so a caller that read the status -
+# a pipeline, a wrapper, `&&` - was told a failed build and red tests were a
+# pass. A build that fails stops the run: tests and a boot after it measure
+# the previous binary, which is this file's own first rule.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 what="${1:-all}"
 d="${2:-build-gcc-Release}"
+
+failed=""
+fail() {   # fail <step>: remember that a step failed, for the verdict and the status
+    failed="$failed $1"
+}
 
 if [ ! -d "$d" ]; then
     echo "no build directory '$d' - configure one first, e.g."
@@ -27,7 +39,9 @@ fi
 do_build() {
     echo "=== build $d"
     cmake --build "$d" -j"$(nproc)" > /tmp/vibeos-build.log 2>&1
-    echo "rc=$?"
+    local rc=$?
+    echo "rc=$rc"
+    [ "$rc" -eq 0 ] || fail build
     grep -E 'error:|error ' /tmp/vibeos-build.log | head -5
     # Two kinds of expected noise, filtered so the number means something.
     #
@@ -51,7 +65,9 @@ do_build() {
         echo "static-checks=ok"
     else
         echo "static-checks=FAIL"
+        fail static-checks
     fi
+    [ "$rc" -eq 0 ]
 }
 
 do_tests() {
@@ -95,6 +111,7 @@ do_tests() {
         echo "host-tests=pass"
     else
         echo "host-tests=FAIL kernel=$k bootloader=$b torture=$t ctest=$c"
+        fail host-tests
     fi
 }
 
@@ -103,8 +120,17 @@ do_smoke() {
     # 300s is ample for a healthy boot (about 90s) and the harness now
     # gives up early on a wedged guest, so a failure costs about two minutes
     # rather than the whole budget.
+    local before
+    before="$(stat -c %Y qemu-cli-summary.txt 2>/dev/null || echo 0)"
     python3 scripts/qemu-cli-smoke-linux.py "$d" 300 > /dev/null 2>&1
     grep -o '^reason=.*' qemu-cli-summary.txt
+    # The verdict the gate wrote this time, and only a pass is one: a summary
+    # older than the run is the last run's, which is how a gate that crashed
+    # once read as green three times (CLAUDE.md).
+    if [ "$(stat -c %Y qemu-cli-summary.txt 2>/dev/null || echo 0)" = "$before" ] ||
+       ! grep -q '^reason=cli_and_network_verified' qemu-cli-summary.txt; then
+        fail smoke
+    fi
     grep -aoE 'auxv ok|auxv wrong|linux abi ok[^\r]*|abi: [^\r]*|tls survived[^\r]*|tls lost[^\r]*|gs survived[^\r]*|MUSL_OK[^\r]*|MUSL_ARGS[^\r]*|unimplemented Linux syscall nr=0x[0-9a-f]*' \
         qemu-cli-serial.log | sort -u
 }
@@ -136,7 +162,9 @@ do_clang() {
     cmake -S . -B build-clang-Release -G Ninja -DCMAKE_C_COMPILER=clang \
           -DCMAKE_BUILD_TYPE=Release > /tmp/vibeos-clang-cfg.log 2>&1
     cmake --build build-clang-Release -j"$(nproc)" > /tmp/vibeos-clang.log 2>&1
-    echo "clang-rc=$?"
+    local rc=$?
+    echo "clang-rc=$rc"
+    [ "$rc" -eq 0 ] || fail clang
     # Source warnings only, and the filter is the whole point.
     #
     # The first version counted every line containing "warning:", which is
@@ -164,14 +192,18 @@ do_nont() {
     cmake -S . -B build-nont-Release -G Ninja -DCMAKE_BUILD_TYPE=Release \
           -DVIBEOS_PERSONALITY_NT=OFF -DVIBEOS_BUILD_TESTS=OFF > /tmp/vibeos-nont-cfg.log 2>&1
     cmake --build build-nont-Release --target vibeos_kernel -j"$(nproc)" > /tmp/vibeos-nont.log 2>&1
-    echo "nont-rc=$?"
+    local rc=$?
+    echo "nont-rc=$rc"
+    [ "$rc" -eq 0 ] || fail nont
     grep -E 'error:|undefined reference' /tmp/vibeos-nont.log | head -5
     k=$(find build-nont-Release -maxdepth 2 -name 'vibeos_kernel*' -type f | head -1)
     if [ -z "$k" ]; then
         echo "nont-symbols=FAIL reason=no_kernel_image"
+        fail nont-symbols
     else
         n=$(nm "$k" 2>/dev/null | grep -cE ' (nt_|vibeos_nt_|vibeos_pe_|hw_pe_|hw_personality_nt)')
         echo "nont-symbols=$([ "$n" = 0 ] && echo ok || echo "FAIL nt_symbols=$n")"
+        [ "$n" = 0 ] || fail nont-symbols
     fi
 }
 
@@ -185,18 +217,28 @@ do_fuzz() {
     fi
     cmake -S . -B build-fuzz -G Ninja -DCMAKE_C_COMPILER=clang           -DCMAKE_BUILD_TYPE=Release -DVIBEOS_BUILD_FUZZERS=ON           > /tmp/vibeos-fuzz.log 2>&1 &&
         cmake --build build-fuzz --target fuzz_inet_input -j"$(nproc)"               >> /tmp/vibeos-fuzz.log 2>&1
-    echo "fuzz-rc=$?"
+    local rc=$?
+    echo "fuzz-rc=$rc"
+    [ "$rc" -eq 0 ] || fail fuzz
     grep -E 'error:|undefined reference' /tmp/vibeos-fuzz.log | head -5
 }
 
+# do_build's own status is the build's: what follows it runs only on a binary
+# that was just made.
 case "$what" in
     build) do_build ;;
-    tests) do_build; do_tests ;;
-    smoke) do_build; do_smoke ;;
+    tests) do_build && do_tests ;;
+    smoke) do_build && do_smoke ;;
     fuzz)  do_fuzz ;;
     clang) do_clang ;;
     nont)  do_nont ;;
-    all)   do_build; do_tests; do_clang; do_nont; do_fuzz; do_smoke ;;
+    all)   do_build && { do_tests; do_clang; do_nont; do_fuzz; do_smoke; } ;;
     *)     echo "usage: $0 [build|tests|smoke|fuzz|clang|nont|all] [build-dir]"; exit 2 ;;
 esac
 echo CHECK_DONE
+if [ -n "$failed" ]; then
+    echo "check=FAIL steps=${failed# }"
+    exit 1
+fi
+echo "check=ok"
+exit 0
