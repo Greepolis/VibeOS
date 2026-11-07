@@ -1,0 +1,8 @@
+# Target source: tests/linux/musl_threads.c
+# Gate assertion: blocked_read_race_seed_mismatch
+# Run with VIBEOS_THREADS_EXPECTED_SEED set to the seed the build used.
+### the guest reports a seed other than the one it was built with
+--- old
+    printf("THREADS_RACE_SEED=%llu rounds=8\n", g_race_seed);
++++ new
+    printf("THREADS_RACE_SEED=%llu rounds=8\n", g_race_seed + 1u);
