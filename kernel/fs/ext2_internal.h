@@ -69,4 +69,28 @@ int ext2_read_part(vibeos_ext2_t *fs, uint64_t block, uint32_t off, uint8_t *out
 /* 1 for a symbolic link whose target is in i_block (docs fs_ext4.md E4-001). */
 int ext2_inode_is_fast_symlink(const vibeos_ext2_t *fs, const uint8_t *inode);
 
+/* ---- the journal (ext4_journal.c) ----
+ * Every sector the reader or the writer reads goes through ext2_sec_read, and
+ * every sector of metadata the writer writes through ext4_j_meta_write: while
+ * a transaction is open they are the journal's copy of the block. A file's
+ * data goes through ext4_j_data_write, which writes it in place (ordered
+ * mode) unless the block was freed by this same transaction - then what was
+ * there on the disk may still be metadata the last commit names, and the data
+ * is logged instead. */
+int ext2_sec_read(vibeos_ext2_t *fs, uint64_t lba, void *buf);
+int ext4_j_meta_write(vibeos_ext2_t *fs, uint64_t lba, const void *buf);
+int ext4_j_data_write(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf);
+void ext4_j_freed(vibeos_ext2_t *fs, uint64_t start, uint64_t count);
+/* At mount, for the writer: find the journal and decide whether writes go
+ * through it. 0, or -1 for a journal this driver will not write (the volume
+ * is then read-only). Leaves fs->j.on 0 for a volume without one. */
+int ext4_j_load(vibeos_ext2_t *fs);
+/* At mount, for a volume whose superblock says RECOVER: replay what was
+ * committed and leave the journal empty and the flag clear. */
+int ext4_j_recover(vibeos_ext2_t *fs);
+/* Around every operation that changes the volume. end commits whatever the
+ * operation logged, whether it succeeded or not, and returns 0 or -EIO. */
+int ext4_j_begin(vibeos_ext2_t *fs);
+int ext4_j_end(vibeos_ext2_t *fs);
+
 #endif

@@ -194,7 +194,7 @@ POINTS = {
 # its symbols as the driver does; counting them would raise the radius for
 # splitting a file in two, which is the opposite of what the number is for.
 ALSO_OWN = {
-    "filesystem (direct)": ("kernel/fs/ext4_write.c", "kernel/fs/ext2_internal.h", "include/vibeos/ext4_write.h"),
+    "filesystem (direct)": ("kernel/fs/ext4_write.c", "kernel/fs/ext4_journal.c", "kernel/fs/ext2_internal.h", "include/vibeos/ext4_write.h", "include/vibeos/ext4_journal.h"),
 }
 
 

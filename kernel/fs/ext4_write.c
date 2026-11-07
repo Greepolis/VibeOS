@@ -110,10 +110,14 @@ void ext4_w_mount(vibeos_ext2_t *fs) {
     if ((fs->incompat & INCOMPAT_EXTENTS) == 0u || (fs->incompat & INCOMPAT_FILETYPE) == 0u || !fs->csum ||
         (fs->ro_compat & ~known_ro) != 0u ||
         (compat & ~(COMPAT_HAS_JOURNAL | COMPAT_EXT_ATTR | COMPAT_RESIZE_INODE | COMPAT_DIR_INDEX)) != 0u ||
-        (fs->incompat & INCOMPAT_RECOVER) != 0u ||
         fs->inode_size != 256u || fs->desc_size > GD_MAX || fs->block_size > 4096u ||
         (le16(fs->sb + 0x3Au) & 0x2u) != 0u ||   /* the volume says it has errors: e2fsck first */
         fs->cache == 0 || fs->cache->dev == 0 || fs->cache->dev->write == 0) {
+        return;
+    }
+    /* With a journal, every change goes through it (ext4_journal.c); one
+     * this driver will not write leaves the volume read-only. */
+    if (ext4_j_load(fs) != 0) {
         return;
     }
     fs->writable = 1;
@@ -123,8 +127,8 @@ void ext4_w_mount(vibeos_ext2_t *fs) {
 
 static int sb_store(vibeos_ext2_t *fs) {
     st32(fs->sb + 0x3FCu, crc32c(~0u, fs->sb, 0x3FCu));
-    if (vibeos_blockcache_write(fs->cache, fs->part_lba + 2u, fs->sb) != 0 ||
-        vibeos_blockcache_write(fs->cache, fs->part_lba + 3u, fs->sb + VIBEOS_BLOCK_SIZE) != 0) {
+    if (ext4_j_meta_write(fs, fs->part_lba + 2u, fs->sb) != 0 ||
+        ext4_j_meta_write(fs, fs->part_lba + 3u, fs->sb + VIBEOS_BLOCK_SIZE) != 0) {
         return -VIBEOS_EIO;
     }
     return 0;
@@ -160,12 +164,24 @@ static int blk_write(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf) {
         return -VIBEOS_EIO;
     }
     for (i = 0; i < sectors; i++) {
-        if (vibeos_blockcache_write(fs->cache, fs->part_lba + block * sectors + i,
-                                    buf + (uint64_t)i * VIBEOS_BLOCK_SIZE) != 0) {
-            return -VIBEOS_EIO;
+        int rc = ext4_j_meta_write(fs, fs->part_lba + block * sectors + i, buf + (uint64_t)i * VIBEOS_BLOCK_SIZE);
+
+        if (rc != 0) {
+            return rc;
         }
     }
     return 0;
+}
+
+/* A file's data: in place, ahead of the commit that names it (ordered mode),
+ * through the journal only where that would overwrite what the last commit
+ * still calls metadata (ext4_j_data_write). Bounded as blk_write is. */
+static int blk_data(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf) {
+    if (block >= fs->blocks_count || block < fs->first_data_block) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, block);
+        return -VIBEOS_EIO;
+    }
+    return ext4_j_data_write(fs, block, buf);
 }
 
 /* ---- group descriptors ---------------------------------------------------- */
@@ -205,13 +221,13 @@ static int gd_write(vibeos_ext2_t *fs, uint32_t g, uint8_t *d) {
     st16(d + 0x1Eu, gd_csum(fs, g, d));
     lba = fs->part_lba + (fs->group_desc_block + at / fs->block_size) * (fs->block_size / VIBEOS_BLOCK_SIZE) +
           off / VIBEOS_BLOCK_SIZE;
-    if (vibeos_blockcache_read(fs->cache, lba, sector) != 0) {
+    if (ext2_sec_read(fs, lba, sector) != 0) {
         return -VIBEOS_EIO;
     }
     for (i = 0; i < fs->desc_size; i++) {
         sector[off % VIBEOS_BLOCK_SIZE + i] = d[i];
     }
-    return vibeos_blockcache_write(fs->cache, lba, sector) == 0 ? 0 : -VIBEOS_EIO;
+    return ext4_j_meta_write(fs, lba, sector);
 }
 
 /* The descriptor's counts are split in two halves with 64-bit volumes. */
@@ -484,6 +500,8 @@ static int bfree(vibeos_ext2_t *fs, uint64_t start, uint64_t count) {
     uint8_t d[GD_MAX];
     uint8_t *bm = fs->wbuf2;
 
+    ext4_j_freed(fs, start, count);
+
     while (count > 0u) {
         uint32_t g, bit, nb, n, freed = 0, i;
 
@@ -640,7 +658,7 @@ static int inode_put(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
         return -VIBEOS_EIO;
     }
     lba = fs->part_lba + blk * (fs->block_size / VIBEOS_BLOCK_SIZE) + off / VIBEOS_BLOCK_SIZE;
-    if (vibeos_blockcache_read(fs->cache, lba, sector) != 0) {
+    if (ext2_sec_read(fs, lba, sector) != 0) {
         return -VIBEOS_EIO;
     }
     for (i = 0; i < fs->inode_size; i++) {
@@ -648,7 +666,7 @@ static int inode_put(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
     }
     /* What the reader holds of this inode is the old one. */
     __atomic_store_n(&fs->cached_ino, 0u, __ATOMIC_RELEASE);
-    return vibeos_blockcache_write(fs->cache, lba, sector) == 0 ? 0 : -VIBEOS_EIO;
+    return ext4_j_meta_write(fs, lba, sector);
 }
 
 static int inode_get(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
@@ -1735,7 +1753,7 @@ static int file_check(const uint8_t *inode) {
  * never names a block that is not there yet. A failure part-way returns the
  * bytes done, as write(2) does; the blocks taken for the part not written stay
  * the file's (E4-009). */
-static long w_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, const void *buf, uint32_t len) {
+static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, const void *buf, uint32_t len) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
     const uint8_t *src = (const uint8_t *)buf;
@@ -1814,7 +1832,7 @@ static long w_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
         }
         fresh = bi >= fresh_from && bi < fresh_to;
         if (chunk == bs) {
-            rc = blk_write(fs, phys, src + done);
+            rc = blk_data(fs, phys, src + done);
         } else {
             if (fresh) {
                 memset(fs->wbuf, 0, bs);
@@ -1823,7 +1841,7 @@ static long w_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
                 break;
             }
             memcpy(fs->wbuf + within, src + done, chunk);
-            rc = blk_write(fs, phys, fs->wbuf);
+            rc = blk_data(fs, phys, fs->wbuf);
         }
         if (rc != 0) {
             break;
@@ -1849,7 +1867,7 @@ static long w_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
     return done > 0u ? (long)done : rc;
 }
 
-static int w_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size) {
+static int x_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
     uint32_t bs = fs->block_size, ino = (uint32_t)node->id;
@@ -1875,7 +1893,11 @@ static int w_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
             return rc;
         }
         /* The bytes of the last block past the new end must read as zeros when
-         * the file grows again: a block can be partly kept. */
+         * the file grows again: a block can be partly kept. Through the
+         * journal (blk_write), not in place: zeroed ahead of the commit, a
+         * power cut left the old size over bytes already gone - Linux closes
+         * that with its orphan list, and this driver has none. Found by the
+         * power-cut sweep. */
         if (new_size % bs != 0u) {
             int uninit;
             uint64_t phys = ext_map(fs, (uint32_t)(new_size / bs), &uninit);
@@ -1903,7 +1925,7 @@ static int w_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
     return inode_put(fs, ino, inode);
 }
 
-static int w_create(void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out) {
+static int x_create(void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
     uint32_t ino = 0;
@@ -1919,13 +1941,13 @@ static int w_create(void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t
     return 0;
 }
 
-static int w_mkdir(void *fsv, const char *path) {
+static int x_mkdir(void *fsv, const char *path) {
     uint32_t ino;
 
     return node_create((vibeos_ext2_t *)fsv, path, VIBEOS_S_IFDIR | 0755u, 0, 0, &ino) == 0 ? 0 : -1;
 }
 
-static int w_symlink(void *fsv, const char *target, const char *path) {
+static int x_symlink(void *fsv, const char *target, const char *path) {
     uint32_t ino;
 
     return node_create((vibeos_ext2_t *)fsv, path, VIBEOS_S_IFLNK | 0777u, target, cstr_len(target), &ino);
@@ -1987,15 +2009,15 @@ static int remove_name(vibeos_ext2_t *fs, const char *path, int want_dir) {
     return inode_release(fs, ino, inode);
 }
 
-static int w_unlink(void *fsv, const char *path) {
+static int x_unlink(void *fsv, const char *path) {
     return remove_name((vibeos_ext2_t *)fsv, path, 0) == 0 ? 0 : -1;
 }
 
-static int w_rmdir(void *fsv, const char *path) {
+static int x_rmdir(void *fsv, const char *path) {
     return remove_name((vibeos_ext2_t *)fsv, path, 1);
 }
 
-static int w_link(void *fsv, const char *existing, const char *path) {
+static int x_link(void *fsv, const char *existing, const char *path) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t src[EXT2_MAX_INODE_SIZE], parent[EXT2_MAX_INODE_SIZE];
     uint32_t sino, plen, nlen, pino;
@@ -2041,7 +2063,7 @@ static int w_link(void *fsv, const char *existing, const char *path) {
 /* rename: the target's name is pointed at the source (or a name made), the
  * source's name removed, and the counts and ".." that follow from a directory
  * having moved are put right. */
-static int w_rename(void *fsv, const char *from, const char *to, uint32_t flags) {
+static int x_rename(void *fsv, const char *from, const char *to, uint32_t flags) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t p1[EXT2_MAX_INODE_SIZE], p2[EXT2_MAX_INODE_SIZE], src[EXT2_MAX_INODE_SIZE], dst[EXT2_MAX_INODE_SIZE];
     uint32_t plen1, plen2, nlen1, nlen2, pino1, pino2, sino, dino = 0, scratch;
@@ -2189,7 +2211,7 @@ static int attr_apply(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, const vib
     return inode_put(fs, ino, inode);
 }
 
-static int w_setattr(void *fsv, const char *path, const vibeos_fs_attr_t *attr) {
+static int x_setattr(void *fsv, const char *path, const vibeos_fs_attr_t *attr) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
     uint32_t ino = ext2_resolve(fs, path, inode);
@@ -2200,7 +2222,7 @@ static int w_setattr(void *fsv, const char *path, const vibeos_fs_attr_t *attr) 
     return attr_apply(fs, ino, inode, attr);
 }
 
-static int w_setattr_node(void *fsv, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *attr) {
+static int x_setattr_node(void *fsv, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *attr) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
 
@@ -2213,21 +2235,40 @@ static int w_setattr_node(void *fsv, const vibeos_fs_node_t *node, const vibeos_
 
 /* Replace a file's contents, creating it: the original shape, for callers that
  * have a whole file. */
-static long w_write_file(void *fsv, const char *path, const void *buf, uint32_t len) {
+static long x_write_file(void *fsv, const char *path, const void *buf, uint32_t len) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     vibeos_fs_node_t node;
     long r;
 
     if (w_lookup(fs, path, &node) != 0) {
-        if (w_create(fs, path, 0644u, &node) != 0) {
+        if (x_create(fs, path, 0644u, &node) != 0) {
             return -1;
         }
-    } else if (node.is_dir || w_truncate(fs, &node, 0) != 0) {
+    } else if (node.is_dir || x_truncate(fs, &node, 0) != 0) {
         return -1;
     }
-    r = w_write_at(fs, &node, 0, buf, len);
+    r = x_write_at(fs, &node, 0, buf, len);
     return r < 0 ? -1 : r;
 }
+
+/* ---- one operation, one transaction (ext4_journal.c) ------------------- */
+
+#define J_OP_INT(name, params, args)                                                            static int w_##name params {                                                                    vibeos_ext2_t *fs_ = (vibeos_ext2_t *)fsv;                                                 int rc_ = ext4_j_begin(fs_), end_;                                                          if (rc_ != 0) {                                                                                 return rc_;                                                                             }                                                                                           rc_ = x_##name args;                                                                        end_ = ext4_j_end(fs_);                                                                     return end_ != 0 ? end_ : rc_;                                                          }
+#define J_OP_LONG(name, params, args)                                                           static long w_##name params {                                                                   vibeos_ext2_t *fs_ = (vibeos_ext2_t *)fsv;                                                 long r_;                                                                                    int rc_ = ext4_j_begin(fs_), end_;                                                          if (rc_ != 0) {                                                                                 return rc_;                                                                             }                                                                                           r_ = x_##name args;                                                                         end_ = ext4_j_end(fs_);                                                                     return end_ != 0 ? end_ : r_;                                                           }
+
+J_OP_LONG(write_at, (void *fsv, const vibeos_fs_node_t *node, uint64_t off, const void *buf, uint32_t len),
+          (fsv, node, off, buf, len))
+J_OP_INT(truncate, (void *fsv, const vibeos_fs_node_t *node, uint64_t new_size), (fsv, node, new_size))
+J_OP_INT(create, (void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out), (fsv, path, mode, out))
+J_OP_INT(mkdir, (void *fsv, const char *path), (fsv, path))
+J_OP_INT(symlink, (void *fsv, const char *target, const char *path), (fsv, target, path))
+J_OP_INT(unlink, (void *fsv, const char *path), (fsv, path))
+J_OP_INT(rmdir, (void *fsv, const char *path), (fsv, path))
+J_OP_INT(link, (void *fsv, const char *existing, const char *path), (fsv, existing, path))
+J_OP_INT(rename, (void *fsv, const char *from, const char *to, uint32_t flags), (fsv, from, to, flags))
+J_OP_INT(setattr, (void *fsv, const char *path, const vibeos_fs_attr_t *attr), (fsv, path, attr))
+J_OP_INT(setattr_node, (void *fsv, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *attr), (fsv, node, attr))
+J_OP_LONG(write_file, (void *fsv, const char *path, const void *buf, uint32_t len), (fsv, path, buf, len))
 
 static const vibeos_fs_ops_t g_ext4_rw = {
     .lookup = w_lookup,

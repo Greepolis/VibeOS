@@ -90,7 +90,45 @@ typedef struct {
         uint32_t start_lo;
     } ext[1360];                  /* four leaves of 340: depth 1 at most */
     uint8_t cached_ptrs[4096];
+
+    /* ---- the journal's (docs/filesystem-design/ext4.md step 3) ----
+     * One operation is one transaction. What it changes of the metadata is
+     * written into the journal's blocks, not over the metadata - the block
+     * cache is write-back, so a block written in place reaches the disk
+     * whenever it is evicted, which may be before the commit - and every read
+     * of such a block while the transaction is open is answered from there
+     * (kernel/fs/ext4_journal.c). */
+    struct {
+        int on;                   /* has_journal and a journal this driver writes */
+        int open;                 /* a transaction is being built */
+        int dead;                 /* a commit failed half-way: no more writes */
+        int csum3;                /* the journal's checksums are v3 */
+        int is64;                 /* tags carry 64-bit block numbers */
+        uint32_t first;           /* s_first: the log's first block */
+        uint32_t maxlen;          /* s_maxlen: the journal's length in blocks */
+        uint32_t seq;             /* the next transaction's sequence number */
+        uint32_t start;           /* s_start as found: 0 is an empty log */
+        uint32_t seed;            /* crc32c of the journal's uuid */
+        uint32_t tag_bytes;       /* one descriptor tag, uuid excluded */
+        uint32_t tags_per_desc;   /* what one descriptor block holds */
+        uint32_t cap;             /* blocks one transaction may log */
+        uint32_t n;               /* blocks this one has logged */
+        uint32_t nx;              /* the journal inode's extents */
+        struct {
+            uint32_t lblk, len;
+            uint64_t phys;
+        } x[16];
+        uint64_t home[384];       /* where each logged block belongs */
+        uint8_t escaped[48];      /* which logged blocks began with the journal's magic */
+        uint32_t nfreed;          /* blocks freed by this transaction, as runs */
+        int freed_overflow;       /* more runs than the table: every data write is logged */
+        struct {
+            uint64_t start, count;
+        } freed[16];
+    } j;
 } vibeos_ext2_t;
+
+/* The journal's counters are in vibeos/ext4_journal.h. */
 
 /* How many inode and pointer-block reads the caches answered: the counter
  * that says they are used at all. */

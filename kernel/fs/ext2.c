@@ -40,7 +40,7 @@ int ext2_read_block(vibeos_ext2_t *fs, uint64_t block, uint8_t *out) {
     }
     for (i = 0; i < sectors; i++) {
         uint64_t lba = fs->part_lba + block * sectors + i;
-        if (vibeos_blockcache_read(fs->cache, lba, out + i * VIBEOS_BLOCK_SIZE) != 0) {
+        if (ext2_sec_read(fs, lba, out + i * VIBEOS_BLOCK_SIZE) != 0) {
             return -1;
         }
     }
@@ -51,9 +51,11 @@ int ext2_read_block(vibeos_ext2_t *fs, uint64_t block, uint8_t *out) {
  * or how something is stored - meta_bg moves the group descriptors, inline
  * data puts a file in its inode, casefold changes what a name matches - and
  * reading such a volume without knowing would return the wrong bytes, so it is
- * refused. RECOVER is refused too: the journal holds metadata newer than the
- * volume, and until step 3 replays it, reading past it reads the past. A
- * ro_compat feature only matters to a writer, and this is not one yet. */
+ * refused. RECOVER is not in the list: the journal holds metadata newer than
+ * the volume, so the mount replays it first (ext4_j_recover, step 3) and
+ * mounts what that leaves - or, on a device that takes no writes, refuses,
+ * because reading past it reads the past. A ro_compat feature only matters
+ * to a writer. */
 #define INCOMPAT_KNOWN (INCOMPAT_FILETYPE | INCOMPAT_EXTENTS | INCOMPAT_64BIT | INCOMPAT_FLEX_BG | \
                         INCOMPAT_CSUM_SEED | INCOMPAT_LARGEDIR)
 
@@ -146,8 +148,28 @@ static void ext2_cache_put(uint32_t *seq, uint32_t *slot_key, uint32_t key, uint
     __atomic_store_n(seq, s + 2u, __ATOMIC_RELEASE);
 }
 
+static int ext2_mount_once(vibeos_ext2_t *fs, vibeos_blockcache_t *cache, uint64_t part_lba, int *recover);
+
 int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
                       uint64_t part_lba) {
+    int recover = 0;
+
+    if (ext2_mount_once(fs, cache, part_lba, &recover) != 0) {
+        return -1;
+    }
+    if (!recover) {
+        return 0;
+    }
+    /* Replayed, the volume is mounted again from its superblock as the
+     * journal left it; one that still says RECOVER after that is refused. */
+    if (ext4_j_recover(fs) != 0 || ext2_mount_once(fs, cache, part_lba, &recover) != 0 || recover) {
+        fs->mounted = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static int ext2_mount_once(vibeos_ext2_t *fs, vibeos_blockcache_t *cache, uint64_t part_lba, int *recover) {
     uint8_t sb[VIBEOS_BLOCK_SIZE * 2u];
     uint32_t log_bs;
     uint64_t blocks_count, groups;
@@ -164,6 +186,7 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     fs->ptr_seq = 0;
     fs->csum = 0;
     fs->writable = 0;
+    __builtin_memset(&fs->j, 0, sizeof(fs->j));   /* no transaction: every read is of the volume */
     __atomic_store_n(&g_ext2_refused, 0u, __ATOMIC_RELAXED);
 
     /* The superblock is at byte 1024, whatever the block size, which is why it
@@ -188,6 +211,8 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     /* The feature words exist from revision 1; revision 0 has none. */
     fs->incompat = rd32(sb + 76) >= 1u ? rd32(sb + 0x60) : 0u;
     fs->ro_compat = rd32(sb + 76) >= 1u ? rd32(sb + 0x64) : 0u;
+    *recover = (fs->incompat & INCOMPAT_RECOVER) != 0u;
+    fs->incompat &= ~INCOMPAT_RECOVER;
     if ((fs->incompat & ~INCOMPAT_KNOWN) != 0u) {
         __atomic_store_n(&g_ext2_refused, fs->incompat & ~INCOMPAT_KNOWN, __ATOMIC_RELAXED);
         return -1;
@@ -280,7 +305,7 @@ int ext2_read_part(vibeos_ext2_t *fs, uint64_t block, uint32_t off, uint8_t *out
     while (done < n) {
         uint32_t at = off + done, in = at % VIBEOS_BLOCK_SIZE, take = VIBEOS_BLOCK_SIZE - in, i;
 
-        if (vibeos_blockcache_read(fs->cache, fs->part_lba + block * sectors + at / VIBEOS_BLOCK_SIZE, sector) != 0) {
+        if (ext2_sec_read(fs, fs->part_lba + block * sectors + at / VIBEOS_BLOCK_SIZE, sector) != 0) {
             return -1;
         }
         if (take > n - done) {

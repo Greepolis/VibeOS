@@ -34,8 +34,9 @@
  * 4608 -> 32768 for ext4's writer (docs/filesystem-design/ext4.md step 2): two
  * block buffers and a file's whole extent list - four leaves of 340 - live in
  * the volume's state, so two ext4 volumes are written at once and the driver
- * needs no allocator and no lock of its own beyond the mount's. */
-#define VIBEOS_FS_STATE_BYTES 32768u
+ * needs no allocator and no lock of its own beyond the mount's. 32768 -> 36864
+ * for its journal (step 3): where each block an operation changed belongs. */
+#define VIBEOS_FS_STATE_BYTES 36864u
 
 typedef struct {
     uint64_t first_lba;

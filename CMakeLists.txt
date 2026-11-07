@@ -175,6 +175,7 @@ if(VIBEOS_BUILD_FUZZERS)
         tests/fuzz/fuzz_ext2_image.c
         kernel/fs/ext2.c
         kernel/fs/ext4_write.c
+        kernel/fs/ext4_journal.c
         kernel/fs/blockcache.c
         kernel/fs/vfs.c
         kernel/core/mbz.c
