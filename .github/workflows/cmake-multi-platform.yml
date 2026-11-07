@@ -237,19 +237,6 @@ jobs:
             -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON -DVIBEOS_REQUIRE_TLS=ON
           cmake --build build --parallel
           cmake --build build --target vibeos_image
-      - name: Explore replayable guest race seeds
-        run: |
-          set -euo pipefail
-          for seed in 0x200199 0x20020b 0x20031d 0x20042f; do
-            echo "::group::guest race seed $seed"
-            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON \
-              -DVIBEOS_REQUIRE_TLS=ON -DVIBEOS_THREADS_RACE_SEED="$seed"
-            cmake --build build --parallel --target vibeos_musl_threads
-            cmake --build build --parallel --target vibeos_image
-            VIBEOS_THREADS_EXPECTED_SEED="$seed" python3 scripts/qemu-cli-smoke-linux.py build 900
-            echo "::endgroup::"
-          done
       - name: Prove FD close/reuse fails when production fdget drops its reference
         env:
           SABOTAGE_VERIFY: bash scripts/dev/verify-concurrency-guest-sabotage.sh build blocked_read_did_not_survive_descriptor_reuse|blocked_read_fd_reuse_failed_in_a_seeded_round|file_put_underflow
@@ -262,6 +249,15 @@ jobs:
         env:
           SABOTAGE_VERIFY: bash scripts/dev/verify-concurrency-guest-sabotage.sh build blocked_read_race_seed_missing
         run: python3 scripts/dev/sabotage.py tests/linux/musl_threads.c scripts/dev/cases/linux-race-seed-marker.txt build
+      - name: Prove the QEMU gate rejects a replay seed other than the one built
+        env:
+          VIBEOS_THREADS_EXPECTED_SEED: "0x200199"
+          SABOTAGE_VERIFY: bash scripts/dev/verify-concurrency-guest-sabotage.sh build blocked_read_race_seed_mismatch
+        run: python3 scripts/dev/sabotage.py tests/linux/musl_threads.c scripts/dev/cases/linux-race-seed-mismatch.txt build
+      - name: Prove the QEMU gate requires the descriptor-reuse success marker
+        env:
+          SABOTAGE_VERIFY: bash scripts/dev/verify-concurrency-guest-sabotage.sh build blocked_read_did_not_survive_descriptor_reuse
+        run: python3 scripts/dev/sabotage.py tests/linux/musl_threads.c scripts/dev/cases/linux-fd-reuse-marker.txt build
       - name: Prove TCP accept rejects a reused listener generation
         run: python3 scripts/dev/sabotage.py kernel/net/inet.c scripts/dev/cases/inet-parent-generation.txt build
       - name: Rebuild restored production tree

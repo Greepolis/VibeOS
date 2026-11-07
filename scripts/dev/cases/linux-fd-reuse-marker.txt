@@ -1,0 +1,6 @@
+# Target source: tests/linux/musl_threads.c
+# Gate assertion: blocked_read_did_not_survive_descriptor_reuse
+### C8 never reports success
+--- old
+    printf("THREADS_C8_BLOCKED_FD_REUSE_OK: blocked read retained old file after fd reuse\n");
++++ new
