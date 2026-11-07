@@ -337,6 +337,7 @@ int ks_map_user_pages(int slot, uint64_t va, uint64_t pages) {
 void ks_tlb_drain(void) { hw_tlbq_drain(); }
 void ks_tlb_flush_page(uint64_t va) { hw_invlpg(va); }
 void *ks_page_alloc(void) { return hw_alloc_page(); }
+void ks_page_hold(void *page) { vibeos_frame_get_page(page); }
 void ks_page_free(void *page, const char *why) { hw_free_page_why(page, why); }
 uint64_t ks_heap_base(void) { return VIBEOS_HW_USER_HEAP_BASE; }
 uint64_t ks_mmap_base(void) { return VIBEOS_HW_USER_MMAP_BASE; }

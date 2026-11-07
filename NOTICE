@@ -1,0 +1,20 @@
+VibeOS NOTICE
+=============
+
+GNOS DRM/KMS
+------------
+
+Portions of the software DRM/KMS implementation in kernel/drm/,
+include/vibeos/drm.h, include/vibeos/drm_uapi.h, and the DRM tests in
+tests/kernel/ are ported from GNOS:
+
+  https://github.com/Real-GNOS/GNOS
+  Copyright (C) 2026 and earlier GNOS project contributors.
+
+The GNOS DRM/KMS sources were originally published under GPL-2.0. The GNOS
+original author authorized their use in VibeOS under GPL-3.0-or-later on
+2026-11-05, and this project distributes the ported work under
+GPL-3.0-or-later.
+
+The port is a rewrite for VibeOS's per-open file model. It does not include
+GNOS's singleton devtmpfs bridge.

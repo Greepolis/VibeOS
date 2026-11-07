@@ -25,16 +25,12 @@ static const devfs_entry_t g_dev[] = {
     {"stdin", VIBEOS_S_IFLNK | 0777u, 0, "/proc/self/fd/0"},
     {"stdout", VIBEOS_S_IFLNK | 0777u, 0, "/proc/self/fd/1"},
     {"stderr", VIBEOS_S_IFLNK | 0777u, 0, "/proc/self/fd/2"},
+    {"dri/card0", VIBEOS_S_IFCHR | 0666u, VIBEOS_DEV_DRM_CARD0, 0},
 };
 #define DEVFS_ENTRIES ((uint32_t)(sizeof(g_dev) / sizeof(g_dev[0])))
-
-static int devfs_same(const char *a, const char *b) {
-    while (*a && *a == *b) {
-        a++;
-        b++;
-    }
-    return *a == 0 && *b == 0;
-}
+#define DEVFS_DRI_ENTRY (DEVFS_ENTRIES - 1u)
+#define DEVFS_DRI_ID (2u + DEVFS_ENTRIES)
+#define DEVFS_FIND_DRI (-3)
 
 static uint32_t devfs_len(const char *s) {
     uint32_t n = 0;
@@ -44,18 +40,34 @@ static uint32_t devfs_len(const char *s) {
     return n;
 }
 
+static int devfs_match(const char *path, uint32_t n, const char *name) {
+    uint32_t i;
+
+    for (i = 0; i < n; i++) {
+        if (path[i] != name[i]) {
+            return 0;
+        }
+    }
+    return name[n] == 0;
+}
+
 /* The entry `path` names, or -1 for the directory itself, or -2 for nothing. */
 static int devfs_find(const char *path) {
+    uint32_t n;
     uint32_t i;
 
     while (*path == '/') {
         path++;
     }
-    if (*path == 0) {
+    n = devfs_len(path);
+    if (n == 0u) {
         return -1;
     }
+    if (n == 3u && devfs_match(path, n, "dri")) {
+        return DEVFS_FIND_DRI;
+    }
     for (i = 0; i < DEVFS_ENTRIES; i++) {
-        if (devfs_same(path, g_dev[i].name)) {
+        if (devfs_match(path, n, g_dev[i].name)) {
             return (int)i;
         }
     }
@@ -71,6 +83,15 @@ static int devfs_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
         return -VIBEOS_ENOENT;
     }
     out->nlink = 1u;
+    if (i == DEVFS_FIND_DRI) {
+        out->id = DEVFS_DRI_ID;
+        out->is_dir = 1;
+        out->mode = VIBEOS_S_IFDIR | 0755u;
+        out->nlink = 2u;
+        out->rdev = 0;
+        out->size = 0;
+        return 0;
+    }
     if (i < 0) {
         out->id = 1u;
         out->is_dir = 1;
@@ -98,24 +119,33 @@ static long devfs_read_at(void *fs, const vibeos_fs_node_t *node, uint64_t off, 
 
 static int devfs_list(void *fs, const char *path, uint32_t index, char *name, uint32_t cap,
                       uint64_t *out_size, int *out_is_dir) {
+    int i = devfs_find(path);
+    const char *entry;
     uint32_t k;
 
     (void)fs;
-    if (devfs_find(path) != -1) {
+    if (i == -1) {
+        if (index > DEVFS_DRI_ENTRY || cap == 0u) {
+            return -1;
+        }
+        entry = index == DEVFS_DRI_ENTRY ? "dri" : g_dev[index].name;
+    } else if (i == DEVFS_FIND_DRI) {
+        if (index != 0u || cap == 0u) {
+            return -1;
+        }
+        entry = "card0";
+    } else {
         return -VIBEOS_ENOTDIR;
     }
-    if (index >= DEVFS_ENTRIES || cap == 0u) {
-        return -1;
-    }
-    for (k = 0; k + 1u < cap && g_dev[index].name[k]; k++) {
-        name[k] = g_dev[index].name[k];
+    for (k = 0; k + 1u < cap && entry[k]; k++) {
+        name[k] = entry[k];
     }
     name[k] = 0;
     if (out_size) {
         *out_size = 0;
     }
     if (out_is_dir) {
-        *out_is_dir = 0;
+        *out_is_dir = i == -1 && index == DEVFS_DRI_ENTRY;
     }
     return 0;
 }
@@ -126,7 +156,7 @@ static long devfs_readlink(void *fs, const char *path, char *buf, uint32_t cap) 
 
     (void)fs;
     if (i < 0) {
-        return i == -1 ? -VIBEOS_EINVAL : -VIBEOS_ENOENT;
+        return (i == -1 || i == DEVFS_FIND_DRI) ? -VIBEOS_EINVAL : -VIBEOS_ENOENT;
     }
     if (!g_dev[i].link) {
         return -VIBEOS_EINVAL;

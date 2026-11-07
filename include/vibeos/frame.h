@@ -135,6 +135,12 @@ uint64_t vibeos_frame_alloc_contig(uint32_t count, vibeos_frame_state_t state);
  * different one. */
 void vibeos_frame_get(uint64_t phys);
 
+/* The same, for a caller that holds the page's kernel pointer. The kernel
+ * reaches physical memory by identity; this wrapper keeps the reference
+ * arithmetic in the frame layer even when the caller has only the pointer a
+ * filesystem handed it. */
+void vibeos_frame_get_page(void *page);
+
 /* Take a reference only if the frame already has an owner (M-038). Returns 1
  * with the reference held, 0 having changed nothing. See frame.c. */
 int vibeos_frame_try_get(uint64_t phys);

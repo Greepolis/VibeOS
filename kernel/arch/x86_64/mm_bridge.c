@@ -958,7 +958,24 @@ void hw_free_page_why(void *p, const char *why) {
      * interrupts masked. */
     if (vibeos_frame_total() != 0ull && (++g_free_seq & 0x7u) == 0u) {
         uint32_t pid = 0;
-        if (hw_frame_still_mapped(phys, &pid, 0, 0)) {
+        uint32_t mappers = 0;
+        uint64_t mapped_va = 0;
+        uint32_t owners_at_check;
+        /* A frame another process still maps is a defect only when those
+         * mappings outnumber the references the frame layer is tracking. A
+         * mapping itself holds a reference (vmspace.c records one
+         * vibeos_frame_get per PTE), so while owners >= mappers every mapping
+         * is accounted for and the free is safe: the frame layer keeps the page
+         * resident and only reclaims it once the last holder goes. A client
+         * that closes its fd while keeping the mmap does exactly this and it is
+         * correct, not a premature free (PR #165 reviewer note) - it must not
+         * be reported. This call is about to drop one reference, so compare
+         * against owners - 1: only a mapping that survives the drop with no
+         * backing reference is a genuine dangling free. The form
+         * `mappers + 1u > owners` makes the comparison without the underflow a
+         * naive `owners - 1` would suffer when owners is zero. */
+        if (hw_frame_still_mapped(phys, &pid, &mappers, &mapped_va) &&
+            mappers + 1u > (owners_at_check = vibeos_frame_owners(phys))) {
             hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,
                    "freeing a frame that a live process still maps "
                    "(a0 = frame, a1 = pid)");

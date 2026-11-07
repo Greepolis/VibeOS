@@ -274,6 +274,60 @@ jobs:
           echo "failing seeds: $fails of 300"
           test "$fails" -eq 0
 
+  drm-torture:
+    name: DRM Torture (handles, names, offsets)
+    # module: drm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential
+
+      # The model owns the expected handle slots, name lifetimes and map
+      # offsets; the driver's own structures are never read. The sanitizers
+      # then catch a handle table walked past its end, which the model cannot
+      # see because it is a different array.
+      - name: Build (sanitized)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          cmake --build build-asan --parallel --target vibeos_drm_torture
+
+      # Four files, create/close/destroy/flink/open/map interleaved, with every
+      # handle cell, name and offset compared after every operation. Many seeds
+      # because the interesting cases are orderings nobody thought of.
+      - name: Torture DRM (300 seeds, sanitized)
+        run: |
+          set -uo pipefail
+          fails=0
+          for s in $(seq 1 300); do
+            if ! ./build-asan/vibeos_drm_torture "$s" 3000 > /tmp/drmt.log 2>&1; then
+              fails=$((fails + 1))
+              echo "::group::seed $s"
+              cat /tmp/drmt.log
+              echo "::endgroup::"
+            fi
+          done
+          echo "failing seeds: $fails of 300"
+          test "$fails" -eq 0
+
+      # Long runs reach a full name table and a file whose handle slots are all
+      # in use, which the short runs only sometimes do.
+      - name: Torture DRM (long runs)
+        run: |
+          set -euo pipefail
+          for s in 1 7 13 29 61; do
+            ./build-asan/vibeos_drm_torture "$s" 50000
+          done
+
   registry-torture:
     name: Registry Torture (model + sanitizers)
     # The NT registry's core (docs/abi/windows.md W8 step 2). It is one part of

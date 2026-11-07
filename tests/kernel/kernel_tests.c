@@ -10114,6 +10114,7 @@ int test_linux_gaps(void);
 int test_klog(void);
 int test_crash(void);
 int test_device(void);
+int test_drm(void);
 int test_gui(void);
 int test_runq(void);
 int test_lifetime(void);
@@ -10492,6 +10493,7 @@ int main(void) {
     RUN_TEST(test_klog);
     RUN_TEST(test_crash);
     RUN_TEST(test_device);
+    RUN_TEST(test_drm);
     RUN_TEST(test_gui);
     RUN_TEST(test_runq);
     RUN_TEST(test_lifetime);

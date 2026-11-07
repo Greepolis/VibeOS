@@ -211,6 +211,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/klog_tests.c
         tests/kernel/crash_tests.c
         tests/kernel/device_tests.c
+        tests/kernel/drm_tests.c
         tests/kernel/gui_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c
@@ -340,6 +341,18 @@ if(VIBEOS_BUILD_TESTS)
     target_link_libraries(vibeos_tmpfs_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_tmpfs_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-tmpfs-torture COMMAND vibeos_tmpfs_torture 1 3000)
+
+    # DRM handles, names, references and fake map offsets against a model of
+    # four files. The model shares no code with the driver: it owns the
+    # expected handle slots, name lifetimes and offsets, and the final checks
+    # ask that every object and every name is gone once the last file closes.
+    add_executable(vibeos_drm_torture
+        tests/kernel/drm_torture.c
+        tests/kernel/drm_torture_support.c
+        kernel/drm/drm_drv.c
+    )
+    target_include_directories(vibeos_drm_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-drm-torture COMMAND vibeos_drm_torture 1 2000)
 
     # The file-lock table against a model with no ranges in it (docs/abi/ L1
     # step 6): every request, every byte probed, and the number of locks held.

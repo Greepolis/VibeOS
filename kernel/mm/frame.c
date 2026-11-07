@@ -587,6 +587,10 @@ void vibeos_frame_get(uint64_t phys) {
     frame_unlock();
 }
 
+void vibeos_frame_get_page(void *page) {
+    vibeos_frame_get((uint64_t)(uintptr_t)page);
+}
+
 /* Take a reference only if somebody already has one. A frame with no owner is
  * free (or about to be handed out), and giving it an owner from the outside
  * would resurrect it. Returns 1 with the reference held, or 0 having changed
