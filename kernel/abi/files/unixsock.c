@@ -1127,6 +1127,8 @@ static void ux_gc_locked(vibeos_file_t **drop, uint32_t *ndrop, uint32_t cap) {
 static volatile uint32_t g_ux_gc_busy;
 /* Every reference one pass can give back - 16 KiB, a whole kernel stack, so
  * not on one: the busy flag above makes it one pass's at a time. */
+/* quota: none - not a pool anybody fills: the collector's scratch, emptied
+ * before the pass that filled it returns. */
 static vibeos_file_t *g_ux_gc_drop[UX_MAX * UX_RIGHTS_Q * VIBEOS_MSG_RIGHTS_MAX];
 
 /* Collected when a local socket is made, and when one is let go: a cycle
