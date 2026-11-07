@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target: kernel/txn/journal.c
+
+### checkpoint reports success without writing committed targets
+--- old
+        if (vibeos_blockcache_write(j->bc, rd64(desc + 16u + i * 8u), block) != 0) {
+            return -1;
+        }
++++ new
+        (void)block;
+        if (0) {
+            return -1;
+        }

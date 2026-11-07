@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target: kernel/object/handle_table.c
+
+### close leaves the handle live
+--- old
+            vibeos_handle_entry_t ev = table->entries[i];
+            table->entries[i].in_use = 0;
+            table->entries[i].id = 0;
++++ new
+            vibeos_handle_entry_t ev = table->entries[i];
+            table->entries[i].in_use = 1;
+            table->entries[i].id = 0;

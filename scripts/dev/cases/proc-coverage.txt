@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target: kernel/proc/process.c
+
+### terminating a non-init parent reparents children to the wrong process
+--- old
+            pt->entries[i].parent_pid = (pid == 1u) ? 0u : 1u;
++++ new
+            pt->entries[i].parent_pid = (pid == 1u) ? 1u : 0u;

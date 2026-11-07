@@ -634,6 +634,219 @@ jobs:
             echo "::endgroup::"
           done
 
+  module-abi-torture:
+    name: Kernel ABI model torture (ASan + UBSan)
+    # module: abi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the module torture
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-module-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-module-asan --parallel --target vibeos_module_torture
+      - name: Replayable randomized seeds
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in $(seq 1 80); do
+            ./build-module-asan/vibeos_module_torture abi "$seed" 5000
+          done
+      - name: Long state-transition runs
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-module-asan/vibeos_module_torture abi "$seed" 100000
+          done
+
+  module-ipc-torture:
+    name: Kernel IPC model torture (ASan + UBSan)
+    # module: ipc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the module torture
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-module-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-module-asan --parallel --target vibeos_module_torture
+      - name: Replayable randomized seeds
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in $(seq 1 80); do
+            ./build-module-asan/vibeos_module_torture ipc "$seed" 5000
+          done
+      - name: Long state-transition runs
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-module-asan/vibeos_module_torture ipc "$seed" 100000
+          done
+
+  module-object-torture:
+    name: Kernel OBJECT model torture (ASan + UBSan)
+    # module: object
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the module torture
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-module-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-module-asan --parallel --target vibeos_module_torture
+      - name: Replayable randomized seeds
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in $(seq 1 80); do
+            ./build-module-asan/vibeos_module_torture object "$seed" 2500
+          done
+      - name: Long state-transition runs
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-module-asan/vibeos_module_torture object "$seed" 25000
+          done
+
+  module-proc-torture:
+    name: Kernel PROC model torture (ASan + UBSan)
+    # module: proc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the module torture
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-module-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-module-asan --parallel --target vibeos_module_torture
+      - name: Replayable randomized seeds
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in $(seq 1 80); do
+            ./build-module-asan/vibeos_module_torture proc "$seed" 5000
+          done
+      - name: Long state-transition runs
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-module-asan/vibeos_module_torture proc "$seed" 100000
+          done
+
+  module-txn-torture:
+    name: Kernel TXN model torture (ASan + UBSan)
+    # module: txn
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the module torture
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-module-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-module-asan --parallel --target vibeos_module_torture
+      - name: Replayable randomized seeds
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in $(seq 1 80); do
+            ./build-module-asan/vibeos_module_torture txn "$seed" 100
+          done
+      - name: Long state-transition runs
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-module-asan/vibeos_module_torture txn "$seed" 1000
+          done
+
+  module-coverage-mutations:
+    name: Module torture production mutation checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build host tests and module torture
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-module-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-module-asan --parallel
+      - name: Break each production invariant and require the model to go red
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: bash scripts/dev/verify-module-mutations.sh build-module-asan
+
   fuzz-protocols:
     name: Fuzz the Receive Path
     # module: net
