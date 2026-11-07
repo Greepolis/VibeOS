@@ -2,111 +2,127 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Which kernel modules have no intensive nightly test?
 
-**Every module gets one.** That is the rule, and it is here rather than only in
-CLAUDE.md because a rule nobody can check is a rule that decays - this project
-has the evidence, in the shape of three lessons that were written down and then
-broken by somebody quoting them.
+Every module gets one. The rule lives here as well as in project guidance
+because a rule nobody can check is a rule that decays.
 
-## What an intensive test is
+An intensive test is long, randomised, and checked against something other
+than the code under test: many seeds against a reference model, a soak whose
+length is the point, or a fuzzer. The memory manager compares every frame's
+owner count against a plain-array model; the scheduler does the same for its
+picker. Timekeeping now has an independent event-count model, boundary probes
+and production-source mutation checks.
 
-Not the host tests, which every module has and which check the cases somebody
-thought of. Intensive means long, randomised, and checked against something
-other than the code under test: many seeds against a reference model, a soak
-whose length is the point, a fuzzer. The two that exist show the shape - the
-memory manager's torture compares every frame's owner count against a model in
-plain arrays, and the scheduler's does the same for the picker.
+The reason is that a subsystem asked whether it is correct answers from the
+numbers it used to decide, so self-consistent defects survive. The model must
+use a different representation and the test must be shown to fail when a
+production invariant is broken.
 
-The reason is the same in both: a subsystem asked whether it is correct answers
-from the numbers it used to decide, so the defects that survive are the
-self-consistent ones. This kernel has had exactly that in both subsystems - a
-frame the allocator believed nobody owned while a process ran from it, and a
-task class derived from is_idle that collapsed KERNEL into NORMAL and stayed
-self-consistent for months.
+A job declares coverage with a '# module: <names>' comment at job level in
+.github/workflows/nightly.yml. A comment rather than a YAML key because GitHub
+rejects unknown keys; a separate manifest would be a second source of truth.
+Step-level annotations do not count.
 
-## How a job declares what it covers
-
-A `# module: <names>` comment inside the job in .github/workflows/nightly.yml.
-A comment rather than a YAML key because GitHub rejects keys it does not know,
-and a separate manifest would be a second place to keep true.
-
-## A ratchet
-
-Eleven of thirteen modules had nothing when this was written. Demanding zero
-would start red, and a check that starts red is one nobody reads. The number
-may only go down.
+The number may only go down. Eleven of thirteen modules had nothing when this
+rule was introduced. The journal torture was removed after three independent
+sabotages were caught on zero of thirty seeds; see
+scripts/dev/cases/io-journal.txt. A test that cannot fail is not evidence of
+coverage, and lowering the baseline requires a test that discriminates.
 """
 
+import argparse
 import os
 import re
 import sys
 
-# Modules with nothing yet: seven of thirteen. Each is a debt, not a decision -
-# unlike the
-# exemptions in check-counters-produced.py, there is no good reason for any of
-# these, only an order to do them in.
-# Raised from 7 to 8 in I5c, as a decision rather than as a convenience.
-#
-# The journal moved from kernel/fs/ to kernel/txn/ - it is not a filesystem
-# concern - and that created a module directory with no intensive nightly test.
-#
-# One was written and then deleted, which is the part worth recording. It ran
-# thousands of randomised transactions with the power cut inside each, and
-# three separate sabotages of the journal - committing without flushing the
-# data, and dropping each of the two checksum comparisons in recovery - were
-# caught on ZERO of thirty seeds. A test that cannot fail is not a test, and
-# shipping one as coverage is worse than the gap, because the gap is at least
-# visible. See scripts/dev/cases/io-journal.txt for what was tried.
-#
-# What the journal does have is an exhaustive host sweep: the power-off point
-# walked across every write of a fixed transaction, on a drive model whose
-# cache reorders. That is a real check and it is not nothing; it is just not
-# what this rule asks for. Lowering this number again means writing a torture
-# that discriminates.
-# Lowered from 8 to 7 in docs/abi/ L1: kernel/fs has tmpfs's torture against a
-# model (tmpfs-torture in nightly.yml).
-BASELINE = 7
-
+# Six modules remain uncovered: abi, exec, ipc, object, proc and txn.
+# History: 11 of 13 modules were uncovered at introduction. Raised from 7 to
+# 8 in I5c as an explicit debt decision, then lowered from 8 to 7 in L1 after
+# kernel/fs gained tmpfs's model torture. Lowered from 7 to 6 here after
+# kernel/time gained an independent model and production mutation checks.
+# The journal is deliberately not counted: its three recovery/flush sabotages
+# were caught on zero of thirty seeds (see scripts/dev/cases/io-journal.txt).
+# The number may only go down when a new test proves it can detect a defect.
+BASELINE = 6
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 NIGHTLY = os.path.join(ROOT, ".github", "workflows", "nightly.yml")
 KERNEL = os.path.join(ROOT, "kernel")
 
 
-def modules():
-    return sorted(d for d in os.listdir(KERNEL)
-                  if os.path.isdir(os.path.join(KERNEL, d)))
+def modules(kernel_dir=KERNEL):
+    return sorted(name for name in os.listdir(kernel_dir)
+                  if os.path.isdir(os.path.join(kernel_dir, name)))
 
 
-def covered():
-    if not os.path.isfile(NIGHTLY):
-        return set()
-    text = open(NIGHTLY, encoding="utf-8").read()
-    out = set()
-    for m in re.finditer(r"^\s*#\s*module:\s*(.+)$", text, re.M):
-        for name in m.group(1).split():
-            out.add(name.strip())
-    return out
+def declared_modules(nightly_path=NIGHTLY):
+    """Read module annotations only from actual top-level workflow jobs."""
+    if not os.path.isfile(nightly_path):
+        raise FileNotFoundError(nightly_path)
+    result = set()
+    in_jobs = False
+    current_job = False
+    with open(nightly_path, encoding="utf-8") as stream:
+        for line in stream:
+            if re.match(r"^jobs:\s*$", line):
+                in_jobs, current_job = True, False
+                continue
+            if in_jobs and re.match(r"^[^ \s#][^:]*:\s*(?:#.*)?$", line):
+                in_jobs, current_job = False, False
+            if not in_jobs:
+                continue
+            if re.match(r"^  [A-Za-z0-9_-]+:\s*(?:#.*)?$", line):
+                current_job = True
+                continue
+            if current_job and re.match(r"^ {4}#\s*module:", line):
+                value = line.split("module:", 1)[1].strip()
+                result.update(value.split())
+    return result
 
 
-def main():
-    have = covered()
-    missing = [m for m in modules() if m not in have]
+def analyze(kernel_dir=KERNEL, nightly_path=NIGHTLY, baseline=BASELINE):
+    present = set(modules(kernel_dir))
+    declared = declared_modules(nightly_path)
+    missing = sorted(present - declared)
+    stale = sorted(declared - present)
+    return {
+        "modules": sorted(present),
+        "declared": sorted(declared),
+        "missing": missing,
+        "stale": stale,
+        "baseline": baseline,
+        "ok": not stale and len(missing) <= baseline,
+    }
 
-    print(f"modules={len(modules())} covered={len(modules()) - len(missing)} "
-          f"uncovered={len(missing)}")
-    for m in missing:
-        print("  no intensive nightly test: kernel/" + m)
-    # A declared module that does not exist is a job pointing at nothing.
-    for h in sorted(have):
-        if h not in modules():
-            print("  a nightly job claims a module that is not there: " + h)
-            return 1
 
-    if len(missing) > BASELINE:
-        print(f"nightly-coverage=FAIL uncovered={len(missing)} "
-              f"baseline={BASELINE}")
-        return 1
-    print("nightly-coverage=ok")
-    return 0
+def render(report):
+    lines = [
+        "Nightly intensive module coverage",
+        "modules={modules} covered={covered} uncovered={uncovered} baseline={baseline}".format(
+            modules=len(report["modules"]),
+            covered=len(report["modules"]) - len(report["missing"]),
+            uncovered=len(report["missing"]),
+            baseline=report["baseline"]),
+    ]
+    lines.extend("  uncovered: kernel/" + name for name in report["missing"])
+    lines.extend("  stale declaration: " + name for name in report["stale"])
+    lines.append("nightly-coverage=" + ("ok" if report["ok"] else "FAIL"))
+    return "\n".join(lines) + "\n"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", help="also write the exact report to this path")
+    args = parser.parse_args(argv)
+    try:
+        report = analyze()
+    except (OSError, UnicodeError) as error:
+        print("nightly-coverage=ERROR " + str(error))
+        return 2
+    output = render(report)
+    print(output, end="")
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as stream:
+            stream.write(output)
+    return 0 if report["ok"] else 1
 
 
 if __name__ == "__main__":

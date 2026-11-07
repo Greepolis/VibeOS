@@ -44,6 +44,7 @@ run counters-produced      python3 scripts/dev/check-counters-produced.py
 run mustbezero-asserted    python3 scripts/dev/check-mustbezero-asserted.py
 # Every module gets an intensive nightly run.
 run nightly-coverage       python3 scripts/dev/check-nightly-coverage.py
+run nightly-coverage-tests bash -c "python3 scripts/dev/test-check-nightly-coverage.py && echo nightly-coverage-tests=ok"
 # Which of the portable kernel's functions nothing reaches. Written two days
 # before it was wired in, and unwired for both of them.
 run reachable              python3 scripts/dev/check-reachable.py
