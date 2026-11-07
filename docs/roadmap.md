@@ -32,10 +32,20 @@ administration), in this order:
    Planned in [abi/windows.md](abi/windows.md): our own `ntdll`, an object
    manager in the kernel, Wine's conformance tests as the oracle.
 2. **The filesystem's hierarchy** - what lives where, from the boot volume to
-   `/tmp`, `/proc` and `/dev`, decided rather than accumulated.
+   `/tmp`, `/proc` and `/dev`, decided rather than accumulated. With it, the
+   VFS hands out references to directories and files, not paths (issues #181
+   and #195): the working directory is a string, so a removed and recreated
+   one is entered, and most creations, removals and renames are made by name
+   after the permission check, so a name swapped in between is acted on. The
+   identity checks of 2026-11-06 refuse the stale cases they can see; the
+   reference is what removes the window.
 3. **The user interface** - designed, not grown from the boot console.
 4. **Security, all of it** - isolation, privilege, sandboxing; L9's
-   capabilities, seccomp and Landlock are its Linux-facing part.
+   capabilities, seccomp and Landlock are its Linux-facing part. The NT
+   personality's half includes security descriptors for its objects (issue
+   #170): a named object is opened by anyone who knows its name, with any
+   rights the type has, and NtDuplicateObject grants what it is asked for,
+   because there is no DACL to ask.
 5. **The applications that manage the system.**
 6. **The rest of networking.**
 7. **System administration (L8)**, last, once what it administers is defined.
