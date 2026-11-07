@@ -24,6 +24,7 @@
 #include "vibeos/blockdev.h"
 
 static uint64_t g_rng;
+static uint64_t g_seed;
 
 static uint64_t rnd64(void) {
     g_rng ^= g_rng << 13;
@@ -34,7 +35,7 @@ static uint64_t rnd64(void) {
 
 static int fail(const char *module, const char *what, unsigned round) {
     printf("FAIL:%s_torture seed=%llu round=%u: %s\n",
-           module, (unsigned long long)g_rng, round, what);
+           module, (unsigned long long)g_seed, round, what);
     return 1;
 }
 
@@ -94,6 +95,12 @@ static int same_message(const vibeos_message_t *a, const vibeos_message_t *b) {
            a->transferred_rights == b->transferred_rights;
 }
 
+/* Exercise the channel and waitset through their public operations only.
+ * The channel oracle is a separately indexed FIFO array; the waitset oracle
+ * derives each policy's order from event state and its own round-robin cursor.
+ * Keeping both models separate is important: copying the implementation's
+ * ring indices or selection cursor would make the same defect pass twice.
+ */
 static int run_ipc(unsigned rounds) {
     vibeos_channel_t channel;
     vibeos_message_t model[VIBEOS_CHANNEL_CAPACITY];
@@ -104,6 +111,9 @@ static int run_ipc(unsigned rounds) {
     uint32_t cursor = 0;
     unsigned i, r;
 
+    /* Start from a known empty channel and a fixed registration order. The
+     * model owns its head/count and never inspects the production ring slots.
+     */
     vibeos_channel_init(&channel);
     for (i = 0; i < 16u; i++) {
         vibeos_event_init(&events[i]);
@@ -159,7 +169,9 @@ static int run_ipc(unsigned rounds) {
         /* Rebuild the expected event ordering from the public event state.
          * The oracle does not call the waitset's collection helper or reuse
          * its round-robin cursor. Registration order is intentionally stable.
-         * Priority ties are resolved by the first registered event. */
+         * Priority ties are resolved by the first registered event. The
+         * independent cursor advances only after a non-empty round-robin peek.
+         */
         {
             size_t got[16], got_count = 0, want[16], want_count = 0;
             uint32_t policy = (uint32_t)(rnd64() % 4u);
@@ -563,6 +575,7 @@ int main(int argc, char **argv) {
     module = argv[1];
     g_rng = argc > 2 ? strtoull(argv[2], 0, 0) : 1u;
     if (g_rng == 0) g_rng = 0x9E3779B97F4A7C15ull;
+    g_seed = g_rng;
     if (argc > 3) rounds = (unsigned)strtoul(argv[3], 0, 0);
     printf("MODULE_TORTURE_SEED module=%s seed=%llu rounds=%u\n",
            module, (unsigned long long)g_rng, rounds);
