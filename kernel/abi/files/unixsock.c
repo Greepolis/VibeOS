@@ -19,9 +19,10 @@
  * descriptions. They wait in the receiver's endpoint, tied to the position in
  * its ring where the message that carried them begins, and a read hands them
  * over with the first byte of that message - which is why a stream read stops
- * at such a position rather than run past it, as Linux's does. Nothing collects
- * a cycle of sockets passed through each other; Linux has a garbage collector
- * for that and this file does not.
+ * at such a position rather than run past it, as Linux's does. A cycle of
+ * sockets passed through each other is collected when a socket is made or
+ * its last reference goes (ux_gc, issue #194), the way Linux's collector
+ * does it.
  *
  * Every wait looks, gives up the core, and looks again, stopping for a signal and
  * honouring O_NONBLOCK and MSG_DONTWAIT, as the IP sockets' do (socket.c). */
@@ -1014,6 +1015,143 @@ static uint32_t ux_ready(vibeos_file_t *f) {
     return r;
 }
 
+/* ---- collecting cycles (issue #194) ------------------------------------------
+ *
+ * A socket's description sent through a socket waits in the receiver's
+ * queue as a reference. Two sockets sent through each other and then closed
+ * hold each other up for ever - and with a table of 32 endpoints, sixteen
+ * socketpairs filled it for every process until the machine restarted.
+ *
+ * Linux's way, on a table this size: a description is a candidate when every
+ * reference to it is one waiting in a queue; a candidate is reached when its
+ * reference waits in the queue of an endpoint somebody can still read - one
+ * that is not a candidate, or a candidate already reached, or a connection
+ * not yet accepted by a reached listener. Candidates nothing reaches can never
+ * be read by anyone, so the rights waiting in them are given back, and the
+ * cycle comes apart through the ordinary releases. A reference held for a
+ * moment by a call in progress is a reference: such a socket is no candidate.
+ * Under the lock; what is to be put goes into `drop`. */
+static void ux_gc_locked(vibeos_file_t **drop, uint32_t *ndrop, uint32_t cap) {
+    vibeos_file_t *file_of[UX_MAX];
+    uint32_t inflight[UX_MAX];
+    uint8_t cand[UX_MAX], reached[UX_MAX];
+    uint32_t i, j, k, more;
+
+    for (i = 0; i < UX_MAX; i++) {
+        file_of[i] = 0;
+        inflight[i] = 0;
+        cand[i] = reached[i] = 0;
+    }
+    for (i = 0; i < UX_MAX; i++) {
+        if (!g_ux[i].used) {
+            continue;
+        }
+        for (j = 0; j < g_ux[i].nrights; j++) {
+            for (k = 0; k < g_ux[i].rights[j].n; k++) {
+                vibeos_file_t *f = g_ux[i].rights[j].f[k];
+
+                if (f && f->ops == &vibeos_fops_unix && f->ux >= 0 && (uint32_t)f->ux < UX_MAX &&
+                    g_ux[f->ux].used && g_ux[f->ux].gen == f->sock_gen) {
+                    file_of[f->ux] = f;
+                    inflight[f->ux]++;
+                }
+            }
+        }
+    }
+    for (i = 0; i < UX_MAX; i++) {
+        cand[i] = file_of[i] && __atomic_load_n(&file_of[i]->refs, __ATOMIC_ACQUIRE) == inflight[i];
+    }
+    /* Reached: whatever is not a candidate, then whatever a reached endpoint's
+     * queue or backlog holds, until nothing more is. An endpoint with no
+     * description of its own (a connection waiting in a backlog) is reached
+     * only through its listener. */
+    for (i = 0; i < UX_MAX; i++) {
+        reached[i] = (uint8_t)(g_ux[i].used && !cand[i]);
+    }
+    for (i = 0; i < UX_MAX; i++) {
+        uint32_t q;
+
+        for (q = 0; g_ux[i].used && q < g_ux[i].qlen; q++) {
+            int s = g_ux[i].queue[q];
+
+            if (s >= 0 && (uint32_t)s < UX_MAX) {
+                reached[s] = 0;   /* waiting to be accepted: its listener decides */
+            }
+        }
+    }
+    do {
+        more = 0;
+        for (i = 0; i < UX_MAX; i++) {
+            uint32_t q;
+
+            if (!g_ux[i].used || !reached[i]) {
+                continue;
+            }
+            for (q = 0; q < g_ux[i].qlen; q++) {
+                int s = g_ux[i].queue[q];
+
+                if (s >= 0 && (uint32_t)s < UX_MAX && g_ux[s].used && !reached[s]) {
+                    reached[s] = 1;
+                    more = 1;
+                }
+            }
+            for (j = 0; j < g_ux[i].nrights; j++) {
+                for (k = 0; k < g_ux[i].rights[j].n; k++) {
+                    vibeos_file_t *f = g_ux[i].rights[j].f[k];
+
+                    if (f && f->ops == &vibeos_fops_unix && f->ux >= 0 && (uint32_t)f->ux < UX_MAX &&
+                        cand[f->ux] && !reached[f->ux]) {
+                        reached[f->ux] = 1;
+                        more = 1;
+                    }
+                }
+            }
+        }
+    } while (more);
+    for (i = 0; i < UX_MAX; i++) {
+        if (!g_ux[i].used || !cand[i] || reached[i]) {
+            continue;
+        }
+        for (j = 0; j < g_ux[i].nrights; j++) {
+            for (k = 0; k < g_ux[i].rights[j].n; k++) {
+                if (*ndrop < cap) {
+                    drop[(*ndrop)++] = g_ux[i].rights[j].f[k];
+                    g_ux[i].rights[j].f[k] = 0;
+                }
+            }
+        }
+        g_ux[i].nrights = 0;
+    }
+}
+
+static volatile uint32_t g_ux_gc_busy;
+/* Every reference one pass can give back - 16 KiB, a whole kernel stack, so
+ * not on one: the busy flag above makes it one pass's at a time. */
+static vibeos_file_t *g_ux_gc_drop[UX_MAX * UX_RIGHTS_Q * VIBEOS_MSG_RIGHTS_MAX];
+
+/* Collected when a local socket is made, and when one is let go: a cycle
+ * comes to be held by nobody when its last descriptor closes, which runs no
+ * release, so the next socket made is what finds it. Not again from inside
+ * itself - the puts below release sockets whose own release comes back here.
+ * What a pass on another core misses meanwhile is found by the next socket
+ * made. */
+static void ux_gc(void) {
+    uint32_t nd = 0, k, zero = 0;
+
+    if (!__atomic_compare_exchange_n(&g_ux_gc_busy, &zero, 1u, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return;
+    }
+    ks_lock(&g_ux_lock, __func__);
+    ux_gc_locked(g_ux_gc_drop, &nd, sizeof(g_ux_gc_drop) / sizeof(g_ux_gc_drop[0]));
+    ks_unlock(&g_ux_lock);
+    for (k = 0; k < nd; k++) {
+        if (g_ux_gc_drop[k]) {
+            vibeos_file_put(g_ux_gc_drop[k]);
+        }
+    }
+    __atomic_store_n(&g_ux_gc_busy, 0u, __ATOMIC_RELEASE);
+}
+
 static void ux_release(vibeos_file_t *f) {
     vibeos_file_t *drop[(UX_BACKLOG + 1u) * UX_RIGHTS_Q * VIBEOS_MSG_RIGHTS_MAX];
     uint32_t nd = 0, k;
@@ -1029,6 +1167,7 @@ static void ux_release(vibeos_file_t *f) {
         vibeos_file_put(drop[k]);
     }
     f->ux = -1;
+    ux_gc();
     ks_wake_waiters();
 }
 
@@ -1058,6 +1197,10 @@ vibeos_file_t *vibeos_unix_create(int type, uint32_t flags, long *err) {
     vibeos_file_t *f;
     int idx;
 
+    /* A cycle held only by its own messages closes no description - its
+     * references never reach zero - so a release cannot be what collects
+     * it. A new endpoint is when a free one matters; the table is 32. */
+    ux_gc();
     ks_lock(&g_ux_lock, __func__);
     idx = ux_alloc(type);
     ks_unlock(&g_ux_lock);

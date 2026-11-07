@@ -1637,7 +1637,11 @@ anything below was fixed: 113 passed. The last: 131 passed, 10 failed, 177 broke
   refused under OFD-lock tests (L6).
 - Leases (`F_SETLEASE`), `O_PATH` descriptors answering EBADF to I/O, FIFOs
   from `mknod`/`mkfifo`, `RENAME_EXCHANGE`: gaps in L1's own rows, the last two
-  already in the registry.
+  already in the registry. Since issue #179 an `O_PATH` descriptor of a file
+  does no I/O at all (`vibeos_fops_path`: read, write, seek, truncate and
+  mapping refuse, fstat answers) and needs no permission on the file; what is
+  left is the error - EINVAL, ESPIPE or ENODEV where Linux says EBADF - and an
+  `O_PATH` directory, which is still an ordinary one for `getdents`.
 - xattr tests report TCONF, correctly: no filesystem here keeps them.
 
 - **Sabotage**: `abi-ltp-l1.txt` (6), `abi-restart.txt` (4),

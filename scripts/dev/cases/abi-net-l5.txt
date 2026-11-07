@@ -109,3 +109,11 @@
             deadline = ks_ticks() + (ks_hz() * 4u);
 +++ new
             deadline = ks_ticks() + (ks_hz() * 4u);
+
+### a Unix socket is walked to without the caller's search permission (#169)
+--- old
+        r = vibeos_path_walk_as("/", "/", abs, create ? (VIBEOS_PATH_CREATE | VIBEOS_PATH_NOFOLLOW) : 0u,
+                                &c, w);
++++ new
+        r = vibeos_path_walk("/", "/", abs, create ? (VIBEOS_PATH_CREATE | VIBEOS_PATH_NOFOLLOW) : 0u, w);
+        (void)c;

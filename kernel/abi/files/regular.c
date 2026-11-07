@@ -542,6 +542,16 @@ const vibeos_file_ops_t vibeos_fops_regular = {
     .release = regular_release,
 };
 
+/* O_PATH: a name held, and no data behind it. Every I/O call asks the
+ * operation it needs and finds none - read, write, seek, truncate, sync, a
+ * mapping - so a descriptor opened that way by a privileged process and kept
+ * across a setuid gives the file's bytes to nobody (issue #179). stat stays:
+ * fstat is what such a descriptor is for. */
+const vibeos_file_ops_t vibeos_fops_path = {
+    .name = "path",
+    .stat = regular_stat,
+};
+
 static int dir_sync(vibeos_file_t *f) {
     return vibeos_fs_sync(f->mnt);   /* fsync on a directory is how a rename is made durable */
 }

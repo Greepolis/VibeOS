@@ -28,6 +28,9 @@
 #define VIBEOS_IOCTL_SET_PGRP 0x5410u
 
 extern const vibeos_file_ops_t vibeos_fops_regular;
+/* An O_PATH description of a file: what it names can be asked about, and
+ * nothing can be read, written, mapped or cut through it (issue #179). */
+extern const vibeos_file_ops_t vibeos_fops_path;
 extern const vibeos_file_ops_t vibeos_fops_dir;
 extern const vibeos_file_ops_t vibeos_fops_pipe;
 extern const vibeos_file_ops_t vibeos_fops_socket;

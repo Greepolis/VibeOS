@@ -6821,6 +6821,170 @@ static void t_parent_gone(void) {
     expect(linux_may_remove(&w) < 0, "nor one to remove");
 }
 
+/* #194: a socketpair whose ends are each sent through themselves, then
+ * closed, held its two endpoints for ever - sixteen of them filled the table
+ * of 32 for everybody. Twenty rounds of it must leave room for a pair. */
+static long send_self(long fd, uint64_t mh, uint64_t iov, uint64_t ctl, uint64_t buf) {
+    linux_msghdr_t *h = (linux_msghdr_t *)kf_uptr(mh);
+    uint64_t *io = (uint64_t *)kf_uptr(iov);
+    linux_cmsghdr_t *c = (linux_cmsghdr_t *)kf_uptr(ctl);
+
+    memset(h, 0, sizeof(*h));
+    memcpy(kf_uptr(buf), "x", 1);
+    io[0] = buf;
+    io[1] = 1;
+    h->msg_iov = iov;
+    h->msg_iovlen = 1;
+    c->cmsg_len = sizeof(*c) + 4;
+    c->cmsg_level = 1;   /* SOL_SOCKET */
+    c->cmsg_type = 1;    /* SCM_RIGHTS */
+    *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) = (int32_t)fd;
+    h->msg_control = ctl;
+    h->msg_controllen = 24;
+    return SYS3(46 /* sendmsg */, (uint64_t)fd, mh, 0);
+}
+
+static void t_scm_rights_cycle(void) {
+    uint64_t sv = kf_ualloc(8), mh = kf_ualloc(64), iov = kf_ualloc(16), ctl = kf_ualloc(64),
+             buf = kf_ualloc(8);
+    int32_t *p = (int32_t *)kf_uptr(sv);
+    uint32_t round;
+    int ok = 1;
+
+    fresh(93);
+    for (round = 0; round < 20u && ok; round++) {
+        ok = SYS4(53 /* socketpair */, 1 /* AF_UNIX */, 1 /* SOCK_STREAM */, 0, sv) == 0 &&
+             send_self(p[0], mh, iov, ctl, buf) == 1 && send_self(p[1], mh, iov, ctl, buf) == 1 &&
+             SYS1(3, (uint64_t)p[0]) == 0 && SYS1(3, (uint64_t)p[1]) == 0;
+    }
+    expect(ok, "twenty socketpairs, each end sent through itself and closed unread");
+    expect(SYS4(53, 1, 1, 0, sv) == 0, "and the cycles were collected: a pair is still to be had");
+    (void)SYS1(3, (uint64_t)p[0]);
+    (void)SYS1(3, (uint64_t)p[1]);
+
+    /* And nothing somebody can still read is collected. A's end a0 holds a
+     * message; a0 is sent through B and closed, and B's other end is kept.
+     * a0 is a candidate - every reference to it is in flight - but B's kept
+     * end reaches it, so a pass of the collector (a new socket) must leave
+     * a0's message to be read by whoever receives a0. */
+    {
+        uint64_t sb = kf_ualloc(8);
+        int32_t *q = (int32_t *)kf_uptr(sb);
+        linux_msghdr_t *h = (linux_msghdr_t *)kf_uptr(mh);
+        linux_cmsghdr_t *c = (linux_cmsghdr_t *)kf_uptr(ctl);
+        long a0, a1, b1, other, got, again;
+
+        expect(SYS4(53, 1, 1, 0, sv) == 0 && SYS4(53, 1, 1, 0, sb) == 0, "two pairs, A and B");
+        a0 = p[0];
+        a1 = p[1];
+        b1 = q[1];
+        expect(send_self(a1, mh, iov, ctl, buf) == 1, "a message with a descriptor waiting at a0");
+        *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) = (int32_t)a0;
+        expect(SYS3(46, (uint64_t)q[0], mh, 0) == 1 && SYS1(3, (uint64_t)a0) == 0 &&
+                   SYS1(3, (uint64_t)q[0]) == 0,
+               "a0 sent through B, and a0 and B's sending end closed");
+        other = SYS3(41 /* socket */, 1, 1, 0);
+        expect(other >= 0, "a new socket, which runs the collector");
+        memset(kf_uptr(ctl), 0, 64);
+        h->msg_controllen = 64;
+        h->msg_flags = 0;
+        got = SYS3(47 /* recvmsg */, (uint64_t)b1, mh, 0);
+        again = got == 1 ? *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) : -1;
+        expect(again >= 0, "B's kept end receives a0");
+        memset(kf_uptr(ctl), 0, 64);
+        h->msg_controllen = 64;
+        h->msg_flags = 0;
+        expect(again >= 0 && SYS3(47, (uint64_t)again, mh, 0) == 1 && c->cmsg_type == 1,
+               "and a0 still holds its message and the descriptor in it: nothing reachable was taken");
+        (void)SYS1(3, (uint64_t)again);
+        (void)SYS1(3, (uint64_t)a1);
+        (void)SYS1(3, (uint64_t)b1);
+        (void)SYS1(3, (uint64_t)other);
+    }
+}
+
+/* #173: RLIMIT_MSGQUEUE is a user's, over all its queues, charged at their
+ * full size when they are made - and another user's room is its own. */
+static void t_mq_rlimit(void) {
+    int me = fresh(92);
+    long q1, q2, q3;
+
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.suid = ks_ps(me)->cred.fsuid = 1000u;
+    ks_ps(me)->rlim_cur[LINUX_RLIMIT_MSGQUEUE] = 100000u;   /* one default queue: 10 x 8192 and change */
+    q1 = SYS4(240 /* mq_open */, ustr("rl-a"), 0x42u /* O_CREAT | O_RDWR */, 0600u, 0);
+    expect(q1 >= 0, "a queue within the user's RLIMIT_MSGQUEUE");
+    q2 = SYS4(240, ustr("rl-b"), 0x42u, 0600u, 0);
+    expect(q2 == -VIBEOS_EMFILE, "a second that would take it past the limit is EMFILE, as Linux");
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.suid = ks_ps(me)->cred.fsuid = 1001u;
+    q3 = SYS4(240, ustr("rl-c"), 0x42u, 0600u, 0);
+    expect(q3 >= 0, "while another user has its own room");
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.suid = ks_ps(me)->cred.fsuid = 1000u;
+    expect(SYS1(241 /* mq_unlink */, ustr("rl-a")) == 0 && SYS1(3 /* close */, (uint64_t)q1) == 0 &&
+               (q2 = SYS4(240, ustr("rl-b"), 0x42u, 0600u, 0)) >= 0,
+           "and a queue gone gives its charge back");
+    (void)SYS1(3, (uint64_t)q2);
+    (void)SYS1(241, ustr("rl-b"));
+    (void)SYS1(3, (uint64_t)q3);
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.suid = ks_ps(me)->cred.fsuid = 1001u;
+    (void)SYS1(241, ustr("rl-c"));
+}
+
+/* #169: a connect walks to the socket as the caller. A root directory of 0700
+ * holding a socket anybody may write to: the socket is not reachable by
+ * somebody who may not enter the directory. */
+static void t_unix_connect_search(void) {
+    static const char p[] = "/tmp/ux-priv/s";
+    uint64_t sa = kf_ualloc(110);
+    uint8_t *b = (uint8_t *)kf_uptr(sa);
+    long srv, cli;
+    int me = fresh(91);
+
+    memset(b, 0, 110);
+    b[0] = 1;   /* AF_UNIX */
+    memcpy(b + 2, p, sizeof(p));
+    expect(SYS2(83 /* mkdir */, ustr("/tmp/ux-priv"), 0700u) == 0, "a directory only root may enter");
+    srv = SYS3(41 /* socket */, 1, 1 /* SOCK_STREAM */, 0);
+    expect(srv >= 0 && SYS3(49 /* bind */, (uint64_t)srv, sa, 2u + sizeof(p)) == 0 &&
+               SYS2(50 /* listen */, (uint64_t)srv, 4) == 0 && SYS2(90 /* chmod */, ustr(p), 0777u) == 0,
+           "a socket in it that anybody may write to");
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.suid = ks_ps(me)->cred.fsuid = 1000u;
+    cli = SYS3(41, 1, 1, 0);
+    expect(cli >= 0 && SYS3(42 /* connect */, (uint64_t)cli, sa, 2u + sizeof(p)) == -VIBEOS_EACCES,
+           "a user who may not search the directory cannot connect to it: EACCES");
+}
+
+/* #179: O_PATH names a file and does no I/O on it, whatever access mode came
+ * with it. Opened O_PATH|O_RDWR by root and kept after the uid is dropped,
+ * it read and wrote the file. */
+static void t_o_path(void) {
+    uint64_t buf = kf_ualloc(16), sb = kf_ualloc(sizeof(linux_stat_t));
+    uint8_t *b = (uint8_t *)kf_uptr(buf);
+    long fd, p;
+    int me = fresh(90);
+
+    fd = SYS4(257 /* openat */, (uint64_t)-100, ustr("/tmp/o-path"), 0x42u /* O_CREAT | O_RDWR */, 0600u);
+    memcpy(b, "secret", 6);
+    expect(fd >= 0 && SYS3(1 /* write */, (uint64_t)fd, buf, 6) == 6, "a root file, 0600, with six bytes");
+    p = SYS4(257, (uint64_t)-100, ustr("/tmp/o-path"), VIBEOS_O_PATH | VIBEOS_O_RDWR, 0);
+    expect(p >= 0, "opened O_PATH|O_RDWR");
+    ks_ps(me)->cred.uid = ks_ps(me)->cred.euid = ks_ps(me)->cred.suid = ks_ps(me)->cred.fsuid = 1000u;
+    memset(b, 0, 16);
+    expect(SYS3(0 /* read */, (uint64_t)p, buf, 6) < 0 && b[0] == 0, "an O_PATH descriptor reads nothing");
+    expect(SYS3(1, (uint64_t)p, buf, 1) < 0, "nor writes");
+    expect(SYS4(17 /* pread64 */, (uint64_t)p, buf, 6, 0) < 0 && SYS4(18 /* pwrite64 */, (uint64_t)p, buf, 1, 0) < 0,
+           "nor at an offset");
+    expect(SYS2(77 /* ftruncate */, (uint64_t)p, 0) < 0, "nor cuts it");
+    expect(SYS3(8 /* lseek */, (uint64_t)p, 0, 2) < 0, "nor seeks");
+    expect(sys(9 /* mmap */, 0, 4096, 3 /* PROT_READ|WRITE */, 1 /* MAP_SHARED */, (uint64_t)p, 0, 0) < 0,
+           "nor is mapped");
+    expect(SYS2(5 /* fstat */, (uint64_t)p, sb) == 0 && ((linux_stat_t *)kf_uptr(sb))->st_size == 6u,
+           "and fstat, which is what it is for, answers");
+    expect(SYS4(257, (uint64_t)-100, ustr("/tmp/o-path"), VIBEOS_O_PATH, 0) >= 0,
+           "an unprivileged O_PATH open of a 0600 file needs no permission on it, as Linux");
+    expect(SYS4(257, (uint64_t)-100, ustr("/tmp/o-path"), VIBEOS_O_RDONLY, 0) == -VIBEOS_EACCES,
+           "while a plain open of it is refused");
+}
+
 /* #181: a directory descriptor whose directory was removed and another made
  * at its name. A relative walk through the descriptor used its path, and so
  * created in the newcomer. */
@@ -7130,6 +7294,10 @@ int test_linux_handlers(void) {
     t_issue_creds();
     t_robust_list_recycled();
     t_link_stale_name();
+    t_o_path();
+    t_scm_rights_cycle();
+    t_mq_rlimit();
+    t_unix_connect_search();
     t_dirfd_replaced();
     t_parent_gone();
     t_clone_during_exit_group();

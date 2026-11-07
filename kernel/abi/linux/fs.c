@@ -786,9 +786,28 @@ long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return -VIBEOS_EINVAL;
     }
+    /* O_PATH keeps only what Linux keeps with it - the rest, the access mode
+     * above all, is ignored - and asks nothing of the file itself: the walk's
+     * search permission is all an O_PATH open needs (issue #179). */
+    if (flags & VIBEOS_O_PATH) {
+        flags &= VIBEOS_O_PATH | VIBEOS_O_CLOEXEC | VIBEOS_O_DIRECTORY | VIBEOS_O_NOFOLLOW;
+    }
     err = linux_walk_at(dirfd, path_uptr, vibeos_open_walk_flags((uint32_t)flags), &w);
     if (err != 0) {
         return err;
+    }
+    if (flags & VIBEOS_O_PATH) {
+        if (!w.exists) {
+            return -VIBEOS_ENOENT;
+        }
+        f = vibeos_open_path(&w, (uint32_t)flags & ~(uint32_t)VIBEOS_O_PATH, 0u, &err);
+        if (!f) {
+            return err;
+        }
+        if (f->ops == &vibeos_fops_regular) {
+            f->ops = &vibeos_fops_path;
+        }
+        return linux_fd_install(f, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
     }
     /* Permission, by what the open would do: read, write (truncating is
      * writing), or make a name in the directory. Asked before the file is

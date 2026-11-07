@@ -39,3 +39,15 @@
 +++ new
         u->name.path[0] = 'x';
         for (k = 0; k < 5u; k++) {
+
+### a cycle of sockets passed through each other is never collected (#194)
+--- old
+        cand[i] = file_of[i] && __atomic_load_n(&file_of[i]->refs, __ATOMIC_ACQUIRE) == inflight[i];
++++ new
+        cand[i] = 0;
+
+### the collector takes a socket that an open endpoint can still read (#194)
+--- old
+        reached[i] = (uint8_t)(g_ux[i].used && !cand[i]);
++++ new
+        reached[i] = 0;

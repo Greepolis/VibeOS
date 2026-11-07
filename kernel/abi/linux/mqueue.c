@@ -50,6 +50,13 @@ typedef struct {
     uint32_t uid, gid, mode;
     int64_t maxmsg, msgsize, curmsgs;
     uint64_t bytes;
+    /* What the queue costs its creator against RLIMIT_MSGQUEUE, and whose
+     * it is - the real user, as Linux charges it. Charged in full when the
+     * queue is made, as Linux does, and given back with the queue: a user's
+     * total is the sum over the queues that exist, so nothing has to be
+     * remembered to undo (issue #173). */
+    uint32_t charge_uid;
+    uint64_t charge;
     linux_mq_msg_t *head;
     /* The last message: a send of a priority no higher than its goes after
      * it at once, where the walk from the head used to cross every message
@@ -126,6 +133,29 @@ static int mq_find(const char *name) {
         }
     }
     return -1;
+}
+
+/* A queue's charge as Linux reckons it: room for every message it may hold,
+ * a pointer for each, and a node of the priority tree for each up to the hard
+ * limit (mqueue_get_inode's mq_treesize; 48 bytes, x86_64's
+ * posix_msg_tree_node). */
+static uint64_t mq_charge(int64_t maxmsg, int64_t msgsize) {
+    uint64_t nodes = (uint64_t)(maxmsg < LINUX_MQ_HARD_MSGMAX ? maxmsg : LINUX_MQ_HARD_MSGMAX);
+
+    return (uint64_t)maxmsg * 8u + nodes * 48u + (uint64_t)maxmsg * (uint64_t)msgsize;
+}
+
+/* What `uid`'s queues cost now. Under the IPC lock. */
+static uint64_t mq_charged(uint32_t uid) {
+    uint64_t n = 0;
+    uint32_t i;
+
+    for (i = 0; i < LINUX_MQ_QUEUES; i++) {
+        if (g_mq[i].used && g_mq[i].charge_uid == uid) {
+            n += g_mq[i].charge;
+        }
+    }
+    return n;
 }
 
 static void mq_drop_ref(int q) {
@@ -293,6 +323,7 @@ static long linux_sys_mq_open(uint64_t name_uptr, uint64_t oflag, uint64_t mode,
     char name[LINUX_MQ_NAME_MAX + 2u];
     linux_mq_attr_t attr;
     vibeos_cred_t c;
+    uint64_t rlim;
     vibeos_file_t *f;
     int q, made = 0;
     long r;
@@ -309,6 +340,16 @@ static long linux_sys_mq_open(uint64_t name_uptr, uint64_t oflag, uint64_t mode,
         }
     }
     linux_cred(&c);
+    {
+        vibeos_procstate_t *ps = ks_ps(ks_current());
+
+        rlim = ~0ull;
+        if (ps) {
+            ks_lock(&ps->files_lock, __func__);
+            rlim = ps->rlim_cur[LINUX_RLIMIT_MSGQUEUE];
+            ks_unlock(&ps->files_lock);
+        }
+    }
     f = vibeos_file_alloc(&linux_fops_mqueue, acc | ((uint32_t)oflag & VIBEOS_O_NONBLOCK));
     if (!f) {
         return -VIBEOS_ENFILE;
@@ -350,6 +391,17 @@ static long linux_sys_mq_open(uint64_t name_uptr, uint64_t oflag, uint64_t mode,
         if (r == 0 && ((live >= (uint64_t)g_mq_queues_max && c.euid != 0u) || live >= LINUX_MQ_QUEUES)) {
             r = -VIBEOS_ENOSPC;
         }
+        /* RLIMIT_MSGQUEUE, for everybody as Linux has it: EMFILE when this
+         * queue's full size would take the user's queues past it. It was
+         * set and reported and asked by nothing, so one user could fill the
+         * machine's queues (issue #173). */
+        if (r == 0) {
+            uint64_t have = mq_charged(c.uid), want = mq_charge(maxmsg, msgsize);
+
+            if (have + want < have || have + want > rlim) {
+                r = -VIBEOS_EMFILE;
+            }
+        }
         for (i = 0; r == 0 && i < LINUX_MQ_QUEUES && g_mq[i].used; i++) {
         }
         if (r == 0) {
@@ -367,6 +419,8 @@ static long linux_sys_mq_open(uint64_t name_uptr, uint64_t oflag, uint64_t mode,
             m->mode = (uint32_t)mode & 0777u & ~linux_umask();
             m->maxmsg = maxmsg;
             m->msgsize = msgsize;
+            m->charge_uid = c.uid;
+            m->charge = mq_charge(maxmsg, msgsize);
             m->curmsgs = 0;
             m->bytes = 0;
             m->head = 0;

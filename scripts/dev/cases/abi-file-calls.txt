@@ -109,3 +109,9 @@ static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t 
         if (0) {
             vibeos_file_put(f);
             return -VIBEOS_ENOENT;   /* its directory is not at its path now (#181) */
+
+### an O_PATH descriptor of a file does I/O like any other (#179)
+--- old
+            f->ops = &vibeos_fops_path;
++++ new
+            (void)0;

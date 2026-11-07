@@ -49,6 +49,8 @@
 #define VIBEOS_O_DIRECTORY 0x10000u
 #define VIBEOS_O_NOFOLLOW 0x20000u
 #define VIBEOS_O_CLOEXEC  0x80000u   /* a descriptor's, never kept here */
+/* A descriptor that names a file and does no I/O on it (issue #179). */
+#define VIBEOS_O_PATH     0x200000u
 
 /* What kind of file fstat says it is: VIBEOS_S_IF* in vibeos/vfs.h. */
 

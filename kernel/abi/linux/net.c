@@ -182,7 +182,18 @@ static long linux_unix_walk(vibeos_sockaddr_t *a, int create, vibeos_path_t *w) 
     if (k > VIBEOS_SA_PATH_MAX) {
         return -VIBEOS_ENAMETOOLONG;
     }
-    if ((r = vibeos_path_walk("/", "/", abs, create ? (VIBEOS_PATH_CREATE | VIBEOS_PATH_NOFOLLOW) : 0u, w)) != 0) {
+    /* Walked as the caller, so every directory on the way needs its search
+     * permission, as Linux asks of a bind, a connect and a send. Walked by
+     * the kernel for itself, a socket in a directory the caller may not
+     * enter was reachable by anyone who knew its name (issue #169). */
+    {
+        vibeos_cred_t c;
+
+        linux_cred(&c);
+        r = vibeos_path_walk_as("/", "/", abs, create ? (VIBEOS_PATH_CREATE | VIBEOS_PATH_NOFOLLOW) : 0u,
+                                &c, w);
+    }
+    if (r != 0) {
         return r;
     }
     for (k = 0; abs[k]; k++) {
