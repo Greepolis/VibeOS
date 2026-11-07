@@ -1,0 +1,15 @@
+# Target source: kernel/fs/partition.c
+# Run: SABOTAGE_VERIFY="bash tests/fuzz/verify_fs_fuzzer_finds.sh build-fuzz" python3 scripts/dev/sabotage.py kernel/fs/partition.c scripts/dev/cases/fuzz-gpt-header-size.txt build
+#
+# Issue #199: the fuzzer has to find a parser defect on its own, from the
+# real-tool seeds, inside the CI budget - not be pointed at it. The GPT
+# header's own size is bounded before it is copied into a 92-byte buffer on
+# the stack; without the bound, a header claiming more overruns that buffer
+# before the CRC is ever checked, so four mutated bytes of sgdisk's image are
+# enough. Expect the verifier to report AddressSanitizer.
+
+### the GPT header size is copied without its upper bound
+--- old
+    if (header_size < 92u || header_size > sizeof(copy)) {
++++ new
+    if (header_size < 92u) {

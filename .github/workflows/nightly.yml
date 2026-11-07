@@ -693,7 +693,8 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64
+          sudo apt-get install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
+            mtools exfatprogs ntfs-3g xorriso fdisk gdisk
 
       - name: Configure instrumented fuzzers
         run: |
@@ -708,7 +709,7 @@ jobs:
       - name: Build filesystem and executable fuzzers
         run: |
           set -euo pipefail
-          cmake --build build-fuzz --parallel --target fuzz_exec_images fuzz_ext2_image
+          cmake --build build-fuzz --parallel --target fuzz_exec_images fuzz_ext2_image fuzz_fs_images
 
       - name: Verify sanitizer negative control
         run: python3 tests/fuzz/verify_sanitizer.py clang
@@ -730,6 +731,13 @@ jobs:
           ./build-fuzz/fuzz_ext2_image fuzz-corpus/ext2 fuzz-corpus/ext4 \
             -max_total_time=600 -max_len=8388608 -print_final_stats=1 \
             -artifact_prefix=fuzz-artifacts/ext2-
+
+      - name: Fuzz FAT, exFAT, NTFS, ISO9660 and partition tables (ASan + UBSan)
+        run: |
+          set -euo pipefail
+          ./build-fuzz/fuzz_fs_images fuzz-corpus/fs \
+            -max_total_time=600 -max_len=8388608 -print_final_stats=1 \
+            -artifact_prefix=fuzz-artifacts/fs-
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()

@@ -180,6 +180,20 @@ if(VIBEOS_BUILD_FUZZERS)
         kernel/core/mbz.c
     )
     target_compile_definitions(fuzz_ext2_image PRIVATE VIBEOS_EXT2_FUZZ_CANARY=1)
+    # FAT, exFAT, NTFS, ISO9660 and the partition tables, one image at a time
+    # offered to each (issue #199).
+    vibeos_add_fuzzer(fuzz_fs_images
+        tests/fuzz/fuzz_fs_images.c
+        kernel/fs/fat.c
+        kernel/fs/fat_chain.c
+        kernel/fs/exfat.c
+        kernel/fs/ntfs.c
+        kernel/fs/iso9660.c
+        kernel/fs/partition.c
+        kernel/fs/blockcache.c
+        kernel/fs/vfs.c
+        kernel/core/mbz.c
+    )
 endif()
 
 # The Rtl runtime of our ntdll (docs/abi/windows.md W2): the files that are

@@ -65,6 +65,44 @@ def mark_ext4_block_bitmap_uninitialized(image):
     image[desc_offset:desc_offset + 32] = desc
 
 
+def fs_seeds(out, tmp, seed_root):
+    """FAT, exFAT, NTFS, ISO9660, MBR and GPT images, each written by the
+    format's own tool (issue #199): a fixture this project writes can only
+    prove the driver agrees with the fixture."""
+    fs = out / "fs"
+    fs.mkdir(parents=True, exist_ok=True)
+
+    def blank(name, mib):
+        image = fs / name
+        with image.open("wb") as stream:
+            stream.truncate(mib * 1024 * 1024)
+        return image
+
+    fat = blank("fat16-mformat.img", 4)
+    run(["mformat", "-i", str(fat), "-v", "SEED", "::"])
+    run(["mcopy", "-i", str(fat), str(seed_root / "fuzz-seed.txt"), "::SEED.TXT"])
+    run(["mmd", "-i", str(fat), "::DIR"])
+
+    run(["mkfs.exfat", "-L", "SEED", str(blank("exfat-mkfs.img", 4))])
+    run(["mkntfs", "-q", "-F", "-Q", str(blank("ntfs-mkntfs.img", 4))])
+
+    iso = fs / "iso9660-xorriso.iso"
+    run(["xorriso", "-as", "mkisofs", "-quiet", "-o", str(iso), str(seed_root)])
+
+    mbr = blank("mbr-sfdisk.img", 2)
+    subprocess.run(["sfdisk", "--quiet", str(mbr)], input=b"label: dos\n2048,,c\n",
+                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    gpt = blank("gpt-sgdisk.img", 2)
+    run(["sgdisk", "-o", "-n", "1:2048:0", "-c", "1:seed", str(gpt)])
+
+    # One malformed neighbour each, derived from the tool's output.
+    for name, offset in (("fat16-mformat.img", 11), ("exfat-mkfs.img", 108),
+                         ("ntfs-mkntfs.img", 11), ("gpt-sgdisk.img", 512 + 80)):
+        bad = bytearray((fs / name).read_bytes())
+        bad[offset:offset + 4] = b"\xff\xff\xff\xff"
+        (fs / ("bad-" + name)).write_bytes(bad)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=pathlib.Path)
@@ -73,7 +111,8 @@ def main():
     args = parser.parse_args()
     out = args.output
     out.mkdir(parents=True, exist_ok=True)
-    required = ("gcc", "x86_64-w64-mingw32-gcc", "mke2fs")
+    required = ("gcc", "x86_64-w64-mingw32-gcc", "mke2fs", "mformat", "mcopy",
+                "mmd", "mkfs.exfat", "mkntfs", "xorriso", "sfdisk", "sgdisk")
     missing = [tool for tool in required if shutil.which(tool) is None]
     if missing:
         raise SystemExit("missing real-image tools: " + ", ".join(missing))
@@ -148,6 +187,8 @@ def main():
         # control reaches build_block_bitmap only through write_file().
         mark_ext4_block_bitmap_uninitialized(bad_geometry)
         (out / "ext4" / "ext4-bad-bitmap-geometry.img").write_bytes(bad_geometry)
+
+        fs_seeds(out, tmp, seed_root)
 
 
 if __name__ == "__main__":

@@ -74,11 +74,14 @@ feature. None is tied to a slot in the order above, and each is a good place
 to start contributing: the rule that applies (CLAUDE.md, "Every module gets an
 intensive test in the nightly") already says what done looks like.
 
-- **Coverage-guided fuzzing of the parsers** (issue #199): the filesystem
-  drivers (FAT, exFAT, NTFS, ISO9660, ext2/ext4), the ELF and PE loaders and
-  the partition tables, each as a libFuzzer target over the host build the way
-  `fuzz_inet_input` already is, with a corpus that starts from images real
-  tools wrote.
+- **Coverage-guided fuzzing of the parsers** (issue #199, done 2026-11-07):
+  `fuzz_exec_images` (ELF, PE), `fuzz_ext2_image` (ext2/ext4, the writer
+  included) and `fuzz_fs_images` (FAT, exFAT, NTFS, ISO9660, MBR, GPT), seeded
+  by `tests/fuzz/make_seed_corpus.py` from what mke2fs, mformat, mkfs.exfat,
+  mkntfs, xorriso, sfdisk, sgdisk and real linkers write. Ten minutes a target
+  in the nightly; in pull-request CI, two production-source cases each fuzzer
+  must catch (`ext4-bitmap-geometry.txt`, `fuzz-gpt-header-size.txt` - the
+  second found by the fuzzer itself from sgdisk's image).
 - **Deterministic concurrency torture for object lifetimes and user mappings**
   (issue #200): the races of 2026-11-06 - a slot reused between a lookup and
   its use, a reference dropped under the wrong lock - reproduced on purpose

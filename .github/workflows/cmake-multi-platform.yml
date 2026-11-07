@@ -333,7 +333,8 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64
+          sudo apt-get install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
+            mtools exfatprogs ntfs-3g xorriso fdisk gdisk
 
       - name: Configure host tests for production sabotage verification
         run: |
@@ -352,7 +353,7 @@ jobs:
             -DVIBEOS_BUILD_TESTS=OFF \
             -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
             -DVIBEOS_ENABLE_TLS=OFF
-          cmake --build build-fuzz --parallel --target fuzz_exec_images fuzz_ext2_image
+          cmake --build build-fuzz --parallel --target fuzz_exec_images fuzz_ext2_image fuzz_fs_images
 
       - name: Verify sanitizer negative control
         run: python3 tests/fuzz/verify_sanitizer.py clang
@@ -374,11 +375,19 @@ jobs:
             echo "No ext4 negative-control log was produced."
           fi
 
-      - name: Rebuild the restored production parser
-        run: cmake --build build-fuzz --parallel --target fuzz_ext2_image
+      - name: Prove the filesystem fuzzer finds a removed GPT bound by itself
+        env:
+          SABOTAGE_VERIFY: bash tests/fuzz/verify_fs_fuzzer_finds.sh build-fuzz 120
+        run: python3 scripts/dev/sabotage.py kernel/fs/partition.c scripts/dev/cases/fuzz-gpt-header-size.txt build
+
+      - name: Rebuild the restored production parsers
+        run: cmake --build build-fuzz --parallel --target fuzz_ext2_image fuzz_fs_images
 
       - name: Smoke ELF/PE fuzzer
         run: ./build-fuzz/fuzz_exec_images fuzz-corpus/exec_images -max_total_time=20 -max_len=1048576
 
       - name: Smoke ext2 fuzzer
         run: ./build-fuzz/fuzz_ext2_image fuzz-corpus/ext2 fuzz-corpus/ext4 -max_total_time=20 -max_len=8388608
+
+      - name: Smoke FAT/exFAT/NTFS/ISO9660/partition fuzzer
+        run: ./build-fuzz/fuzz_fs_images fuzz-corpus/fs -max_total_time=20 -max_len=8388608
