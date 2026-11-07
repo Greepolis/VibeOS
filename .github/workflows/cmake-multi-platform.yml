@@ -16,6 +16,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  timer-torture-negative-controls:
+    name: Timer production mutation checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build focused timer test with sanitizers
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          cmake --build build-asan --parallel --target vibeos_timer_torture
+      - name: Require all production mutations to turn the test red
+        env:
+          SABOTAGE_VERIFY: bash scripts/dev/verify-timer-torture.sh build-asan
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: python3 scripts/dev/sabotage.py kernel/time/timer.c scripts/dev/cases/time-timer.txt build-asan
+
   linux-build-test:
     name: Linux ${{ matrix.compiler }} / ${{ matrix.build_type }}
     # Pinned, in every workflow, rather than ubuntu-latest: that label moves to

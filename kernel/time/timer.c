@@ -1,6 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vibeos/timer.h"
 
+/* Divide before multiplying: remainder is bounded by uint32_t tick_hz.
+ * Saturate if the final duration is not representable in uint64_t. */
+static uint64_t ticks_to_units_saturating(uint64_t ticks, uint32_t tick_hz,
+                                          uint64_t units_per_second) {
+    uint64_t seconds = ticks / tick_hz;
+    uint64_t remainder = ticks % tick_hz;
+    uint64_t whole, fraction;
+    if (seconds > UINT64_MAX / units_per_second) return UINT64_MAX;
+    whole = seconds * units_per_second;
+    fraction = (remainder * units_per_second) / tick_hz;
+    if (whole > UINT64_MAX - fraction) return UINT64_MAX;
+    return whole + fraction;
+}
+
 int vibeos_timer_init(vibeos_timer_t *timer, uint32_t tick_hz) {
     if (!timer || tick_hz == 0) {
         return -1;
@@ -32,14 +46,14 @@ uint64_t vibeos_timer_ticks_to_ns(const vibeos_timer_t *timer, uint64_t ticks) {
     if (!timer || timer->tick_hz == 0) {
         return 0;
     }
-    return (ticks * 1000000000ull) / (uint64_t)timer->tick_hz;
+    return ticks_to_units_saturating(ticks, timer->tick_hz, 1000000000ull);
 }
 
 uint64_t vibeos_timer_ticks_to_ms(const vibeos_timer_t *timer, uint64_t ticks) {
     if (!timer || timer->tick_hz == 0) {
         return 0;
     }
-    return (ticks * 1000ull) / (uint64_t)timer->tick_hz;
+    return ticks_to_units_saturating(ticks, timer->tick_hz, 1000ull);
 }
 
 int vibeos_timer_arm_deadline(vibeos_timer_t *timer, uint64_t deadline_tick) {
