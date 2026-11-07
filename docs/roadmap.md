@@ -39,6 +39,16 @@ administration), in this order:
 5. **The applications that manage the system.**
 6. **The rest of networking.**
 7. **System administration (L8)**, last, once what it administers is defined.
+8. **An authenticated boot** (added 2026-11-07, issue #168), after all of the
+   above. The loader reads `VIBEOSKR.ELF` and `INIT.ELF` as plain files and
+   loads them itself, so Secure Boot's check of the loader stops there: a
+   replaced kernel on the system partition runs with kernel privileges. The
+   phase is a signed image format or manifest for the kernel and the initrd,
+   a trust anchor the loader carries, verification that fails closed when
+   Secure Boot is on, the SecureBoot and SetupMode variables read for real
+   rather than reported as off, and optionally the digests measured into a
+   TPM. Host tests for a good signature, a tampered payload, a missing one and
+   a wrong key.
 
 Implementation sequencing is refined when a subsystem is next, for the reason
 the following section gives. By maintainer request on 2026-10-17, the filesystem
