@@ -225,6 +225,16 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     if (fs->blocks_per_group == 0u || fs->inodes_per_group == 0u) {
         return -1;
     }
+    /* A group's bitmaps are one block each, so a group cannot have more
+     * blocks or inodes than a block has bits - Linux's "blocks per group too
+     * big". The writer sizes its bitmap scratch by the block and the
+     * checksums and the padding of a fresh bitmap by these counts, so a
+     * superblock claiming more had it read and write past that block
+     * (issue #202). block_size is at most 4 KiB by the check on its log
+     * above, so the product has room in 32 bits. */
+    if (fs->blocks_per_group > fs->block_size * 8u || fs->inodes_per_group > fs->block_size * 8u) {
+        return -1;
+    }
     /* Checked before the subtraction, not after it.
      *
      * These are unsigned, so a superblock claiming a first data block past the

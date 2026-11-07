@@ -7419,6 +7419,38 @@ static int test_ext2_dir_size_wrap(void) {
     return 0;
 }
 
+/* #202: a group's bitmap is one block, so a group has no more blocks or
+ * inodes than a block has bits. The fixture's blocks are 1 KiB: 8192 bits. */
+static int test_ext2_group_fits_bitmap(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+
+    if (e2_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    e2_w32(e2_block(1) + 32, 8193u);   /* blocks per group: one past the bitmap */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) == 0) {
+        printf("FAIL:ext2 a group with more blocks than its bitmap has bits was mounted\n");
+        return -1;
+    }
+    e2_w32(e2_block(1) + 32, E2_BLOCKS);
+    e2_w32(e2_block(1) + 40, 8193u);   /* inodes per group, the same */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) == 0) {
+        printf("FAIL:ext2 a group with more inodes than its bitmap has bits was mounted\n");
+        return -1;
+    }
+    e2_w32(e2_block(1) + 40, 32u);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) != 0) {
+        printf("FAIL:ext2 the fixture itself no longer mounts\n");
+        return -1;
+    }
+    return 0;
+}
+
 /* Review v9, points 1-3, on the ext2/ext4 reader. */
 uint32_t ext2_dir_nblocks(const vibeos_ext2_t *fs, uint64_t size);
 const vibeos_fs_driver_t *vibeos_ext2_fs_driver(void);
@@ -10519,6 +10551,7 @@ int main(void) {
     RUN_TEST(test_ext2_dir_size_wrap);
     RUN_TEST(test_ext2_refusals);
     RUN_TEST(test_ext2_triple_indirect_bound);
+    RUN_TEST(test_ext2_group_fits_bitmap);
     RUN_TEST(test_ext2_partition_bound);
     RUN_TEST(test_ext2_dir_nblocks_64);
     RUN_TEST(test_ext2_block_pointer_outside_volume);

@@ -56,3 +56,9 @@
     if (n > 0xFFFFFFFFull) {
 +++ new
     if (0) {
+
+### a group with more blocks than its bitmap has bits is mounted (#202)
+--- old
+    if (fs->blocks_per_group > fs->block_size * 8u || fs->inodes_per_group > fs->block_size * 8u) {
++++ new
+    if (0) {
