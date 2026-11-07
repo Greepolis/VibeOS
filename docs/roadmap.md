@@ -67,6 +67,28 @@ implementation slot: see [filesystem-design/](filesystem-design/README.md) and
 [ui-design/](ui-design/README.md). This is planning-only work; it does not
 reorder the active runtime milestones or authorize a format/ABI freeze.
 
+## Test infrastructure, open to contributors (added 2026-11-07)
+
+Three pieces of work that make the existing tests stronger rather than add a
+feature. None is tied to a slot in the order above, and each is a good place
+to start contributing: the rule that applies (CLAUDE.md, "Every module gets an
+intensive test in the nightly") already says what done looks like.
+
+- **Coverage-guided fuzzing of the parsers** (issue #199): the filesystem
+  drivers (FAT, exFAT, NTFS, ISO9660, ext2/ext4), the ELF and PE loaders and
+  the partition tables, each as a libFuzzer target over the host build the way
+  `fuzz_inet_input` already is, with a corpus that starts from images real
+  tools wrote.
+- **Deterministic concurrency torture for object lifetimes and user mappings**
+  (issue #200): the races of 2026-11-06 - a slot reused between a lookup and
+  its use, a reference dropped under the wrong lock - reproduced on purpose
+  under a seeded scheduler on the host, rather than waited for at boot.
+- **The uncovered-module debt in the nightly** (issue #201):
+  `check-nightly-coverage.py` counts the modules no nightly job exercises
+  intensively, and that count may only go down. Each module taken off it is
+  a job that is long, randomised and checked against something other than
+  the code under test.
+
 ## Why 4 and 5 are sketched and not planned
 
 A plan written for work that starts in a month is a prediction, not a design.
