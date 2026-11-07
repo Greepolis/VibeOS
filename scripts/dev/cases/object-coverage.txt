@@ -3,8 +3,9 @@
 
 ### close leaves the handle live
 --- old
+        if (table->entries[i].in_use && table->entries[i].id == handle) {
             vibeos_handle_entry_t ev = table->entries[i];
-            table->entries[i].in_use = 0;
+            table->entries[i].in_use = 1;
             table->entries[i].id = 0;
 +++ new
             vibeos_handle_entry_t ev = table->entries[i];
