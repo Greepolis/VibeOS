@@ -72,15 +72,18 @@ def main():
             print("%s %s:%d  %s" % ("ok  " if ok else "NONE", path, n, line))
     for path, n, line, _ in missing:
         print("  no quota declared: %s:%d  %s" % (path, n, line))
+    # The advice first and the verdict last: static-checks.sh judges a check
+    # by its last line, and with the advice after it a FAIL read as "printed
+    # no verdict" - which is how a new table reached CI unreported locally.
     if len(missing) > BASELINE:
-        print("pool-quota=FAIL undeclared=%d baseline=%d" % (len(missing), BASELINE))
         print("      A new table names its per-process share beside it - `quota:` - or says why"
               " it has none.")
+        print("pool-quota=FAIL undeclared=%d baseline=%d" % (len(missing), BASELINE))
         return 1
     if len(missing) < BASELINE:
-        print("pool-quota=FAIL undeclared=%d baseline=%d" % (len(missing), BASELINE))
         print("      Fewer than the baseline: lower BASELINE in this script to %d, in this change."
               % len(missing))
+        print("pool-quota=FAIL undeclared=%d baseline=%d" % (len(missing), BASELINE))
         return 1
     print("pool-quota=ok tables=%d undeclared=%d" % (len(rows), len(missing)))
     return 0

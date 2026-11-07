@@ -44,7 +44,14 @@ do_build() {
     echo "warnings=$(grep 'warning:' /tmp/vibeos-build.log | grep -vc 'build-id\|unused-command-line-argument')"
     # The checks that read the tree rather than run it. They live in their own
     # file so that the CI runs the same list (external review, 2026-10-07).
-    bash scripts/dev/static-checks.sh "$d"
+    # Their verdict on one line of its own, like rc= and warnings=: the exit
+    # status was thrown away, so a check that failed here was a line among
+    # thirty and CI was the first to say so (pool-quota, 2026-11-07).
+    if bash scripts/dev/static-checks.sh "$d"; then
+        echo "static-checks=ok"
+    else
+        echo "static-checks=FAIL"
+    fi
 }
 
 do_tests() {
