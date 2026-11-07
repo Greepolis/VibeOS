@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/time/timer.c
+### divider phase survives backend rebind
+--- old
+    timer->irq_ticks_divider = (backend == VIBEOS_TIMER_BACKEND_IRQ) ? irq_ticks_divider : 1;
+    timer->irq_tick_accum = 0;
+    return 0;
++++ new
+    /* sabotage: preserve stale divider phase */
+    return 0;
+
+### wrong IRQ vector is counted
+--- old
+    if (irq_vector != timer->irq_vector) {
+        return 0;
+    }
++++ new
+    if (irq_vector == timer->irq_vector) {
+        return 0;
+    }
+
+### deadline equality no longer expires
+--- old
+    return (now_tick >= timer->last_armed_deadline_tick) ? 1 : 0;
++++ new
+    return (now_tick > timer->last_armed_deadline_tick) ? 1 : 0;
+
+### nanosecond conversion multiplies before dividing
+--- old
+    return ticks_to_units_saturating(ticks, timer->tick_hz, 1000000000ull);
++++ new
+    return (ticks * 1000000000ull) / (uint64_t)timer->tick_hz;
+
+### millisecond conversion multiplies before dividing
+--- old
+    return ticks_to_units_saturating(ticks, timer->tick_hz, 1000ull);
++++ new
+    return (ticks * 1000ull) / (uint64_t)timer->tick_hz;
