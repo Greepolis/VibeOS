@@ -626,6 +626,67 @@ jobs:
             timeout-*
           if-no-files-found: ignore
 
+  fuzz-filesystems-executables:
+    name: Fuzz Filesystem and Executable Parsers
+    # module: fs exec
+    # The disk and image parsers consume attacker-controlled binary formats.
+    # Keep this separate from the network job so each target gets a real budget.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64
+
+      - name: Configure instrumented fuzzers
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-fuzz -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DVIBEOS_BUILD_FUZZERS=ON \
+            -DVIBEOS_BUILD_TESTS=OFF \
+            -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF
+
+      - name: Build filesystem and executable fuzzers
+        run: |
+          set -euo pipefail
+          cmake --build build-fuzz --parallel --target fuzz_exec_images fuzz_ext2_image
+
+      - name: Verify sanitizer negative control
+        run: python3 tests/fuzz/verify_sanitizer.py clang
+
+      - name: Generate real-tool valid and malformed seed corpora
+        run: python3 tests/fuzz/make_seed_corpus.py fuzz-corpus
+
+      - name: Fuzz ELF and PE parsers (ASan + UBSan)
+        run: |
+          set -euo pipefail
+          mkdir -p fuzz-artifacts
+          ./build-fuzz/fuzz_exec_images fuzz-corpus/exec_images \
+            -max_total_time=600 -max_len=1048576 -print_final_stats=1 \
+            -artifact_prefix=fuzz-artifacts/exec-
+
+      - name: Fuzz ext2/ext4 metadata parser (ASan + UBSan)
+        run: |
+          set -euo pipefail
+          ./build-fuzz/fuzz_ext2_image fuzz-corpus/ext2 fuzz-corpus/ext4 \
+            -max_total_time=600 -max_len=8388608 -print_final_stats=1 \
+            -artifact_prefix=fuzz-artifacts/ext2-
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: parser-fuzz-crashes
+          path: fuzz-artifacts/*
+          if-no-files-found: ignore
+
   corpus-needs:
     name: Corpus (needs against docs/abi/corpus.md, answers against Linux)
     # Measures the corpus programs on Linux, not the kernel, so it declares no
