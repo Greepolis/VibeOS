@@ -107,7 +107,7 @@ static int run_ipc(unsigned rounds) {
     size_t head = 0, count = 0;
     vibeos_waitset_t waitset;
     vibeos_event_t events[16];
-    uint8_t enabled[16], priority[16];
+    uint8_t enabled[16], priority[16], model_signaled[16];
     uint32_t cursor = 0;
     unsigned i, r;
 
@@ -117,6 +117,7 @@ static int run_ipc(unsigned rounds) {
     vibeos_channel_init(&channel);
     for (i = 0; i < 16u; i++) {
         vibeos_event_init(&events[i]);
+        model_signaled[i] = 0;
         enabled[i] = 1;
         priority[i] = 0;
     }
@@ -182,8 +183,16 @@ static int run_ipc(unsigned rounds) {
             }
             for (k = 0; k < 16u; k++) {
                 uint64_t v = rnd64();
-                if ((v & 1u) != 0u) vibeos_event_signal(&events[k]);
-                else vibeos_event_clear(&events[k]);
+                if ((v & 1u) != 0u) {
+                    vibeos_event_signal(&events[k]);
+                    model_signaled[k] = 1;
+                } else {
+                    vibeos_event_clear(&events[k]);
+                    model_signaled[k] = 0;
+                }
+                if (vibeos_event_is_signaled(&events[k]) != model_signaled[k]) {
+                    return fail("ipc", "event API differs from independent signal model", r);
+                }
                 enabled[k] = (uint8_t)((v >> 1) & 1u);
                 priority[k] = (uint8_t)(v >> 8);
                 if (vibeos_waitset_set_event_enabled(&waitset, k, enabled[k]) != 0 ||
@@ -196,7 +205,7 @@ static int run_ipc(unsigned rounds) {
                 while (want_count < 16u) {
                     int best = -1;
                     for (k = 0; k < 16u; k++) {
-                        if (!used[k] && enabled[k] && events[k].signaled &&
+                        if (!used[k] && enabled[k] && model_signaled[k] &&
                             (best < 0 || priority[k] > priority[best])) {
                             best = (int)k;
                         }
@@ -208,17 +217,17 @@ static int run_ipc(unsigned rounds) {
             } else if (policy == VIBEOS_WAITSET_WAKE_REVERSE) {
                 for (k = 16u; k > 0; k--) {
                     uint32_t idx = k - 1u;
-                    if (enabled[idx] && events[idx].signaled) want[want_count++] = idx;
+                    if (enabled[idx] && model_signaled[idx]) want[want_count++] = idx;
                 }
             } else if (policy == VIBEOS_WAITSET_WAKE_ROUND_ROBIN) {
                 for (k = 0; k < 16u; k++) {
                     uint32_t idx = (cursor + k) % 16u;
-                    if (enabled[idx] && events[idx].signaled) want[want_count++] = idx;
+                    if (enabled[idx] && model_signaled[idx]) want[want_count++] = idx;
                 }
                 if (want_count != 0) cursor = (uint32_t)((want[want_count - 1u] + 1u) % 16u);
             } else {
                 for (k = 0; k < 16u; k++) {
-                    if (enabled[k] && events[k].signaled) want[want_count++] = k;
+                    if (enabled[k] && model_signaled[k]) want[want_count++] = k;
                 }
             }
             if (vibeos_waitset_peek_signaled(&waitset, got, 16u, &got_count) != 0 ||
@@ -385,8 +394,13 @@ static int run_proc(unsigned rounds) {
             tids[nt] = tid;
             owners[nt] = pid[i];
             thread_live[nt] = 1;
-            thread_model[nt] = VIBEOS_THREAD_STATE_NEW;
+            thread_model[nt] = VIBEOS_THREAD_STATE_RUNNABLE;
+            expected_thread_transitions++;
             nt++;
+            if (process_model[i] != VIBEOS_PROCESS_STATE_RUNNING) {
+                process_model[i] = VIBEOS_PROCESS_STATE_RUNNING;
+                expected_proc_transitions++;
+            }
         }
     }
 
