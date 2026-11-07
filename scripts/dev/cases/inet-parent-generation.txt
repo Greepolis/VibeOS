@@ -1,0 +1,6 @@
+# Target source: kernel/net/inet.c
+### TCP handshake rejects a reused listener generation
+--- old
+                        p->gen == s->parent_gen &&
++++ new
+                        1 &&

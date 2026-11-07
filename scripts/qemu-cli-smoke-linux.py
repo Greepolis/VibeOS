@@ -1721,6 +1721,28 @@ def main():
                 problems.append("tlb_shootdown_timed_out")
             if os.path.exists(tfork) and "TFORK_OK" not in text:
                 problems.append("threaded_fork_lost_the_child_pages")
+            # THREADS.ELF is the guest pthread regression workload. Require
+            # its explicit success markers only when the image actually
+            # contains it, so minimal boot images are not given false failures.
+            threads = os.path.join(efi_root, "EFI", "BOOT", "THREADS.ELF")
+            if os.path.exists(threads) and "THREADS_C7_BLOCKED_UNMAP_OK" not in text:
+                problems.append("blocked_read_unmap_did_not_return_efault")
+            if os.path.exists(threads) and "THREADS_C8_BLOCKED_FD_REUSE_OK" not in text:
+                problems.append("blocked_read_did_not_survive_descriptor_reuse")
+            # A success marker from one round must not hide a failure in
+            # another seeded round. The workload repeats eight schedules.
+            if os.path.exists(threads) and "THREADS_C7_BLOCKED_UNMAP_FAIL" in text:
+                problems.append("blocked_read_unmap_failed_in_a_seeded_round")
+            if os.path.exists(threads) and "THREADS_C8_BLOCKED_FD_REUSE_FAIL" in text:
+                problems.append("blocked_read_fd_reuse_failed_in_a_seeded_round")
+            if os.path.exists(threads):
+                seed_match = re.search(r"THREADS_RACE_SEED=(\d+)", text)
+                if seed_match is None:
+                    problems.append("blocked_read_race_seed_missing")
+                else:
+                    expected_seed = os.environ.get("VIBEOS_THREADS_EXPECTED_SEED")
+                    if expected_seed is not None and int(seed_match.group(1)) != int(expected_seed, 0):
+                        problems.append("blocked_read_race_seed_mismatch")
 
             # The crash recorder captured the deliberate fault, and named
             # the program it happened in. A dump that cannot say which

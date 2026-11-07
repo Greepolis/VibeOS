@@ -1,0 +1,11 @@
+# Target source: kernel/abi/files/pipefile.c
+# Gate assertion: blocked_read_unmap_failed_in_a_seeded_round
+### blocked pipe read reports a fault after wakeup
+--- old
+        if (st == VIBEOS_PIPE_FAULT) {
+            return -VIBEOS_EFAULT;
+        }
++++ new
+        if (st == VIBEOS_PIPE_FAULT) {
+            return 0;
+        }
