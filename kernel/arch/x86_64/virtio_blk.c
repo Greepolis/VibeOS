@@ -317,15 +317,13 @@ static uint16_t virtio_blk_find(void) {
     return 0;
 }
 
-static int vblk_dev_init(void) {
+/* Bring the device from reset to DRIVER_OK with an empty queue. The init path
+ * and the recovery after a timeout (issue #176) are the same sequence, and a
+ * second copy would be the one that drifts. The queue size is read again,
+ * because a reset device is entitled to forget it. 0 on success. */
+static int vblk_queue_setup(void) {
     uint64_t desc_off, avail_off, used_off;
     uint32_t i;
-
-    g_io_base = virtio_blk_find();
-    if (g_io_base == 0) {
-        vibeos_x86_64_serial_puts("[VIRTIO] no virtio-blk device found\n");
-        return -1;
-    }
 
     vb_outb(g_io_base + VIRTIO_STATUS, 0);                       /* reset      */
     vb_outb(g_io_base + VIRTIO_STATUS, VIRTIO_STATUS_ACK);
@@ -358,16 +356,30 @@ static int vblk_dev_init(void) {
     g_used = (struct virtq_used *)(void *)(g_vq + used_off);
     g_last_used = 0;
 
-    /* Device-specific configuration follows the legacy header at offset 20
-     * while MSI-X is disabled, and capacity is its first field. */
-    g_capacity = (uint64_t)vb_inl(g_io_base + 20u) |
-                 ((uint64_t)vb_inl(g_io_base + 24u) << 32);
-
     /* Legacy: queue address is the page frame number of the queue region. */
     vb_outl(g_io_base + VIRTIO_QUEUE_PFN, (uint32_t)((uint64_t)(uintptr_t)g_vq >> 12));
 
     vb_outb(g_io_base + VIRTIO_STATUS,
             VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
+    return 0;
+}
+
+static int vblk_dev_init(void) {
+
+    g_io_base = virtio_blk_find();
+    if (g_io_base == 0) {
+        vibeos_x86_64_serial_puts("[VIRTIO] no virtio-blk device found\n");
+        return -1;
+    }
+
+    if (vblk_queue_setup() != 0) {
+        return -1;
+    }
+
+    /* Device-specific configuration follows the legacy header at offset 20
+     * while MSI-X is disabled, and capacity is its first field. */
+    g_capacity = (uint64_t)vb_inl(g_io_base + 20u) |
+                 ((uint64_t)vb_inl(g_io_base + 24u) << 32);
 
     /* Route the device's interrupt to vector 43, next to the two the PS/2
      * controller already uses. Failure is not fatal: the wait falls back to
@@ -515,20 +527,45 @@ static int vblk_take_completion(void) {
     return ok;
 }
 
-/* A request that timed out is still the device's: its descriptors name
- * g_req, g_status and the caller's buffer, and the device may yet follow
- * them. Until its completion appears on the used ring, nothing here may be
- * rewritten, so a request meanwhile is refused (issue #176). When it does
- * appear, it is taken off and dropped - it answers nobody now - and the
- * driver goes on. Under the lock. 0 when the queue is the driver's again. */
+/* A request that timed out is the device's until the device is reset: its
+ * descriptors name g_req, g_status and g_bounce, and it may yet follow them.
+ * The timeout resets it at once (vblk_reset, below); if that fails the flag
+ * stays set and the next request resets again instead of being refused for
+ * the rest of the boot (issue #176). A completion that does turn up late is
+ * taken off and dropped - it answers nobody now. Under the lock. */
 static int g_blk_outstanding;
+
+/* How many times the device was reset to take back a request it never
+ * answered. On the [VBLK] line; a healthy boot has none. */
+static uint64_t g_resets;
+
+/* Take the queue back from a device that will not give it back (issue #176).
+ * Writing 0 to the status register is a reset, and by the virtio spec a reset
+ * device drops its queues - so nothing it was handed can still be followed,
+ * and the request that timed out is gone rather than late. Before this, one
+ * request the device never completed refused every later one for the rest of
+ * the boot: a disk that failed to answer once was a dead disk. AHCI's
+ * g_ahci_outstanding waits for the late completion instead; virtio has a
+ * reset that is defined to end it, so it does not wait.
+ * Under the lock. 0 when the queue is the driver's again. */
+static int vblk_reset(void) {
+    g_resets++;
+    vibeos_x86_64_serial_puts("[VIRTIO] device reset after a timeout\n");
+    if (vblk_queue_setup() != 0) {
+        return -1;
+    }
+    g_blk_outstanding = 0;
+    return 0;
+}
 
 static int vblk_quiesced(void) {
     if (!g_blk_outstanding) {
         return 0;
     }
     if (g_used->idx == g_last_used) {
-        return -1;
+        /* Still unanswered: the reset at the timeout did not take, so the
+         * first request after it tries again rather than being refused. */
+        return vblk_reset();
     }
     g_last_used = g_used->idx;
     g_blk_outstanding = 0;
@@ -609,6 +646,7 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
                  * into a machine that never reads a sector again. */
                 vibeos_x86_64_serial_puts(write ? "[VIRTIO] write timeout\n"
                                                 : "[VIRTIO] read timeout\n");
+                (void)vblk_reset();
                 blk_unlock();
                 return -1;
             }
@@ -748,6 +786,7 @@ static int vblk_dev_barrier(void) {
             g_timeouts++;
             g_blk_outstanding = 1;
             vibeos_x86_64_serial_puts("[VIRTIO] flush timeout\n");
+            (void)vblk_reset();
             blk_unlock();
             return -1;
         }
@@ -782,6 +821,8 @@ static void vblk_dev_report(vibeos_dev_write_fn out, void *ctx) {
     vibeos_devline_hex(&l, vblk_dev_poll_completions());
     vibeos_devline_str(&l, " timeouts=");
     vibeos_devline_hex(&l, vblk_dev_timeouts());
+    vibeos_devline_str(&l, " resets=");
+    vibeos_devline_hex(&l, g_resets);
     vibeos_devline_end(&l, out, ctx);
 }
 

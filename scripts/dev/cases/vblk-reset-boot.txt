@@ -1,0 +1,33 @@
+# A request virtio-blk never completes costs that request, not the disk
+# (issue #176). The wait is bounded by VBLK_REQ_TICKS; a request that runs out
+# resets the device - status 0, which by the virtio spec drops its queues -
+# and sets the queue up again, so the next request is served. Before, it stayed
+# outstanding and every later read and write was refused for the rest of the
+# boot.
+#
+#  1. one read or write issued after the first thirty seconds is put on the
+#     available ring and the device is never told. Expect "[VIRTIO] device
+#     reset after a timeout", "[VBLK] ... timeouts=0x...01 resets=0x...01", the
+#     boot reaching userland_finished, and the gate red with blk_timeouts (the
+#     timeout is still a must-be-zero) - not guest_wedged, and not a cascade of
+#     failed execs and file operations after the timeout.
+#
+# Target source: kernel/arch/x86_64/virtio_blk.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/virtio_blk.c scripts/dev/cases/vblk-reset-boot.txt
+
+### one late request is never notified
+--- old
+    vb_outw(g_io_base + VIRTIO_QUEUE_NOTIFY, 0);
+
+    /* Poll for completion. */
++++ new
+    {
+        static int skipped;
+        if (skipped || g_timer_ticks < 3000u) {
+            vb_outw(g_io_base + VIRTIO_QUEUE_NOTIFY, 0);
+        } else {
+            skipped = 1;
+        }
+    }
+
+    /* Poll for completion. */
