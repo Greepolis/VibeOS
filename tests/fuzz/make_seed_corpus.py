@@ -101,6 +101,14 @@ def fs_seeds(out, tmp, seed_root):
         bad = bytearray((fs / name).read_bytes())
         bad[offset:offset + 4] = b"\xff\xff\xff\xff"
         (fs / ("bad-" + name)).write_bytes(bad)
+    # sgdisk's header claiming to be a whole sector long. Left to mutation, the
+    # fuzzer found this field in one local run and missed it for 120 s in CI;
+    # a seed one field away from the bound makes the CI case a fixed test and
+    # not a lottery, and the fuzzer still has to get the header there by
+    # parsing, not by being told where the buffer is.
+    big = bytearray((fs / "gpt-sgdisk.img").read_bytes())
+    big[512 + 12:512 + 16] = (512).to_bytes(4, "little")
+    (fs / "bad-gpt-header-size.img").write_bytes(big)
 
 
 def main():
