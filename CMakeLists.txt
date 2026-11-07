@@ -334,6 +334,11 @@ if(VIBEOS_BUILD_TESTS)
     endif()
     add_test(NAME vibeos-gui-torture COMMAND vibeos_gui_torture 1 400 4)
 
+    # The FD/socket lifetime races are exercised through real kernel paths
+    # by the QEMU guest workload. Production-source sabotage checks live in
+    # scripts/dev/cases/ and are run by the dedicated CI job; no host-side
+    # reimplementation of syscall lifetime logic is counted as kernel coverage.
+
     # tmpfs against a model of its own (docs/abi/ L1): names, links, renames,
     # sparse pages and the count of pages it holds, round by round.
     add_executable(vibeos_tmpfs_torture tests/kernel/tmpfs_torture.c)
@@ -655,11 +660,15 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
 
         # Threads, through the library's own pthread implementation. Static so
         # that a failure is about clone and futex rather than about loading.
+        # A cacheable seed lets CI explore distinct, replayable guest schedules.
+        # The binary prints the selected seed before starting its eight rounds.
+        set(VIBEOS_THREADS_RACE_SEED "0x200199" CACHE STRING
+            "Seed for the Linux guest thread race workload")
         set(VIBEOS_THR_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_threads.c")
         set(VIBEOS_THR_BIN "${CMAKE_BINARY_DIR}/musl_threads")
         add_custom_command(
             OUTPUT "${VIBEOS_THR_BIN}"
-            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_THR_BIN}" "${VIBEOS_THR_SRC}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -DVIBEOS_THREADS_RACE_SEED=${VIBEOS_THREADS_RACE_SEED} -o "${VIBEOS_THR_BIN}" "${VIBEOS_THR_SRC}"
             DEPENDS "${VIBEOS_THR_SRC}"
             COMMENT "Building a threaded Linux binary with musl"
             VERBATIM

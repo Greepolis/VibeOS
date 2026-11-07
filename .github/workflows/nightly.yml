@@ -23,7 +23,7 @@ permissions:
 jobs:
   boot-repeatability:
     name: Boot Smoke x5 (flakiness gate)
-    # module: arch core platform
+    # module: arch core platform abi net
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # Only what the crash collector needs. Spelled out rather than inherited:
@@ -542,6 +542,10 @@ jobs:
           # Unsanitized, so the rounds are cheap: this is the pass that gets
           # enough sequences to matter.
           bash scripts/dev/mm-torture.sh build-rel 1200 20000
+
+  # Real syscall-level close/reuse and blocked-user-copy races run in the
+  # existing boot-repeatability guest workload. Production-source sabotage
+  # is kept in PR CI, where each negative control gets a focused verdict.
 
   fuzz-protocols:
     name: Fuzz the Receive Path

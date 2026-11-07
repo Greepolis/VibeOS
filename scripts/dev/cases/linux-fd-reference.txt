@@ -1,0 +1,10 @@
+# Target source: kernel/abi/linux/fs.c
+# Gate assertion: blocked_read_fd_reuse_failed_in_a_seeded_round
+### blocked read pins its open-file description
+--- old
+    f = vibeos_fdtable_get(&ps->files, fd);
+    vibeos_file_get(f);
+    ks_unlock(&ps->files_lock);
++++ new
+    f = vibeos_fdtable_get(&ps->files, fd);
+    ks_unlock(&ps->files_lock);

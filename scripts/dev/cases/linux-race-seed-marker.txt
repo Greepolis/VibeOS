@@ -1,0 +1,6 @@
+# Target source: tests/linux/musl_threads.c
+# Gate assertion: blocked_read_race_seed_missing
+### QEMU gate requires a replayable guest race seed
+--- old
+    printf("THREADS_RACE_SEED=%llu rounds=8\n", g_race_seed);
++++ new

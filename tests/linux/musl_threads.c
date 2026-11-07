@@ -47,6 +47,7 @@
  */
 #define _GNU_SOURCE   /* CPU_SET, sched_getcpu (C6_SCHED) */
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <spawn.h>
@@ -317,6 +318,309 @@ static int vfork_child(void *arg)
 /* C6_SCHED: a thread that keeps running while membarrier's barriers go out,
  * so there is another core of this process for them to reach. */
 static volatile int g_spin_stop;
+
+/* Seeded scheduling pressure around the observed blocked-syscall boundary.
+ * The /proc observation forces the lifetime transition; this PRNG varies
+ * runnable work around it and prints a replayable seed for every boot.
+ */
+#ifndef VIBEOS_THREADS_RACE_SEED
+#define VIBEOS_THREADS_RACE_SEED 0x200199ULL
+#endif
+static unsigned long long g_race_seed = (unsigned long long)VIBEOS_THREADS_RACE_SEED;
+static unsigned long long g_race_rng;
+
+static unsigned long long race_random(void)
+{
+    g_race_rng ^= g_race_rng << 13;
+    g_race_rng ^= g_race_rng >> 7;
+    g_race_rng ^= g_race_rng << 17;
+    return g_race_rng;
+}
+
+static void race_jitter(void)
+{
+    unsigned int n = (unsigned int)(race_random() & 127u);
+    while (n-- != 0u) sched_yield();
+}
+
+/* C7_BLOCKED_UNMAP (#200): wait until /proc reports that the reader is
+ * actually sleeping in read(), then remove its destination mapping from a
+ * sibling thread and wake it. This is an observed blocked syscall, not a
+ * sleep/yield guess. The read must return EFAULT through fault-safe uaccess. */
+#define PAGE_BYTES 4096u
+static int g_unmap_pipe[2];
+static volatile int g_unmap_ready;
+static volatile long g_unmap_tid;
+
+static void *blocked_pipe_reader(void *arg)
+{
+    long n;
+    (void)arg;
+    g_unmap_tid = syscall(SYS_gettid);
+    __atomic_store_n(&g_unmap_ready, 1, __ATOMIC_RELEASE);
+    n = read(g_unmap_pipe[0], arg, 1);
+    if (n == -1 && errno == EFAULT) return (void *)1L;
+    return (void *)2L;
+}
+
+/* /proc stat places the task state after the final ')' because the comm field
+ * may itself contain spaces or parentheses. S/D confirms the worker reached
+ * a kernel sleep state before the sibling changes its mapping or fd table.
+ */
+static int thread_is_sleeping(long tid)
+{
+    char path[96], line[256];
+    char *state;
+    int fd;
+    long n;
+    snprintf(path, sizeof(path), "/proc/%ld/task/%ld/stat",
+             (long)getpid(), tid);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    n = read(fd, line, sizeof(line) - 1u);
+    close(fd);
+    if (n <= 0) return 0;
+    line[n] = 0;
+    state = strrchr(line, ')');
+    return state && state[1] == ' ' &&
+           (state[2] == 'S' || state[2] == 'D');
+}
+
+
+/* C8_BLOCKED_FD_REUSE (#200): close the numeric descriptor while its read is
+ * asleep, install a different pipe into the same number, then wake the old
+ * read through the old writer. The blocked syscall must retain the original
+ * open-file description; a subsequent read on the reused number must see the
+ * new pipe. */
+static volatile int g_fd_reader_ready;
+static volatile long g_fd_reader_tid;
+static int g_fd_read_result;
+static char g_fd_read_byte;
+
+static void *blocked_fd_reader(void *arg)
+{
+    int fd = (int)(long)arg;
+    g_fd_reader_tid = syscall(SYS_gettid);
+    __atomic_store_n(&g_fd_reader_ready, 1, __ATOMIC_RELEASE);
+    g_fd_read_result = (int)read(fd, &g_fd_read_byte, 1);
+    return 0;
+}
+
+/* This is an end-to-end guest test, unlike the host reference-count model:
+ * the old read is already asleep in the kernel when close() releases its fd
+ * number. pipe() must immediately reuse that number for a distinct pipe. Both
+ * writers are then signalled so even a broken lookup cannot strand the test.
+ */
+typedef struct {
+    int fd;
+    char value;
+    unsigned int yields;
+    long result;
+} race_pipe_writer_t;
+
+static void *race_pipe_writer(void *opaque)
+{
+    race_pipe_writer_t *writer = opaque;
+    unsigned int n;
+
+    for (n = 0; n < writer->yields; n++) {
+        sched_yield();
+    }
+    writer->result = (long)write(writer->fd, &writer->value, 1);
+    return 0;
+}
+
+static void test_blocked_fd_reuse(void)
+{
+    int old_pipe[2] = {-1, -1}, new_pipe[2] = {-1, -1};
+    pthread_t t;
+    struct timespec start;
+    int blocked = 0, reused = 0, old_read_closed = 0;
+    char old_value = 'O', new_value = 'N', got = 0;
+    void *result = 0;
+
+    g_fd_reader_ready = 0;
+    g_fd_reader_tid = 0;
+    g_fd_read_result = -99;
+    g_fd_read_byte = 0;
+    if (pipe(old_pipe) != 0 ||
+        pthread_create(&t, 0, blocked_fd_reader, (void *)(long)old_pipe[0]) != 0) {
+        printf("THREADS_C8_BLOCKED_FD_REUSE_FAIL: setup\n");
+        if (old_pipe[0] >= 0) close(old_pipe[0]);
+        if (old_pipe[1] >= 0) close(old_pipe[1]);
+        fflush(stdout);
+        return;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (elapsed_ms(&start) < 10000L) {
+        if (__atomic_load_n(&g_fd_reader_ready, __ATOMIC_ACQUIRE) &&
+            thread_is_sleeping(g_fd_reader_tid)) {
+            blocked = 1;
+            break;
+        }
+        sched_yield();
+    }
+    if (!blocked) {
+        (void)write(old_pipe[1], &old_value, 1);
+        (void)pthread_join(t, &result);
+        printf("THREADS_C8_BLOCKED_FD_REUSE_FAIL: read never observed asleep\n");
+        goto out;
+    }
+
+    race_jitter();
+    if (close(old_pipe[0]) != 0) {
+        (void)write(old_pipe[1], &old_value, 1);
+        (void)pthread_join(t, &result);
+        printf("THREADS_C8_BLOCKED_FD_REUSE_FAIL: close\n");
+        goto out;
+    }
+    old_read_closed = 1;
+    race_jitter();
+    if (pipe(new_pipe) != 0) {
+        (void)write(old_pipe[1], &old_value, 1);
+        (void)pthread_join(t, &result);
+        printf("THREADS_C8_BLOCKED_FD_REUSE_FAIL: replacement pipe\n");
+        goto out;
+    }
+    reused = new_pipe[0] == old_pipe[0];
+    {
+        race_pipe_writer_t old_job = {
+            old_pipe[1], old_value, (unsigned int)(race_random() & 127u), -1
+        };
+        race_pipe_writer_t new_job = {
+            new_pipe[1], new_value, (unsigned int)(race_random() & 127u), -1
+        };
+        pthread_t old_writer, new_writer;
+        int old_started, new_started;
+
+        /* Two real writers race under delays derived from the replay seed.
+         * Either pipe may become ready first; the blocked read must remain
+         * attached to the old open-file description in every schedule. */
+        if (race_random() & 1u) {
+            old_started = pthread_create(&old_writer, 0, race_pipe_writer, &old_job) == 0;
+            new_started = pthread_create(&new_writer, 0, race_pipe_writer, &new_job) == 0;
+        } else {
+            new_started = pthread_create(&new_writer, 0, race_pipe_writer, &new_job) == 0;
+            old_started = pthread_create(&old_writer, 0, race_pipe_writer, &old_job) == 0;
+        }
+        if (!old_started || !new_started) {
+            /* Keep the blocked reader releasable even when a worker cannot
+             * start, but do not silently count a sequential fallback as a
+             * seeded concurrent interleaving. */
+            if (!old_started)
+                old_job.result = (long)write(old_job.fd, &old_job.value, 1);
+            if (!new_started)
+                new_job.result = (long)write(new_job.fd, &new_job.value, 1);
+            if (old_started) (void)pthread_join(old_writer, 0);
+            if (new_started) (void)pthread_join(new_writer, 0);
+            (void)pthread_join(t, &result);
+            printf("THREADS_C8_BLOCKED_FD_REUSE_FAIL: writer thread creation old=%d new=%d\n",
+                   old_started, new_started);
+            goto out;
+        }
+        race_jitter();
+        if (old_started) (void)pthread_join(old_writer, 0);
+        if (new_started) (void)pthread_join(new_writer, 0);
+        if (old_job.result != 1 || new_job.result != 1) {
+            /* A failed old write must not strand the reader on the error path. */
+            if (old_job.result != 1)
+                (void)write(old_job.fd, &old_job.value, 1);
+            if (new_job.result != 1)
+                (void)write(new_job.fd, &new_job.value, 1);
+            (void)pthread_join(t, &result);
+            printf("THREADS_C8_BLOCKED_FD_REUSE_FAIL: writers old=%ld new=%ld\n",
+                   old_job.result, new_job.result);
+            goto out;
+        }
+    }
+    (void)pthread_join(t, &result);
+    if (!reused || g_fd_read_result != 1 || g_fd_read_byte != old_value) {
+        printf("THREADS_C8_BLOCKED_FD_REUSE_FAIL: old read result=%d byte=%u reused=%d\n",
+               g_fd_read_result, (unsigned char)g_fd_read_byte, reused);
+        goto out;
+    }
+    if (read(new_pipe[0], &got, 1) != 1 || got != new_value) {
+        printf("THREADS_C8_BLOCKED_FD_REUSE_FAIL: replacement descriptor lost its new pipe\n");
+        goto out;
+    }
+    printf("THREADS_C8_BLOCKED_FD_REUSE_OK: blocked read retained old file after fd reuse\n");
+
+out:
+    if (new_pipe[0] >= 0) close(new_pipe[0]);
+    if (new_pipe[1] >= 0) close(new_pipe[1]);
+    if (old_pipe[0] >= 0 && !old_read_closed) close(old_pipe[0]);
+    if (old_pipe[1] >= 0) close(old_pipe[1]);
+    fflush(stdout);
+}
+
+/* The destination is valid when read() starts. Once /proc confirms the worker
+ * is asleep, the main thread removes that mapping and supplies the byte. A
+ * correct kernel copies through fault-safe uaccess and reports EFAULT; it must
+ * not dereference the stale user pointer or panic while completing the read.
+ */
+static void test_blocked_read_unmap(void)
+{
+    pthread_t t;
+    void *page, *result = 0;
+    struct timespec start;
+    int blocked = 0, ok = 0;
+    char byte = 'U';
+
+    g_unmap_ready = 0;
+    g_unmap_tid = 0;
+    page = mmap(0, PAGE_BYTES, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED || pipe(g_unmap_pipe) != 0) {
+        printf("THREADS_C7_BLOCKED_UNMAP_FAIL: setup\n");
+        fflush(stdout);
+        return;
+    }
+    if (pthread_create(&t, 0, blocked_pipe_reader, page) != 0) {
+        printf("THREADS_C7_BLOCKED_UNMAP_FAIL: pthread_create\n");
+        close(g_unmap_pipe[0]); close(g_unmap_pipe[1]);
+        munmap(page, PAGE_BYTES);
+        fflush(stdout);
+        return;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (elapsed_ms(&start) < 10000L) {
+        if (__atomic_load_n(&g_unmap_ready, __ATOMIC_ACQUIRE) &&
+            thread_is_sleeping(g_unmap_tid)) {
+            blocked = 1;
+            break;
+        }
+        sched_yield();
+    }
+    if (!blocked) {
+        /* Release the reader before reporting, so a failing test cannot strand
+         * a task and make every later boot assertion meaningless. */
+        (void)write(g_unmap_pipe[1], &byte, 1);
+        (void)pthread_join(t, &result);
+        printf("THREADS_C7_BLOCKED_UNMAP_FAIL: read never observed asleep\n");
+    } else if ((race_jitter(), munmap(page, PAGE_BYTES)) != 0) {
+        (void)write(g_unmap_pipe[1], &byte, 1);
+        (void)pthread_join(t, &result);
+        printf("THREADS_C7_BLOCKED_UNMAP_FAIL: munmap\n");
+    } else {
+        race_jitter();
+        (void)write(g_unmap_pipe[1], &byte, 1);
+        (void)pthread_join(t, &result);
+        if ((long)result == 1L) {
+            printf("THREADS_C7_BLOCKED_UNMAP_OK: blocked read woke with EFAULT\n");
+            ok = 1;
+        } else {
+            printf("THREADS_C7_BLOCKED_UNMAP_FAIL: read returned %ld, expected EFAULT\n",
+                   (long)result);
+        }
+    }
+    (void)ok;
+    close(g_unmap_pipe[0]);
+    close(g_unmap_pipe[1]);
+    fflush(stdout);
+}
+
 
 static void *spin_worker(void *arg)
 {
@@ -1034,6 +1338,23 @@ int main(int argc, char **argv)
             printf("THREADS_C6_COND_OK\n");
         }
         fflush(stdout);
+    }
+    if (argc > 1) {
+        g_race_seed = strtoull(argv[1], 0, 0);
+        if (g_race_seed == 0u) g_race_seed = 1u;
+    }
+    g_race_rng = g_race_seed;
+    printf("THREADS_RACE_SEED=%llu rounds=8\n", g_race_seed);
+    fflush(stdout);
+    {
+        unsigned int round;
+        for (round = 0; round < 8u; round++) {
+            printf("THREADS_RACE_ROUND=%u\n", round);
+            race_jitter();
+            test_blocked_read_unmap();
+            race_jitter();
+            test_blocked_fd_reuse();
+        }
     }
     return 0;
 }
