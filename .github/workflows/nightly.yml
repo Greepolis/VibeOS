@@ -325,6 +325,44 @@ jobs:
           echo "failing seeds: $fails of 300"
           test "$fails" -eq 0
 
+  ext4-powercut:
+    name: ext4 Journal Power-Cut Sweep (every write)
+    # module: fs
+    # docs/filesystem-design/ext4.md step 3: the device stopped after every
+    # one of the script's writes, and each cut judged by e2fsck - after the
+    # driver's replay and after e2fsck's own - and by the tree it leaves.
+    # check.sh runs every 23rd; this runs all of them.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential e2fsprogs
+
+      - name: Build the exerciser
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVIBEOS_BUILD_TESTS=ON
+          cmake --build build --parallel --target vibeos_ext4_exercise
+
+      - name: Replay journals e2fsprogs wrote, and the rest of the ext4 oracle
+        run: |
+          set -euo pipefail
+          bash scripts/dev/verify-ext4.sh build | tee /tmp/ext4.log
+          tail -1 /tmp/ext4.log | grep -q '^ext4=ok'
+
+      - name: Power-cut sweep, every write
+        run: |
+          set -euo pipefail
+          bash scripts/dev/verify-ext4-powercut.sh build 1 | tee /tmp/pc.log
+          tail -1 /tmp/pc.log | grep -q '^ext4_powercut=ok'
+
   registry-torture:
     name: Registry Torture (model + sanitizers)
     # The NT registry's core (docs/abi/windows.md W8 step 2). It is one part of

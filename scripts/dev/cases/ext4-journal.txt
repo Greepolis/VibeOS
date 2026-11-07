@@ -1,0 +1,68 @@
+# ext4's journal (kernel/fs/ext4_journal.c, docs/filesystem-design/ext4.md step 3),
+# broken; caught by scripts/dev/verify-ext4.sh (which replays journals debugfs
+# wrote) and scripts/dev/verify-ext4-powercut.sh (which stops the device after
+# every n-th write and has the driver and e2fsck replay what is left, then asks
+# e2fsck whether it is clean and whether the tree is a state the script passed
+# through).
+#
+# Target source: kernel/fs/ext4_journal.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release && bash scripts/dev/verify-ext4-powercut.sh build-gcc-Release 13'" python3 scripts/dev/sabotage.py kernel/fs/ext4_journal.c scripts/dev/cases/ext4-journal.txt build-gcc-Release
+
+### data over a block this transaction freed is written in place
+--- old
+    int logged = fs->j.open && (freed_here(fs, block) || j_slot_of(fs, block) >= 0);
++++ new
+    int logged = fs->j.open && j_slot_of(fs, block) >= 0;
+
+### a read during a transaction is not answered from the log
+--- old
+        if (k >= 0) {
+            lba = j_lba(fs, slot_jblk(fs, (uint32_t)k), (uint32_t)(rel % spb(fs)));
++++ new
+        if (k >= 0 && 0) {
+            lba = j_lba(fs, slot_jblk(fs, (uint32_t)k), (uint32_t)(rel % spb(fs)));
+
+### a block is logged without what was in it
+--- old
+        if (vibeos_blockcache_read(fs->cache, fs->part_lba + block * spb(fs) + i, sector) != 0 ||
+            vibeos_blockcache_write(fs->cache, j_lba(fs, jb, i), sector) != 0) {
++++ new
+        if ((memset(sector, 0, sizeof(sector)), 0) ||
+            vibeos_blockcache_write(fs->cache, j_lba(fs, jb, i), sector) != 0) {
+
+### a revoke record is ignored by the replay
+--- old
+        if (revokes(fs)[i].block == block && (int32_t)(revokes(fs)[i].seq - seq) >= 0) {
++++ new
+        if (revokes(fs)[i].block == block && 0) {
+
+### a tag's checksum is wrong
+--- old
+                put_be32(d + at + 12u, crc);
++++ new
+                put_be32(d + at + 12u, crc + 1u);
+
+### the logged superblock does not say RECOVER
+--- old
+    bad = sb_log_recover(fs) != 0 || write_descriptors(fs, tid) != 0
++++ new
+    bad = write_descriptors(fs, tid) != 0
+
+### the journal is emptied before the checkpoint is on the disk
+--- old
+        bad = checkpoint(fs) != 0 || flush(fs) != 0 || jsb_store(fs, 0u, tid + 1u, 0u) != 0
++++ new
+        bad = checkpoint(fs) != 0 || jsb_store(fs, 0u, tid + 1u, 0u) != 0
+
+### the commit is written before the log is on the disk
+--- old
+    bad = sb_log_recover(fs) != 0 || write_descriptors(fs, tid) != 0 || sb_recover_flag(fs, 1) != 0 || flush(fs) != 0 ||
++++ new
+    bad = sb_log_recover(fs) != 0 || write_descriptors(fs, tid) != 0 || sb_recover_flag(fs, 1) != 0 ||
+
+# Kept as a comment, not a case: "the superblock is put home among the other
+# blocks, not last" (checkpoint's two passes made one) went NOT RED on
+# 2026-11-07. The cache's flush in order of sector already sends the
+# superblock's two sectors as one run, and no checkpoint of this script is
+# large enough for an eviction to come between them, so this environment
+# cannot tell. The ordering stays as the defence for a transaction that is.

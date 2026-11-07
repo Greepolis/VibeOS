@@ -6,6 +6,16 @@
  *     vibeos_ext4_exercise apply <script>      (changes fs.img through the driver)
  *     vibeos_ext4_exercise refused-file <path> (a path on the volume)
  *     vibeos_ext4_exercise refused-mount
+ *     vibeos_ext4_exercise powercut <n>       (the script, the device dead after write n)
+ *     vibeos_ext4_exercise recover            (mount fs.img, which replays its journal)
+ *     vibeos_ext4_exercise states             (the script, the tree listed after each line)
+ *
+ * The last three are step 3's power-cut sweep (scripts/dev/verify-ext4-powercut.sh):
+ * a device that takes the first n sector writes and silently drops every one
+ * after them is a machine that lost power after write n - nothing the driver
+ * does afterwards reaches the disk, and it is not told. What is left must be
+ * replayed into a volume e2fsck calls clean whose tree is the one before or
+ * the one after the operation the cut fell in, never a mixture.
  *
  * scripts/dev/verify-ext4.sh builds a tree on the host, has mkfs.ext4 -d put
  * it on a volume, and holds what this prints against the tree itself: "walk"
@@ -32,6 +42,7 @@
 
 #include "vibeos/abi_linux.h"
 #include "vibeos/ext2.h"
+#include "vibeos/ext4_journal.h"
 #include "vibeos/storage.h"
 #include "vibeos/vfs.h"
 
@@ -54,6 +65,10 @@ static union {
 static const vibeos_fs_ops_t *g_ops;
 static vibeos_fsmount_t g_mnt;
 static int g_writable_dev;
+static uint64_t g_writes;   /* sector writes the device has been asked for */
+static uint64_t g_cut;      /* after this many it takes no more; 0 is never */
+static uint64_t g_last_lba = ~0ull;
+static int g_dead;          /* the cut has happened */
 
 static int img_read(void *ctx, uint64_t lba, void *buf) {
     (void)ctx;
@@ -69,6 +84,19 @@ static int img_write(void *ctx, uint64_t lba, const void *buf) {
     if (lba >= g_sectors) {
         return -1;
     }
+    /* The unit a disk writes whole is its physical sector, 4 KiB on anything
+     * current. A cut half-way through one is not a state a real power failure
+     * leaves, and with 512-byte atomicity the superblock's two sectors could
+     * land one new and one old - which no journal, Linux's included, can
+     * protect against. So a cut finishes the 4 KiB run the last write was in,
+     * if the next writes continue it, and then the power is gone. */
+    if (++g_writes > g_cut && g_cut != 0u) {
+        if (g_dead || lba != g_last_lba + 1u || lba / 8u != g_last_lba / 8u) {
+            g_dead = 1;
+            return 0;   /* the write is lost, and nobody is told */
+        }
+    }
+    g_last_lba = lba;
     memcpy(g_img + lba * 512u, buf, 512);
     return 0;
 }
@@ -499,11 +527,91 @@ static int apply(void) {
     return 0;
 }
 
+static int save_image(void) {
+    FILE *f = fopen("fs.img", "r+b");
+
+    if (!f || fwrite(g_img, 1, (size_t)(g_sectors * 512u), f) != (size_t)(g_sectors * 512u)) {
+        fprintf(stderr, "FAIL:ext4_exercise cannot write fs.img back\n");
+        if (f) {
+            fclose(f);
+        }
+        return 1;
+    }
+    fclose(f);
+    return 0;
+}
+
+/* The script line by line, each line one operation and so one transaction:
+ * with `states`, the tree is listed before the first line and after each, as
+ * "STATE k" followed by what walk prints. A cut run goes on past the cut, as
+ * the machine would have until it stopped; what the driver believed it did is
+ * not the question, and the sweep judges the disk instead. */
+static int script(int states) {
+    FILE *f = fopen("script.txt", "r");
+    char line[4400];
+    unsigned lines = 0;
+
+    if (!f) {
+        fprintf(stderr, "FAIL:ext4_exercise cannot open the script\n");
+        return 2;
+    }
+    vibeos_fs_set_clock(clock_fn);
+    if (!g_fs.writable) {
+        fprintf(stderr, "FAIL:ext4_exercise the driver did not take the volume as writable\n");
+        fclose(f);
+        return 1;
+    }
+    if (states) {
+        printf("STATE 0\n");
+        (void)walk("/");
+    }
+    while (fgets(line, sizeof(line), f)) {
+        size_t l = strlen(line);
+        int r;
+
+        while (l > 0u && (line[l - 1u] == '\n' || line[l - 1u] == '\r')) {
+            line[--l] = 0;
+        }
+        if (l == 0u || line[0] == '#') {
+            continue;
+        }
+        lines++;
+        r = run_line(line);
+        if (r != 0 && g_cut == 0u) {
+            fprintf(stderr, "FAIL:ext4_exercise line %u (%s) returned %d\n", lines, line, r);
+            fclose(f);
+            return 1;
+        }
+        if (states) {
+            printf("STATE %u\n", lines);
+            (void)walk("/");
+        }
+    }
+    fclose(f);
+    if (!states) {
+        vibeos_ext4_journal_stats_t js;
+
+        vibeos_ext4_journal_stats(&js);
+        printf("writes=%llu lines=%u commits=%llu\n", (unsigned long long)g_writes, lines,
+               (unsigned long long)js.commits);
+        if (g_cut == 0u && js.commits < lines) {
+            fprintf(stderr, "FAIL:ext4_exercise %u operations made %llu commits: the journal is not in the path\n",
+                    lines, (unsigned long long)js.commits);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     /* fs.img in the working directory, as fat_exercise does: a program
      * that opened a path from its arguments is a path-injection finding for
      * code scanning, and a test has no reason to take one. */
-    g_writable_dev = argc >= 2 && strcmp(argv[1], "apply") == 0;
+    g_writable_dev = argc >= 2 && (strcmp(argv[1], "apply") == 0 || strcmp(argv[1], "powercut") == 0 ||
+                                   strcmp(argv[1], "recover") == 0 || strcmp(argv[1], "states") == 0);
+    if (argc == 3 && strcmp(argv[1], "powercut") == 0) {
+        g_cut = strtoull(argv[2], NULL, 10);
+    }
     if (argc < 2 || load("fs.img") != 0) {
         fprintf(stderr, "usage: vibeos_ext4_exercise walk|apply|refused-file <path>|refused-mount, beside fs.img (and script.txt for apply)\n");
         return 2;
@@ -527,6 +635,24 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "apply") == 0 && argc == 2) {
         return apply();
+    }
+    if (strcmp(argv[1], "states") == 0 && argc == 2) {
+        return script(1);
+    }
+    if (strcmp(argv[1], "powercut") == 0 && argc == 3) {
+        int r = script(0);
+
+        return r != 0 ? r : save_image();
+    }
+    if (strcmp(argv[1], "recover") == 0 && argc == 2) {
+        vibeos_ext4_journal_stats_t js;
+
+        if (vibeos_fs_sync(&g_mnt) != 0 || save_image() != 0) {
+            return 1;
+        }
+        vibeos_ext4_journal_stats(&js);
+        printf("replayed=%llu bad_tags=%llu\n", (unsigned long long)js.replayed, (unsigned long long)js.bad_tags);
+        return js.bad_tags == 0u ? 0 : 1;
     }
     if (g_fs.writable) {
         fprintf(stderr, "FAIL:ext4_exercise a device that takes no writes was given the writing operations\n");

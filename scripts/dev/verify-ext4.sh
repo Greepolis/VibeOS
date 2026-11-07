@@ -193,6 +193,47 @@ debugfs -R "rdump / $T/ndump" "$T/n/fs.img" > /dev/null 2>&1
 python3 scripts/dev/ext4-tree.py compare "$T/ntree" "$T/ndump" "$T/n/fs.img" > "$T/ncompare.out" \
     || fail "$(head -3 "$T/ncompare.out" | tr '\n' ' ')" fresh_tree_differs
 
+# ---- a journal e2fsprogs wrote (step 3) -------------------------------------
+# The driver's own journal is replayed by e2fsck in verify-ext4-powercut.sh;
+# this is the other direction. debugfs writes transactions into a volume's
+# journal and leaves them unreplayed, RECOVER set, as a machine that stopped
+# would: one that writes two blocks, one that revokes the second, and one
+# that is never committed. The driver's mount must replay the first two and
+# not the third, so the first block is the data, the second is what was
+# there (the revoke covers the transaction before it), and the third too;
+# and e2fsck, replaying the same image itself, must agree. Twice: the tags
+# debugfs writes by default (64-bit, no checksums) and v3 checksums.
+for v in plain v3; do
+    J="$T/jnl-$v"
+    mkdir -p "$J"
+    truncate -s 16M "$J/fs.img"
+    mkfs.ext4 -q -F -b 4096 -N 128 "$J/fs.img" > /dev/null 2>&1 || fail "mkfs ($v)" mkfs_journal_failed
+    head -c 12288 /dev/urandom > "$J/data.bin"
+    dd if="$J/fs.img" of="$J/before.bin" bs=4096 skip=3000 count=3 2> /dev/null
+    if [ "$v" = v3 ]; then jo="jo -c -v 3"; else jo="jo"; fi
+    printf '%s\njw -b 3000,3001 %s\njw -r 3001\njw -b 3002 -c %s\njc\n' "$jo" "$J/data.bin" "$J/data.bin" > "$J/cmds"
+    debugfs -w -f "$J/cmds" "$J/fs.img" > "$J/debugfs.log" 2>&1
+    dumpe2fs -h "$J/fs.img" 2> /dev/null | grep -q needs_recovery \
+        || fail "debugfs left no transaction to replay ($v)" journal_fixture_empty
+    if [ "$v" = v3 ]; then
+        dumpe2fs -h "$J/fs.img" 2> /dev/null | grep -q 'Journal features:.*journal_checksum_v3' \
+            || fail "debugfs did not write v3 checksums" journal_fixture_not_v3
+    fi
+    cp "$J/fs.img" "$J/theirs.img"
+    (cd "$J" && "$EX" recover) > "$J/rec.out" 2> "$J/rec.err" \
+        || fail "$(cat "$J/rec.err" "$J/rec.out" | head -1) ($v)" journal_replay_failed
+    grep -q '^replayed=2 ' "$J/rec.out" || fail "$(cat "$J/rec.out") ($v), wanted 2" journal_replay_count
+    e2fsck -fn "$J/fs.img" > "$J/fsck.log" 2>&1 \
+        || fail "$(grep -v -E '^(e2fsck|Pass)' "$J/fsck.log" | head -4 | tr '\n' ' ') ($v)" journal_replay_not_clean
+    dd if="$J/fs.img" of="$J/after.bin" bs=4096 skip=3000 count=3 2> /dev/null
+    head -c 4096 "$J/data.bin" > "$J/want.bin"
+    tail -c 8192 "$J/before.bin" >> "$J/want.bin"
+    cmp -s "$J/after.bin" "$J/want.bin" || fail "blocks 3000-3002 after the replay are not data, before, before ($v)" journal_replay_wrong_blocks
+    e2fsck -fy "$J/theirs.img" > "$J/fsy.log" 2>&1
+    dd if="$J/theirs.img" of="$J/theirs.bin" bs=4096 skip=3000 count=3 2> /dev/null
+    cmp -s "$J/after.bin" "$J/theirs.bin" || fail "e2fsck replayed blocks 3000-3002 differently ($v)" journal_replays_disagree
+done
+
 # ---- the refusals -----------------------------------------------------------
 # An inode whose checksum no longer matches: its low half set to zero.
 mkdir -p "$T/csum" "$T/feat"

@@ -107,6 +107,12 @@ do_tests() {
     e4="$(bash scripts/dev/verify-ext4.sh "$d" | tail -1)"
     echo "$e4"
     case "$e4" in ext4=ok*|ext4=skip*) ;; *) t=1 ;; esac
+    # The journal against a power cut (ext4.md step 3): every 23rd write here,
+    # every one of them in the nightly.
+    local pc
+    pc="$(bash scripts/dev/verify-ext4-powercut.sh "$d" 23 | tail -1)"
+    echo "$pc"
+    case "$pc" in ext4_powercut=ok*|ext4_powercut=skip*) ;; *) t=1 ;; esac
     if [ "$k" -eq 0 ] && [ "$b" -eq 0 ] && [ "$t" -eq 0 ] && [ "$c" -eq 0 ]; then
         echo "host-tests=pass"
     else
