@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/ipc/waitset.c
+
+### priority selection must exclude unsignaled events
+--- old
+                if (!ev || !vibeos_event_is_signaled(ev)) {
++++ new
+                if (!ev || vibeos_event_is_signaled(ev)) {
