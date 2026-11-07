@@ -321,6 +321,7 @@ static int run_object(unsigned rounds) {
                 uint32_t probe = 1u + (uint32_t)(rnd64() % (uint64_t)(next_id - 1u));
                 if (g_objects[probe].active) {
                     uint32_t rights = 0, object_id = 0;
+                    uint32_t missing_right;
                     vibeos_object_type_t type = VIBEOS_OBJECT_NONE;
                     if (vibeos_handle_rights(&table, probe, &rights) != 0 ||
                         rights != g_objects[probe].rights ||
@@ -328,6 +329,21 @@ static int run_object(unsigned rounds) {
                         (uint32_t)type != g_objects[probe].type ||
                         object_id != g_objects[probe].object_id) {
                         return fail("object", "handle contents differ from independent map", r);
+                    }
+                    if (vibeos_handle_has_rights(&table, probe, rights) != 1) {
+                        return fail("object", "handle rejected rights it owns", r);
+                    }
+                    missing_right = (~rights) & 15u;
+                    if (missing_right == 0u) missing_right = 16u;
+                    else missing_right &= (uint32_t)(0u - missing_right);
+                    if (vibeos_handle_has_rights(&table, probe, missing_right) != 0) {
+                        return fail("object", "handle accepted a right absent from model", r);
+                    }
+                } else {
+                    uint32_t ignored_rights = 0;
+                    if (vibeos_handle_rights(&table, probe, &ignored_rights) == 0 ||
+                        vibeos_handle_has_rights(&table, probe, 1u) != 0) {
+                        return fail("object", "closed handle still grants rights", r);
                     }
                 }
             }
