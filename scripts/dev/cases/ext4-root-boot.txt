@@ -1,8 +1,10 @@
 # The native root beside the ESP (docs/filesystem-design/ext4.md step 4),
 # broken; caught by the boot gate, which asks that the root partition is
-# mounted at /sysroot, that the build's marker is read from it, and - after
+# mounted at / with the ESP at /boot/efi, that the build's marker is read from it, and - after
 # the boot, on the disk the guest left - that e2fsck calls it clean and the
 # file the guest wrote is there.
+# Reasons: the label case is native_root_not_mounted, the /boot/efi case
+# esp_not_at_boot_efi.
 #
 # Target source: kernel/arch/x86_64/io_bringup.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/arch/x86_64/io_bringup.c scripts/dev/cases/ext4-root-boot.txt build-gcc-Release
@@ -12,3 +14,9 @@
         if (sector[0x78u + k] != (uint8_t)want[k]) {
 +++ new
         if (sector[0x78u + k] == (uint8_t)want[k]) {
+
+### the ESP is not attached at /boot/efi
+--- old
+                const char *s = "/boot/efi";
++++ new
+                const char *s = "/esp";

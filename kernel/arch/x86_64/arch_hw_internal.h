@@ -286,6 +286,7 @@ void hw_membarrier(int global);
  * of splitting a file where everything could reach everything.
  */
 extern vibeos_fsmount_t g_rootfs;
+extern vibeos_fsmount_t g_bootfs;   /* the ESP: INIT.ELF, swap, loop images */
 extern uint64_t g_boot_fat_lba;   /* where the boot volume starts on its disk */
 /* Moved out of arch_hw.c with the bitmap it sizes: a constant that describes a
  * shared object belongs beside the declaration of that object, or the two

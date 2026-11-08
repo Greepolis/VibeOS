@@ -50,7 +50,7 @@ import sys
 #
 # Lower it whenever cases are added. Raising it is a decision somebody makes
 # here, in the same change that earns it, with a reason.
-BASELINE = 108
+BASELINE = 107   # 108 -> 107: the native root's mount and /boot/efi named by ext4-root-boot.txt (ext4.md step 4)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GATE = os.path.join(ROOT, "scripts", "qemu-cli-smoke-linux.py")

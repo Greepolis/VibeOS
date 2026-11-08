@@ -1192,6 +1192,12 @@ def main():
         # the hierarchy's tree. Without mkfs.ext4 the disk is the bare ESP as
         # before, and the verdict says root_absent.
         root_tree = tempfile.mkdtemp(prefix="vibeos-root-")
+        # The root is "/" now, so for this step it carries a copy of the
+        # ESP's tree - EFI/BOOT, /corpus, /lib, /win - and every path the
+        # self-test names still resolves. The next step moves the programs to
+        # /usr/bin and drops the copy.
+        shutil.copytree(efi_root, root_tree, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("*.tmp"))
         for d in ROOT_TREE_DIRS:
             os.makedirs(os.path.join(root_tree, d), exist_ok=True)
         with open(os.path.join(root_tree, "etc", "vibeos", "root"), "w") as f:
@@ -1200,7 +1206,7 @@ def main():
         r = subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
                             os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          "make-boot-disk.py"),
-                            "make", esp_img, root_tree, disk_img, "64"],
+                            "make", esp_img, root_tree, disk_img, str(esp_mb + 64)],
                            capture_output=True, text=True)
         shutil.rmtree(root_tree, ignore_errors=True)
         if os.environ.get("VIBEOS_SMOKE_ROOT", "1") == "0":
@@ -3289,8 +3295,10 @@ def main():
                 # the shell. The command that reads it does not contain the
                 # marker, so its echo cannot satisfy this.
                 if ESP == "image" and disk_img:
-                    if "[IO] MOUNT at=/sysroot type=ext4" not in text:
+                    if "[IO] MOUNT at=/ type=ext4" not in text:
                         problems.append("native_root_not_mounted")
+                    elif "[IO] MOUNT at=/boot/efi type=fat" not in text:
+                        problems.append("esp_not_at_boot_efi")
                     elif "VIBEOS_ROOT_MARKER" not in text:
                         problems.append("native_root_not_read")
                 # A pipeline is the first thing anyone tries on a shell, and

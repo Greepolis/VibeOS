@@ -134,7 +134,7 @@ void hw_write_proof(void) {
     for (i = 0; i < HW_WRITE_PROOF_BYTES; i++) {
         g_write_proof[i] = hw_write_proof_byte(i);
     }
-    if (vibeos_fs_write_file(&g_rootfs, HW_WRITE_PROOF_PATH, g_write_proof,
+    if (vibeos_fs_write_file(&g_bootfs, HW_WRITE_PROOF_PATH, g_write_proof,
                              HW_WRITE_PROOF_BYTES) < 0) {
         vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[IO] WRITE_PROOF write refused: ");
@@ -154,7 +154,7 @@ void hw_write_proof(void) {
         for (i = 0; i < HW_WRITE_PROOF_BYTES; i++) {
             g_write_proof[i] = 0;
         }
-        n = vibeos_fs_read_file(&g_rootfs, HW_WRITE_PROOF_PATH, g_write_proof,
+        n = vibeos_fs_read_file(&g_bootfs, HW_WRITE_PROOF_PATH, g_write_proof,
                                 HW_WRITE_PROOF_BYTES);
         if (n != (long)HW_WRITE_PROOF_BYTES) {
             verdict = "FAILED: read gave the wrong length";
@@ -1280,40 +1280,32 @@ void hw_volumes_bringup(void) {
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 
-    /* Every mounted volume goes in the table, and the first one is the root.
+    /* Every mounted volume goes in the table. The root is the native one when
+     * the disk has it (docs/filesystem-design/ext4.md step 4): the ext4
+     * partition labelled vibeos-root becomes "/", the ESP /boot/efi, and
+     * g_rootfs - exec, the page cache, every relative path - follows it.
+     * Without one the first mounted volume is the root, as before.
      *
-     * The syscalls still take g_rootfs directly - moving them onto the
-     * resolver is the change that makes a second mount reachable, and doing it
-     * in the same step as building the table would mean neither is verified.
-     * What the table gives today is the ability to *say* what is mounted,
-     * which is what the phase's "done when" asks for and what a machine with
-     * one global mount could not do at all. */
-    for (i = 0; i < g_storage.volume_count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
-        char at[VIBEOS_FS_MOUNT_PATH_MAX];
-        uint32_t w = 0;
+     * Two passes, because which volume is "/" has to be known before the
+     * first attach: the table resolves by longest prefix and refuses a path
+     * twice, and the ESP comes first on the disk. */
+    {
+        int root = -1;
 
-        if (!vibeos_fs_is_mounted(&g_storage.volume[i].mount)) {
-            continue;
-        }
-        if (hw_is_native_root(bc, &g_storage.volume[i])) {
-            /* The native root (docs/filesystem-design/ext4.md step 4): an
-             * ext4 partition labelled vibeos-root beside the ESP. At /sysroot
-             * until exec, init and the shell find their programs there; then
-             * it becomes "/" and the ESP /boot/efi. */
-            const char *s = "/sysroot";
-            while (*s) {
-                at[w++] = *s++;
+        for (i = 0; i < g_storage.volume_count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
+            if (vibeos_fs_is_mounted(&g_storage.volume[i].mount) && hw_is_native_root(bc, &g_storage.volume[i])) {
+                root = (int)i;
+                break;
             }
-        } else if (vibeos_fs_mount_count() == 0u) {
-            at[w++] = '/';
-        } else {
-            /* /vol1, /vol2, ... A name a person can type, and one this build
-             * can generate without a formatter. */
-            at[w++] = '/'; at[w++] = 'v'; at[w++] = 'o'; at[w++] = 'l';
-            at[w++] = (char)('0' + (i % 10u));
         }
-        at[w] = 0;
-        {
+        if (root >= 0 && vibeos_fs_attach("/", &g_storage.volume[root].mount) == 0) {
+            g_rootfs = g_storage.volume[root].mount;
+        } else {
+            root = -1;
+        }
+        for (i = 0; i < g_storage.volume_count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
+            char at[VIBEOS_FS_MOUNT_PATH_MAX];
+            uint32_t w = 0;
             /* The boot volume found again by the scan, on a partitioned
              * disk: the table gets the mount the machine is running from,
              * not a second FAT over the same sectors with a cache of its
@@ -1321,17 +1313,36 @@ void hw_volumes_bringup(void) {
              * the boot mount; a partition's start did not, and the first
              * boot with the native root beside the ESP lost every exec. */
             vibeos_fsmount_t *mnt = &g_storage.volume[i].mount;
-            if (g_storage.volume[i].first_lba != 0u && g_storage.volume[i].first_lba == g_boot_fat_lba &&
-                g_storage.volume[i].fs_name && g_storage.volume[i].fs_name[0] == 'f') {
-                mnt = &g_rootfs;
+            int is_boot = g_storage.volume[i].first_lba != 0u && g_storage.volume[i].first_lba == g_boot_fat_lba &&
+                          g_storage.volume[i].fs_name && g_storage.volume[i].fs_name[0] == 'f';
+
+            if ((int)i == root || !vibeos_fs_is_mounted(mnt)) {
+                continue;
             }
-        if (vibeos_fs_attach(at, mnt) != 0) {
-            vibeos_x86_64_serial_lock();
-            vibeos_x86_64_serial_puts("[IO] MOUNT refused at ");
-            vibeos_x86_64_serial_puts(at);
-            vibeos_x86_64_serial_puts("\n");
-            vibeos_x86_64_serial_unlock();
-        }
+            if (is_boot) {
+                mnt = &g_bootfs;
+            }
+            if (is_boot && root >= 0) {
+                const char *s = "/boot/efi";
+                while (*s) {
+                    at[w++] = *s++;
+                }
+            } else if (vibeos_fs_mount_count() == 0u) {
+                at[w++] = '/';
+            } else {
+                /* /vol1, /vol2, ... A name a person can type, and one this
+                 * build can generate without a formatter. */
+                at[w++] = '/'; at[w++] = 'v'; at[w++] = 'o'; at[w++] = 'l';
+                at[w++] = (char)('0' + (i % 10u));
+            }
+            at[w] = 0;
+            if (vibeos_fs_attach(at, mnt) != 0) {
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[IO] MOUNT refused at ");
+                vibeos_x86_64_serial_puts(at);
+                vibeos_x86_64_serial_puts("\n");
+                vibeos_x86_64_serial_unlock();
+            }
         }
     }
 

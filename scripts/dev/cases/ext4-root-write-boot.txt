@@ -4,6 +4,7 @@
 # The guest's file is thirteen bytes, so it is the partial-block path that
 # writes it: a first version of this case broke the whole-block one and went
 # NOT RED, correctly.
+# Reason: root_volume_lost_the_guests_file.
 #
 # Target source: kernel/fs/ext4_write.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-root-write-boot.txt build-gcc-Release

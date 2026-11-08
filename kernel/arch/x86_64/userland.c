@@ -213,8 +213,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * build's mkfs.ext4 put there, and leave a
                                    * file the gate reads back with debugfs after
                                    * e2fsck has judged the volume. */
-                                  "cat /sysroot/etc/vibeos/root\n"
-                                  "echo ROOT_WRITE_OK > /sysroot/var/tmp/written-by-the-guest\n"
+                                  "cat /etc/vibeos/root\n"
+                                  "echo ROOT_WRITE_OK > /var/tmp/written-by-the-guest\n"
                                   "cat DOCS/NOTES.TXT\n"
                                   "ls /EFI/BOOT\n"
                                   /* A working directory (docs/abi/ A4): cd,
@@ -242,7 +242,9 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do "
                                   "echo 0123456789012345678901234567890123456789; done > /tmp/big.txt; "
                                   "echo tail >> /tmp/big.txt; wc -c < /tmp/big.txt\n"
-                                  /* And on the boot volume, which is FAT
+                                  /* And on the boot volume, which is FAT and
+                                   * at /boot/efi since the root moved (ext4.md
+                                   * step 4)
                                    * (step 4): twenty-one lines this time, so
                                    * the count - 866 - is not /tmp's; then a
                                    * file whose name is not 8.3, written and
@@ -250,18 +252,18 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * reads it off the disk image with mtools
                                    * once the machine has stopped. */
                                   "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21; do "
-                                  "echo 0123456789012345678901234567890123456789; done > /fatbig.txt; "
-                                  "echo tail >> /fatbig.txt; wc -c < /fatbig.txt\n"
-                                  "echo LFN_$((2+3)) > '/written with a long name.txt' && "
-                                  "cat '/written with a long name.txt'\n"
+                                  "echo 0123456789012345678901234567890123456789; done > /boot/efi/fatbig.txt; "
+                                  "echo tail >> /boot/efi/fatbig.txt; wc -c < /boot/efi/fatbig.txt\n"
+                                  "echo LFN_$((2+3)) > '/boot/efi/written with a long name.txt' && "
+                                  "cat '/boot/efi/written with a long name.txt'\n"
                                   /* A file of two clusters, opened again
                                    * with O_TRUNC. Nothing here reads the
                                    * result: a truncate that keeps the chain
                                    * leaves a file that reads perfectly, and
                                    * only the gate's consistency check of the
                                    * volume can see the clusters it kept. */
-                                  "cat /fatbig.txt /fatbig.txt /fatbig.txt > /fatcut.txt; "
-                                  "echo cut > /fatcut.txt\n"
+                                  "cat /boot/efi/fatbig.txt /boot/efi/fatbig.txt /boot/efi/fatbig.txt > /boot/efi/fatcut.txt; "
+                                  "echo cut > /boot/efi/fatcut.txt\n"
                                   /* Names and metadata (L1 step 5), as the
                                    * programs that use them call them: mv is
                                    * rename, ln is link and symlink, chmod is
@@ -274,8 +276,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   /* And on FAT, where the gate's check of
                                    * the volume afterwards is what says a
                                    * rename and an rmdir left it whole. */
-                                  "mv /fatcut.txt '/moved by rename.txt' && mkdir /fatdir && "
-                                  "rmdir /fatdir && echo FATMV_$(wc -c < '/moved by rename.txt')\n"
+                                  "mv /boot/efi/fatcut.txt '/boot/efi/moved by rename.txt' && mkdir /boot/efi/fatdir && "
+                                  "rmdir /boot/efi/fatdir && echo FATMV_$(wc -c < '/boot/efi/moved by rename.txt')\n"
                                   /* A directory listed (L1 step 6): a name
                                    * longer than the fifteen bytes getdents64
                                    * used to cut it at, the two dots every

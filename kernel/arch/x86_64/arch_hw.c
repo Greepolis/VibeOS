@@ -519,9 +519,14 @@ _Static_assert(VIBEOS_DEVICE_VECTOR_BASE + VIBEOS_DEVICE_VECTORS <= VIBEOS_HW_WI
 
 #include "vibeos/vfs.h"
 
-/* The one mounted volume. Everything below reaches the filesystem through
- * this, so no syscall in this file knows which driver is underneath it. */
+/* The root: what "/" is, and what exec, the page cache and every relative
+ * path read. The boot volume until the storage scan finds the native root
+ * (docs/filesystem-design/ext4.md step 4), then that ext4 partition. */
 vibeos_fsmount_t g_rootfs;
+/* The boot volume, the ESP, always FAT: what the kernel itself reads from it
+ * - INIT.ELF, the swap file, the loop images, the write proof - stays here
+ * whatever "/" becomes. They were one mount until the root moved off it. */
+vibeos_fsmount_t g_bootfs;
 /* Whether any disk carried a mountable boot volume. A flag rather than a longer
  * condition at the use site, because the loop that sets it already has to break
  * out of itself. */
@@ -1988,7 +1993,8 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
              * system partition, which UEFI requires to be FAT. A first_lba of
              * zero is that driver's "the boot volume" (C7). */
             const vibeos_fs_driver_t *fat = vibeos_storage_driver("fat");
-            if (fat && fat->mount(&g_rootfs, 0, 0ull, 0ull, 0) == 0) {
+            if (fat && fat->mount(&g_bootfs, 0, 0ull, 0ull, 0) == 0) {
+                g_rootfs = g_bootfs;   /* the root, until the scan finds the native one */
                 g_boot_disk_mounted = 1;
                 break;
             }
@@ -2039,7 +2045,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         /* After the volume is mounted and before anything else uses it. The
          * file it leaves behind is small and is overwritten every boot. */
         hw_write_proof();
-        long n = vibeos_fs_read_file(&g_rootfs, "EFI/BOOT/INIT.ELF",
+        long n = vibeos_fs_read_file(&g_bootfs, "EFI/BOOT/INIT.ELF",
                                       g_disk_init_elf, sizeof(g_disk_init_elf));
         if (n > 0) {
             g_disk_init_len = n;
