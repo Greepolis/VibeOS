@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/ipc/event.c
+
+### signaling an event must set its observable state
+--- old
+        event->signaled = 1;
++++ new
+        event->signaled = 0;
