@@ -80,3 +80,10 @@ Proved by `scripts/dev/verify-ext4-powercut.sh`, which stops the device after
 every write of a script of 29 operations and has both the driver and
 `e2fsck` replay what is left: clean, the same, and the state before or after
 the operation the cut fell in. Open items E4-016 onward.
+
+Step 4, ext4 as the root, done 2026-11-08: the gate's boot disk is an MBR
+disk with the ESP and an ext4 partition labelled `vibeos-root`, made by
+`mkfs.ext4` from the hierarchy's tree; the kernel mounts it at `/`, writable
+and journalled, and the ESP at `/boot/efi`; every program runs from
+`/usr/bin`. After the boot the gate cuts the partition out of the disk and
+`e2fsck` must call it clean. Open items E4-021 onward.

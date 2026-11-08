@@ -216,9 +216,24 @@ writes an `ext4` volume it can keep true (the table below the step), and
   of the ESP's tree, so every `EFI/BOOT/...` path still resolves; the gate
   asserts `native_root_not_mounted` and `esp_not_at_boot_efi`, both with a
   sabotage case that goes red.
-- **Open**: the programs into `/usr/bin`, every `EFI/BOOT/...` path in init,
-  the shell and the self-test moved with them, and the copy of the ESP
-  dropped from the root.
+- **The programs in `/usr/bin`** (2026-11-08): the build puts every program
+  of `EFI/BOOT` in the root's `/usr/bin`, and init's service table and
+  `PATH`, the native shell, the self-test, the test programs that exec
+  themselves or BusyBox, and the corpus scripts name `/usr/bin/...`. The root
+  no longer carries `EFI/`: what stays on the ESP alone is what the firmware
+  and the kernel read themselves - the loader, the kernel, INIT.ELF, the loop
+  images, the swap file. A boot runs every program from `/usr/bin`, `/corpus`
+  or `/win`. **Step 4 is done**, with the open items below.
+
+### Open after step 4
+
+| ID | What | Status |
+|---|---|---|
+| E4-021 | The programs keep their ESP names (`BUSYBOX.ELF`, `SVC_OK.ELF`): the gate recognises many of them by those names. Lower-case command names without the extension are a rename across the gate | open |
+| E4-022 | The ESP still carries the programs, so that the bare-ESP layout (`root_absent`, `VIBEOS_SMOKE_ROOT=0`) boots; once nothing needs that layout, the ESP holds only what the firmware and the kernel read | open |
+| E4-023 | `/lib`, `/lib64`, `/corpus`, `/win` and `/etc` are copied to the root as the ESP has them: `/lib` is a directory, not the alias of `/usr/lib` the hierarchy asks for, the test fixtures are in the production tree (F1), and the NT files are not yet in `/usr/lib/windows` | open |
+| E4-024 | INIT.ELF is read by the kernel from the ESP, not from the root: init is the one program that does not come from `/usr/bin` | open |
+| E4-025 | The VM images (`scripts/make-vm-image*`) are still a bare ESP: only the gate's disk has the root partition | open |
 
 ## Step 3: the journal (jbd2, ordered mode) - done 2026-11-07
 
