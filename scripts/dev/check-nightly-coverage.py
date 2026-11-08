@@ -10,11 +10,11 @@ than the code under test: many seeds against a reference model, a soak whose
 length is the point, or a fuzzer. The memory manager compares every frame's
 owner count against a plain-array model; the scheduler does the same for its
 picker. Timekeeping has an independent event-count model, boundary probes and
-production-source mutation checks. The ABI registry is compared with a linear
-lookup oracle; IPC channels and waitset policies with queue/selection models;
-object handles with a seeded ledger; the portable process/thread model with a
-lifecycle ledger; and journal recovery with separate durable and volatile disk
-images plus an interrupted-checkpoint replay.
+production-source mutation checks. IPC channels/events/waitset policies are
+compared with independent FIFO, event-state and selection models; object
+handles are checked against a seeded ledger with a deterministic quota-boundary
+probe. ABI, the portable process table and journal recovery are deliberately
+not counted until their tests discriminate the relevant production properties.
 
 The reason is that a subsystem asked whether it is correct answers from the
 numbers it used to decide, so self-consistent defects survive. The model must
