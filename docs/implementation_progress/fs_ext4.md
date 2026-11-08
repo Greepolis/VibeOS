@@ -178,6 +178,37 @@ writes an `ext4` volume it can keep true (the table below the step), and
   the `a && b` form that `ext4-read.txt` documented scored every case red with
   no output. The lines say `bash -c '...'` now.
 
+## Step 4: ext4 as the root - first half done 2026-11-08
+
+- **The disk**: the gate's boot disk is a disk now, not a bare ESP:
+  `scripts/make-boot-disk.py` puts an MBR in front of the ESP that
+  `make_esp_image.py` builds (partition 1, type 0xEF) and an ext4 partition
+  beside it (partition 2, type 0x83), made by the host's `mkfs.ext4 -L
+  vibeos-root -d` from the hierarchy's tree. OVMF boots the 0xEF partition,
+  the FAT driver takes the first partition as the boot volume, and the storage
+  scan finds the second.
+- **The mount**: the scan's volume whose label is `vibeos-root` is attached
+  at `/sysroot`, writable and journalled (`hw_is_native_root`, by label, not
+  "the first ext4": no wrong-volume fallback). The scan also finds the boot
+  partition again; the mount table gets the boot mount for it, not a second
+  FAT over the same sectors - the first boot with the partition lost every
+  exec to that.
+- **Proved**: the guest reads the marker the build put in the root and writes
+  a file there; after the boot the gate cuts the partition out of the disk,
+  replays and checks it with `e2fsck`, and reads the file back with `debugfs`
+  (`root_volume_not_clean`, `root_volume_lost_the_guests_file`,
+  `native_root_not_mounted`, `native_root_not_read`). **E4-015 closed.**
+  Without `mkfs.ext4` the disk is the bare ESP and the verdict says
+  `root_absent=`; `VIBEOS_SMOKE_ROOT=0` asks for that layout on purpose.
+- **Sabotage**: `ext4-root-boot.txt` (the label not recognised: red,
+  `native_root_not_mounted`) and `ext4-root-write-boot.txt` (a partial-block
+  write dropped: red, `root_volume_lost_the_guests_file`; a first version that
+  dropped whole-block writes went NOT RED, because the guest's file is
+  thirteen bytes).
+- **Second half, open**: the programs into `/usr/bin` on the root, ext4 at
+  `/` and the ESP at `/boot/efi`, and every `EFI/BOOT/...` path in init, the
+  shell, the self-test and the loader moved with them.
+
 ## Step 3: the journal (jbd2, ordered mode) - done 2026-11-07
 
 - **What it does** (`kernel/fs/ext4_journal.c`): every operation that changes
@@ -268,7 +299,7 @@ writes an `ext4` volume it can keep true (the table below the step), and
 | E4-012 | A node's id is an inode number and the node carries no generation: one held across the last unlink may name another file later (`getattr` says ENOENT while the inode is free). The same gap as FAT's | open |
 | E4-013 | `s_wtime`, `s_mnt_count`, `s_kbytes_written`, the state word and the backup superblocks and descriptors are not maintained (Linux keeps the backups stale too, until resize or e2fsck); atime is not updated by reads | open |
 | E4-014 | Stack: a rename is a 1.2 KB frame above the reader's two 4 KiB ones, about 10 KB of the four-page kernel stack. It is the same nest a read of a path makes, plus the frame; making the reader's block buffers the volume's (under `.serialize`) would end it | open |
-| E4-015 | The boot gate does not write to an ext4 volume: the guest's `/ext4` is a read-only loop device. Step 4 mounts a writable one and gates the image the guest leaves with `e2fsck`, as `fat-fsck.py` is for FAT | open (step 4) |
+| E4-015 | The boot gate does not write to an ext4 volume: the guest's `/ext4` is a read-only loop device. Step 4 mounts a writable one and gates the image the guest leaves with `e2fsck`, as `fat-fsck.py` is for FAT | **closed in step 4** |
 
 ## Open after step 1
 
