@@ -339,6 +339,13 @@ static int run_object(unsigned rounds) {
                     if (vibeos_handle_has_rights(&table, probe, missing_right) != 0) {
                         return fail("object", "handle accepted a right absent from model", r);
                     }
+                    /* A composite request must require every requested bit.
+                     * This catches implementations that incorrectly return
+                     * true when only one requested right is present. */
+                    if (vibeos_handle_has_rights(&table, probe,
+                            rights | missing_right) != 0) {
+                        return fail("object", "handle accepted a partially satisfied rights mask", r);
+                    }
                 } else {
                     uint32_t ignored_rights = 0;
                     if (vibeos_handle_rights(&table, probe, &ignored_rights) == 0 ||
@@ -555,6 +562,16 @@ static int run_proc(unsigned rounds) {
             thread_model[i] = VIBEOS_THREAD_STATE_EXITED;
             thread_live[i] = 0;
             expected_thread_exits++;
+        }
+    }
+    /* thread_count alone is not enough: inspect every physical slot
+     * after teardown so a leaked in_use entry cannot hide behind a decremented
+     * aggregate counter and permanently consume capacity. */
+    for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
+        if (pt.threads[i].in_use || pt.threads[i].tid != 0u ||
+            pt.threads[i].owner_pid != 0u ||
+            pt.threads[i].state != VIBEOS_THREAD_STATE_EXITED) {
+            return fail("proc", "thread slot remained allocated after teardown", rounds + 3u);
         }
     }
     {
