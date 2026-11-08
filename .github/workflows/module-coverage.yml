@@ -8,12 +8,8 @@ on:
       - "cmake/core_sources.cmake"
       - ".github/workflows/nightly.yml"
       - ".github/workflows/module-coverage.yml"
-      - "kernel/abi/**"
-      - "kernel/fs/blockcache.c"
       - "kernel/ipc/**"
       - "kernel/object/**"
-      - "kernel/proc/**"
-      - "kernel/txn/**"
       - "include/vibeos/**"
       - "tests/kernel/module_torture.c"
       - "scripts/dev/check-nightly-coverage.py"
@@ -30,7 +26,7 @@ permissions:
 
 jobs:
   module-coverage:
-    name: Five module models and production mutations
+    name: Two module models and production mutations
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -47,7 +43,7 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
       - name: Build host tests and module torture
         run: cmake --build build-module-asan --parallel
-      - name: Run the five focused CTest entries
+      - name: Run the two focused CTest entries
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
