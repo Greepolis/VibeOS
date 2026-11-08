@@ -27,13 +27,11 @@ rejects unknown keys; a separate manifest would be a second source of truth.
 Step-level annotations do not count.
 
 The number may only go down. Eleven of thirteen modules had nothing when this
-rule was introduced. The earlier journal tortures were removed after their
-sabotages were caught on zero of thirty seeds; see
-scripts/dev/cases/io-journal.txt. The replacement txn model creates a
-committed-but-uncheckpointed transaction by failing a target write after the
-commit record is durable, then reboots with an empty cache and requires a full
-replay. A test that cannot fail is not evidence of coverage, and lowering the
-baseline requires a test that discriminates.
+rule was introduced. The earlier journal tortures were removed after their sabotages were caught on
+zero of thirty seeds; see scripts/dev/cases/io-journal.txt. ABI, PROC and TXN
+remain uncovered until independent tests discriminate their production
+properties. A test that cannot fail is not evidence of coverage, and lowering
+the baseline requires a test that discriminates.
 """
 
 import argparse
