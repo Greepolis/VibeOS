@@ -22,3 +22,9 @@ int vibeos_handle_close(vibeos_handle_table_t *table, uint32_t handle) {
         if (table->entries[i].in_use && table->entries[i].id == handle) {
             vibeos_handle_entry_t ev = table->entries[i];
             table->entries[i].in_use = 1;
+
+### quota rejects the exact capacity boundary
+--- old
+    if (handle_active_count(table) >= table->max_handles) {
++++ new
+    if (handle_active_count(table) > table->max_handles) {

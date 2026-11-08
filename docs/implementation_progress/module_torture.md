@@ -1,40 +1,45 @@
 # Nightly Module Torture (#201)
 
-Status: Implemented on the coverage branch; acceptance depends on the PR and nightly gates.
+Status: IPC and OBJECT are covered by this change. ABI, PROC and TXN remain
+in the nightly coverage debt until their tests discriminate the properties
+that matter.
 
-The nightly coverage ratchet now has one job per previously uncovered module.
-Each job runs under ASan and UBSan, prints replayable seeds, and includes longer
-state-transition runs. The short host CTest entries make basic regressions
-visible before the nightly budget is spent. The production mutations are run
-in PR CI and nightly CI; a build failure is inconclusive, and every mutation
-must make the relevant model test fail.
+The coverage checker has a baseline of three uncovered modules. The baseline
+is a hard upper bound, not a claim that every module has a qualifying test.
+Each module removed from the debt must have an independent model and a
+production mutation that demonstrates the model can detect a meaningful
+regression.
 
-## Models
+## Covered models
 
 | Module | Production surface exercised | Independent oracle |
 | --- | --- | --- |
-| abi | `kernel/abi/abi_linux.c` immutable syscall-number metadata registry (`vibeos_linux_syscall*`) | Linear scan over the published metadata rows, compared with the production binary lookup for every exact row and seeded present/absent numbers. This does **not** exercise the separate dynamic ABI row-registration/lookup API (`vibeos_abi_linux_register`, `vibeos_abi_linux_row`, or `linux_lookup`). |
-| ipc | `kernel/ipc/channel.c`, `event.c`, `waitset.c` | Plain FIFO array for channel contents; an independently maintained `model_signaled[]` state updated from signal/clear operations and checked through the event API; and separate expected ordering for FIFO, reverse, round-robin and priority waitset policies. Targeted channel, event-signal, and waitset mutations are tested independently. |
-| object | `kernel/object/handle_table.c` | Seeded handle ledger for allocation, quota failures, close, positive and negative `has_rights` checks, object identity and per-type counts. Closed handles are also checked not to grant rights. Provenance/revocation lineage and all lifecycle event semantics are outside this torture's current scope. |
-| proc | `kernel/proc/process.c` portable process/thread table | Independent parent, process-state and thread-lifecycle ledger, including child adoption and teardown. Teardown checks require every expected process entry to remain present and queryable, including terminated entries. It does not claim coverage of token/permission, handle-transfer, audit-ring, or all process-control APIs. |
-| txn | `kernel/txn/journal.c` over `kernel/fs/blockcache.c` | Separate volatile and durable disk images; an injected target-write failure after the commit record is durable, followed by a fresh-cache recovery and byte-for-byte all-target verification. Pre-commit crashes, malformed descriptors/checksums, recovery I/O failures, and capacity/duplicate-target boundaries are not covered by this scenario. |
+| ipc | `kernel/ipc/channel.c`, `event.c`, `waitset.c` | A plain FIFO array for channel contents; independently tracked event state; and separately derived expected order for FIFO, reverse, round-robin and priority waitset policies. The oracle checks behaviour through public operations and does not inspect `channel.count` or other implementation state. |
+| object | `kernel/object/handle_table.c` | A seeded handle ledger for allocation, close, quota, rights, object identity and per-type counts. The quota varies by seed; a balanced allocation/close stream avoids permanent saturation; every historical handle is checked at each sample point, including every live handle and every closed-id rejection. |
 
-## Scope notes
+The object test's complete historical-handle scan is deliberately performed at
+sample points rather than every operation. The handle table has 1024 physical
+slots, which are reused while public handle IDs remain monotonic.
 
-- proc is deliberately tested as the portable process model. kernel/proc
-  is not the live x86-64 syscall path today; this test does not claim otherwise
-  and does not relax the reachability fence documented by docs/core/phases.md.
-- ABI coverage is intentionally limited to the immutable syscall metadata
-  registry; dynamic ABI row registration and dispatch lookup need a separate
-  model and mutation gate before that surface can be called covered.
-- The journal test targets the previously untestable state: a committed
-  descriptor whose checkpoint was interrupted. It fails one target write
-  after the commit record has reached durable storage, discards all cache RAM,
-  then requires recovery to write every target and retire the descriptor.
-  This avoids the old withdrawn torture's invalid assumption that a completed
-  commit() leaves a replayable transaction behind.
+## Still uncovered
 
-- The focused module-coverage workflow watches the production and test dependencies of its gate, including the transaction block-cache implementation, public VibeOS headers, and the sabotage/anchor-checking scripts. A change limited to one of these inputs must still rerun the focused gate.
-- The module annotation is attached to each real top-level nightly job. The
-  coverage checker continues to reject annotations in steps, stale module
-  names, and a baseline regression.
+| Module | Why it remains in the debt | Required evidence before coverage can be claimed |
+| --- | --- | --- |
+| abi | The existing test compares immutable syscall metadata lookup with a linear scan. It does not model dynamic row registration, dispatch, or Linux/NT handlers. Random probes over a constant table are weaker than an exhaustive check. | Exhaustive metadata boundary checks are useful but do not cover the handlers. Add seeded syscall sequences through `tests/kernel/ksvc_fake.c` and compare descriptors/paths/results with an independent model, or keep the module uncovered. |
+| proc | `kernel/proc/process.c` is not reachable from the live x86-64 syscall path and contains the known process-slot reclamation defect: termination leaves process entries `in_use`. The previous torture asserted that this defect was expected behaviour, so a future fix would make the test fail for the wrong reason. | First decide whether this portable subsystem is retained, removed, or wired. If retained, model process reaping and slot reuse as the intended contract; do not encode the current leak as correct behaviour. Keep the reachability fence in `docs/core/phases.md`. |
+| txn | The existing device model made all volatile writes durable in one flush and injected only a checkpoint target-write failure after commit. It therefore did not discriminate removal or reordering of the pre-commit flush. | Simulate a power cut after each individual device write (and relevant flush boundary), reboot from the durable image, and assert the durable state is all-old or all-new. The sweep must catch removal of the phase-one flush. |
+
+## Mutation evidence
+
+IPC mutations include a waitset round-robin cursor that does not advance and
+priority ties resolved in the wrong direction, in addition to the focused
+channel/event/waitset controls. OBJECT includes a quota-boundary mutation
+(`>=` changed to `>`) that must be caught when the live count equals quota.
+The mutations run against only their corresponding module mode in the focused
+PR workflow.
+
+The long randomized IPC and OBJECT runs remain in separate nightly jobs with
+ASan/UBSan and replayable seeds. The focused workflow runs the short CTest
+models and their production mutations on relevant changes. The nightly does
+not repeat the mutation gate.
+

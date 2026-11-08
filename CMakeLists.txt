@@ -341,16 +341,14 @@ if(VIBEOS_BUILD_TESTS)
     target_include_directories(vibeos_timer_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-timer-torture COMMAND vibeos_timer_torture 1 10000)
 
-    # Five remaining kernel modules, each with a seed-replayable independent
-    # model. Nightly runs the long streams and the production mutation gate.
+    # IPC and object are the two modules removed from the coverage debt.
+    # ABI, proc and txn remain uncovered until their tests model the relevant
+    # production properties rather than nominally exercising the code.
     add_executable(vibeos_module_torture tests/kernel/module_torture.c)
     target_link_libraries(vibeos_module_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_module_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    add_test(NAME vibeos-module-abi-torture COMMAND vibeos_module_torture abi 1 5000)
     add_test(NAME vibeos-module-ipc-torture COMMAND vibeos_module_torture ipc 1 5000)
     add_test(NAME vibeos-module-object-torture COMMAND vibeos_module_torture object 1 5000)
-    add_test(NAME vibeos-module-proc-torture COMMAND vibeos_module_torture proc 1 5000)
-    add_test(NAME vibeos-module-txn-torture COMMAND vibeos_module_torture txn 1 100)
 
     add_executable(vibeos_sched_torture tests/kernel/sched_torture.c)
     target_link_libraries(vibeos_sched_torture PRIVATE vibeos_kernel_core)

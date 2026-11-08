@@ -12,10 +12,7 @@ run_case() {
         python3 scripts/dev/sabotage.py "$source" "$cases" "$build_dir"
 }
 
-run_case abi kernel/abi/abi_linux.c scripts/dev/cases/abi-coverage.txt
 run_case ipc kernel/ipc/channel.c scripts/dev/cases/ipc-coverage.txt
 run_case ipc kernel/ipc/event.c scripts/dev/cases/event-coverage.txt
 run_case ipc kernel/ipc/waitset.c scripts/dev/cases/waitset-coverage.txt
 run_case object kernel/object/handle_table.c scripts/dev/cases/object-coverage.txt
-run_case proc kernel/proc/process.c scripts/dev/cases/proc-coverage.txt
-run_case txn kernel/txn/journal.c scripts/dev/cases/txn-coverage.txt
