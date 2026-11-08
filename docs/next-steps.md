@@ -13,7 +13,7 @@ was decided.
    and a mount manifest. F0-F2 need no choice of on-disk format.
 2. **ext4 as the native root** (F3, decided 2026-11-03; steps 1 to 3 - read, write,
    the journal - done) - [filesystem-design/ext4.md](filesystem-design/ext4.md): the
-   root on it (step 4: the partition, mounted writable at /sysroot and gated, done; the programs and `/` on it, next), then the intensive test (step 5). `mkfs.ext4` and `e2fsck` are the oracle.
+   root on it (step 4: the partition at `/` and the ESP at `/boot/efi`, gated, done; the programs into `/usr/bin`, next), then the intensive test (step 5). `mkfs.ext4` and `e2fsck` are the oracle.
 
 ## Next
 

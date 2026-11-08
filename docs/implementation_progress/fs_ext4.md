@@ -205,9 +205,20 @@ writes an `ext4` volume it can keep true (the table below the step), and
   write dropped: red, `root_volume_lost_the_guests_file`; a first version that
   dropped whole-block writes went NOT RED, because the guest's file is
   thirteen bytes).
-- **Second half, open**: the programs into `/usr/bin` on the root, ext4 at
-  `/` and the ESP at `/boot/efi`, and every `EFI/BOOT/...` path in init, the
-  shell, the self-test and the loader moved with them.
+- **The root at `/`** (2026-11-08): the ext4 partition is attached at `/`
+  and the ESP at `/boot/efi`. The kernel keeps two mounts where it had one:
+  `g_rootfs`, the root - exec, the page cache, relative paths - and
+  `g_bootfs`, the ESP, which the kernel itself reads (INIT.ELF, the swap
+  file, the loop images, the write proof). The self-test's FAT exercises -
+  the large file, the long name mtools reads back, the truncate, rename and
+  rmdir the consistency check judges - write under `/boot/efi`, or they
+  would have been testing ext4. For this part the root image carries a copy
+  of the ESP's tree, so every `EFI/BOOT/...` path still resolves; the gate
+  asserts `native_root_not_mounted` and `esp_not_at_boot_efi`, both with a
+  sabotage case that goes red.
+- **Open**: the programs into `/usr/bin`, every `EFI/BOOT/...` path in init,
+  the shell and the self-test moved with them, and the copy of the ESP
+  dropped from the root.
 
 ## Step 3: the journal (jbd2, ordered mode) - done 2026-11-07
 
