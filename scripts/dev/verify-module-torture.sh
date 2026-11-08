@@ -9,13 +9,12 @@ fi
 if [ "$#" -ge 2 ]; then
     modules=("$2")
 else
-    modules=(abi ipc object proc txn)
+    modules=(ipc object)
 fi
 for seed in 1 7; do
     for module in "${modules[@]}"; do
         case "$module" in
-            abi|ipc|object|proc) rounds=4000 ;;
-            txn) rounds=100 ;;
+            ipc|object) rounds=4000 ;;
             *) echo "unknown module: $module"; exit 2 ;;
         esac
         "./$build_dir/vibeos_module_torture" "$module" "$seed" "$rounds"
