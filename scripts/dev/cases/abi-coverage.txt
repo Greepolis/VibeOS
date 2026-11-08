@@ -1,8 +1,0 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
-# Target source: kernel/abi/abi_linux.c
-
-### binary lookup stops recognizing exact syscall numbers
---- old
-        if ((uint64_t)g_registry[mid].nr == nr) {
-+++ new
-        if ((uint64_t)g_registry[mid].nr != nr) {
