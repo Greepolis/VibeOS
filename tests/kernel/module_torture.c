@@ -271,7 +271,12 @@ static int run_ipc(unsigned rounds) {
             }
             {
                 size_t expected_count = want_count < 3u ? want_count : 3u;
-                if (vibeos_waitset_wait_batch(&waitset, 0, got, 3u, &got_count) != 0 ||
+                int wait_rc = vibeos_waitset_wait_batch(&waitset, 0, got, 3u, &got_count);
+                /* wait_batch reports timeout as -1 when no event is ready;
+                 * peek_signaled, used by the former full-set check, returned
+                 * success with an empty result. Preserve that API distinction
+                 * in the reference oracle. */
+                if ((expected_count == 0u ? wait_rc == 0 : wait_rc != 0) ||
                     got_count != expected_count) {
                     return fail("ipc", "waitset batch count differs from model", r);
                 }
