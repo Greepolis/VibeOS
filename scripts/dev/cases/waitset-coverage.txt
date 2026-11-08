@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/ipc/waitset.c
+
+### priority selection must exclude unsignaled events
+--- old
+                if (!ev || !vibeos_event_is_signaled(ev)) {
++++ new
+                if (!ev || vibeos_event_is_signaled(ev)) {
+
+### round-robin cursor advances past the last returned event
+--- old
+            waitset->rr_cursor = (uint32_t)((out_indices[written - 1] + 1u) % waitset->count);
++++ new
+            waitset->rr_cursor = waitset->rr_cursor;
+ 
+### priority ties keep the first registered event first
+--- old
+                    prio > best_priority ||
++++ new
+                    prio >= best_priority ||

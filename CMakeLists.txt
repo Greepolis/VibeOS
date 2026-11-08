@@ -342,6 +342,15 @@ if(VIBEOS_BUILD_TESTS)
     target_include_directories(vibeos_timer_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-timer-torture COMMAND vibeos_timer_torture 1 10000)
 
+    # IPC and object are the two modules removed from the coverage debt.
+    # ABI, proc and txn remain uncovered until their tests model the relevant
+    # production properties rather than nominally exercising the code.
+    add_executable(vibeos_module_torture tests/kernel/module_torture.c)
+    target_link_libraries(vibeos_module_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_module_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-module-ipc-torture COMMAND vibeos_module_torture ipc 1 5000)
+    add_test(NAME vibeos-module-object-torture COMMAND vibeos_module_torture object 1 5000)
+
     add_executable(vibeos_sched_torture tests/kernel/sched_torture.c)
     target_link_libraries(vibeos_sched_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_sched_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

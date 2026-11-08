@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/object/handle_table.c
+
+### close leaves the handle allocated
+--- old
+int vibeos_handle_close(vibeos_handle_table_t *table, uint32_t handle) {
+    uint32_t i;
+    if (!table || handle == 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
+        if (table->entries[i].in_use && table->entries[i].id == handle) {
+            vibeos_handle_entry_t ev = table->entries[i];
+            table->entries[i].in_use = 0;
++++ new
+int vibeos_handle_close(vibeos_handle_table_t *table, uint32_t handle) {
+    uint32_t i;
+    if (!table || handle == 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
+        if (table->entries[i].in_use && table->entries[i].id == handle) {
+            vibeos_handle_entry_t ev = table->entries[i];
+            table->entries[i].in_use = 1;
+
+### quota rejects the exact capacity boundary
+--- old
+    if (handle_active_count(table) >= table->max_handles) {
++++ new
+    if (handle_active_count(table) > table->max_handles) {

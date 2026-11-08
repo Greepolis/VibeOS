@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/ipc/channel.c
+
+### channel ring advances by the wrong number of slots
+--- old
+    channel->tail = (channel->tail + 1u) % VIBEOS_CHANNEL_CAPACITY;
++++ new
+    channel->tail = (channel->tail + 2u) % VIBEOS_CHANNEL_CAPACITY;

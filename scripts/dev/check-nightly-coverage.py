@@ -9,8 +9,12 @@ An intensive test is long, randomised, and checked against something other
 than the code under test: many seeds against a reference model, a soak whose
 length is the point, or a fuzzer. The memory manager compares every frame's
 owner count against a plain-array model; the scheduler does the same for its
-picker. Timekeeping now has an independent event-count model, boundary probes
-and production-source mutation checks.
+picker. Timekeeping has an independent event-count model, boundary probes and
+production-source mutation checks. IPC channels/events/waitset policies are
+compared with independent FIFO, event-state and selection models; object
+handles are checked against a seeded ledger with a deterministic quota-boundary
+probe. ABI, the portable process table and journal recovery are deliberately
+not counted until their tests discriminate the relevant production properties.
 
 The reason is that a subsystem asked whether it is correct answers from the
 numbers it used to decide, so self-consistent defects survive. The model must
@@ -23,10 +27,11 @@ rejects unknown keys; a separate manifest would be a second source of truth.
 Step-level annotations do not count.
 
 The number may only go down. Eleven of thirteen modules had nothing when this
-rule was introduced. The journal torture was removed after three independent
-sabotages were caught on zero of thirty seeds; see
-scripts/dev/cases/io-journal.txt. A test that cannot fail is not evidence of
-coverage, and lowering the baseline requires a test that discriminates.
+rule was introduced. The earlier journal tortures were removed after their sabotages were caught on
+zero of thirty seeds; see scripts/dev/cases/io-journal.txt. ABI, PROC and TXN
+remain uncovered until independent tests discriminate their production
+properties. A test that cannot fail is not evidence of coverage, and lowering
+the baseline requires a test that discriminates.
 """
 
 import argparse
@@ -34,18 +39,13 @@ import os
 import re
 import sys
 
-# Five modules remain uncovered: abi, ipc, object, proc and txn.
-# History: 11 of 13 modules were uncovered at introduction. Raised from 7 to
-# 8 in I5c as an explicit debt decision, then lowered from 8 to 7 in L1 after
-# kernel/fs gained tmpfs's model torture. Lowered from 7 to 6 here after
-# kernel/time gained an independent model and production mutation checks.
-# Lowered from 6 to 5 when kernel/exec's parsers (ELF, PE) got a nightly
-# libFuzzer job seeded from real linkers (#203); the same job's ext4 target
-# has a production-source case it must catch.
-# The journal is deliberately not counted: its three recovery/flush sabotages
-# were caught on zero of thirty seeds (see scripts/dev/cases/io-journal.txt).
-# The number may only go down when a new test proves it can detect a defect.
-BASELINE = 5
+# Thirteen modules have qualifying intensive nightly tests. The three remaining
+# modules (abi, proc and txn) stay in the debt: their current nominal models do
+# not discriminate the properties that matter. IPC and object left the debt
+# only after their independent models and targeted production mutations were
+# strengthened in PR #207. The baseline is a hard upper bound and may only go
+# down when a new test proves it can detect a defect.
+BASELINE = 3
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 NIGHTLY = os.path.join(ROOT, ".github", "workflows", "nightly.yml")
 KERNEL = os.path.join(ROOT, "kernel")
