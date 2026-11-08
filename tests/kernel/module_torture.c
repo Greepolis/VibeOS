@@ -263,6 +263,36 @@ static int run_object(unsigned rounds) {
         vibeos_handle_set_quota(&table, quota) != 0) {
         return fail("object", "table init or quota", 0);
     }
+
+    /* Deterministically exercise both sides of the quota boundary before the
+     * randomized stream. This makes the >= -> > sabotage fail on every seed,
+     * rather than depending on a random stream reaching saturation. */
+    for (r = 0; r < quota; r++) {
+        uint32_t rights = 1u + (uint32_t)(rnd64() & 15u);
+        uint32_t type = (uint32_t)(rnd64() % 3u);
+        uint32_t object_id = 1u + (uint32_t)(rnd64() % 100000u);
+        uint32_t handle = 0;
+        int rc = type == VIBEOS_OBJECT_NONE
+            ? vibeos_handle_alloc(&table, rights, &handle)
+            : vibeos_handle_alloc_object(&table, rights,
+                (vibeos_object_type_t)type, object_id, &handle);
+        if (rc != 0 || handle != next_id || handle >= OBJ_MODEL_MAX) {
+            return fail("object", "quota prefill allocation differs from model", r);
+        }
+        g_objects[handle].active = 1;
+        g_objects[handle].rights = rights;
+        g_objects[handle].type = type;
+        g_objects[handle].object_id = type == VIBEOS_OBJECT_NONE ? 0 : object_id;
+        active++;
+        types[type]++;
+        next_id++;
+    }
+    {
+        uint32_t extra = 0;
+        int rc = vibeos_handle_alloc(&table, 1u, &extra);
+        failures++;
+        if (rc == 0) return fail("object", "exact quota boundary admitted an extra handle", quota);
+    }
     for (r = 0; r < rounds; r++) {
         uint64_t x = rnd64();
         if ((x % 100u) < 50u) {
