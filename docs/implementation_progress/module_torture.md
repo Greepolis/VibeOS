@@ -14,7 +14,7 @@ must make the relevant model test fail.
 | Module | Production surface exercised | Independent oracle |
 | --- | --- | --- |
 | abi | `kernel/abi/abi_linux.c` immutable syscall-number metadata registry (`vibeos_linux_syscall*`) | Linear scan over the published metadata rows, compared with the production binary lookup for every exact row and seeded present/absent numbers. This does **not** exercise the separate dynamic ABI row-registration/lookup API (`vibeos_abi_linux_register`, `vibeos_abi_linux_row`, or `linux_lookup`). |
-| ipc | `kernel/ipc/channel.c`, `event.c`, `waitset.c` | Plain FIFO array for channel contents; an independently maintained `model_signaled[]` state updated from signal/clear operations and checked through the event API; and separate expected ordering for FIFO, reverse, round-robin and priority waitset policies. Targeted channel and waitset mutations are tested independently. |
+| ipc | `kernel/ipc/channel.c`, `event.c`, `waitset.c` | Plain FIFO array for channel contents; an independently maintained `model_signaled[]` state updated from signal/clear operations and checked through the event API; and separate expected ordering for FIFO, reverse, round-robin and priority waitset policies. Targeted channel, event-signal, and waitset mutations are tested independently. |
 | object | `kernel/object/handle_table.c` | Seeded handle ledger for allocation, quota failures, close, positive and negative `has_rights` checks, object identity and per-type counts. Closed handles are also checked not to grant rights. Provenance/revocation lineage and all lifecycle event semantics are outside this torture's current scope. |
 | proc | `kernel/proc/process.c` portable process/thread table | Independent parent, process-state and thread-lifecycle ledger, including child adoption and teardown. Teardown checks require every expected process entry to remain present and queryable, including terminated entries. It does not claim coverage of token/permission, handle-transfer, audit-ring, or all process-control APIs. |
 | txn | `kernel/txn/journal.c` over `kernel/fs/blockcache.c` | Separate volatile and durable disk images; an injected target-write failure after the commit record is durable, followed by a fresh-cache recovery and byte-for-byte all-target verification. Pre-commit crashes, malformed descriptors/checksums, recovery I/O failures, and capacity/duplicate-target boundaries are not covered by this scenario. |
@@ -33,6 +33,8 @@ must make the relevant model test fail.
   then requires recovery to write every target and retire the descriptor.
   This avoids the old withdrawn torture's invalid assumption that a completed
   commit() leaves a replayable transaction behind.
+
+- The focused module-coverage workflow watches the production and test dependencies of its gate, including the transaction block-cache implementation, public VibeOS headers, and the sabotage/anchor-checking scripts. A change limited to one of these inputs must still rerun the focused gate.
 - The module annotation is attached to each real top-level nightly job. The
   coverage checker continues to reject annotations in steps, stale module
   names, and a baseline regression.
