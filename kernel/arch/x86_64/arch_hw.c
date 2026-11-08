@@ -1654,7 +1654,16 @@ static void hw_vfs_mount_unlock(volatile uint32_t *word) {
 
 /* One line per mounted volume, bracketed: six console calls are six critical
  * sections otherwise. */
+/* Where the boot volume starts on its disk: the first FAT mounted, which is
+ * the boot mount below. Sector 0 on a bare ESP, its partition's first sector
+ * on a partitioned disk - and then the storage scan finds the same volume
+ * again, which must not become a second mount of it (io_bringup.c). */
+uint64_t g_boot_fat_lba = ~0ull;
+
 static void hw_fat_mounted(int is_fat32, uint32_t part_lba, uint32_t data_lba) {
+    if (g_boot_fat_lba == ~0ull) {
+        g_boot_fat_lba = part_lba;
+    }
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[FAT] mounted ");
     vibeos_x86_64_serial_puts(is_fat32 ? "FAT32" : "FAT16");

@@ -95,6 +95,14 @@ DISK_ARGS = {
 # job that had never had xorriso in the first place.
 ABSENT_IS_FINE = ("no image", "no such file on this medium")
 
+# The native root's tree as the build makes it (docs/filesystem-design/
+# hierarchy.md): every directory the hierarchy names, empty until step 4's
+# second half moves programs into /usr. /dev, /proc, /run and /tmp are mount
+# points.
+ROOT_TREE_DIRS = ("boot/efi", "dev", "etc/vibeos", "home", "mnt", "opt", "proc", "root",
+                  "run", "sys", "tmp", "usr/bin", "usr/lib/windows", "usr/share",
+                  "var/cache", "var/lib/windows", "var/log", "var/tmp")
+
 LOG_DISK_SECTORS = 8192          # 4 MiB, addressed by sector, no filesystem
 LOG_DISK_ARGS = {
     "virtio": ["-device", "ich9-ahci,id=ahci",
@@ -1075,6 +1083,32 @@ def corpus_problems(serial_text):
     return problems, absent
 
 
+def root_volume_problems(root_img):
+    """What is wrong with the native root the guest left behind
+    (docs/filesystem-design/ext4.md step 4, E4-015): e2fsck -fn must call it
+    clean - after replaying the journal if the guest stopped with one - and
+    the file the guest wrote must read back through debugfs, an ext4 reader
+    this project did not write."""
+    out = []
+    e2fsck = shutil.which("e2fsck") or "/usr/sbin/e2fsck"
+    debugfs = shutil.which("debugfs") or "/usr/sbin/debugfs"
+    if not os.path.exists(e2fsck):
+        return out
+    r = subprocess.run([e2fsck, "-fy", root_img], capture_output=True, text=True)
+    if r.returncode > 1:
+        out.append("root_volume_replay_failed")
+    r = subprocess.run([e2fsck, "-fn", root_img], capture_output=True, text=True)
+    if r.returncode != 0:
+        first = [l for l in r.stdout.splitlines() if l and not l.startswith(("e2fsck", "Pass"))]
+        out.append("root_volume_not_clean:" + (first[0].replace(" ", "_")[:60] if first else "?"))
+    if os.path.exists(debugfs):
+        r = subprocess.run([debugfs, "-R", "cat /var/tmp/written-by-the-guest", root_img],
+                           capture_output=True, text=True)
+        if "ROOT_WRITE_OK" not in r.stdout:
+            out.append("root_volume_lost_the_guests_file")
+    return out
+
+
 def boot_volume_problems(esp_img):
     """What is wrong with the FAT volume the guest left behind, as reasons.
 
@@ -1153,8 +1187,35 @@ def main():
                                      "make_esp_image.py"),
                         efi_root, esp_img, str(esp_mb)],
                        check=True, stdout=subprocess.DEVNULL)
-        esp_drive = f"if=none,id=esp,format=raw,file={esp_img}"
+        # The native root beside it (docs/filesystem-design/ext4.md step 4):
+        # one disk, an MBR, the ESP and an ext4 partition mkfs.ext4 made from
+        # the hierarchy's tree. Without mkfs.ext4 the disk is the bare ESP as
+        # before, and the verdict says root_absent.
+        root_tree = tempfile.mkdtemp(prefix="vibeos-root-")
+        for d in ROOT_TREE_DIRS:
+            os.makedirs(os.path.join(root_tree, d), exist_ok=True)
+        with open(os.path.join(root_tree, "etc", "vibeos", "root"), "w") as f:
+            f.write("VIBEOS_ROOT_MARKER\n")
+        disk_img = os.path.abspath(f"qemu-cli-disk{suffix}.img")
+        r = subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "make-boot-disk.py"),
+                            "make", esp_img, root_tree, disk_img, "64"],
+                           capture_output=True, text=True)
+        shutil.rmtree(root_tree, ignore_errors=True)
+        if os.environ.get("VIBEOS_SMOKE_ROOT", "1") == "0":
+            # Asked for the bare ESP: the layout before step 4, kept for
+            # comparing the two (a boot with the root against one without).
+            r = subprocess.CompletedProcess([], 3, "", "")
+        if r.returncode == 0:
+            esp_drive = f"if=none,id=esp,format=raw,file={disk_img}"
+        elif r.returncode == 3:
+            disk_img = None
+            esp_drive = f"if=none,id=esp,format=raw,file={esp_img}"
+        else:
+            raise SystemExit("make-boot-disk.py: " + (r.stdout + r.stderr).strip())
     elif ESP == "vvfat":
+        disk_img = None
         esp_drive = f"if=none,id=esp,format=raw,file=fat:rw:{efi_root}"
     else:
         raise SystemExit(f"VIBEOS_SMOKE_ESP={ESP!r}: expected vvfat or image")
@@ -3223,6 +3284,15 @@ def main():
                     problems.append("terminal_raw_mode_failed")
                 if "ASH_INTERACTIVE_OK" not in text:
                     problems.append("interactive_shell_did_not_run")
+                # The native root (ext4.md step 4): mounted writable from its
+                # partition, and the marker the build put in it read through
+                # the shell. The command that reads it does not contain the
+                # marker, so its echo cannot satisfy this.
+                if ESP == "image" and disk_img:
+                    if "[IO] MOUNT at=/sysroot type=ext4" not in text:
+                        problems.append("native_root_not_mounted")
+                    elif "VIBEOS_ROOT_MARKER" not in text:
+                        problems.append("native_root_not_read")
                 # A pipeline is the first thing anyone tries on a shell, and
                 # the way it fails is by hanging rather than by erroring - so
                 # PIPE_OK arriving at all is the check. It is printed after
@@ -3697,7 +3767,21 @@ def main():
             # it left behind is one another system would accept is not something
             # the guest can say about itself.
             if ESP == "image":
-                problems = boot_volume_problems(esp_img)
+                problems = []
+                if disk_img:
+                    # Both partitions back out of the disk the guest wrote:
+                    # the checkers want a filesystem, not a disk.
+                    root_img = esp_img + ".root"
+                    r = subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+                                        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                     "make-boot-disk.py"),
+                                        "extract", disk_img, esp_img, root_img],
+                                       capture_output=True, text=True)
+                    if r.returncode != 0:
+                        problems.append("boot_disk_unreadable")
+                    else:
+                        problems += root_volume_problems(root_img)
+                problems += boot_volume_problems(esp_img)
                 if problems:
                     reason = "invariant_failed:" + ",".join(problems)
                     raise RuntimeError(reason)
@@ -3710,6 +3794,9 @@ def main():
                 # Said in the verdict, not left to be noticed: these workloads
                 # were skipped because their programs were not built.
                 reason += " corpus_absent=" + "+".join(corpus_absent)
+            if ESP == "image" and not disk_img:
+                # No mkfs.ext4 on the host: the disk was the bare ESP.
+                reason += " root_absent=" + ("asked" if os.environ.get("VIBEOS_SMOKE_ROOT", "1") == "0" else "no_mkfs.ext4")
             if ESP == "image" and not L5_DNS_NAME:
                 # A skip that is allowed is printed where the result is read.
                 reason += " dns_absent"

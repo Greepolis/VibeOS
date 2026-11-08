@@ -1204,6 +1204,36 @@ static void hw_procfs_bringup(void) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* Whether a scanned volume is the native root: ext4, and the volume label
+ * (s_volume_name, at 0x78 of the superblock, which is sector 2 of the
+ * partition) says vibeos-root - which is what the build's mkfs.ext4 -L wrote.
+ * A label rather than "the first ext4": a disk can carry other ext4 volumes,
+ * and mounting the wrong one as the root is the wrong-volume fallback the
+ * hierarchy's design forbids. */
+static int hw_is_native_root(vibeos_blockcache_t *bc, const vibeos_volume_t *v) {
+    static const char want[] = "vibeos-root";
+    uint8_t sector[VIBEOS_BLOCK_SIZE];
+    uint32_t k;
+    const char *a = v->fs_name, *b = "ext4";
+
+    if (!a) {
+        return 0;
+    }
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    if (*a != *b || vibeos_blockcache_read(bc, v->first_lba + 2u, sector) != 0) {
+        return 0;
+    }
+    for (k = 0; k < sizeof(want); k++) {   /* the terminator too: a longer label is not this one */
+        if (sector[0x78u + k] != (uint8_t)want[k]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 void hw_volumes_bringup(void) {
     vibeos_blockcache_t *bc = vibeos_fat_cache();
     uint64_t sectors = 0;
@@ -1265,7 +1295,16 @@ void hw_volumes_bringup(void) {
         if (!vibeos_fs_is_mounted(&g_storage.volume[i].mount)) {
             continue;
         }
-        if (vibeos_fs_mount_count() == 0u) {
+        if (hw_is_native_root(bc, &g_storage.volume[i])) {
+            /* The native root (docs/filesystem-design/ext4.md step 4): an
+             * ext4 partition labelled vibeos-root beside the ESP. At /sysroot
+             * until exec, init and the shell find their programs there; then
+             * it becomes "/" and the ESP /boot/efi. */
+            const char *s = "/sysroot";
+            while (*s) {
+                at[w++] = *s++;
+            }
+        } else if (vibeos_fs_mount_count() == 0u) {
             at[w++] = '/';
         } else {
             /* /vol1, /vol2, ... A name a person can type, and one this build
@@ -1274,12 +1313,25 @@ void hw_volumes_bringup(void) {
             at[w++] = (char)('0' + (i % 10u));
         }
         at[w] = 0;
-        if (vibeos_fs_attach(at, &g_storage.volume[i].mount) != 0) {
+        {
+            /* The boot volume found again by the scan, on a partitioned
+             * disk: the table gets the mount the machine is running from,
+             * not a second FAT over the same sectors with a cache of its
+             * own. On a bare ESP the scan's first_lba of zero already meant
+             * the boot mount; a partition's start did not, and the first
+             * boot with the native root beside the ESP lost every exec. */
+            vibeos_fsmount_t *mnt = &g_storage.volume[i].mount;
+            if (g_storage.volume[i].first_lba != 0u && g_storage.volume[i].first_lba == g_boot_fat_lba &&
+                g_storage.volume[i].fs_name && g_storage.volume[i].fs_name[0] == 'f') {
+                mnt = &g_rootfs;
+            }
+        if (vibeos_fs_attach(at, mnt) != 0) {
             vibeos_x86_64_serial_lock();
             vibeos_x86_64_serial_puts("[IO] MOUNT refused at ");
             vibeos_x86_64_serial_puts(at);
             vibeos_x86_64_serial_puts("\n");
             vibeos_x86_64_serial_unlock();
+        }
         }
     }
 

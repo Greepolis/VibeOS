@@ -93,7 +93,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       - name: Build
         run: |
@@ -162,7 +162,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       # Two boots at two round counts, because one figure cannot tell a fixed
       # startup cost from a per-round leak - and those are the same number with
@@ -650,7 +650,7 @@ jobs:
       - name: Install guest dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
       - name: Build the guest
         run: |
           set -euo pipefail
@@ -799,7 +799,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential musl-tools strace busybox-static qemu-system-x86 qemu-utils ovmf mtools
+          sudo apt-get install -y ninja-build build-essential musl-tools strace busybox-static qemu-system-x86 qemu-utils e2fsprogs ovmf mtools
 
       # The musl test programs are part of the corpus; the full build is what
       # produces them, as it does for the boot image.

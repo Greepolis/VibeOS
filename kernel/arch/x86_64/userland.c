@@ -208,6 +208,13 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * and reads the rest of the console itself. */
                                   "sh\n"
                                   "echo ASH_INTERACTIVE_OK\n"
+                                  /* The native root, written (docs/filesystem-
+                                   * design/ext4.md step 4): read the marker the
+                                   * build's mkfs.ext4 put there, and leave a
+                                   * file the gate reads back with debugfs after
+                                   * e2fsck has judged the volume. */
+                                  "cat /sysroot/etc/vibeos/root\n"
+                                  "echo ROOT_WRITE_OK > /sysroot/var/tmp/written-by-the-guest\n"
                                   "cat DOCS/NOTES.TXT\n"
                                   "ls /EFI/BOOT\n"
                                   /* A working directory (docs/abi/ A4): cd,

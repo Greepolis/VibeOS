@@ -1,0 +1,17 @@
+# The native root written by the guest (docs/filesystem-design/ext4.md step 4,
+# E4-015), broken in the writer; caught after the boot, when the gate cuts the
+# root partition out of the disk and asks debugfs for the file the guest wrote.
+# The guest's file is thirteen bytes, so it is the partial-block path that
+# writes it: a first version of this case broke the whole-block one and went
+# NOT RED, correctly.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-root-write-boot.txt build-gcc-Release
+
+### a write of part of a block never reaches the volume
+--- old
+            memcpy(fs->wbuf + within, src + done, chunk);
+            rc = blk_data(fs, phys, fs->wbuf);
++++ new
+            memcpy(fs->wbuf + within, src + done, chunk);
+            rc = 0;
