@@ -8,6 +8,7 @@ fcntl
 fork
 futex
 get_robust_list
+getpid
 gettid
 ioctl
 kill
@@ -15,6 +16,7 @@ membarrier
 mmap
 mprotect
 munmap
+open
 pipe
 pipe2
 read

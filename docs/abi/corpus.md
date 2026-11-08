@@ -61,7 +61,7 @@ come out ready.
 | `musl-pie` | 6 | 5 | `ioctl` | - |
 | `musl-signal` | 7 | 6 | `ioctl` | - |
 | `musl-tfork` | 16 | 12 | `clone` `futex` `ioctl` `mmap` | - |
-| `musl-threads` | 33 | 29 | `clone` `futex` `ioctl` `mmap` | - |
+| `musl-threads` | 35 | 31 | `clone` `futex` `ioctl` `mmap` | - |
 | `sqlite-file` | 27 | 25 | `ioctl` `mmap` | - |
 | `sqlite-memory` | 18 | 16 | `ioctl` `mmap` | - |
 
@@ -77,10 +77,10 @@ that starts with no syscall's (for example `abort01`, `cacheflush01`, `confstr01
 
 | Phase | Syscalls in the phase | with LTP tests | tests |
 | --- | --- | --- | --- |
-| done | 236 | 219 | 898 |
+| done | 237 | 220 | 901 |
 | L1 - files and paths | 8 | 8 | 71 |
 | L2 - processes, credentials, time | 10 | 9 | 41 |
-| L3 - memory | 5 | 5 | 47 |
+| L3 - memory | 4 | 4 | 44 |
 | L4 - event loops | 0 | 0 | 0 |
 | L5 - sockets | 4 | 4 | 18 |
 | L6 - threads and scheduling | 4 | 4 | 16 |
