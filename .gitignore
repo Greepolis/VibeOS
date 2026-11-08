@@ -82,4 +82,10 @@ argv-hunt/
 # Rebuilt by the boot gate on every run (make_esp_image.py).
 qemu-cli-esp.img
 qemu-cli-esp-*.img
+# The boot disk with the native root beside the ESP (scripts/make-boot-disk.py,
+# docs/filesystem-design/ext4.md step 4), and the root partition cut back out
+# of it for e2fsck after the boot.
+qemu-cli-disk.img
+qemu-cli-disk-*.img
+qemu-cli-esp*.img.root
 qemu-cli-*.prev.*
