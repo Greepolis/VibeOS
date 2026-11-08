@@ -130,6 +130,45 @@ static int run_ipc(unsigned rounds) {
         }
     }
 
+    /* A batch smaller than the ready set makes round-robin cursor movement
+     * observable. Repeating the same ready set must return disjoint batches
+     * before wrapping; a cursor that never advances repeats the first batch. */
+    if (vibeos_waitset_set_wake_policy(&waitset,
+            VIBEOS_WAITSET_WAKE_ROUND_ROBIN) != 0) {
+        return fail("ipc", "round-robin setup", 0);
+    }
+    for (i = 0; i < 16u; i++) {
+        if (i == 1u || i == 4u || i == 7u || i == 10u) {
+            vibeos_event_signal(&events[i]);
+            model_signaled[i] = 1;
+        }
+    }
+    {
+        const size_t expected_batches[3][2] = {{1u, 4u}, {7u, 10u}, {1u, 4u}};
+        size_t batch[2], batch_count;
+        unsigned pass, k;
+        for (pass = 0; pass < 3u; pass++) {
+            if (vibeos_waitset_wait_batch(&waitset, 0, batch, 2u, &batch_count) != 0 ||
+                batch_count != 2u || batch[0] != expected_batches[pass][0] ||
+                batch[1] != expected_batches[pass][1]) {
+                return fail("ipc", "round-robin cursor did not rotate bounded batches", pass);
+            }
+            for (k = 0; k < 2u; k++) {
+                if (batch[k] >= 16u || !model_signaled[batch[k]]) {
+                    return fail("ipc", "round-robin returned an unready event", pass);
+                }
+            }
+        }
+        cursor = 5u;
+    }
+    for (i = 0; i < 16u; i++) {
+        vibeos_event_clear(&events[i]);
+        model_signaled[i] = 0;
+    }
+    if (vibeos_waitset_set_wake_policy(&waitset, VIBEOS_WAITSET_WAKE_FIFO) != 0) {
+        return fail("ipc", "waitset policy reset", 0);
+    }
+
     for (r = 0; r < rounds; r++) {
         uint64_t x = rnd64();
         /* The reference FIFO owns its own head and count. It never reads the
@@ -220,19 +259,28 @@ static int run_ipc(unsigned rounds) {
                     uint32_t idx = (cursor + k) % 16u;
                     if (enabled[idx] && model_signaled[idx]) want[want_count++] = idx;
                 }
-                if (want_count != 0) cursor = (uint32_t)((want[want_count - 1u] + 1u) % 16u);
+                if (want_count > 3u) {
+                    cursor = (uint32_t)((want[2] + 1u) % 16u);
+                } else if (want_count != 0) {
+                    cursor = (uint32_t)((want[want_count - 1u] + 1u) % 16u);
+                }
             } else {
                 for (k = 0; k < 16u; k++) {
                     if (enabled[k] && model_signaled[k]) want[want_count++] = k;
                 }
             }
-            if (vibeos_waitset_peek_signaled(&waitset, got, 16u, &got_count) != 0 ||
-                got_count != want_count) {
-                return fail("ipc", "waitset result count differs from model", r);
-            }
-            for (k = 0; k < want_count; k++) {
-                if (got[k] != want[k]) {
-                    return fail("ipc", "waitset selection order differs from model", r);
+            {
+                size_t expected_count = want_count < 3u ? want_count : 3u;
+                if (vibeos_waitset_wait_batch(&waitset, 0, got, 3u, &got_count) != 0 ||
+                    got_count != expected_count) {
+                    return fail("ipc", "waitset batch count differs from model", r);
+                }
+                /* Round-robin advances only past the returned batch, not the
+                 * full ready set. The reference cursor is updated above. */
+                for (k = 0; k < expected_count; k++) {
+                    if (got[k] != want[k]) {
+                        return fail("ipc", "waitset selection order differs from model", r);
+                    }
                 }
             }
         }
