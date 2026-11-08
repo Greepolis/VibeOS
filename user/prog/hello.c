@@ -85,10 +85,10 @@ static const char ok_heap[] = "heap+mmap ok\n";
 static const char bad_ptr[] = "kernel pointer correctly rejected\n";
 static const char in_child[] = "child process running (fork ok)\n";
 static const char reaped_ok[] = "parent reaped child with status 7\n";
-static const char exec_path[] = "EFI/BOOT/TASK.ELF";
+static const char exec_path[] = "/usr/bin/TASK.ELF";
 static const char exec_done[] = "parent: exec'd child completed\n";
 static const char kbd_prefix[] = "console read: ";
-static const char shell_path[] = "EFI/BOOT/SH.ELF";
+static const char shell_path[] = "/usr/bin/SH.ELF";
 
 static const char argv_ok[] = "argv ok: well formed and NULL terminated\n";
 static const char argv_bad[] = "argv wrong\n";
@@ -161,7 +161,7 @@ static const char gs_lost[] = "abi: %gs lost across a context switch\n";
 static const char abi_gs[] = "abi: arch_prctl or %gs broken\n";
 static const char sse_kept[] = "sse survived context switches\n";
 static const char sse_lost[] = "abi: xmm lost across a context switch\n";
-static const char self_path[] = "/EFI/BOOT/SELFTEST.ELF";
+static const char self_path[] = "/usr/bin/SELFTEST.ELF";
 static const char iov_a[] = "iov";
 static const char iov_b[] = "ec\n";
 
@@ -650,7 +650,7 @@ static const char cred_file[] = "/tmp/cred.root";
 static const char cred_dir[] = "/tmp/cred.dir";
 static const char cred_in[] = "/tmp/cred.dir/x";
 static const char cred_mine[] = "/tmp/cred.mine";
-static const char cred_bb[] = "/EFI/BOOT/BUSYBOX.ELF";
+static const char cred_bb[] = "/usr/bin/BUSYBOX.ELF";
 static const char *const cred_argv[] = { "test", "-r", cred_file, 0 };
 
 static int check_credentials(void) {

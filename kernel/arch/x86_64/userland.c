@@ -165,17 +165,17 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "ls DOCS\n"
                                   "write TMP.TXT scratch\b\b\bch\n"  /* backspace editing */
                                   "rm TMP.TXT\n"
-                                  "EFI/BOOT/TASK.ELF\n"
+                                  "/usr/bin/TASK.ELF\n"
                                   "net\n"
                                   "ping 10.0.2.2\n"
-                                  "EFI/BOOT/NET.ELF\n"
-                                  "EFI/BOOT/MUSL.ELF\n"
-                                  "EFI/BOOT/PIE.ELF\n"
-                                  "EFI/BOOT/DYN.ELF\n"
-                                  "EFI/BOOT/THREADS.ELF\n"
-                                  "EFI/BOOT/TFORK.ELF\n"
-                                  "EFI/BOOT/SIGNAL.ELF\n"
-                                  "EFI/BOOT/EVENTS.ELF\n"
+                                  "/usr/bin/NET.ELF\n"
+                                  "/usr/bin/MUSL.ELF\n"
+                                  "/usr/bin/PIE.ELF\n"
+                                  "/usr/bin/DYN.ELF\n"
+                                  "/usr/bin/THREADS.ELF\n"
+                                  "/usr/bin/TFORK.ELF\n"
+                                  "/usr/bin/SIGNAL.ELF\n"
+                                  "/usr/bin/EVENTS.ELF\n"
                                   /* The NT personality's first program
                                    * (docs/abi/windows.md W1): a PE image,
                                    * exec'd by this Linux-ABI shell like any
@@ -198,11 +198,11 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * empties the page cache, and the BusyBox
                                    * commands after it are what give the exec
                                    * cache audit something to compare. */
-                                  "EFI/BOOT/SVC_RECL.ELF\n"
-                                  "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
-                                  "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"
-                                  "EFI/BOOT/BUSYBOX.ELF ls EFI/BOOT\n"
-                                  "EFI/BOOT/BUSYBOX.ELF sh -c \"echo BUSYBOX_SH_OK; cat DOCS/NOTES.TXT\"\n"
+                                  "/usr/bin/SVC_RECL.ELF\n"
+                                  "/usr/bin/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
+                                  "/usr/bin/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"
+                                  "/usr/bin/BUSYBOX.ELF ls /usr/bin\n"
+                                  "/usr/bin/BUSYBOX.ELF sh -c \"echo BUSYBOX_SH_OK; cat DOCS/NOTES.TXT\"\n"
                                   /* Everything from here is typed at BusyBox's
                                    * shell, not ours: it replaces this process
                                    * and reads the rest of the console itself. */
@@ -216,7 +216,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "cat /etc/vibeos/root\n"
                                   "echo ROOT_WRITE_OK > /var/tmp/written-by-the-guest\n"
                                   "cat DOCS/NOTES.TXT\n"
-                                  "ls /EFI/BOOT\n"
+                                  "ls /usr/bin\n"
                                   /* A working directory (docs/abi/ A4): cd,
                                    * the kernel's answer to getcwd - pwd -P,
                                    * because plain pwd answers from $PWD
@@ -310,7 +310,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * kernel CLI, so a slower build cannot have
                                    * its script cut short by a halt that arrived
                                    * while it was still working. */
-                                  "ls /EFI/BOOT | wc -l\n"
+                                  "ls /usr/bin | wc -l\n"
                                   "echo PIPE_OK\n"
                                   "echo VIBEOS_SELFTEST_DONE\n"
                                   "exit\n");

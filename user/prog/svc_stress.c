@@ -592,7 +592,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
             /* The round count goes in the replay line too: a failure at
              * round 9000 cannot be reproduced by a default 120-round run, and
              * a replay recipe that does not reproduce is worse than none. */
-            say("STRESS_FAIL: replay with EFI/BOOT/SVC_STRS.ELF ", seed, 1);
+            say("STRESS_FAIL: replay with /usr/bin/SVC_STRS.ELF ", seed, 1);
             say("STRESS_FAIL: rounds ", (uint64_t)rounds, 1);
             sys3(SYS_exit, 1, 0, 0);
         }

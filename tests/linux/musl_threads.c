@@ -290,7 +290,7 @@ static volatile int xproc_word;
  * with an argument that makes it answer one question and exit. */
 static void *exec_worker(void *arg)
 {
-    char *const args[] = { (char *)"EFI/BOOT/THREADS.ELF",
+    char *const args[] = { (char *)"/usr/bin/THREADS.ELF",
                            (char *)"exec-probe", 0 };
 
     (void)arg;
@@ -1113,7 +1113,7 @@ int main(int argc, char **argv)
             pthread_mutex_init(robust, &ma);
             pid = fork();
             if (pid == 0) {
-                char *const args[] = { (char *)"EFI/BOOT/THREADS.ELF", (char *)"exec-probe", 0 };
+                char *const args[] = { (char *)"/usr/bin/THREADS.ELF", (char *)"exec-probe", 0 };
 
                 pthread_mutex_lock(robust);
                 execv(args[0], args);
@@ -1219,7 +1219,7 @@ int main(int argc, char **argv)
      * probe, whose answer is 23. */
     {
         static char vfork_stack[16384] __attribute__((aligned(16)));
-        char *const args[] = { (char *)"EFI/BOOT/THREADS.ELF", (char *)"exec-probe", 0 };
+        char *const args[] = { (char *)"/usr/bin/THREADS.ELF", (char *)"exec-probe", 0 };
         int status = 0, ok = 1;
         pid_t pid;
 

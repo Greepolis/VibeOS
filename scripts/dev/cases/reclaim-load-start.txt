@@ -13,5 +13,5 @@
 
 ### the self-test no longer runs svc-reclaim
 --- old
-                                  "EFI/BOOT/SVC_RECL.ELF\n"
+                                  "/usr/bin/SVC_RECL.ELF\n"
 +++ new

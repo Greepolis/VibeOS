@@ -140,24 +140,24 @@ typedef struct {
  * twenty commands - and a supervisor that gives every service the same name
  * makes its own logs useless. */
 static char *svc_argv[] = {(char *)"svc", 0, 0};
-static char *const svc_envp[] = {(char *)"PATH=/EFI/BOOT", (char *)"TERM=dumb", 0};
+static char *const svc_envp[] = {(char *)"PATH=/usr/bin", (char *)"TERM=dumb", 0};
 
 static service_t services[] = {
     /* The bring-up workload: everything the boot gate checks runs inside this
      * one, and it ends by exec'ing the shell. A session - when the shell is
      * done, so is the machine. */
-    {"selftest", "EFI/BOOT/SELFTEST.ELF", 0, 0, 1, 0, -1, SVC_STOPPED},
+    {"selftest", "/usr/bin/SELFTEST.ELF", 0, 0, 1, 0, -1, SVC_STOPPED},
     /* Exits zero: a clean stop, which must not be restarted. */
-    {"svc-ok", "EFI/BOOT/SVC_OK.ELF", 0, 2, 0, 0, -1, SVC_STOPPED},
+    {"svc-ok", "/usr/bin/SVC_OK.ELF", 0, 2, 0, 0, -1, SVC_STOPPED},
     /* Fails every time: restarted twice, then marked FAILED and left alone. */
-    {"svc-flap", "EFI/BOOT/SVC_FLAP.ELF", 0, 2, 0, 0, -1, SVC_STOPPED},
+    {"svc-flap", "/usr/bin/SVC_FLAP.ELF", 0, 2, 0, 0, -1, SVC_STOPPED},
     /* Faults instead of exiting. Not restarted: the point is not recovery but
      * that the supervisor is still running to report it, which is only true
      * because the kernel now kills the faulting task instead of halting. */
-    {"svc-crash", "EFI/BOOT/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-crash", "/usr/bin/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
     /* Randomised churn with a printed seed. A session, not a daemon: it runs a
      * bounded number of rounds and its exit status is the verdict. */
-    {"svc-stress", "EFI/BOOT/SVC_STRS.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-stress", "/usr/bin/SVC_STRS.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
     /* A fork storm, on purpose. What it proves is not its own output but that
      * everything after it still works: init can still start something and the
      * shell can still run a command once a program has taken everything it is
@@ -171,8 +171,8 @@ static service_t services[] = {
      * the TLB quarantine (M-061). Both are what a boot now gates by running it.
      * It does not reach the watermarks; svc-reclaim does, run last in the
      * boot's self-test rather than from here so that nothing runs beside it. */
-    {"svc-press", "EFI/BOOT/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
-    {"svc-bomb", "EFI/BOOT/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-press", "/usr/bin/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-bomb", "/usr/bin/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
 };
 
 #define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))

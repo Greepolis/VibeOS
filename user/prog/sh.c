@@ -4,7 +4,7 @@
  *
  * Builtins: help, echo <text>, exit [code]
  * Anything else is treated as a program path on the filesystem and run as a
- * child process (fork + execve + wait), e.g. "EFI/BOOT/TASK.ELF".
+ * child process (fork + execve + wait), e.g. "/usr/bin/TASK.ELF".
  */
 
 #define SYS_read   0
@@ -216,7 +216,7 @@ static const char *program_name(const char *path) {
  * sitting on the volume. HOME and TERM are there because programs read them
  * and an absent value is a different case from an empty one. */
 static char *g_envp[] = {
-    (char *)"PATH=/EFI/BOOT",
+    (char *)"PATH=/usr/bin",
     (char *)"HOME=/",
     (char *)"TERM=dumb",
     0
@@ -318,7 +318,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
                 "ping <a.b.c.d>    ICMP echo a host\n"
                 "resolve <name>    look a name up in DNS\n"
                 "exit              leave the shell\n"
-                "<path>            run a program, e.g. EFI/BOOT/TASK.ELF\n");
+                "<path>            run a program, e.g. /usr/bin/TASK.ELF\n");
         } else if (seq(line, "echo")) {
             put(args);
             put("\n");
@@ -438,7 +438,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
              * poll() before every key. */
             static char *ash_argv[] = {(char *)"sh", 0};
             put("handing the console to BusyBox sh\n");
-            sys3(SYS_execve, (long)(unsigned long)"EFI/BOOT/BUSYBOX.ELF",
+            sys3(SYS_execve, (long)(unsigned long)"/usr/bin/BUSYBOX.ELF",
                  (long)(unsigned long)ash_argv, (long)(unsigned long)g_envp);
             put("sh: cannot exec BusyBox\n");
         } else if (seq(line, "exit")) {

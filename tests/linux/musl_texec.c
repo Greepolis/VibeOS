@@ -29,7 +29,7 @@
 /* Where this program lives on the boot media. It re-execs itself, and it
  * cannot ask: /proc/self/exe does not exist on this filesystem, which the boot
  * log shows a C runtime discovering on every start. */
-#define SELF_PATH "EFI/BOOT/TEXEC.ELF"
+#define SELF_PATH "/usr/bin/TEXEC.ELF"
 
 #define ROUNDS 8
 #define PATTERN_BYTES 4096

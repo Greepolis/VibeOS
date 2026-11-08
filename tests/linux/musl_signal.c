@@ -781,7 +781,7 @@ static int process_checks(void) {
     if (c == 0) {
         static char *const argv[] = { "true", 0 };
         static char *const envp[] = { 0 };
-        int fd = open("/EFI/BOOT/BUSYBOX.ELF", O_RDONLY);
+        int fd = open("/usr/bin/BUSYBOX.ELF", O_RDONLY);
         syscall(322 /* execveat */, fd, "", argv, envp, 0x1000 /* AT_EMPTY_PATH */);
         _exit(9);
     }
@@ -809,7 +809,7 @@ static int process_checks(void) {
                 if (setresuid(0, 65534, 0) != 0) {
                     _exit(7);
                 }
-                execve("/EFI/BOOT/BUSYBOX.ELF", argv, envp);
+                execve("/usr/bin/BUSYBOX.ELF", argv, envp);
                 _exit(9);
             }
             close(pp[1]);

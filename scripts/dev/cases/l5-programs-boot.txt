@@ -22,16 +22,16 @@ http://10.0.2.2:7779/l5
 
 ### SOCKETS.ELF is not run
 --- old
-/EFI/BOOT/SOCKETS.ELF
+/usr/bin/SOCKETS.ELF
 echo "L5P_SOCKETS_RC $?"
 +++ new
 echo "L5P_SOCKETS_RC $?"
 
 ### the lookup asks for a name nobody has
 --- old
-    timeout 15 /EFI/BOOT/SOCKETS.ELF resolve "$N"
+    timeout 15 /usr/bin/SOCKETS.ELF resolve "$N"
 +++ new
-    timeout 15 /EFI/BOOT/SOCKETS.ELF resolve "$N.invalid"
+    timeout 15 /usr/bin/SOCKETS.ELF resolve "$N.invalid"
 
 ### the script stops before its last line
 --- old

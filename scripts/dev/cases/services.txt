@@ -39,5 +39,5 @@
 
 ### the crashing service never runs at all
 --- old
-    {"svc-crash", "EFI/BOOT/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-crash", "/usr/bin/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
 +++ new

@@ -277,7 +277,7 @@ def thread_fault_signature(text):
 
 assert thread_fault_signature(
     "[MM] COW_FAULT va=0x800000016b err=0x7 NOT-handled\n"
-    "[CRASH] recorded pid=0x9 exe=/EFI/BOOT/SVC_CRSH.ELF") is None, \
+    "[CRASH] recorded pid=0x9 exe=/usr/bin/SVC_CRSH.ELF") is None, \
     "fires on the benign svc-crash fault"
 assert thread_fault_signature(
     "[CRASH] this task's stack is the free-page poison: reclaimed while running") \
@@ -1192,12 +1192,20 @@ def main():
         # the hierarchy's tree. Without mkfs.ext4 the disk is the bare ESP as
         # before, and the verdict says root_absent.
         root_tree = tempfile.mkdtemp(prefix="vibeos-root-")
-        # The root is "/" now, so for this step it carries a copy of the
-        # ESP's tree - EFI/BOOT, /corpus, /lib, /win - and every path the
-        # self-test names still resolves. The next step moves the programs to
-        # /usr/bin and drops the copy.
+        # The root is "/": the programs go to /usr/bin, and the rest of the
+        # ESP's tree - /corpus, /lib, /lib64, /win, /etc - comes along as it
+        # is. What stays on the ESP alone is what the firmware and the kernel
+        # read from it themselves: the loader, the kernel, INIT.ELF, the loop
+        # images and the swap file (g_bootfs). The ESP still carries the
+        # programs too, for the bare-ESP layout (root_absent).
         shutil.copytree(efi_root, root_tree, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("*.tmp"))
+                        ignore=shutil.ignore_patterns("*.tmp", "EFI", "startup.nsh"))
+        os.makedirs(os.path.join(root_tree, "usr", "bin"), exist_ok=True)
+        boot_dir = os.path.join(efi_root, "EFI", "BOOT")
+        for n in sorted(os.listdir(boot_dir)):
+            if n.endswith((".IMG", ".EFI", ".tmp")) or n in ("VIBEOSKR.ELF", "SWAPFILE.BIN"):
+                continue
+            shutil.copy2(os.path.join(boot_dir, n), os.path.join(root_tree, "usr", "bin", n))
         for d in ROOT_TREE_DIRS:
             os.makedirs(os.path.join(root_tree, d), exist_ok=True)
         with open(os.path.join(root_tree, "etc", "vibeos", "root"), "w") as f:
@@ -2952,7 +2960,7 @@ def main():
             # cost a run: the binary ships on the media whether or not the boot
             # script runs it, so a file check reported a missing result as a
             # failure while nothing had been asked to produce one.
-            if "EFI/BOOT/TEXEC.ELF bytes=" in text:
+            if "TEXEC.ELF bytes=" in text:
                 if "TEXEC_OK" not in text:
                     problems.append("thread_and_exec_did_not_pass")
                 for line in text.splitlines():

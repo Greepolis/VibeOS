@@ -16,13 +16,13 @@ echo "L5P_WGET_SAW $(timeout 15 wget -q -O - http://10.0.2.2:7778/l5 2>/tmp/wget
 # carries dns_absent.
 N="@L5_DNS_NAME@"
 if [ -n "$N" ]; then
-    timeout 15 /EFI/BOOT/SOCKETS.ELF resolve "$N"
+    timeout 15 /usr/bin/SOCKETS.ELF resolve "$N"
 else
     echo "L5P_DNS_NOT_ASKED"
 fi
 
 # The phase's own checks, a Unix-socket server and client among them, in two
 # processes: SOCKETS.ELF prints SOCKETS_OK only if every one held.
-/EFI/BOOT/SOCKETS.ELF
+/usr/bin/SOCKETS.ELF
 echo "L5P_SOCKETS_RC $?"
 echo "L5P_DONE_$((5*9))"

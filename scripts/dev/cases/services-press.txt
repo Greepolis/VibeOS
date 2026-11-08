@@ -6,6 +6,6 @@
 
 ### init no longer starts svc-press
 --- old
-    {"svc-press", "EFI/BOOT/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-press", "/usr/bin/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
 +++ new
 
