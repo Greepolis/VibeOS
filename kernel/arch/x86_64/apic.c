@@ -479,7 +479,18 @@ static void ap_install_trampoline(uint64_t cr3) {
     *(volatile uint64_t *)(uintptr_t)(AP_TRAMPOLINE_ADDR + AP_OFF_CR3) = cr3;
 }
 
+/* An IPI is two writes to *this core's* LAPIC: the destination, then the
+ * command that sends it. A caller that can be preempted between them - the
+ * kernel task waking the other cores runs with interrupts on - may resume on
+ * another core and send the command with whatever destination that core's
+ * LAPIC last held. On VirtualBox an INIT went to a running core that way: the
+ * core that held the kernel task was reset into wait-for-SIPI, the task was
+ * never seen again, the last two APs stayed in the firmware's parking loop
+ * and the machine never left userland. So the pair, and the wait for it to
+ * leave, happen with interrupts off. */
 static void lapic_ipi(uint32_t dest, uint32_t low) {
+    uint64_t flags = vibeos_x86_64_irq_save();
+
     lapic_write(LAPIC_ICR_HIGH, dest << 24);
     lapic_write(LAPIC_ICR_LOW, low);
     /* Wait for delivery status to clear. */
@@ -489,6 +500,7 @@ static void lapic_ipi(uint32_t dest, uint32_t low) {
             __asm__ __volatile__("pause" ::: "memory");
         }
     }
+    vibeos_x86_64_irq_restore(flags);
 }
 
 /* Send a fixed-delivery IPI to every other core.
@@ -513,6 +525,15 @@ int vibeos_x86_64_smp_start_cpu(uint32_t lapic_id, uint64_t cr3, uint64_t stack_
                                 uint64_t entry) {
     uint32_t spins;
 
+    /* The whole sequence on one core, with interrupts off. The kernel task that
+     * runs it is otherwise preemptible, and the core the first SIPI wakes
+     * starts taking tasks at once: on VirtualBox the kernel task was resumed on
+     * that very core and sent the second SIPI to itself. The kernel task was
+     * never seen again, the remaining APs were never woken, and the machine
+     * never left userland. At most about 0.2 s per core with the timer off. */
+    uint64_t flags = vibeos_x86_64_irq_save();
+    int rc = -1;
+
     ap_install_trampoline(cr3);
     *(volatile uint64_t *)(uintptr_t)(AP_TRAMPOLINE_ADDR + AP_OFF_STACK) = stack_top;
     *(volatile uint64_t *)(uintptr_t)(AP_TRAMPOLINE_ADDR + AP_OFF_ENTRY) = entry;
@@ -523,15 +544,21 @@ int vibeos_x86_64_smp_start_cpu(uint32_t lapic_id, uint64_t cr3, uint64_t stack_
     apic_udelay(10000u);
     lapic_ipi(lapic_id, 0x00004600u | (AP_TRAMPOLINE_ADDR >> 12)); /* SIPI    */
     apic_udelay(200u);
-    lapic_ipi(lapic_id, 0x00004600u | (AP_TRAMPOLINE_ADDR >> 12)); /* SIPI #2 */
+    /* The second SIPI only to a core that has not answered the first, as
+     * Intel's own sequence does: one that is running must not get another. */
+    if (!vibeos_x86_64_ap_alive) {
+        lapic_ipi(lapic_id, 0x00004600u | (AP_TRAMPOLINE_ADDR >> 12)); /* SIPI #2 */
+    }
 
     for (spins = 0; spins < 200u; spins++) {
         if (vibeos_x86_64_ap_alive) {
-            return 0;
+            rc = 0;
+            break;
         }
         apic_udelay(1000u);
     }
-    return -1;
+    vibeos_x86_64_irq_restore(flags);
+    return rc;
 }
 
 /* Mask the legacy 8259 pair completely: with the IO-APIC routing external
