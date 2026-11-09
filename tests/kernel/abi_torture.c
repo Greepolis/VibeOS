@@ -65,7 +65,10 @@ enum {
     ABI_NR_MUNMAP = 11,
     ABI_NR_FORK = 57,
     ABI_NR_WAIT4 = 61,
-    ABI_NR_RENAMEAT2 = 316
+    ABI_NR_RENAMEAT2 = 316,
+    ABI_NR_MKDIR = 83,
+    ABI_NR_UNLINK = 87,
+    ABI_NR_READLINK = 89
 };
 
 #define ABI_O_NONBLOCK 0x800u
@@ -950,6 +953,45 @@ static int vm_model_access(const abi_vm_interval_t *v, uint32_t count,
     return 0;
 }
 
+/* The legacy pathname calls are distinct syscall-table entries which
+ * delegate to the dirfd forms. Exercise those public entrypoints too. */
+static int test_legacy_path_wrappers(unsigned round) {
+    static const char dir[] = "/tmp/abi-legacy-dir";
+    static const char file[] = "/tmp/abi-legacy-dir/file";
+    static const char link[] = "/tmp/abi-legacy-dir/link";
+    static const char target[] = "file";
+    uint64_t dir_u = kf_ualloc(sizeof(dir));
+    uint64_t file_u = kf_ualloc(sizeof(file));
+    uint64_t link_u = kf_ualloc(sizeof(link));
+    uint64_t target_u = kf_ualloc(sizeof(target));
+    uint64_t out = kf_ualloc(16u);
+    long fd;
+
+    if (!dir_u || !file_u || !link_u || !target_u || !out)
+        return fail(round, "legacy pathname wrapper allocation");
+    memcpy(kf_uptr(dir_u), dir, sizeof(dir));
+    memcpy(kf_uptr(file_u), file, sizeof(file));
+    memcpy(kf_uptr(link_u), link, sizeof(link));
+    memcpy(kf_uptr(target_u), target, sizeof(target));
+    if (call_sys(ABI_NR_MKDIR, dir_u, 0700u, 0u, 0u) != 0)
+        return fail(round, "legacy mkdir did not create its directory");
+    fd = call_sys(ABI_NR_OPEN, file_u, ABI_O_CREAT | ABI_O_EXCL | ABI_O_RDWR, 0600u, 0u);
+    if (fd < 0 || call_sys(ABI_NR_WRITE, (uint64_t)fd, target_u, sizeof(target) - 1u, 0u) !=
+                  (long)(sizeof(target) - 1u))
+        return fail(round, "legacy pathname wrapper file setup");
+    if (call_sys(ABI_NR_SYMLINKAT, target_u, ABI_AT_FDCWD, link_u, 0u) != 0 ||
+        call_sys(ABI_NR_READLINK, link_u, out, 16u, 0u) != (long)(sizeof(target) - 1u) ||
+        memcmp(kf_uptr(out), target, sizeof(target) - 1u) != 0)
+        return fail(round, "legacy readlink did not return the symlink target bytes");
+    if (call_sys(ABI_NR_UNLINK, file_u, 0u, 0u, 0u) != 0 ||
+        call_sys(ABI_NR_OPEN, file_u, 0u, 0u, 0u) != -VIBEOS_ENOENT ||
+        call_sys(ABI_NR_UNLINK, link_u, 0u, 0u, 0u) != 0 ||
+        call_sys(ABI_NR_UNLINKAT, ABI_AT_FDCWD, dir_u, ABI_AT_REMOVEDIR, 0u) != 0 ||
+        call_sys(ABI_NR_CLOSE, (uint64_t)fd, 0u, 0u, 0u) != 0)
+        return fail(round, "legacy unlink or directory cleanup differed from the path model");
+    return 0;
+}
+
 /* Exercise real page-table changes through mmap, mprotect and munmap. */
 static int test_memory_model(unsigned round) {
     const uint64_t base = 0x30000000ull;
@@ -1372,6 +1414,7 @@ static int run_seed(uint64_t seed, unsigned rounds) {
     if (test_vector_io(0u)) return 1;
     if (test_path_model(0u)) return 1;
     if (test_nested_path_model(0u)) return 1;
+    if (test_legacy_path_wrappers(0u)) return 1;
     if (test_memory_model(0u)) return 1;
     if (test_fork_model(0u)) return 1;
 #ifdef VIBEOS_TEST_NT_ABI
