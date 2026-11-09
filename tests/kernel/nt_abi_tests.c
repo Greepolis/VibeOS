@@ -770,6 +770,155 @@ static void t_read_write_file(void) {
            "the event is set when the read completes");
 }
 
+/* A seeded NT file sequence, with a model that owns both bytes and the
+ * shared file position. NtDuplicateObject must create another handle to the
+ * same open description; closing the first handle must not invalidate the
+ * second. Explicit ByteOffsets and current-position operations are interleaved
+ * so the model also checks how each operation changes the shared position. */
+static uint32_t nt_model_next(uint32_t *state) {
+    uint32_t x = *state;
+
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+static void t_nt_file_sequence(void) {
+    const uint32_t rw = VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE;
+    uint8_t model[16384];
+    uint64_t buf, info, h, duplicate, out;
+    const uint64_t duplicate_args[3] = { 0, 0, VIBEOS_DUPLICATE_SAME_ACCESS };
+    uint32_t seed;
+
+    for (seed = 1; seed <= 8u; seed++) {
+        uint32_t state = 0x9E3779B9u ^ (seed * 0x45D9F3Bu);
+        uint64_t position = 0, size = 0;
+        uint32_t step;
+        char path[64];
+
+        fresh(120u + seed);
+        kf_fs_add("/w4", 0, 0, 1);
+        /* After fresh(), not before the loop (#211): kf_reset() starts the
+         * fake's user memory again from its first byte, so a buffer taken
+         * before it is handed out a second time by the next allocations -
+         * the status block and the ByteOffset rw_file() places for each
+         * call. The harness then wrote the offset (or the status) into the
+         * first byte of the data it was about to write, and the kernel wrote
+         * what it found: it read as NtWriteFile changing its input buffer. */
+        buf = kf_ualloc(16384);
+        (void)snprintf(path, sizeof(path), "\\??\\C:\\w4\\model-%u.bin", seed);
+        expect(create_file(&h, &info, rw, path, 2, 0x40) == ST(VIBEOS_STATUS_SUCCESS),
+               "seeded file model: create");
+        out = kf_ualloc(8);
+        kf_next_sp(stack_args(duplicate_args, 3));
+        expect(nt(VIBEOS_NT_NR_NtDuplicateObject, VIBEOS_NT_CURRENT_PROCESS, h,
+                  VIBEOS_NT_CURRENT_PROCESS, out, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "seeded file model: duplicate handle");
+        duplicate = *(uint64_t *)kf_uptr(out);
+
+        for (step = 0; step < 160u; step++) {
+            uint32_t r = nt_model_next(&state);
+            uint32_t len = 1u + ((r >> 8) & 7u);
+            int write = (r & 3u) != 0u;
+            int positional = (r & 0x10u) != 0u;
+            uint64_t offset = positional ? (uint64_t)((r >> 16) % (uint32_t)(size + 9u)) : position;
+            uint64_t count = 0;
+            uint64_t handle = step < 80u && (r & 0x100u) ? h : duplicate;
+            uint32_t i;
+            long status;
+
+            if (write) {
+                uint8_t *bytes = (uint8_t *)kf_uptr(buf);
+
+                uint8_t input[8];
+
+                for (i = 0; i < len; i++) {
+                    bytes[i] = (uint8_t)nt_model_next(&state);
+                }
+                /* Keep the oracle independent of the syscall's input buffer:
+                 * the kernel must not be able to change the model's bytes. */
+                memcpy(input, bytes, len);
+                status = rw_file(1, handle, 0, buf, len, positional ? &offset : 0, &count);
+                expect(status == ST(VIBEOS_STATUS_SUCCESS) && count == len,
+                       "seeded file model: write result and byte count");
+                if (memcmp(bytes, input, len) != 0) {
+                    printf("NT model write changed input seed=%u step=%u offset=%llu len=%u handle=%llu positional=%d first=%02x->%02x\n",
+                           seed, step, (unsigned long long)offset, len,
+                           (unsigned long long)handle, positional, input[0], bytes[0]);
+                    for (i = 0; i < len; i++) {
+                        if (bytes[i] != input[i]) {
+                            printf("NT model write changed byte +%u: %02x->%02x\n",
+                                   i, input[i], bytes[i]);
+                            break;
+                        }
+                    }
+                }
+                expect(memcmp(bytes, input, len) == 0,
+                       "seeded file model: write leaves caller buffer unchanged");
+                if (offset > size) {
+                    memset(model + size, 0, (size_t)(offset - size));
+                }
+                memcpy(model + offset, input, len);
+                if (offset + len > size) {
+                    size = offset + len;
+                }
+                position = offset + len;
+            } else {
+                uint64_t available = offset < size ? size - offset : 0u;
+                uint32_t expected = available < len ? (uint32_t)available : len;
+                uint8_t *bytes = (uint8_t *)kf_uptr(buf);
+
+                memset(bytes, 0xA5, len);
+                status = rw_file(0, handle, 0, buf, len, positional ? &offset : 0, &count);
+                expect(count == expected &&
+                           status == ST(expected ? VIBEOS_STATUS_SUCCESS : VIBEOS_STATUS_END_OF_FILE),
+                       "seeded file model: read result and byte count");
+                if (expected != 0u && memcmp(bytes, model + offset, expected) != 0) {
+                    printf("NT model mismatch seed=%u step=%u offset=%llu pos=%llu size=%llu len=%u expected=%u handle=%llu positional=%d\n",
+                           seed, step, (unsigned long long)offset, (unsigned long long)position,
+                           (unsigned long long)size, len, expected, (unsigned long long)handle, positional);
+                    for (i = 0; i < expected; i++) {
+                        if (bytes[i] != model[offset + i]) {
+                            printf("NT model first byte mismatch at +%u: got=%02x expected=%02x\n",
+                                   i, bytes[i], model[offset + i]);
+                            break;
+                        }
+                    }
+                    expect(0, "seeded file model: returned bytes");
+                }
+                if (positional) {
+                    position = offset + expected;
+                } else if (expected != 0u) {
+                    position += expected;
+                }
+            }
+            if (step == 79u) {
+                expect(nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+                       "seeded file model: close original while duplicate remains");
+            }
+        }
+
+        /* A fresh open has its own position; read the whole file at offset
+         * zero and compare every byte with the model before closing it. */
+        expect(create_file(&h, &info, rw, path, 1, 0x40) == ST(VIBEOS_STATUS_SUCCESS),
+               "seeded file model: reopen for final byte comparison");
+        {
+            uint64_t zero = 0, count = 0;
+            long status = rw_file(0, h, 0, buf, (uint32_t)size, &zero, &count);
+
+            expect(status == ST(VIBEOS_STATUS_SUCCESS) && count == size &&
+                       memcmp(kf_uptr(buf), model, (size_t)size) == 0,
+                   "seeded file model: final contents match independent bytes");
+        }
+        expect(nt(VIBEOS_NT_NR_NtClose, h, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   nt(VIBEOS_NT_NR_NtClose, duplicate, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+                   nt(VIBEOS_NT_NR_NtClose, duplicate, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
+               "seeded file model: close both handles exactly once");
+    }
+}
+
 /* NtQueryInformationFile or NtSetInformationFile with class `cls` on `len`
  * bytes at `buf`. The status, and the status block's count. */
 static long file_info(int set, uint64_t h, uint64_t buf, uint32_t len, uint32_t cls, uint64_t *count) {
@@ -3563,6 +3712,7 @@ int test_nt_abi(void) {
     t_delay();
     t_handles_and_names();
     t_read_write_file();
+    t_nt_file_sequence();
     t_file_information();
     t_small_file_services();
     t_query_directory();
