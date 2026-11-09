@@ -87,3 +87,13 @@ disk with the ESP and an ext4 partition labelled `vibeos-root`, made by
 and journalled, and the ESP at `/boot/efi`; every program runs from
 `/usr/bin`. After the boot the gate cuts the partition out of the disk and
 `e2fsck` must call it clean. Open items E4-021 onward.
+
+Step 5, the intensive test, done 2026-11-09 (`scripts/dev/ext4-torture.py`):
+random operations run twice, by the host's kernel on a directory and by the
+driver on a volume `mkfs.ext4` made, so the model is Linux; the trees compared
+line for line, `e2fsck` and the superblock's counts after every seed, and power
+cuts at random writes judged as step 3's sweep judges them. The seed varies
+the block size, the volume's size and groups, the journal, and whether the
+volume starts with an indexed directory. Three thousand seeds and four hundred
+with ten cuts each a night, on seeds no earlier night ran. Open items E4-026
+onward.

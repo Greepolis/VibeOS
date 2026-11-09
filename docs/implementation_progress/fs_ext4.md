@@ -178,6 +178,61 @@ writes an `ext4` volume it can keep true (the table below the step), and
   the `a && b` form that `ext4-read.txt` documented scored every case red with
   no output. The lines say `bash -c '...'` now.
 
+## Step 5: the intensive test - done 2026-11-09
+
+- **What it does** (`scripts/dev/ext4-torture.py`): for each seed, a random
+  sequence of operations - create, write at an offset, writes with holes
+  between them, truncate, mkdir, rmdir, unlink, rename and rename without
+  replacing, link, symlink, chmod, the whole-file write, a directory filled
+  past a block - is run by the host's own kernel on a directory, and whatever
+  each call returned, success or an errno, becomes the line the driver must
+  match (`fail ERRNO ...`). Names come from a small pool, so calls collide.
+  The model is Linux; nothing in this project decides what an operation
+  should have done.
+- **Judged by**: `e2fsck -fn` on the volume the driver leaves; the superblock's
+  free counts against the groups' sum and its checksum, from `dumpe2fs` (e2fsck
+  mends both without calling a volume unclean); the tree read back through the
+  driver against the host's, line for line. For the seeds with cuts, the
+  device stops after a random write: the driver's replay and e2fsck's must each
+  be clean, must agree, and the tree must be one the host's passed through.
+- **Volume shapes**: the seed picks 1 or 4 KiB blocks, 16, 64 or 128 MiB (one
+  group or several, groups mkfs left uninitialised), a journal or none (one
+  seed in five: step 2's writer, which keeps the superblock itself), and in one
+  seed in three a starting tree with a directory of 300 entries that `e2fsck
+  -fD` indexes, so the driver changes an htree directory it did not make.
+- **What a cut may leave that is no state**: ordered mode writes data in place
+  ahead of the commit, so a write over bytes a file already had, cut before its
+  commit, leaves the old tree with some of those bytes new. Linux leaves the
+  same. It is accepted in exactly that shape - the state before that write, the
+  old size, and every byte, read by `debugfs`, the old one or the new one - and
+  counted as `torn_writes`.
+- **Found while writing it**, none a driver defect: `mkdir` and `unlink` answer
+  0 or -1 by the VFS contract (the errno is the Linux handler's), so for those
+  the script asks only for a refusal (`refuse`); the exerciser's commit check
+  counted refused lines, which commit nothing; and a file past the writer's
+  four leaves of extents gets a short write and then EFBIG where Linux grows a
+  level (E4-008, E4-010), so the generator keeps each file under half the cap.
+- **Proved**: the 43 sabotage cases of `ext4-write.txt`,
+  `ext4-journal-writer.txt` and `ext4-journal.txt`, verified by
+  `verify-ext4-torture.sh` (40 seeds, 10 with 6 cuts): 36 red. Not red, and
+  red under the checks written for them: extents not joined and an unwritten
+  extent (no correctness a tree can show, and `fallocate` is not in the
+  exerciser - `verify-ext4.sh`); the five journal cases whose window is a few
+  writes wide (a free not told to the journal, a truncate tail zeroed in place,
+  data over a freed block, an ignored revoke, the commit before the log) -
+  random cuts land in them rarely, the every-write sweep of step 3 always.
+- **Runs**: `check.sh` runs `verify-ext4-torture.sh` (60 seeds, 12 with six
+  cuts, about a minute and a half); the nightly's `ext4-torture` job runs 3000
+  seeds and 400 with ten cuts, on a range that moves with the run number, and
+  uploads a failing seed's volume and script.
+
+### Open after step 5
+
+| ID | What | Status |
+|---|---|---|
+| E4-026 | Operations the torture does not make: chown, utimes, xattrs, fallocate, and writes past 2 MiB in one call; and none that Linux's VFS decides before the filesystem (rename into its own subtree, across kinds, onto another name of the same inode) - those are the handlers' and are tested there | open |
+| E4-027 | A cut is judged only for the tree, not for modes, owners and times: the listing the two sides compare carries paths, types, sizes, link targets and contents | open |
+
 ## Step 4: ext4 as the root - first half done 2026-11-08
 
 - **The disk**: the gate's boot disk is a disk now, not a bare ESP:
@@ -318,7 +373,7 @@ writes an `ext4` volume it can keep true (the table below the step), and
 | ID | What | Status |
 |---|---|---|
 | E4-007 | No journal: a power cut between the steps of an operation (inode before entry, entry before count) leaves a volume e2fsck must repair; the order is chosen so that the damage is a leak or a count, not a dangling name | **closed in step 3** |
-| E4-008 | A tree Linux grew to depth 2 (more than 1360 extents) is read, and a write that would change it is `EFBIG`; a block-mapped file on an ext4 volume is read, and writing or removing one is `EOPNOTSUPP` | open |
+| E4-008 | A tree Linux grew to depth 2 (more than 1360 extents) is read, and a write that would change it is `EFBIG` (a write that reaches the cap is first short, then `EFBIG`; the torture of step 5 keeps its files under it); a block-mapped file on an ext4 volume is read, and writing or removing one is `EOPNOTSUPP` | open |
 | E4-009 | An `ext_store` that finds no room for a leaf after the data blocks were written leaks those blocks (the tree is not updated); a write that fails half-way through an allocated run leaves the unwritten rest of that run reading as stale data. Both only on ENOSPC or an I/O error | open |
 | E4-010 | The rule that a `BLOCK_UNINIT` group's bitmap holds other groups' tables that lie inside it (flex_bg) is coded and untested: this mke2fs puts every table in group 0, which is never `BLOCK_UNINIT`. Block sizes below 4 KiB and 128-byte inodes are refused or untested (1 KiB blocks are coded for, the extent cap there is 336) | open |
 | E4-011 | Allocation is first-fit from the parent's group: directories are not spread (Orlov), no preallocation, no delayed allocation; no `fallocate`, hole punching, xattrs, ACLs, `mknod`, project quotas | open |
