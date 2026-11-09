@@ -22,6 +22,33 @@ Last review: 2026-08-01
 - **Real hardware timer IRQ on metal** (`arch_hw.c`): 8259 PIC remapped to vectors 0x20-0x2F, PIT programmed to 100 Hz, IRQ ISR stubs 32-47, EOI handling, `sti`, and a tick counter incremented from IRQ0. Verified in QEMU: `TIMER_IRQ_OK ticks=3` (bounded spin confirms periodic delivery), boot continues to CLI with interrupts enabled.
 - Local APIC initialization and AP startup now provide the runtime interrupt foundation for SMP scheduling; the legacy PIC/PIT route remains the early/QEMU-compatible timer path.
 
+## AP start-up under VirtualBox (2026-11-09)
+
+Found by booting the `.ova` in VirtualBox (AHCI ICH8, four cores, hardware
+virtualisation), which no gate does: the machine never left userland. One AP of
+three came up; the kernel task that was starting them was never seen again; the
+other two stayed in OVMF's parking loop (the VirtualBox debugger put them at a
+firmware address on the firmware's page tables). It was there before the ext4
+root: the bare-ESP image stops the same way.
+
+- **Fixed** (`apic.c`): the INIT-SIPI-SIPI sequence runs on one core with
+  interrupts off, each IPI's two LAPIC writes too, and the second SIPI goes only
+  to a core that has not answered the first. The kernel task was preemptible,
+  and the core the first SIPI woke took tasks at once.
+- **Fixed**: PIT channel 2 stopped counting down once an AP was running, and the
+  BSP waited on it for ever with the timer off. The delay is bounded and says so
+  the first time (`PIT channel 2 did not count down`); the bound was hit in two
+  boots of three.
+- **Measured**: seven VirtualBox boots after the fixes, four cores online in
+  every one, userland finished in every one that was given ten minutes; six
+  QEMU boots clean.
+- **Open**: the LAPIC timer is calibrated against the same PIT, and under
+  VirtualBox the count varies more than fourfold between boots (0x3ab2 to
+  0xffe4). Time then runs at the wrong rate: the self-test's job-control phase,
+  which sleeps in 10 ms steps, took up to two and a half minutes. Calibrating
+  against the ACPI PM timer, or the hypervisor's own frequency leaf, would end
+  it. No gate boots VirtualBox, so none of this is gated.
+
 ## Pending
 - Point the on-metal handler at the live kernel `trap_state` and current PID (currently a bring-up-local trap_state) so KILL_CURRENT can terminate a real process.
 - Drive the scheduler from the real timer tick (preemption) instead of the host-modeled timer path.
