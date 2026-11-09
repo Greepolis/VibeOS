@@ -113,6 +113,11 @@ do_tests() {
     pc="$(bash scripts/dev/verify-ext4-powercut.sh "$d" 23 | tail -1)"
     echo "$pc"
     case "$pc" in ext4_powercut=ok*|ext4_powercut=skip*) ;; *) t=1 ;; esac
+    # Random operations against Linux (ext4.md step 5): sixty seeds and twelve
+    # with power cuts here, thousands in the nightly.
+    local et
+    et="$(bash scripts/dev/verify-ext4-torture.sh "$d")" || t=1
+    echo "$et" | tail -2
     if [ "$k" -eq 0 ] && [ "$b" -eq 0 ] && [ "$t" -eq 0 ] && [ "$c" -eq 0 ]; then
         echo "host-tests=pass"
     else
