@@ -126,6 +126,15 @@ static void hw_runtime_supervisor_init(void) {
  * are now two separate steps with the portable kernel in between. */
 const vibeos_boot_info_t *g_saved_boot_info;
 
+/* A native root with /etc/vibeos/services: init runs that manifest rather
+ * than the boot gate's self-test, and the kernel feeds it nothing. */
+static int hw_production_root(void) {
+    vibeos_fs_node_t node;
+
+    return g_rootfs.fs != g_bootfs.fs &&
+           vibeos_fs_lookup(&g_rootfs, "/etc/vibeos/services", &node) == 0 && !node.is_dir;
+}
+
 static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     const unsigned char *init_elf = vibeos_user_hello_elf;
     uint64_t init_len = vibeos_user_hello_elf_len;
@@ -157,6 +166,13 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     /* Keyboard is live (IRQ1 unmasked). Seed a test line so the blocking read()
      * path is exercised on the non-interactive CI console; real keystrokes fill
      * the same ring on hardware. */
+    /* Only on a self-test boot. A root that says what init runs
+     * (/etc/vibeos/services, the rule init itself uses) is a system for
+     * people, and typing the self-test's script into its shell ran the test
+     * commands in front of whoever booted it (E4-023). */
+    if (hw_production_root()) {
+        vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); production root, no self-test input\n");
+    } else {
     vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); seeding read() self-test input\n");
     (void)vibeos_input_inject("vibeos\n"
                                   "mkdir DOCS\n"
@@ -314,6 +330,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "echo PIPE_OK\n"
                                   "echo VIBEOS_SELFTEST_DONE\n"
                                   "exit\n");
+    }
 
     hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);
     a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len,
