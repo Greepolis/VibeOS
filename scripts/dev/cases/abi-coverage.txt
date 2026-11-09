@@ -123,3 +123,21 @@
     return (vibeos_fs_unlink(w.mnt, w.tail) == 0) ? 0 : -VIBEOS_EIO;
 +++ new
     return -VIBEOS_EPERM;
+
+### legacy mkdir dispatches to the dirfd implementation
+--- old
+    return linux_sys_mkdirat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, mode);
++++ new
+    return -VIBEOS_EPERM;
+
+### legacy unlink dispatches to the dirfd implementation
+--- old
+    return linux_sys_unlinkat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, 0);
++++ new
+    return -VIBEOS_EPERM;
+
+### legacy readlink dispatches to the dirfd implementation
+--- old
+    return linux_sys_readlinkat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, ubuf, bufsz);
++++ new
+    return -VIBEOS_EPERM;
