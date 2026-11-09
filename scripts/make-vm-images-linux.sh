@@ -52,16 +52,35 @@ python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" "$ESP_MB" || exit 1
 # used to be the bare ESP, so an imported VM ran with no root at all. Without
 # mkfs.ext4 there is no root to make, and that is an error here: an image
 # without one is not the system.
+#
+# It is a production image (E4-023, E4-022): the root carries no test programs
+# and no fixtures, and init starts the shell rather than the boot gate's
+# self-test; the ESP carries what the firmware and the kernel read from it -
+# the loader, the kernel, INIT.ELF for a disk with no root, the swap file - and
+# not the programs or the filesystem test images. The .iso above is still the
+# full ESP: a CD holds no root partition, so it is the one medium where the
+# ESP has to be the whole system.
 DISK="$ART/vibeos_disk.img"
 ROOT_TREE="$ART/root_tree"
-rm -rf "$ROOT_TREE"
-python3 "$SCRIPT_DIR/make-root-tree.py" "$EFI_ROOT" "$ROOT_TREE" || exit 1
+PROD_EFI="$ART/efi_root_production"
+PROD_ESP="$ART/vibeos_esp_production.img"
+rm -rf "$ROOT_TREE" "$PROD_EFI"
+python3 "$SCRIPT_DIR/make-root-tree.py" "$EFI_ROOT" "$ROOT_TREE" --production || exit 1
+mkdir -p "$PROD_EFI/EFI/BOOT"
+for f in BOOTX64.EFI VIBEOSKR.ELF INIT.ELF SWAPFILE.BIN; do
+  [ -f "$EFI_ROOT/EFI/BOOT/$f" ] && cp "$EFI_ROOT/EFI/BOOT/$f" "$PROD_EFI/EFI/BOOT/"
+done
+[ -f "$EFI_ROOT/startup.nsh" ] && cp "$EFI_ROOT/startup.nsh" "$PROD_EFI/"
+PROD_ESP_MB=$(du -sm --apparent-size "$PROD_EFI" | cut -f1)
+PROD_ESP_MB=$(( PROD_ESP_MB + PROD_ESP_MB / 2 + 8 ))
+if [[ "$PROD_ESP_MB" -lt 24 ]]; then PROD_ESP_MB=24; fi
+python3 "$SCRIPT_DIR/make_esp_image.py" "$PROD_EFI" "$PROD_ESP" "$PROD_ESP_MB" || exit 1
 ROOT_MB=$(du -sm --apparent-size "$ROOT_TREE" | cut -f1)
 ROOT_MB=$(( ROOT_MB * 2 + 256 ))
-echo "[VM-IMG] building the boot disk: ESP ${ESP_MB} MiB, root ${ROOT_MB} MiB (ext4)..."
-python3 "$SCRIPT_DIR/make-boot-disk.py" make "$ESP" "$ROOT_TREE" "$DISK" "$ROOT_MB"
+echo "[VM-IMG] building the boot disk: ESP ${PROD_ESP_MB} MiB, root ${ROOT_MB} MiB (ext4), production..."
+python3 "$SCRIPT_DIR/make-boot-disk.py" make "$PROD_ESP" "$ROOT_TREE" "$DISK" "$ROOT_MB"
 rc=$?
-rm -rf "$ROOT_TREE"
+rm -rf "$ROOT_TREE" "$PROD_EFI" "$PROD_ESP"
 if [[ "$rc" -ne 0 ]]; then
   echo "[VM-IMG] ERROR: make-boot-disk.py failed (rc=$rc; 3 is no mkfs.ext4)" >&2
   exit 1

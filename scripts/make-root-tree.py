@@ -3,7 +3,7 @@
 """The native root's tree, from a build's EFI tree (docs/filesystem-design/
 hierarchy.md, ext4.md step 4).
 
-    make-root-tree.py <efi_root> <out_dir> [--marker]
+    make-root-tree.py <efi_root> <out_dir> [--marker] [--production]
 
 The root is "/": the programs go to /usr/bin, and the rest of the EFI tree -
 /corpus, /lib, /lib64, /win, /etc - comes along as it is. What stays on the
@@ -13,6 +13,13 @@ hierarchy names is made, empty where nothing goes yet.
 
 --marker writes /etc/vibeos/root, which the boot gate reads back to prove the
 guest is reading this volume and not another one.
+
+--production is the tree an image for people carries (E4-023): no test
+programs, no /corpus fixtures, no test executables under /win, and an
+/etc/vibeos/services that has init start the shell and nothing else. Without
+that file init runs its built-in table, which is the boot gate's self-test -
+two minutes of stress before a prompt, on every boot of every VM image, until
+this flag existed. hierarchy.md: "A production build MUST omit them."
 
 One script, because two callers build this tree - the boot gate's disk and
 the VM images - and two copies of the list would drift.
@@ -32,14 +39,37 @@ ROOT_TREE_DIRS = ("boot/efi", "dev", "etc/vibeos", "home", "mnt", "opt", "proc",
 # program for /usr/bin.
 ESP_ONLY = ("VIBEOSKR.ELF", "SWAPFILE.BIN")
 
+# The programs a production root keeps: init, the shells, and the small
+# native utilities. Everything else in EFI/BOOT is a test program the boot
+# gate runs. A list of what to keep rather than of what to drop, so that a new
+# test program is left out by default instead of shipped by default.
+PRODUCTION_PROGRAMS = ("INIT.ELF", "NATIVE_INIT.ELF", "BUSYBOX.ELF", "SH.ELF",
+                       "CAT", "ECHO", "LS", "WC")
 
-def make(efi_root, out, marker):
-    shutil.copytree(efi_root, out, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("*.tmp", "EFI", "startup.nsh"))
+# Test executables that sit beside the Windows DLLs.
+WIN_TESTS = ("hello.exe", "stubcall.exe")
+
+# What init starts on a production root: BusyBox's shell on the console, as a
+# session - when it ends, so does the machine's userland.
+PRODUCTION_SERVICES = """\
+# Services init starts (user/prog/init.c): <name> <path> <restart_limit> <oneshot> [<arg>]
+# BusyBox becomes the command it is invoked as, so the name is the applet.
+sh /usr/bin/BUSYBOX.ELF 0 1
+"""
+
+
+def make(efi_root, out, marker, production):
+    ignore = ["*.tmp", "EFI", "startup.nsh"]
+    if production:
+        ignore.append("corpus")
+        ignore.extend(WIN_TESTS)
+    shutil.copytree(efi_root, out, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*ignore))
     os.makedirs(os.path.join(out, "usr", "bin"), exist_ok=True)
     boot_dir = os.path.join(efi_root, "EFI", "BOOT")
     for n in sorted(os.listdir(boot_dir)):
         if n.endswith((".IMG", ".EFI", ".tmp")) or n in ESP_ONLY:
+            continue
+        if production and n not in PRODUCTION_PROGRAMS:
             continue
         shutil.copy2(os.path.join(boot_dir, n), os.path.join(out, "usr", "bin", n))
     for d in ROOT_TREE_DIRS:
@@ -47,6 +77,9 @@ def make(efi_root, out, marker):
     if marker:
         with open(os.path.join(out, "etc", "vibeos", "root"), "w") as f:
             f.write("VIBEOS_ROOT_MARKER\n")
+    if production:
+        with open(os.path.join(out, "etc", "vibeos", "services"), "w") as f:
+            f.write(PRODUCTION_SERVICES)
 
 
 def main():
@@ -54,7 +87,7 @@ def main():
     if len(args) != 2:
         print(__doc__.strip().splitlines()[3].strip())
         return 2
-    make(args[0], args[1], "--marker" in sys.argv[1:])
+    make(args[0], args[1], "--marker" in sys.argv[1:], "--production" in sys.argv[1:])
     return 0
 
 
