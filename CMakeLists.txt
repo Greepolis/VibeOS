@@ -343,13 +343,35 @@ if(VIBEOS_BUILD_TESTS)
     add_test(NAME vibeos-timer-torture COMMAND vibeos_timer_torture 1 10000)
 
     # IPC and object are the two modules removed from the coverage debt.
-    # ABI, proc and txn remain uncovered until their tests model the relevant
-    # production properties rather than nominally exercising the code.
+    # ABI has a useful scoped Linux file/descriptor/pipe/vector/path model,
+    # but remains uncovered until its broader Linux and NT surfaces have
+    # independent models.
+    # Proc and txn likewise remain uncovered until their tests discriminate
+    # the production properties rather than nominally exercising the code.
     add_executable(vibeos_module_torture tests/kernel/module_torture.c)
     target_link_libraries(vibeos_module_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_module_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-module-ipc-torture COMMAND vibeos_module_torture ipc 1 5000)
     add_test(NAME vibeos-module-object-torture COMMAND vibeos_module_torture object 1 5000)
+
+    # Linux ABI syscall sequences run through the real dispatch and handlers
+    # on ksvc_fake, against an independent descriptor/file/offset model.
+    add_executable(vibeos_abi_torture
+        tests/kernel/abi_torture.c
+        tests/kernel/ksvc_fake.c
+        kernel/core/pe.c
+        ${VIBEOS_LINUX_ABI_SOURCES})
+    # Exercise the NT personality through the same fake kernel when that
+    # optional personality is enabled.
+    if(VIBEOS_PERSONALITY_NT)
+        target_sources(vibeos_abi_torture PRIVATE ${VIBEOS_NT_ABI_SOURCES})
+        target_compile_definitions(vibeos_abi_torture PRIVATE VIBEOS_TEST_NT_ABI=1)
+    endif()
+    target_link_libraries(vibeos_abi_torture PRIVATE vibeos_kernel_core vibeos_user_core vibeos_tls)
+    target_include_directories(vibeos_abi_torture PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/kernel)
+    add_test(NAME vibeos-module-abi-torture COMMAND vibeos_abi_torture 1 4000)
 
     add_executable(vibeos_sched_torture tests/kernel/sched_torture.c)
     target_link_libraries(vibeos_sched_torture PRIVATE vibeos_kernel_core)

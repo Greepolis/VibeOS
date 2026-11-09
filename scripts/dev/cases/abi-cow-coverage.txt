@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/mm/vmspace.c
+
+### fork marks writable private pages copy-on-write in both address spaces
+--- old
+        desired = (entry & ~(PTE_WRITE | VIBEOS_PTE_SWAPOUT)) | PTE_COW_BIT;
++++ new
+        desired = entry & ~PTE_WRITE;

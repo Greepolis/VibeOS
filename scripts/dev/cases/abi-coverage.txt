@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/linux/fs.c
+
+### lseek returns the actual new position
+--- old
+    r = f->ops->seek ? f->ops->seek(f, (int64_t)off, (int)whence) : -VIBEOS_ESPIPE;
+    vibeos_file_put(f);
+    return r;
++++ new
+    r = f->ops->seek ? f->ops->seek(f, (int64_t)off, (int)whence) : -VIBEOS_ESPIPE;
+    vibeos_file_put(f);
+    return 0;
+
+### dup preserves the shared open-file-description offset
+--- old
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    return linux_fd_install(f, fdflags, min);   /* takes the reference get gave */
++++ new
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    f->pos = 0;
+    return linux_fd_install(f, fdflags, min);   /* takes the reference get gave */
+
+### pread64 leaves the shared file position unchanged
+--- old
+    r = f->ops->pread ? f->ops->pread(f, buf, len, off)
+                      : f->ops == &vibeos_fops_dir ? -VIBEOS_EISDIR : -VIBEOS_ESPIPE;
+    vibeos_file_put(f);
++++ new
+    r = f->ops->pread ? f->ops->pread(f, buf, len, off)
+                      : f->ops == &vibeos_fops_dir ? -VIBEOS_EISDIR : -VIBEOS_ESPIPE;
+    if (r >= 0) f->pos++;
+    vibeos_file_put(f);
+
+
+### pipe2 preserves the requested nonblocking mode
+--- old
+    r = vibeos_open_pipe((uint32_t)flags, ks_id(ks_current())->tgid, &rd, &wr);
++++ new
+    r = vibeos_open_pipe(0u, ks_id(ks_current())->tgid, &rd, &wr);
+
+### dup3 applies close-on-exec to the new descriptor
+--- old
+    return linux_dup_to(oldfd, newfd, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u);
++++ new
+    return linux_dup_to(oldfd, newfd, 0u);
+
+### F_DUPFD_CLOEXEC marks the duplicated descriptor
+--- old
+                                  VIBEOS_ARG_INT(cmd) == LINUX_F_DUPFD_CLOEXEC ? VIBEOS_FD_CLOEXEC : 0u);
++++ new
+                                  0u);
+
+### close_range CLOEXEC marks descriptors instead of doing nothing
+--- old
+        if (flags & LINUX_CLOSE_RANGE_CLOEXEC) {
++++ new
+        if (0 && (flags & LINUX_CLOSE_RANGE_CLOEXEC)) {
+
+### descriptor-table exhaustion reports EMFILE
+--- old
+        return fd == VIBEOS_FDT_NOMEM ? -VIBEOS_ENOMEM : -VIBEOS_EMFILE;
++++ new
+        return -VIBEOS_ENOMEM;
+
+### pwrite64 leaves the shared description offset unchanged
+--- old
+    r = f->ops->pwrite ? f->ops->pwrite(f, buf, len, off)
+                       : f->ops == &vibeos_fops_dir ? -VIBEOS_EISDIR : -VIBEOS_ESPIPE;
+    vibeos_file_put(f);
++++ new
+    r = f->ops->pwrite ? f->ops->pwrite(f, buf, len, off)
+                       : f->ops == &vibeos_fops_dir ? -VIBEOS_EISDIR : -VIBEOS_ESPIPE;
+    if (r >= 0) f->pos += (uint64_t)r;
+    vibeos_file_put(f);
+
+### fstat and newfstatat report the filesystem-visible size
+--- old
+    k.st_size = (int64_t)st->size;
++++ new
+    k.st_size = 0;
+
+### fcntl F_SETFD honors the requested descriptor flag
+--- old
+                r = vibeos_fdtable_set_flags(&ps->files, fd,
+                                             (uint32_t)arg & VIBEOS_FD_CLOEXEC) == 0 ? 0 : -VIBEOS_EBADF;
++++ new
+                r = vibeos_fdtable_set_flags(&ps->files, fd, 0u) == 0 ? 0 : -VIBEOS_EBADF;
+
+### chdir updates the process working directory used by getcwd and relative paths
+--- old
+    for (i = 0; i + 1u < VIBEOS_PATH_MAX && abs[i]; i++) {
+        ps->cwd[i] = abs[i];
+    }
++++ new
+    for (i = 0; i + 1u < VIBEOS_PATH_MAX && abs[i]; i++) {
+        ps->cwd[i] = '/';
+    }
+
+### readlinkat returns the stored symbolic-link target bytes
+--- old
+    t = vibeos_fs_readlink(w.mnt, *w.tail ? w.tail : "/", raw, sizeof(raw));
++++ new
+    t = -VIBEOS_EINVAL;
+
+### fork copies the parent's descriptor table while sharing descriptions
+--- old
+    r = vibeos_fdtable_copy(&dst->files, &src->files);
++++ new
+    r = 0;
+
+### mkdirat creates the requested directory through its parent dirfd
+--- old
+    if (vibeos_fs_mkdir(w.mnt, w.tail) != 0) {
++++ new
+    if (1) {
+
+### unlinkat removes the named non-directory entry
+--- old
+    return (vibeos_fs_unlink(w.mnt, w.tail) == 0) ? 0 : -VIBEOS_EIO;
++++ new
+    return -VIBEOS_EPERM;
