@@ -837,9 +837,9 @@ static int test_memory_model(unsigned round) {
     const uint64_t map_flags = 0x100022u; /* MAP_FIXED_NOREPLACE | PRIVATE | ANONYMOUS */
     const uint64_t fixed_flags = 0x32u;    /* MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS */
     const uint64_t anonymous_only = 0x20u; /* MAP_ANONYMOUS without PRIVATE/SHARED */
-    const uint8_t zero[sizeof(first)] = {0};
     const uint64_t rw = 3u;               /* PROT_READ | PROT_WRITE */
     const uint8_t first[] = {0x11u, 0x22u, 0x33u, 0x44u};
+    const uint8_t zero[sizeof(first)] = {0};
     const uint8_t second[] = {0xA1u, 0xB2u, 0xC3u, 0xD4u};
     const uint8_t file_data[] = {0x51u, 0x62u, 0x73u, 0x84u};
     const uint8_t private_data[] = {0x91u, 0x92u, 0x93u, 0x94u};
