@@ -27,7 +27,10 @@
 
 #include <stdint.h>
 
+#define SYS_read   0
 #define SYS_write  1
+#define SYS_open   2
+#define SYS_close  3
 #define SYS_fork   57
 #define SYS_execve 59
 #define SYS_exit   60
@@ -175,7 +178,117 @@ static service_t services[] = {
     {"svc-bomb", "/usr/bin/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
 };
 
-#define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))
+/* ---- the manifest on the root ------------------------------------------- */
+
+/* A system that is not the boot gate's says what it runs in
+ * /etc/vibeos/services, one service a line:
+ *
+ *     <name> <path> <restart_limit> <oneshot> [<arg>]
+ *
+ * '#' starts a comment. Without the file - the gate's disk, a bare ESP - init
+ * runs the table above, which is the self-test (E4-023: the test workload was
+ * the only thing any image could run, so an image for people booted the
+ * gate's two minutes of stress before it reached a prompt). The file is read
+ * whole into one buffer and the table points into it. */
+#define MANIFEST_MAX 16
+static char manifest_text[2048];
+static service_t manifest[MANIFEST_MAX];
+static service_t *svcs = services;
+static int nsvcs = (int)(sizeof(services) / sizeof(services[0]));
+
+static int is_space(char c) {
+    return c == ' ' || c == '\t' || c == '\r';
+}
+
+/* A non-negative decimal, or -1. */
+static int parse_num(const char *t) {
+    int v = 0;
+
+    if (!t || !*t) {
+        return -1;
+    }
+    for (; *t; t++) {
+        if (*t < '0' || *t > '9' || v > 1000) {
+            return -1;
+        }
+        v = v * 10 + (*t - '0');
+    }
+    return v;
+}
+
+static void load_manifest(void) {
+    int64_t fd = sys3(SYS_open, (uint64_t)(uintptr_t)"/etc/vibeos/services", 0, 0);
+    int64_t got = 0, n;
+    int count = 0, bad = 0;
+    char *at, *end;
+
+    if (fd < 0) {
+        say("NATIVE_INIT_MANIFEST builtin", 0, -1, -1);
+        return;
+    }
+    while (got < (int64_t)sizeof(manifest_text) - 1 &&
+           (n = sys3(SYS_read, (uint64_t)fd, (uint64_t)(uintptr_t)(manifest_text + got),
+                     (uint64_t)(sizeof(manifest_text) - 1u - (uint64_t)got))) > 0) {
+        got += n;
+    }
+    sys3(SYS_close, (uint64_t)fd, 0, 0);
+    manifest_text[got] = 0;
+
+    at = manifest_text;
+    end = manifest_text + got;
+    while (at < end) {
+        char *line = at, *tok[5];
+        int k = 0;
+
+        while (at < end && *at != '\n') {
+            at++;
+        }
+        *at++ = 0;
+        /* Comments end the line; then split on blanks, in place. */
+        {
+            char *c = line;
+            while (*c && *c != '#') {
+                c++;
+            }
+            *c = 0;
+        }
+        while (*line && k < 5) {
+            while (is_space(*line)) {
+                *line++ = 0;
+            }
+            if (!*line) {
+                break;
+            }
+            tok[k++] = line;
+            while (*line && !is_space(*line)) {
+                line++;
+            }
+        }
+        if (k == 0) {
+            continue;
+        }
+        if (k < 4 || count >= MANIFEST_MAX || parse_num(tok[2]) < 0 || parse_num(tok[3]) < 0) {
+            bad++;
+            continue;
+        }
+        manifest[count].name = tok[0];
+        manifest[count].path = tok[1];
+        manifest[count].restart_limit = parse_num(tok[2]);
+        manifest[count].oneshot = parse_num(tok[3]) != 0;
+        manifest[count].arg = k == 5 ? tok[4] : 0;
+        manifest[count].restarts = 0;
+        manifest[count].pid = -1;
+        manifest[count].state = SVC_STOPPED;
+        count++;
+    }
+    /* A file that names nothing usable is a broken system, not a reason to run
+     * the self-test on somebody's machine: say so, and run nothing. */
+    say("NATIVE_INIT_MANIFEST file", 0, count, bad);
+    svcs = manifest;
+    nsvcs = count;
+}
+
+#define SERVICE_COUNT nsvcs
 
 static int start_service(service_t *svc) {
     int64_t child = sys3(SYS_fork, 0, 0, 0);
@@ -207,8 +320,8 @@ static service_t *service_by_pid(int64_t pid) {
     int i;
 
     for (i = 0; i < SERVICE_COUNT; i++) {
-        if (services[i].state == SVC_RUNNING && services[i].pid == pid) {
-            return &services[i];
+        if (svcs[i].state == SVC_RUNNING && svcs[i].pid == pid) {
+            return &svcs[i];
         }
     }
     return 0;
@@ -223,13 +336,14 @@ int vibeos_main(int argc, char **argv, char **envp) {
     (void)envp;
 
     say("NATIVE_INIT_READY", 0, -1, -1);
+    load_manifest();
 
     for (i = 0; i < SERVICE_COUNT; i++) {
-        (void)start_service(&services[i]);
+        (void)start_service(&svcs[i]);
     }
     /* Kept for the gate that predates the manifest: it says init is a parent
      * rather than the workload wearing init's name. */
-    say("NATIVE_INIT_CHILD_PID=", 0, services[0].pid, -1);
+    say("NATIVE_INIT_CHILD_PID=", 0, nsvcs > 0 ? svcs[0].pid : -1, -1);
 
     for (;;) {
         int64_t status = 0;
@@ -277,7 +391,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
         }
         live = 0;
         for (i = 0; i < SERVICE_COUNT; i++) {
-            if (services[i].state == SVC_RUNNING) {
+            if (svcs[i].state == SVC_RUNNING) {
                 live++;
             }
         }
@@ -289,11 +403,11 @@ int vibeos_main(int argc, char **argv, char **envp) {
     /* A summary the CLI and the gate can both read, and proof that init is
      * still here after a service failed. */
     for (i = 0; i < SERVICE_COUNT; i++) {
-        const char *state = services[i].state == SVC_RUNNING ? "RUNNING"
-                          : services[i].state == SVC_FAILED ? "FAILED"
+        const char *state = svcs[i].state == SVC_RUNNING ? "RUNNING"
+                          : svcs[i].state == SVC_FAILED ? "FAILED"
                           : "STOPPED";
-        say("SVC_STATUS", services[i].name, services[i].restarts, -1);
-        say(state, services[i].name, -1, -1);
+        say("SVC_STATUS", svcs[i].name, svcs[i].restarts, -1);
+        say(state, svcs[i].name, -1, -1);
     }
     say("NATIVE_INIT_CHILD_EXITED", 0, -1, -1);
     return 0;
