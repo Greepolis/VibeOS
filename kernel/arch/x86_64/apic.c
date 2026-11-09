@@ -262,10 +262,21 @@ void vibeos_x86_64_lapic_enable(uint32_t spurious_vector) {
     lapic_write(LAPIC_SVR, 0x100u | (spurious_vector & 0xFFu));
 }
 
+/* Delays whose PIT never reached zero and were ended by the bound instead. */
+static volatile uint32_t g_pit_delay_bounded;
+
 /* Busy-wait `us` microseconds using PIT channel 2 as a one-shot reference.
- * Needs no interrupts, so it works during AP startup with IF clear. */
+ * Needs no interrupts, so it works during AP startup with IF clear.
+ *
+ * Bounded: on VirtualBox, once the first AP is running, channel 2's output
+ * stopped rising and the BSP waited here for ever, inside the AP start, with
+ * the timer off - the remaining cores never woke and the machine never left
+ * userland. A wait on a device nobody controls ends on its own, and says so
+ * the first time. Each poll is a port read, a microsecond or more on any
+ * machine, so the bound is many times the delay asked for. */
 static void apic_udelay(uint32_t us) {
     uint32_t count = (uint32_t)(((uint64_t)us * 1193182ull) / 1000000ull);
+    uint64_t polls = 0, bound = (uint64_t)us * 64u + 100000u;
     uint8_t gate;
     if (count == 0u) {
         count = 1u;
@@ -280,6 +291,12 @@ static void apic_udelay(uint32_t us) {
     ap_outb(0x42, (uint8_t)(count >> 8));
     ap_outb(0x61, gate);                              /* start counting */
     while ((ap_inb(0x61) & 0x20u) == 0u) {
+        if (++polls > bound) {
+            if (g_pit_delay_bounded++ == 0u) {
+                vibeos_x86_64_serial_puts("[APIC] PIT channel 2 did not count down; delay ended by its bound\n");
+            }
+            return;
+        }
         __asm__ __volatile__("pause" ::: "memory");
     }
 }
