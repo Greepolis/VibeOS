@@ -986,6 +986,7 @@ static int test_memory_model(unsigned round) {
         return fail(round, "mmap did not reserve the requested two-page interval");
     }
     if (call_sys6(ABI_NR_MMAP, base, page, rw, map_flags, ~0ull, 0u) != -VIBEOS_EEXIST ||
+        vm_model_replace(vm, &vm_count, base, base + page, rw, 0) == 0 ||
         call_sys(ABI_NR_MUNMAP, base + 1u, page, 0u, 0u) != -VIBEOS_EINVAL ||
         call_sys(ABI_NR_MPROTECT, base + 1u, page, 1u, 0u) != -VIBEOS_EINVAL) {
         return fail(round, "mmap overlap or unaligned range validation differs");
