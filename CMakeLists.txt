@@ -345,9 +345,8 @@ if(VIBEOS_BUILD_TESTS)
     # IPC and object are the two modules removed from the coverage debt.
     # ABI has a useful scoped Linux file/descriptor/pipe/vector/path model,
     # but remains uncovered until its broader Linux and NT surfaces have
-    # independent models.
-    # Proc and txn likewise remain uncovered until their tests discriminate
-    # the production properties rather than nominally exercising the code.
+    # independent models. PROC has an independent lifecycle model; TXN
+    # remains uncovered until its test discriminates commit order.
     add_executable(vibeos_module_torture tests/kernel/module_torture.c)
     target_link_libraries(vibeos_module_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_module_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -372,6 +371,13 @@ if(VIBEOS_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/kernel)
     add_test(NAME vibeos-module-abi-torture COMMAND vibeos_abi_torture 1 4000)
+
+    # The portable process table keeps termination tombstones until explicit
+    # reap; this model proves the bounded process slots can be reused safely.
+    add_executable(vibeos_proc_torture tests/kernel/proc_torture.c)
+    target_link_libraries(vibeos_proc_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_proc_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-module-proc-torture COMMAND vibeos_proc_torture 1 5000)
 
     add_executable(vibeos_sched_torture tests/kernel/sched_torture.c)
     target_link_libraries(vibeos_sched_torture PRIVATE vibeos_kernel_core)

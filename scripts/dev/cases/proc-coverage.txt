@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/proc/process.c
+
+### reap leaves the terminated process slot allocated
+--- old
+    entry->pid = 0;
+    entry->parent_pid = 0;
+    entry->process_group_id = 0;
+    entry->session_id = 0;
+    entry->session_leader = 0;
+    entry->in_use = 0;
+    entry->state = VIBEOS_PROCESS_STATE_TERMINATED;
++++ new
+    entry->pid = 0;
+    entry->parent_pid = 0;
+    entry->process_group_id = 0;
+    entry->session_id = 0;
+    entry->session_leader = 0;
+    entry->in_use = 1;
+    entry->state = VIBEOS_PROCESS_STATE_TERMINATED;

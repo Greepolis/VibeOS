@@ -263,6 +263,14 @@ of memory and took a day to attribute. And a caller identity read from an
 argument the caller supplies, which is not a weak security model but the absence
 of one.
 
+**Current state (2026-11-09).** The slot-reclamation defect is addressed in the
+portable model: termination leaves a queryable tombstone, and the new
+`vibeos_proc_reap()` operation releases the slot only after owned threads are
+gone. A seeded lifecycle torture checks child reparenting, tombstone lifetime,
+capacity exhaustion and reuse. This does not make the file reachable. Thread
+creation still lacks a caller check and caller identity remains caller-supplied;
+the C3 gate therefore remains closed.
+
 **The gate, and it is absolute.**
 
 > Nothing here may become reachable from ring 3 before those three are closed.
