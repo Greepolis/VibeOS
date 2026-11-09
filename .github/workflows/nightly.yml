@@ -895,6 +895,17 @@ jobs:
       # SQLite and Lua from their pinned, hash-checked sources. LTP is left out
       # here: its list of built tests is recorded separately and takes a few
       # minutes more to build than everything else in this job.
+      #
+      # The archives are kept between runs: www.lua.org timed out on the
+      # 2026-11-09 nightly and failed the job before anything was measured. The
+      # cache only saves a download - corpus-build.sh still checks every
+      # archive against its pinned sha256 - and the key moves with sources.txt.
+      - name: Cache the corpus sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/vibeos-corpus
+          key: corpus-sources-${{ hashFiles('tests/corpus/sources.txt') }}
+
       - name: Build the third-party corpus
         run: bash scripts/dev/corpus-build.sh build --no-ltp
 
