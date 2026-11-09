@@ -3289,6 +3289,10 @@ def main():
                         problems.append("esp_not_at_boot_efi")
                     elif "VIBEOS_ROOT_MARKER" not in text:
                         problems.append("native_root_not_read")
+                    elif "[IO] read /usr/bin/INIT.ELF from the root" not in text:
+                        # init is a program like the others (E4-024): with a
+                        # root, it comes from /usr/bin, not from the ESP.
+                        problems.append("init_not_from_root")
                 # A pipeline is the first thing anyone tries on a shell, and
                 # the way it fails is by hanging rather than by erroring - so
                 # PIPE_OK arriving at all is the check. It is printed after

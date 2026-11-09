@@ -2045,15 +2045,24 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         /* After the volume is mounted and before anything else uses it. The
          * file it leaves behind is small and is overwritten every boot. */
         hw_write_proof();
-        long n = vibeos_fs_read_file(&g_bootfs, "EFI/BOOT/INIT.ELF",
-                                      g_disk_init_elf, sizeof(g_disk_init_elf));
+        /* init is a program like the others, so it comes from /usr/bin on the
+         * root (E4-024). The ESP's copy is only for a disk with no native
+         * root - a bare ESP, or the .iso - where the root *is* the ESP. */
+        int from_root = g_rootfs.fs != g_bootfs.fs;
+        long n = from_root ? vibeos_fs_read_file(&g_rootfs, "/usr/bin/INIT.ELF",
+                                                  g_disk_init_elf, sizeof(g_disk_init_elf))
+                           : vibeos_fs_read_file(&g_bootfs, "EFI/BOOT/INIT.ELF",
+                                                  g_disk_init_elf, sizeof(g_disk_init_elf));
         if (n > 0) {
             g_disk_init_len = n;
             hw_log(VIBEOS_LOG_INFO, 1u, (uint64_t)n, 0,
                    "init program read from disk");
-            vibeos_x86_64_serial_puts("[FAT] read INIT.ELF from disk, size=0x");
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts(from_root ? "[IO] read /usr/bin/INIT.ELF from the root, size=0x"
+                                                : "[FAT] read INIT.ELF from the ESP (no native root), size=0x");
             vibeos_x86_64_serial_print_hex((uint64_t)n);
             vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
         } else {
             hw_log(VIBEOS_LOG_ERROR, 2u, 0, 0,
                    "init program missing from the boot volume");
