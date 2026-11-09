@@ -33,6 +33,32 @@ static inline uint8_t ap_inb(uint16_t p) {
     __asm__ __volatile__("inb %1,%0" : "=a"(v) : "Nd"(p));
     return v;
 }
+static inline uint32_t ap_inl(uint16_t p) {
+    uint32_t v;
+    __asm__ __volatile__("inl %1,%0" : "=a"(v) : "Nd"(p));
+    return v;
+}
+
+/* ---- the ACPI PM timer ---------------------------------------------------- */
+
+/* A free-running counter at 3.579545 MHz that the FADT describes, 24 or 32
+ * bits wide. It is the machine's time reference here: the LAPIC timer is
+ * calibrated against it, and the short delays of AP start-up are measured on
+ * it. PIT channel 2 did both before, and under VirtualBox it is not a clock -
+ * its output stopped rising once an AP ran, and the LAPIC calibration it gave
+ * varied more than fourfold between boots, so time ran at the wrong rate.
+ * The PIT stays as the fallback for a FADT that names no timer. */
+#define PM_TIMER_HZ 3579545u
+
+static uint16_t g_pm_port;      /* 0: none described */
+static uint32_t g_pm_mask;      /* 0xFFFFFF, or 0xFFFFFFFF with TMR_VAL_EXT */
+
+static void acpi_parse_fadt(const uint8_t *fadt);
+
+/* Ticks of the PM timer between two reads, across one wrap. */
+static uint32_t pm_since(uint32_t from) {
+    return (ap_inl(g_pm_port) - from) & g_pm_mask;
+}
 
 /* ---- MMIO ---------------------------------------------------------------- */
 
@@ -189,7 +215,8 @@ int vibeos_x86_64_acpi_init(uint64_t rsdp_addr) {
         tbl = (const uint8_t *)(uintptr_t)addr;
         if (sig_eq(tbl, "APIC", 4)) {
             apic_parse_madt(tbl);
-            break;
+        } else if (sig_eq(tbl, "FACP", 4)) {
+            acpi_parse_fadt(tbl);
         }
     }
 
@@ -207,6 +234,33 @@ int vibeos_x86_64_acpi_init(uint64_t rsdp_addr) {
     vibeos_x86_64_serial_print_hex(g_ioapic_base);
     vibeos_x86_64_serial_puts("\n");
     return 0;
+}
+
+/* PM_TMR_BLK at 76 (a port), PM_TMR_LEN at 91 (4 when there is a timer), the
+ * flags at 112 (bit 8, TMR_VAL_EXT: 32 bits rather than 24), and from ACPI 2.0
+ * X_PM_TMR_BLK at 208, a generic address whose space 1 is I/O. The extended
+ * field wins when it names an I/O port; a timer in memory space is not used. */
+static void acpi_parse_fadt(const uint8_t *fadt) {
+    uint32_t len = ld32(fadt + 4);
+    uint64_t port = 0;
+
+    if (len < 116u || fadt[91] != 4u) {
+        return;
+    }
+    port = ld32(fadt + 76);
+    if (len >= 220u && fadt[208] == 1u && ld64(fadt + 212) != 0u) {
+        port = ld64(fadt + 212);
+    }
+    if (port == 0u || port > 0xFFFFu) {
+        return;
+    }
+    g_pm_port = (uint16_t)port;
+    g_pm_mask = (ld32(fadt + 112) & 0x100u) != 0u ? 0xFFFFFFFFu : 0x00FFFFFFu;
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[ACPI] PM timer: port=0x");
+    vibeos_x86_64_serial_print_hex(g_pm_port);
+    vibeos_x86_64_serial_puts(g_pm_mask == 0xFFFFFFFFu ? " bits=32\n" : " bits=24\n");
+    vibeos_x86_64_serial_unlock();
 }
 
 uint32_t vibeos_x86_64_acpi_cpu_count(void) { return g_cpu_count; }
@@ -278,6 +332,24 @@ static void apic_udelay(uint32_t us) {
     uint32_t count = (uint32_t)(((uint64_t)us * 1193182ull) / 1000000ull);
     uint64_t polls = 0, bound = (uint64_t)us * 64u + 100000u;
     uint8_t gate;
+
+    if (g_pm_port != 0u) {
+        uint32_t want = (uint32_t)(((uint64_t)us * PM_TIMER_HZ) / 1000000ull) + 1u;
+        uint32_t from = ap_inl(g_pm_port);
+
+        /* Bounded like the PIT's: a counter that stops is a device fault, not
+         * a reason to wait for ever. */
+        while (pm_since(from) < want) {
+            if (++polls > bound) {
+                if (g_pit_delay_bounded++ == 0u) {
+                    vibeos_x86_64_serial_puts("[APIC] PM timer did not advance; delay ended by its bound\n");
+                }
+                return;
+            }
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+        return;
+    }
     if (count == 0u) {
         count = 1u;
     }
@@ -318,9 +390,11 @@ void vibeos_x86_64_lapic_timer_start(uint32_t hz, uint32_t vector) {
         if (g_timer_count < 1000u) {
             g_timer_count = 1000u;          /* implausibly slow read: use a floor */
         }
+        vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[APIC] LAPIC timer calibrated: count=0x");
         vibeos_x86_64_serial_print_hex(g_timer_count);
-        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_puts(g_pm_port != 0u ? " ref=pm_timer\n" : " ref=pit\n");
+        vibeos_x86_64_serial_unlock();
     }
 
     lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_PERIODIC | (vector & 0xFFu));

@@ -1632,6 +1632,13 @@ def main():
             elif int(cpus.group(1), 16) != EXPECTED_CPUS:
                 problems.append(f"cpus_online={int(cpus.group(1), 16)}_expected={EXPECTED_CPUS}")
 
+            # The LAPIC timer is calibrated against the ACPI PM timer, which
+            # QEMU's q35 describes in its FADT. Falling back to the PIT is
+            # silent and still boots here - QEMU's PIT is a fine clock - and is
+            # exactly what made time run at the wrong rate under VirtualBox.
+            if "LAPIC timer calibrated" in text and " ref=pm_timer" not in text:
+                problems.append("lapic_timer_not_calibrated_by_pm_timer")
+
             # A recovered fault still means something went wrong that the boot
             # was not supposed to hit. There are exactly three exceptions, and
             # all are deliberate: the int3 self-test; svc-crash, which

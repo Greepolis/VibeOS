@@ -42,12 +42,17 @@ root: the bare-ESP image stops the same way.
 - **Measured**: seven VirtualBox boots after the fixes, four cores online in
   every one, userland finished in every one that was given ten minutes; six
   QEMU boots clean.
-- **Open**: the LAPIC timer is calibrated against the same PIT, and under
-  VirtualBox the count varies more than fourfold between boots (0x3ab2 to
-  0xffe4). Time then runs at the wrong rate: the self-test's job-control phase,
-  which sleeps in 10 ms steps, took up to two and a half minutes. Calibrating
-  against the ACPI PM timer, or the hypervisor's own frequency leaf, would end
-  it. No gate boots VirtualBox, so none of this is gated.
+- **Fixed, the same day**: the LAPIC timer was calibrated against the same
+  PIT, and under VirtualBox the count varied more than fourfold between boots
+  (0x3ab2 to 0xffe4) - time ran at the wrong rate, and the self-test's
+  job-control phase, which sleeps in 10 ms steps, took up to two and a half
+  minutes. The reference is the ACPI PM timer now (3.579545 MHz, from the
+  FADT), for the calibration and for the AP start-up delays; the PIT is the
+  fallback when the FADT names none. Four VirtualBox boots: counts within 1.5%
+  of each other and of QEMU's (0x99826 to 0x9c8d3, QEMU 0x9a1ed), the job phase
+  0 to 3 s, the bound never hit. Gated in QEMU
+  (`lapic_timer_not_calibrated_by_pm_timer`, `apic-pm-timer-boot.txt`, red).
+  No gate boots VirtualBox.
 
 ## Pending
 - Point the on-metal handler at the live kernel `trap_state` and current PID (currently a bring-up-local trap_state) so KILL_CURRENT can terminate a real process.
