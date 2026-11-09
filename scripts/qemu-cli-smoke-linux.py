@@ -95,14 +95,6 @@ DISK_ARGS = {
 # job that had never had xorriso in the first place.
 ABSENT_IS_FINE = ("no image", "no such file on this medium")
 
-# The native root's tree as the build makes it (docs/filesystem-design/
-# hierarchy.md): every directory the hierarchy names, empty until step 4's
-# second half moves programs into /usr. /dev, /proc, /run and /tmp are mount
-# points.
-ROOT_TREE_DIRS = ("boot/efi", "dev", "etc/vibeos", "home", "mnt", "opt", "proc", "root",
-                  "run", "sys", "tmp", "usr/bin", "usr/lib/windows", "usr/share",
-                  "var/cache", "var/lib/windows", "var/log", "var/tmp")
-
 LOG_DISK_SECTORS = 8192          # 4 MiB, addressed by sector, no filesystem
 LOG_DISK_ARGS = {
     "virtio": ["-device", "ich9-ahci,id=ahci",
@@ -1192,24 +1184,12 @@ def main():
         # the hierarchy's tree. Without mkfs.ext4 the disk is the bare ESP as
         # before, and the verdict says root_absent.
         root_tree = tempfile.mkdtemp(prefix="vibeos-root-")
-        # The root is "/": the programs go to /usr/bin, and the rest of the
-        # ESP's tree - /corpus, /lib, /lib64, /win, /etc - comes along as it
-        # is. What stays on the ESP alone is what the firmware and the kernel
-        # read from it themselves: the loader, the kernel, INIT.ELF, the loop
-        # images and the swap file (g_bootfs). The ESP still carries the
-        # programs too, for the bare-ESP layout (root_absent).
-        shutil.copytree(efi_root, root_tree, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("*.tmp", "EFI", "startup.nsh"))
-        os.makedirs(os.path.join(root_tree, "usr", "bin"), exist_ok=True)
-        boot_dir = os.path.join(efi_root, "EFI", "BOOT")
-        for n in sorted(os.listdir(boot_dir)):
-            if n.endswith((".IMG", ".EFI", ".tmp")) or n in ("VIBEOSKR.ELF", "SWAPFILE.BIN"):
-                continue
-            shutil.copy2(os.path.join(boot_dir, n), os.path.join(root_tree, "usr", "bin", n))
-        for d in ROOT_TREE_DIRS:
-            os.makedirs(os.path.join(root_tree, d), exist_ok=True)
-        with open(os.path.join(root_tree, "etc", "vibeos", "root"), "w") as f:
-            f.write("VIBEOS_ROOT_MARKER\n")
+        # The tree is make-root-tree.py's, which the VM images use too.
+        subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "make-root-tree.py"),
+                        efi_root, root_tree, "--marker"],
+                       check=True, stdout=subprocess.DEVNULL)
         disk_img = os.path.abspath(f"qemu-cli-disk{suffix}.img")
         r = subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
                             os.path.join(os.path.dirname(os.path.abspath(__file__)),
