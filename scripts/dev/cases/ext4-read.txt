@@ -7,9 +7,13 @@
 
 ### an index node always descends into its first child
 --- old
-        while (i + 1u < entries && rd32(node + 12u + (i + 1u) * 12u) <= n) {
+            if (rd32(e) > n) {
+                break;
+            }
 +++ new
-        while (0 && i + 1u < entries && rd32(node + 12u + (i + 1u) * 12u) <= n) {
+            if (rd32(e) > n || 1) {
+                break;
+            }
 
 ### a block inside an extent is read at the extent's start
 --- old

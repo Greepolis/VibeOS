@@ -461,14 +461,50 @@ static int extent_header_ok(const uint8_t *node, uint32_t room, uint32_t *entrie
  * inode's sixty bytes of i_block; each level down is a block with its own
  * checksum in a tail after its entries, seeded by the inode that owns it. A
  * block nobody wrote - past every extent, or in an extent marked
- * uninitialised - reads as a hole: 0. */
+ * uninitialised - reads as a hole: 0.
+ *
+ * A level below the root is read a piece at a time - its header, the entries
+ * one by one, its checksum a sector at a time - and never whole onto the
+ * stack. It used to be a 4 KiB buffer in this frame, under a directory scan's
+ * own 4 KiB, under exec: once ext4 was the root, a Debug build's NT process
+ * creation ran into the guard page below its kernel stack here (E4-014). */
+static int extent_entry(vibeos_ext2_t *fs, const uint8_t *root, uint64_t blk, uint32_t i, uint8_t e[12]) {
+    uint32_t k;
+
+    if (blk == 0u) {
+        for (k = 0; k < 12u; k++) {
+            e[k] = root[12u + i * 12u + k];
+        }
+        return 0;
+    }
+    return ext2_read_part(fs, blk, 12u + i * 12u, e, 12u);
+}
+
+static int extent_block_csum_ok(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint64_t blk,
+                                uint32_t at) {
+    uint8_t piece[VIBEOS_BLOCK_SIZE], tail[4];
+    uint32_t crc = ext2_inode_seed(fs, ino, inode), off = 0;
+
+    while (off < at) {
+        uint32_t take = at - off < VIBEOS_BLOCK_SIZE ? at - off : VIBEOS_BLOCK_SIZE;
+
+        if (ext2_read_part(fs, blk, off, piece, take) != 0) {
+            return 0;
+        }
+        crc = vibeos_ext2_crc32c(crc, piece, take);
+        off += take;
+    }
+    return ext2_read_part(fs, blk, at, tail, 4u) == 0 && crc == rd32(tail);
+}
+
 static int ext2_map_extent(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint32_t n,
                            uint64_t *out) {
-    uint8_t block[EXT2_MAX_BLOCK];
-    const uint8_t *node = inode + 40u;
-    uint32_t room = 60u, entries, depth, level, i;
+    uint8_t hdr[12], e[12];
+    const uint8_t *root = inode + 40u;
+    uint64_t blk = 0;   /* the node being walked: 0 is the root in the inode */
+    uint32_t entries, depth, level, i;
 
-    if (extent_header_ok(node, room, &entries, &depth) != 0) {
+    if (extent_header_ok(root, 60u, &entries, &depth) != 0) {
         return -1;
     }
     for (level = 0; depth > 0u; level++) {
@@ -480,32 +516,42 @@ static int ext2_map_extent(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode
             return 0;
         }
         /* The last index whose first block is at or below n. */
-        i = 0;
-        while (i + 1u < entries && rd32(node + 12u + (i + 1u) * 12u) <= n) {
-            i++;
-        }
-        child = rd32(node + 12u + i * 12u + 4u) | ((uint64_t)rd16(node + 12u + i * 12u + 8u) << 32);
-        if (ext2_read_block(fs, child, block) != 0) {
+        if (extent_entry(fs, root, blk, 0u, e) != 0) {
             return -1;
         }
-        node = block;
-        room = fs->block_size;
-        if (extent_header_ok(node, room, &entries, &depth) != 0 || depth != want_depth) {
+        child = rd32(e + 4u) | ((uint64_t)rd16(e + 8u) << 32);
+        for (i = 1; i < entries; i++) {
+            if (extent_entry(fs, root, blk, i, e) != 0) {
+                return -1;
+            }
+            if (rd32(e) > n) {
+                break;
+            }
+            child = rd32(e + 4u) | ((uint64_t)rd16(e + 8u) << 32);
+        }
+        if (child == 0u || child >= fs->blocks_count || ext2_read_part(fs, child, 0u, hdr, 12u) != 0) {
+            return -1;
+        }
+        blk = child;
+        if (extent_header_ok(hdr, fs->block_size, &entries, &depth) != 0 || depth != want_depth) {
             return -1;   /* a child that is not one level below its parent: a loop, or garbage */
         }
         if (fs->csum) {
-            uint32_t at = 12u + rd16(node + 4u) * 12u;
+            uint32_t at = 12u + rd16(hdr + 4u) * 12u;
 
-            if (at + 4u > fs->block_size ||
-                vibeos_ext2_crc32c(ext2_inode_seed(fs, ino, inode), node, at) != rd32(node + at)) {
+            if (at + 4u > fs->block_size || !extent_block_csum_ok(fs, ino, inode, child, at)) {
                 return ext2_csum_bad(child);
             }
         }
     }
     for (i = 0; i < entries; i++) {
-        const uint8_t *e = node + 12u + i * 12u;
-        uint32_t first = rd32(e), len = rd16(e + 4u);
+        uint32_t first, len;
 
+        if (extent_entry(fs, root, blk, i, e) != 0) {
+            return -1;
+        }
+        first = rd32(e);
+        len = rd16(e + 4u);
         if (len > 32768u) {
             len -= 32768u;   /* uninitialised: allocated, and reads as zeros */
             if (n >= first && n - first < len) {
