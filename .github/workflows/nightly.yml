@@ -363,6 +363,59 @@ jobs:
           bash scripts/dev/verify-ext4-powercut.sh build 1 | tee /tmp/pc.log
           tail -1 /tmp/pc.log | grep -q '^ext4_powercut=ok'
 
+  ext4-torture:
+    name: ext4 Torture (random operations against Linux, e2fsck, power cuts)
+    # module: fs
+    # docs/filesystem-design/ext4.md step 5: random operations run by the
+    # host's kernel and by the driver, the trees compared, e2fsck after every
+    # seed, and power cuts at random writes. The seed range moves with the run
+    # number, so each night covers seeds no earlier night did; a failing seed
+    # is printed and its volume and script are uploaded.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential e2fsprogs
+
+      - name: Build the exerciser
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVIBEOS_BUILD_TESTS=ON
+          cmake --build build --parallel --target vibeos_ext4_exercise
+
+      - name: Random operations, 3000 seeds
+        env:
+          RUN: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          first=$(( RUN * 3000 ))
+          python3 scripts/dev/ext4-torture.py build "$first" 3000 --keep /tmp/ext4-fail | tee /tmp/t.log
+          tail -1 /tmp/t.log | grep -q '^ext4_torture=ok'
+
+      - name: Power cuts at random writes, 400 seeds of 10 cuts
+        env:
+          RUN: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          first=$(( 1000000000 + RUN * 400 ))
+          python3 scripts/dev/ext4-torture.py build "$first" 400 --cuts 10 --keep /tmp/ext4-fail | tee /tmp/c.log
+          tail -1 /tmp/c.log | grep -q '^ext4_torture=ok'
+
+      - name: Keep a failing seed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ext4-torture-failures
+          path: /tmp/ext4-fail
+          if-no-files-found: ignore
+
   registry-torture:
     name: Registry Torture (model + sanitizers)
     # The NT registry's core (docs/abi/windows.md W8 step 2). It is one part of
