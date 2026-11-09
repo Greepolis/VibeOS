@@ -3,6 +3,7 @@
 # Produce importable VibeOS VM images from a completed build tree.
 #
 #   esp.img   raw FAT16 UEFI EFI System Partition (boots in QEMU+OVMF)
+#   disk.img  raw boot disk: MBR, the ESP and the ext4 root (the .vdi/.vmdk/.ova)
 #   .vdi      VirtualBox disk (qemu-img)
 #   .vmdk     VMware disk (qemu-img)
 #   .iso      UEFI El Torito CD image (xorriso) - the most portable option
@@ -46,10 +47,30 @@ if [[ "$ESP_MB" -lt 24 ]]; then ESP_MB=24; fi
 echo "[VM-IMG] EFI root is $(du -sm --apparent-size "$EFI_ROOT" | cut -f1) MiB; ESP sized at ${ESP_MB} MiB"
 python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" "$ESP_MB" || exit 1
 
+# The disk a machine boots: an MBR, the ESP and the native root on ext4 beside
+# it, as the boot gate's disk is (docs/filesystem-design/ext4.md, E4-025). It
+# used to be the bare ESP, so an imported VM ran with no root at all. Without
+# mkfs.ext4 there is no root to make, and that is an error here: an image
+# without one is not the system.
+DISK="$ART/vibeos_disk.img"
+ROOT_TREE="$ART/root_tree"
+rm -rf "$ROOT_TREE"
+python3 "$SCRIPT_DIR/make-root-tree.py" "$EFI_ROOT" "$ROOT_TREE" || exit 1
+ROOT_MB=$(du -sm --apparent-size "$ROOT_TREE" | cut -f1)
+ROOT_MB=$(( ROOT_MB * 2 + 256 ))
+echo "[VM-IMG] building the boot disk: ESP ${ESP_MB} MiB, root ${ROOT_MB} MiB (ext4)..."
+python3 "$SCRIPT_DIR/make-boot-disk.py" make "$ESP" "$ROOT_TREE" "$DISK" "$ROOT_MB"
+rc=$?
+rm -rf "$ROOT_TREE"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[VM-IMG] ERROR: make-boot-disk.py failed (rc=$rc; 3 is no mkfs.ext4)" >&2
+  exit 1
+fi
+
 if command -v qemu-img >/dev/null 2>&1; then
   echo "[VM-IMG] converting to VirtualBox (.vdi) and VMware (.vmdk)..."
-  qemu-img convert -f raw -O vdi  "$ESP" "$ART/vibeos.vdi"
-  qemu-img convert -f raw -O vmdk "$ESP" "$ART/vibeos.vmdk"
+  qemu-img convert -f raw -O vdi  "$DISK" "$ART/vibeos.vdi"
+  qemu-img convert -f raw -O vmdk "$DISK" "$ART/vibeos.vmdk"
 else
   echo "[VM-IMG] NOTE: qemu-img not found; skipping .vdi/.vmdk conversion"
 fi
@@ -79,9 +100,9 @@ fi
 # EFI. The appliance carries that configuration with it.
 if command -v qemu-img >/dev/null 2>&1; then
   echo "[VM-IMG] building importable appliance (.ova) and VMware .vmx..."
-  python3 "$SCRIPT_DIR/make_ova.py" "$ESP" "$ART" || exit 1
+  python3 "$SCRIPT_DIR/make_ova.py" "$DISK" "$ART" || exit 1
   python3 "$SCRIPT_DIR/dev/check-vm-images.py" "$ART" || exit 1
 fi
 
 echo "[VM-IMG] done. Artifacts in $ART:"
-ls -1 "$ART" | grep -E '^vibeos(\.(vdi|vmdk|iso|ova|vmx)|-disk1\.vmdk|_esp\.img)$' || true
+ls -1 "$ART" | grep -E '^vibeos(\.(vdi|vmdk|iso|ova|vmx)|-disk1\.vmdk|_(esp|disk)\.img)$' || true

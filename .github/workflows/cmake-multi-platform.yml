@@ -194,6 +194,16 @@ jobs:
           set -euo pipefail
           python3 scripts/qemu-boot-image-linux.py build/artifacts/vibeos.iso BOOT_OK 180 cdrom raw
 
+      # The disk the .vdi/.vmdk/.ova carry, booted as it ships: it has to come
+      # up with the native root mounted at /, not only reach the kernel (E4-025;
+      # it was a bare ESP, and an imported VM had no root).
+      - name: QEMU Boot-Test the VirtualBox Disk Mounts the Root (Required Gate, GCC)
+        if: matrix.compiler == 'gcc'
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          python3 scripts/qemu-boot-image-linux.py build/artifacts/vibeos.vdi "[IO] MOUNT at=/ type=ext4" 240 disk vdi
+
       - name: QEMU OVMF Summary
         if: always()
         run: |
