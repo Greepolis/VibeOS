@@ -49,6 +49,12 @@ SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
     python3 scripts/dev/sabotage.py kernel/abi/nt/object.c \
         scripts/dev/cases/abi-nt-duplicate-coverage.txt "$build_dir"
 
+# NT access masks are per handle; the existing rights suite must reject an
+# operation when a duplicate or newly opened handle was not granted that bit.
+SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
+    python3 scripts/dev/sabotage.py kernel/abi/nt/object.c \
+        scripts/dev/cases/abi-nt-rights-coverage.txt "$build_dir"
+
 # NT file transfers are independently checked for returned bytes and the
 # shared file position; keep each direction as a separate production mutation.
 SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
