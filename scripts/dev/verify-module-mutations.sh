@@ -41,21 +41,21 @@ SABOTAGE_VERIFY="bash scripts/dev/verify-abi-torture.sh $build_dir" \
 
 # NT is a distinct personality: keep its first handle-model mutation on the
 # same handler-level executable, not the Linux-only dispatcher path.
-SABOTAGE_VERIFY="bash scripts/dev/verify-abi-torture.sh $build_dir" \
+SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
     python3 scripts/dev/sabotage.py kernel/abi/nt/object.c \
         scripts/dev/cases/abi-nt-coverage.txt "$build_dir"
 
-SABOTAGE_VERIFY="bash scripts/dev/verify-abi-torture.sh $build_dir" \
+SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
     python3 scripts/dev/sabotage.py kernel/abi/nt/object.c \
         scripts/dev/cases/abi-nt-duplicate-coverage.txt "$build_dir"
 
 # NT file transfers are independently checked for returned bytes and the
 # shared file position; keep each direction as a separate production mutation.
-SABOTAGE_VERIFY="bash scripts/dev/verify-abi-torture.sh $build_dir" \
+SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
     python3 scripts/dev/sabotage.py kernel/abi/nt/file.c \
         scripts/dev/cases/abi-nt-read-coverage.txt "$build_dir"
 
-SABOTAGE_VERIFY="bash scripts/dev/verify-abi-torture.sh $build_dir" \
+SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
     python3 scripts/dev/sabotage.py kernel/abi/nt/file.c \
         scripts/dev/cases/abi-nt-write-coverage.txt "$build_dir"
 
