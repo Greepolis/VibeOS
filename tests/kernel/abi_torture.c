@@ -830,6 +830,126 @@ static int test_nested_path_model(unsigned round) {
     return 0;
 }
 
+/* The memory oracle is a sorted interval set, independent of the fake page tables. */
+#define ABI_VM_MAX_INTERVALS 16u
+typedef struct {
+    uint64_t start;
+    uint64_t end;
+    uint32_t prot;
+} abi_vm_interval_t;
+
+static int vm_model_replace(abi_vm_interval_t *v, uint32_t *count,
+                            uint64_t start, uint64_t end, uint32_t prot,
+                            int replace) {
+    abi_vm_interval_t next[ABI_VM_MAX_INTERVALS];
+    uint32_t n = 0, i, j;
+    for (i = 0; i < *count; i++) {
+        abi_vm_interval_t old = v[i];
+        if (old.end <= start || old.start >= end) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = old;
+            continue;
+        }
+        if (!replace) return -1;
+        if (old.start < start) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = (abi_vm_interval_t){old.start, start, old.prot};
+        }
+        if (old.end > end) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = (abi_vm_interval_t){end, old.end, old.prot};
+        }
+    }
+    if (n == ABI_VM_MAX_INTERVALS) return -1;
+    next[n++] = (abi_vm_interval_t){start, end, prot};
+    for (i = 0; i < n; i++) for (j = i + 1u; j < n; j++) {
+        if (next[j].start < next[i].start) {
+            abi_vm_interval_t t = next[i]; next[i] = next[j]; next[j] = t;
+        }
+    }
+    memcpy(v, next, n * sizeof(next[0]));
+    *count = n;
+    return 0;
+}
+
+static int vm_model_protect(abi_vm_interval_t *v, uint32_t *count,
+                            uint64_t start, uint64_t end, uint32_t prot) {
+    abi_vm_interval_t next[ABI_VM_MAX_INTERVALS];
+    uint64_t covered = start;
+    uint32_t n = 0, i, j;
+    for (i = 0; i < *count; i++) {
+        abi_vm_interval_t old = v[i];
+        uint64_t lo, hi;
+        if (old.end <= start || old.start >= end) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = old;
+            continue;
+        }
+        lo = old.start > start ? old.start : start;
+        hi = old.end < end ? old.end : end;
+        if (lo > covered) return -1;
+        if (old.start < lo) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = (abi_vm_interval_t){old.start, lo, old.prot};
+        }
+        if (n == ABI_VM_MAX_INTERVALS) return -1;
+        next[n++] = (abi_vm_interval_t){lo, hi, prot};
+        if (old.end > hi) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = (abi_vm_interval_t){hi, old.end, old.prot};
+        }
+        if (hi > covered) covered = hi;
+    }
+    if (covered != end) return -1;
+    for (i = 0; i < n; i++) for (j = i + 1u; j < n; j++) {
+        if (next[j].start < next[i].start) {
+            abi_vm_interval_t t = next[i]; next[i] = next[j]; next[j] = t;
+        }
+    }
+    memcpy(v, next, n * sizeof(next[0]));
+    *count = n;
+    return 0;
+}
+
+static int vm_model_unmap(abi_vm_interval_t *v, uint32_t *count,
+                          uint64_t start, uint64_t end) {
+    abi_vm_interval_t next[ABI_VM_MAX_INTERVALS];
+    uint64_t covered = start;
+    uint32_t n = 0, i;
+    for (i = 0; i < *count; i++) {
+        abi_vm_interval_t old = v[i];
+        if (old.end <= start || old.start >= end) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = old;
+            continue;
+        }
+        if (old.start > covered) return -1;
+        if (old.start < start) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = (abi_vm_interval_t){old.start, start, old.prot};
+        }
+        if (old.end > end) {
+            if (n == ABI_VM_MAX_INTERVALS) return -1;
+            next[n++] = (abi_vm_interval_t){end, old.end, old.prot};
+        }
+        if (old.end > covered) covered = old.end;
+    }
+    if (covered < end) return -1;
+    memcpy(v, next, n * sizeof(next[0]));
+    *count = n;
+    return 0;
+}
+
+static int vm_model_access(const abi_vm_interval_t *v, uint32_t count,
+                           uint64_t address, uint32_t need) {
+    uint32_t i;
+    for (i = 0; i < count; i++) {
+        if (address >= v[i].start && address < v[i].end)
+            return (v[i].prot & need) == need;
+    }
+    return 0;
+}
+
 /* Exercise real page-table changes through mmap, mprotect and munmap. */
 static int test_memory_model(unsigned round) {
     const uint64_t base = 0x30000000ull;
@@ -849,6 +969,8 @@ static int test_memory_model(unsigned round) {
     uint64_t file_path = kf_ualloc(sizeof("/tmp/abi-map-model"));
     uint64_t filebuf = kf_ualloc(16u);
     uint8_t got[sizeof(first)];
+    abi_vm_interval_t vm[ABI_VM_MAX_INTERVALS];
+    uint32_t vm_count = 0;
     long fd;
 
     if (!file_path || !filebuf) {
@@ -857,8 +979,11 @@ static int test_memory_model(unsigned round) {
     memcpy(kf_uptr(file_path), "/tmp/abi-map-model", sizeof("/tmp/abi-map-model"));
     memcpy(kf_uptr(filebuf), file_data, sizeof(file_data));
 
-    if (call_sys6(ABI_NR_MMAP, base, page * 2u, rw, map_flags, ~0ull, 0u) != (long)base) {
-        return fail(round, "mmap did not reserve the requested two-page anonymous range");
+    if (call_sys6(ABI_NR_MMAP, base, page * 2u, rw, map_flags, ~0ull, 0u) != (long)base ||
+        vm_model_replace(vm, &vm_count, base, base + page * 2u, rw, 0) != 0 ||
+        !vm_model_access(vm, vm_count, base, 3u) ||
+        !vm_model_access(vm, vm_count, base + page, 3u)) {
+        return fail(round, "mmap did not reserve the requested two-page interval");
     }
     if (call_sys6(ABI_NR_MMAP, base, page, rw, map_flags, ~0ull, 0u) != -VIBEOS_EEXIST ||
         call_sys(ABI_NR_MUNMAP, base + 1u, page, 0u, 0u) != -VIBEOS_EINVAL ||
@@ -874,6 +999,9 @@ static int test_memory_model(unsigned round) {
     /* MAP_FIXED replaces an existing mapping at the exact address. The new
      * anonymous page must be zero-filled, not retain the old page's bytes. */
     if (call_sys6(ABI_NR_MMAP, base, page, rw, fixed_flags, ~0ull, 0u) != (long)base ||
+        vm_model_replace(vm, &vm_count, base, base + page, rw, 1) != 0 ||
+        !vm_model_access(vm, vm_count, base, 3u) ||
+        !vm_model_access(vm, vm_count, base + page, 3u) ||
         kf_peek(base, got, sizeof(got)) != 0 || memcmp(got, zero, sizeof(zero)) != 0 ||
         kf_poke(base, first, sizeof(first)) != 0) {
         return fail(round, "MAP_FIXED did not replace the existing page with fresh anonymous memory");
@@ -883,21 +1011,30 @@ static int test_memory_model(unsigned round) {
         return fail(round, "mmap accepted an unaligned MAP_FIXED address or missing mapping type");
     }
     if (call_sys(ABI_NR_MPROTECT, base + page, page, 1u, 0u) != 0 ||
+        vm_model_protect(vm, &vm_count, base + page, base + page * 2u, 1u) != 0 ||
+        !vm_model_access(vm, vm_count, base + page, 1u) ||
+        vm_model_access(vm, vm_count, base + page, 2u) ||
         kf_poke(base + page, first, sizeof(first)) == 0 ||
         kf_peek(base + page, got, sizeof(got)) != 0 || memcmp(got, second, sizeof(second)) != 0) {
         return fail(round, "mprotect(PROT_READ) did not revoke writes while preserving reads");
     }
     if (call_sys(ABI_NR_MPROTECT, base + page, page, rw, 0u) != 0 ||
+        vm_model_protect(vm, &vm_count, base + page, base + page * 2u, rw) != 0 ||
+        !vm_model_access(vm, vm_count, base + page, 3u) ||
         kf_poke(base + page, first, sizeof(first)) != 0 ||
         kf_peek(base + page, got, sizeof(got)) != 0 || memcmp(got, first, sizeof(first)) != 0) {
         return fail(round, "mprotect did not restore write access");
     }
     if (call_sys(ABI_NR_MUNMAP, base + page, page, 0u, 0u) != 0 ||
+        vm_model_unmap(vm, &vm_count, base + page, base + page * 2u) != 0 ||
+        vm_model_access(vm, vm_count, base + page, 1u) ||
         kf_peek(base + page, got, sizeof(got)) == 0 ||
         kf_peek(base, got, sizeof(got)) != 0 || memcmp(got, first, sizeof(first)) != 0) {
         return fail(round, "munmap did not remove only the selected page");
     }
     if (call_sys(ABI_NR_MUNMAP, base, page, 0u, 0u) != 0 ||
+        vm_model_unmap(vm, &vm_count, base, base + page) != 0 ||
+        vm_count != 0u || vm_model_access(vm, vm_count, base, 1u) ||
         kf_peek(base, got, sizeof(got)) == 0 ||
         call_sys6(ABI_NR_MMAP, 0u, 0u, rw, map_flags, ~0ull, 0u) != -VIBEOS_EINVAL) {
         return fail(round, "munmap did not release the remaining page or zero-length mmap was accepted");
@@ -911,17 +1048,22 @@ static int test_memory_model(unsigned round) {
         (long)sizeof(file_data) ||
         call_sys6(ABI_NR_MMAP, base, page, rw, private_file_flags, (uint64_t)fd, 0u) !=
         (long)base ||
+        vm_model_replace(vm, &vm_count, base, base + page, rw, 0) != 0 ||
+        !vm_model_access(vm, vm_count, base, 1u) ||
         kf_peek(base, got, sizeof(file_data)) != 0 ||
         memcmp(got, file_data, sizeof(file_data)) != 0 ||
         kf_poke(base, private_data, sizeof(private_data)) != 0 ||
         call_sys(ABI_NR_PREAD64, (uint64_t)fd, filebuf, sizeof(file_data), 0u) !=
         (long)sizeof(file_data) ||
         memcmp(kf_uptr(filebuf), file_data, sizeof(file_data)) != 0 ||
-        call_sys(ABI_NR_MUNMAP, base, page, 0u, 0u) != 0) {
+        call_sys(ABI_NR_MUNMAP, base, page, 0u, 0u) != 0 ||
+        vm_model_unmap(vm, &vm_count, base, base + page) != 0) {
         return fail(round, "MAP_PRIVATE did not copy file bytes or isolate private writes");
     }
     if (call_sys6(ABI_NR_MMAP, base, page, rw, shared_file_flags, (uint64_t)fd, 0u) !=
         (long)base ||
+        vm_model_replace(vm, &vm_count, base, base + page, rw, 0) != 0 ||
+        !vm_model_access(vm, vm_count, base, 3u) ||
         kf_poke(base, shared_data, sizeof(shared_data)) != 0 ||
         call_sys(ABI_NR_PREAD64, (uint64_t)fd, filebuf, sizeof(file_data), 0u) !=
         (long)sizeof(file_data) ||
@@ -934,6 +1076,7 @@ static int test_memory_model(unsigned round) {
         kf_peek(base, got, sizeof(file_data)) != 0 ||
         memcmp(got, file_data, sizeof(file_data)) != 0 ||
         call_sys(ABI_NR_MUNMAP, base, page, 0u, 0u) != 0 ||
+        vm_model_unmap(vm, &vm_count, base, base + page) != 0 ||
         call_sys(ABI_NR_CLOSE, (uint64_t)fd, 0u, 0u, 0u) != 0 ||
         call_sys(ABI_NR_UNLINKAT, ABI_AT_FDCWD, file_path, 0u, 0u) != 0) {
         return fail(round, "MAP_SHARED file writes were not visible through the mapping or cleanup failed");
