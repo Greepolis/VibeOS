@@ -39,7 +39,7 @@ The mutations run against only their corresponding model in the focused PR
 workflow. ABI's `lseek`, shared-offset, `pread64`-position, `pipe2` nonblocking mode,
 `dup3`/`fcntl` close-on-exec, `close_range`, `EMFILE`, `pwrite64` position,
 `O_APPEND`, `ftruncate`, stat-size, `getdents64`, `renameat2(RENAME_NOREPLACE)`,
-`chdir`, `linkat`, `symlinkat`, `readlinkat`, `mkdirat`, `unlinkat`, anonymous and file-backed private/shared `mmap` including fixed replacement and mapping-type validation, `mprotect`,
+`chdir`, `linkat`, `symlinkat`, `readlinkat` and the legacy pathname wrappers, `mkdirat`, `unlinkat`, anonymous and file-backed private/shared `mmap` including fixed replacement and mapping-type validation, `mprotect`,
 `munmap`, fork descriptor-table-copy and fork COW-page marking sabotages are run against the ABI syscall state machine, not against
 the IPC/OBJECT executable.
 
