@@ -38,3 +38,26 @@
         if (ks_map_page(me, base + i * 4096ull, page, want) != 0) {
 +++ new
         if (ks_map_anon(me, base + i * 4096ull, want) != 0) {
+
+### MAP_FIXED replaces an existing mapping before installing the new pages
+--- old
+        } else {
+            if ((r = vibeos_umem_unmap(me, ps, addr, addr + bytes)) != 0) {
+                return r;
+            }
+        }
++++ new
+        } else {
+            if (0) {
+                return r;
+            }
+        }
+
+### mmap rejects a mapping with neither MAP_PRIVATE nor MAP_SHARED
+--- old
+    if ((flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE && (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED &&
+        (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED_VALIDATE) {
+        return -VIBEOS_EINVAL;
++++ new
+    if (0) {
+        return -VIBEOS_EINVAL;
