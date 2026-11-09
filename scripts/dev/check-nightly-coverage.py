@@ -13,8 +13,10 @@ picker. Timekeeping has an independent event-count model, boundary probes and
 production-source mutation checks. IPC channels/events/waitset policies are
 compared with independent FIFO, event-state and selection models; object
 handles are checked against a seeded ledger with a deterministic quota-boundary
-probe. The ABI syscall model is currently scoped to a small part of Linux file
-handling and does not qualify the whole ABI module. The portable process table
+probe. The ABI syscall tests cover selected Linux file, descriptor, pipe, path,
+memory and fork-inheritance slices plus a separate NT handle/file slice; most
+of both personalities remains uncovered, so they do not qualify the whole ABI
+module. The portable process table
 and journal recovery are likewise not counted until their tests discriminate
 the relevant production properties.
 
