@@ -316,6 +316,21 @@ static int run(char **a, int n) {
         }
         return 0;
     }
+    if (strcmp(c, "refuse") == 0 && n >= 2) {
+        /* The next command must be refused, with whatever it says. For unlink
+         * and mkdir, whose operations predate L1 and answer 0 or -1 by
+         * contract (vfs.h): the errno a program sees is decided by the Linux
+         * handler before the filesystem is asked, so the filesystem's part is
+         * only to refuse and change nothing - which the tree compared after it
+         * checks. */
+        int r = run(a + 1, n - 1);
+
+        if (r >= 0) {
+            fprintf(stderr, "FAIL:ext4_exercise %s %s was done, wanted a refusal\n", a[1], n > 2 ? a[2] : "");
+            return -1;
+        }
+        return 0;
+    }
     if (strcmp(c, "create") == 0 && n == 3) {
         return vibeos_fs_create(&g_mnt, a[1], (uint32_t)strtoul(a[2], NULL, 8), &node);
     }
@@ -549,7 +564,7 @@ static int save_image(void) {
 static int script(int states) {
     FILE *f = fopen("script.txt", "r");
     char line[4400];
-    unsigned lines = 0;
+    unsigned lines = 0, changing = 0;
 
     if (!f) {
         fprintf(stderr, "FAIL:ext4_exercise cannot open the script\n");
@@ -576,6 +591,9 @@ static int script(int states) {
             continue;
         }
         lines++;
+        /* A refusal changes nothing and so commits nothing (step 5's random
+         * scripts are full of them); every other line must commit. */
+        changing += strncmp(line, "fail\t", 5) != 0 && strncmp(line, "refuse\t", 7) != 0;
         r = run_line(line);
         if (r != 0 && g_cut == 0u) {
             fprintf(stderr, "FAIL:ext4_exercise line %u (%s) returned %d\n", lines, line, r);
@@ -594,9 +612,9 @@ static int script(int states) {
         vibeos_ext4_journal_stats(&js);
         printf("writes=%llu lines=%u commits=%llu\n", (unsigned long long)g_writes, lines,
                (unsigned long long)js.commits);
-        if (g_cut == 0u && js.commits < lines) {
+        if (g_cut == 0u && js.commits < changing) {
             fprintf(stderr, "FAIL:ext4_exercise %u operations made %llu commits: the journal is not in the path\n",
-                    lines, (unsigned long long)js.commits);
+                    changing, (unsigned long long)js.commits);
             return 1;
         }
     }
