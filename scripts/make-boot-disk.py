@@ -37,6 +37,38 @@ def entry(boot, ptype, start, count):
     return struct.pack("<B3sB3sII", boot, b"\xfe\xff\xff", ptype, b"\xfe\xff\xff", start, count)
 
 
+def owned_by_root(img, tree):
+    """Every file of the system belongs to root (E4-028). mkfs.ext4 -d copies
+    the owner from the host, so each one was the uid of whoever built the
+    image - 1000 in WSL - and on a machine with users that is somebody's
+    account owning /usr/bin. Changing them on the host needs root; debugfs,
+    which mkfs's own package ships, sets them in the image instead."""
+    debugfs = shutil.which("debugfs")
+    if not debugfs:
+        raise SystemExit("make-boot-disk: debugfs is needed to give the root's files to root")
+    cmds = []
+    for d, dirs, files in os.walk(tree):
+        rel = os.path.relpath(d, tree)
+        base = "/" if rel == "." else "/" + rel.replace(os.sep, "/")
+        for name in [""] + dirs + files:
+            if name == "" and base != "/":
+                continue   # each directory is its parent's entry
+            p = base if name == "" else (base.rstrip("/") + "/" + name)
+            if '"' in p or "\n" in p:
+                raise SystemExit("make-boot-disk: a name debugfs cannot quote: %r" % p)
+            cmds.append('sif "%s" uid 0' % p)
+            cmds.append('sif "%s" gid 0' % p)
+    script = img + ".debugfs"
+    with open(script, "w") as f:
+        f.write("\n".join(cmds) + "\n")
+    r = subprocess.run([debugfs, "-w", "-f", script, img], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, universal_newlines=True)
+    os.unlink(script)
+    errors = [l for l in r.stderr.splitlines() if l.strip() and not l.startswith("debugfs ")]
+    if r.returncode != 0 or errors:
+        raise SystemExit("make-boot-disk: debugfs could not set the owners: %s" % "; ".join(errors[:3]))
+
+
 def make(esp, tree, disk, root_mb):
     mkfs = shutil.which("mkfs.ext4")
     if not mkfs:
@@ -47,6 +79,7 @@ def make(esp, tree, disk, root_mb):
         f.truncate(root_mb * 1024 * 1024)
     subprocess.run([mkfs, "-q", "-F", "-L", LABEL, "-b", "4096", "-d", tree, root],
                    check=True, stdout=subprocess.DEVNULL)
+    owned_by_root(root, tree)
     esp_bytes = os.path.getsize(esp)
     esp_sectors = (esp_bytes + SECTOR - 1) // SECTOR
     root_start = (ALIGN + esp_sectors + ALIGN - 1) // ALIGN * ALIGN

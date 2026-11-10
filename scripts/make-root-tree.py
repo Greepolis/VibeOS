@@ -106,6 +106,32 @@ def make(efi_root, out, marker, production):
     if production:
         with open(os.path.join(out, "etc", "vibeos", "services"), "w") as f:
             f.write(PRODUCTION_SERVICES)
+    normalise_modes(out)
+
+
+# Modes the system's own tree has, whatever the build tree had: a build on a
+# Windows disk mounted into WSL reports every file 0777, and mkfs.ext4 -d
+# copied that onto the root - any user could have replaced /usr/bin/BUSYBOX.ELF
+# (E4-028). Directories 0755, programs and libraries 0755, the rest 0644;
+# /tmp and /var/tmp are sticky and writable by all, /root is root's.
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700}
+# /win: the Windows test programs, which the gate execs - a boot whose modes
+# left them 0644 said "cannot exec" for every one of them.
+EXECUTABLE_DIRS = ("usr/bin", "usr/lib", "win")
+
+
+def normalise_modes(out):
+    for d, dirs, files in os.walk(out):
+        rel = os.path.relpath(d, out).replace(os.sep, "/")
+        rel = "" if rel == "." else rel
+        os.chmod(d, SPECIAL_DIR_MODES.get(rel, 0o755))
+        for name in files:
+            p = os.path.join(d, name)
+            if os.path.islink(p):
+                continue
+            executable = any(rel == x or rel.startswith(x + "/") for x in EXECUTABLE_DIRS) or \
+                rel.startswith("corpus")
+            os.chmod(p, 0o755 if executable else 0o644)
 
 
 def main():
