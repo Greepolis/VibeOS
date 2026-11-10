@@ -396,7 +396,7 @@ static long futex_sleep(uint32_t leader, uint64_t deadline, uint64_t addr) {
  * (still a deadline, so the wait ends at once), or a negated errno. Relative
  * for FUTEX_WAIT, absolute for WAIT_BITSET and the futex2 calls - on any clock,
  * since every clock here counts the ticks since boot (timer.c). */
-static long futex_deadline(uint64_t utimeout, int absolute, uint64_t *deadline) {
+static long futex_deadline(uint64_t utimeout, int absolute, uint64_t clk, uint64_t *deadline) {
     linux_timespec_t ts;
     int64_t t;
 
@@ -415,6 +415,10 @@ static long futex_deadline(uint64_t utimeout, int absolute, uint64_t *deadline) 
         return -VIBEOS_EINVAL;
     }
     if (absolute) {
+        /* On CLOCK_REALTIME the time is the time of day, which glibc's timed
+         * waits pass: taken back to ticks since boot, or every such wait would
+         * have been decades long once the wall clock was read (E4-029). */
+        t = (int64_t)linux_abs_to_boot_ticks(clk, (uint64_t)t);
         *deadline = (uint64_t)t > ks_ticks() ? (uint64_t)t : 1u;
     } else {
         *deadline = ks_ticks() + (t ? (uint64_t)t : 1u);
@@ -598,7 +602,7 @@ static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val, uint64_t u
             /* A relative timeout, which every C library's timed wait passes
              * and which used to be ignored: a timed wait that nobody ended
              * waited for ever. */
-            if ((r = futex_deadline(utimeout, 0, &deadline)) != 0) {
+            if ((r = futex_deadline(utimeout, 0, LINUX_CLOCK_MONOTONIC, &deadline)) != 0) {
                 return r;
             }
             return futex_wait_one(addr, priv, (uint32_t)val, LINUX_FUTEX_BITSET_MATCH_ANY, deadline);
@@ -608,7 +612,10 @@ static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val, uint64_t u
             if ((uint32_t)val3 == 0u) {
                 return -VIBEOS_EINVAL;
             }
-            if ((r = futex_deadline(utimeout, 1, &deadline)) != 0) {
+            if ((r = futex_deadline(utimeout, 1,
+                                    (op & LINUX_FUTEX_CLOCK_REALTIME) ? LINUX_CLOCK_REALTIME
+                                                                      : LINUX_CLOCK_MONOTONIC,
+                                    &deadline)) != 0) {
                 return r;
             }
             return futex_wait_one(addr, priv, (uint32_t)val, (uint32_t)val3, deadline);
@@ -646,7 +653,7 @@ static long futex2_deadline(uint64_t utimeout, uint64_t clk, uint64_t *deadline)
         VIBEOS_ARG_INT(clk) != LINUX_CLOCK_REALTIME) {
         return -VIBEOS_EINVAL;
     }
-    return futex_deadline(utimeout, 1, deadline);
+    return futex_deadline(utimeout, 1, clk, deadline);
 }
 
 static long linux_sys_futex_wake(uint64_t addr, uint64_t mask, uint64_t nr, uint64_t flags) {

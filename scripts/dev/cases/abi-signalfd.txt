@@ -51,9 +51,9 @@
 
 ### a relative timer counts the tick in progress
 --- old
-        next = (flags & LINUX_TFD_TIMER_ABSTIME) ? (uint64_t)v : ks_ticks() + (uint64_t)v + 1u;
+                   : ks_ticks() + (uint64_t)v + 1u;
 +++ new
-        next = (flags & LINUX_TFD_TIMER_ABSTIME) ? (uint64_t)v : ks_ticks() + (uint64_t)v - 1u;
+                   : ks_ticks() + (uint64_t)v - 1u;
 
 ### a semaphore flag is dropped on the way in
 --- old

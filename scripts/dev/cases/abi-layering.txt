@@ -18,6 +18,6 @@
 
 ### a handler reads an architecture global directly
 --- old
-    uint64_t secs = ks_ticks() / ks_hz();
+    uint64_t secs = (ks_ticks() + ks_wall_base_ticks()) / ks_hz();   /* the wall clock (E4-029) */
 +++ new
-    uint64_t secs = g_timer_ticks / ks_hz();
+    uint64_t secs = (g_timer_ticks + ks_wall_base_ticks()) / ks_hz();   /* the wall clock (E4-029) */

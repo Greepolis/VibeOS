@@ -97,10 +97,35 @@ static int linux_clock_kind(uint64_t clk) {
     }
 }
 
+/* The clocks that tell the time of day rather than the time since boot
+ * (E4-029): their readings, and absolute times given on them, are offset by
+ * ks_wall_base_ticks(). TAI is not UTC on Linux either, but without a leap
+ * second table it reads the same here. */
+int linux_clock_is_wall(uint64_t clk) {
+    switch ((int64_t)(int32_t)(uint32_t)clk) {
+        case LINUX_CLOCK_REALTIME:
+        case LINUX_CLOCK_REALTIME_COARSE:
+        case LINUX_CLOCK_REALTIME_ALARM:
+        case LINUX_CLOCK_TAI:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* An absolute time on clock `clk`, in that clock's ticks, as ticks since boot:
+ * what every deadline here is kept in. A time before the boot is the boot. */
+uint64_t linux_abs_to_boot_ticks(uint64_t clk, uint64_t t) {
+    uint64_t base = linux_clock_is_wall(clk) ? ks_wall_base_ticks() : 0u;
+
+    return t > base ? t - base : 0u;
+}
+
 /* What a clock reads now, in ticks; -1 for one it does not know. */
 int64_t linux_clock_read(uint64_t clk) {
     switch (linux_clock_kind(clk)) {
-        case VIBEOS_PCLOCK_REAL:        return (int64_t)ks_ticks();
+        case VIBEOS_PCLOCK_REAL:
+            return (int64_t)(ks_ticks() + (linux_clock_is_wall(clk) ? ks_wall_base_ticks() : 0u));
         case VIBEOS_PCLOCK_PROCESS_CPU: return (int64_t)linux_cpu_of_process(linux_my_tgid());
         case VIBEOS_PCLOCK_THREAD_CPU:  return (int64_t)linux_cpu_of_thread(ks_current());
         default:                        return -1;
@@ -233,6 +258,9 @@ static long linux_sys_timer_create(uint64_t clk, uint64_t sev_uptr, uint64_t id_
                              ks_id(ks_current())->pid, signo, value, &id) != 0) {
         return -VIBEOS_EAGAIN;
     }
+    if (linux_clock_is_wall(clk)) {
+        (void)vibeos_ptimer_set_wall(linux_my_tgid(), id);
+    }
     if (vibeos_uaccess_copy((void *)(uintptr_t)id_uptr, &id, sizeof(id)) != 0) {
         (void)vibeos_ptimer_delete(linux_my_tgid(), id);
         return -VIBEOS_EFAULT;
@@ -263,6 +291,14 @@ static long linux_sys_timer_settime(uint64_t idarg, uint64_t flags, uint64_t new
     /* An absolute time on a CPU clock is turned into what is left of it: those
      * timers count down what they are charged. One already past fires on the
      * next tick charged. */
+    /* An absolute time on a wall clock, in boot ticks as the table keeps it. */
+    if ((flags & LINUX_TIMER_ABSTIME) && kind == VIBEOS_PCLOCK_REAL && value != 0 &&
+        vibeos_ptimer_wall(linux_my_tgid(), id) == 1) {
+        value = (int64_t)linux_abs_to_boot_ticks(LINUX_CLOCK_REALTIME, (uint64_t)value);
+        if (value == 0) {
+            value = 1;   /* already past: fires on the next tick, not never */
+        }
+    }
     if ((flags & LINUX_TIMER_ABSTIME) && kind != VIBEOS_PCLOCK_REAL && value != 0) {
         int64_t now = kind == VIBEOS_PCLOCK_THREAD_CPU ? (int64_t)linux_cpu_of_thread(ks_current())
                                                        : (int64_t)linux_cpu_of_process(linux_my_tgid());

@@ -372,6 +372,45 @@ static void t_uname_and_clock(void) {
     expect(SYS2(228, 1, ts) == 0, "clock_gettime");
 }
 
+/* The wall clock (E4-029). The fake's is 2026-11-10T00:00:00Z at tick 0
+ * (ks_wall_base_ticks), so a realtime reading that forgot it is off by
+ * decades, and an absolute deadline on CLOCK_REALTIME that was not taken back
+ * to ticks since boot never comes - the fake reports that wait as blocked. */
+static void t_wall_clock(void) {
+    const int64_t wall0 = 1762732800;   /* the fake's base, in seconds */
+    uint64_t ts = 0, t = 0, word = 0, until = 0;
+    int64_t *v;
+    kf_outcome_t how;
+    long r;
+
+    fresh(16);
+    ts = kf_ualloc(16);
+    t = kf_ualloc(8);
+    v = (int64_t *)kf_uptr(ts);
+    expect(SYS2(228, 0, ts) == 0 && v[0] >= wall0 && v[0] < wall0 + 86400,
+           "CLOCK_REALTIME reads the time of day");
+    expect(SYS2(228, 1, ts) == 0 && v[0] >= 0 && v[0] < 86400,
+           "CLOCK_MONOTONIC still counts from boot");
+    expect(SYS1(201, t) >= wall0 && *(int64_t *)kf_uptr(t) >= wall0, "time() is the time of day");
+
+    /* glibc's timed waits: FUTEX_WAIT_BITSET with an absolute CLOCK_REALTIME
+     * time. Thirty milliseconds from now must end in thirty milliseconds. */
+    word = kf_ualloc(4);
+    until = kf_ualloc(16);
+    *(uint32_t *)kf_uptr(word) = 0u;
+    (void)SYS2(228, 0, ts);
+    ((int64_t *)kf_uptr(until))[0] = v[0];
+    ((int64_t *)kf_uptr(until))[1] = v[1] + 30000000;
+    if (((int64_t *)kf_uptr(until))[1] >= 1000000000) {
+        ((int64_t *)kf_uptr(until))[0] += 1;
+        ((int64_t *)kf_uptr(until))[1] -= 1000000000;
+    }
+    r = sys(202, word, LINUX_FUTEX_WAIT_BITSET | LINUX_FUTEX_CLOCK_REALTIME | 128u, 0, until, 0,
+            0xFFFFFFFFu, &how);
+    expect(how == KF_RETURNED && r == -VIBEOS_ETIMEDOUT,
+           "an absolute CLOCK_REALTIME futex deadline ends when the wall clock reaches it");
+}
+
 static void t_exit_and_wait(void) {
     kf_outcome_t how;
     uint64_t st;
@@ -7255,6 +7294,7 @@ int test_linux_handlers(void) {
     t_flock_range_overflow();
     t_registry_answers();
     t_uname_and_clock();
+    t_wall_clock();
     t_exit_and_wait();
     t_fork_publishes_a_child();
     t_dup_shares_offset();

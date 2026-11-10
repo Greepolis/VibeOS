@@ -52,6 +52,8 @@ int64_t linux_ticks_of(const linux_timespec_t *ts);
 /* The clocks (timer.c): what one reads now in ticks, -1 for a clock this
  * kernel does not know; and the CPU time a process or a thread has run. */
 int64_t linux_clock_read(uint64_t clk);
+int linux_clock_is_wall(uint64_t clk);
+uint64_t linux_abs_to_boot_ticks(uint64_t clk, uint64_t t);
 uint64_t linux_cpu_of_process(uint32_t tgid);
 uint64_t linux_cpu_of_thread(int slot);
 uint64_t linux_cpu_slot(int slot);

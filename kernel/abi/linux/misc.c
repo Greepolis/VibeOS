@@ -184,7 +184,7 @@ static long linux_sys_clock_nanosleep(uint64_t clk, uint64_t flags, uint64_t req
 }
 
 static long linux_sys_time(uint64_t tptr) {
-    uint64_t secs = ks_ticks() / ks_hz();
+    uint64_t secs = (ks_ticks() + ks_wall_base_ticks()) / ks_hz();   /* the wall clock (E4-029) */
 
     if (tptr != 0u) {
         if (vibeos_uaccess_copy((void *)(uintptr_t)tptr, &secs, sizeof(secs)) != 0) {

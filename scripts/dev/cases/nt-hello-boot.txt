@@ -20,6 +20,7 @@
 
 ### NtQuerySystemTime counts from 1970, not 1601 (nt_program_did_not_run)
 --- old
-    return nt_put64(out, VIBEOS_NT_EPOCH_DELTA + nt_now_100ns());
+    return VIBEOS_NT_EPOCH_DELTA +
+           (ticks + ks_wall_base_ticks()) * (VIBEOS_NT_PERF_FREQUENCY / (uint64_t)ks_hz());
 +++ new
-    return nt_put64(out, nt_now_100ns());
+    return (ticks + ks_wall_base_ticks()) * (VIBEOS_NT_PERF_FREQUENCY / (uint64_t)ks_hz());

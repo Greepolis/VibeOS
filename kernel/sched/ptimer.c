@@ -8,6 +8,7 @@ typedef struct {
     uint8_t used;
     uint8_t clock;       /* vibeos_pclock_t */
     uint8_t notify;
+    uint8_t wall;        /* a POSIX timer on a wall clock: absolute times are offset */
     uint32_t tgid;
     int32_t id;
     uint32_t notify_tid;
@@ -154,6 +155,29 @@ int vibeos_ptimer_create(uint32_t tgid, uint32_t clock, uint32_t notify, uint32_
     unlock();
     *id_out = id;
     return 0;
+}
+
+int vibeos_ptimer_set_wall(uint32_t tgid, int32_t id) {
+    pt_t *e;
+
+    lock();
+    e = find(tgid, id);
+    if (e) {
+        e->wall = 1;
+    }
+    unlock();
+    return e ? 0 : -1;
+}
+
+int vibeos_ptimer_wall(uint32_t tgid, int32_t id) {
+    pt_t *e;
+    int r;
+
+    lock();
+    e = find(tgid, id);
+    r = e ? (int)e->wall : -1;
+    unlock();
+    return r;
 }
 
 int vibeos_ptimer_clock(uint32_t tgid, int32_t id) {

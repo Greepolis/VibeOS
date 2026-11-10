@@ -75,14 +75,14 @@
     }
 }
 
-/* What a clock reads now
+/* The clocks that tell the time of day
 +++ new
         default:
             return VIBEOS_PCLOCK_REAL;
     }
 }
 
-/* What a clock reads now
+/* The clocks that tell the time of day
 
 ### times reports no CPU time
 --- old

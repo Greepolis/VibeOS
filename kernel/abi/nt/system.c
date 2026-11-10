@@ -17,8 +17,10 @@ static uint64_t nt_now_100ns(void) {
     return ks_ticks() * (VIBEOS_NT_PERF_FREQUENCY / (uint64_t)ks_hz());
 }
 
+/* A tick since boot as a FILETIME: 100 ns since 1601, by the wall clock. */
 uint64_t nt_ticks_to_filetime(uint64_t ticks) {
-    return VIBEOS_NT_EPOCH_DELTA + ticks * (VIBEOS_NT_PERF_FREQUENCY / (uint64_t)ks_hz());
+    return VIBEOS_NT_EPOCH_DELTA +
+           (ticks + ks_wall_base_ticks()) * (VIBEOS_NT_PERF_FREQUENCY / (uint64_t)ks_hz());
 }
 
 static long nt_put64(uint64_t uptr, uint64_t v) {
@@ -28,11 +30,11 @@ static long nt_put64(uint64_t uptr, uint64_t v) {
 }
 
 /* NtQuerySystemTime(SystemTime): 100-ns intervals since 1601. The kernel's
- * realtime clock counts from 1970 - from boot, today, with no clock chip read
- * - and this is that clock moved to Windows' epoch, so the two personalities
- * agree to the tick about what time it is. */
+ * realtime clock - the CMOS clock read at boot plus the ticks since (E4-029) -
+ * moved to Windows' epoch, so the two personalities agree to the tick about
+ * what time it is. The performance counter below stays time since boot. */
 static long nt_query_system_time(uint64_t out) {
-    return nt_put64(out, VIBEOS_NT_EPOCH_DELTA + nt_now_100ns());
+    return nt_put64(out, nt_ticks_to_filetime(ks_ticks()));
 }
 
 /* NtQueryPerformanceCounter(Counter, Frequency): a counter that never goes

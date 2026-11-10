@@ -92,6 +92,11 @@ int vibeos_ptimer_get(uint32_t tgid, int32_t id, uint64_t now, uint64_t *left, u
 /* Expiries missed before the last one was taken; -1: no timer. */
 int vibeos_ptimer_overrun(uint32_t tgid, int32_t id);
 int vibeos_ptimer_delete(uint32_t tgid, int32_t id);
+/* A POSIX timer on a wall clock (E4-029): it counts REAL ticks like any
+ * other, and the Linux layer offsets the absolute times it is given. Set once
+ * at creation; 1 or 0, or -1: no such timer. */
+int vibeos_ptimer_set_wall(uint32_t tgid, int32_t id);
+int vibeos_ptimer_wall(uint32_t tgid, int32_t id);
 /* The clock a timer counts (vibeos_pclock_t), or -1: no such timer. */
 int vibeos_ptimer_clock(uint32_t tgid, int32_t id);
 /* The process ran a new program: its POSIX timers go, its interval timers

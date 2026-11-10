@@ -126,7 +126,13 @@ static long linux_sys_timerfd_settime(uint64_t fd, uint64_t flags, uint64_t new_
         return r;
     }
     if (v != 0) {
-        next = (flags & LINUX_TFD_TIMER_ABSTIME) ? (uint64_t)v : ks_ticks() + (uint64_t)v + 1u;
+        /* An absolute time on a realtime timerfd is a time of day (E4-029). */
+        next = (flags & LINUX_TFD_TIMER_ABSTIME)
+                   ? linux_abs_to_boot_ticks((uint64_t)(uint32_t)f->tfd_clock, (uint64_t)v)
+                   : ks_ticks() + (uint64_t)v + 1u;
+        if (next == 0u) {
+            next = 1u;   /* already past: due now, not disarmed */
+        }
     }
     vibeos_timerfd_set(f, next, (uint64_t)iv, &old_left, &old_interval);
     vibeos_file_put(f);

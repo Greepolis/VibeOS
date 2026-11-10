@@ -39,7 +39,7 @@ void linux_ipc_unlock(void) {
 }
 
 int64_t linux_ipc_now(void) {
-    return (int64_t)(ks_ticks() / ks_hz());   /* what time() says (misc.c) */
+    return (int64_t)((ks_ticks() + ks_wall_base_ticks()) / ks_hz());   /* what time() says (misc.c) */
 }
 
 /* ---- what every kind shares ---------------------------------------------------- */
