@@ -1,0 +1,13 @@
+# The merged /usr (docs/filesystem-design/hierarchy.md, E4-023): /lib and
+# /lib64 are links to /usr/lib on the native root, and the kernel follows them
+# when it opens a program's interpreter. Broken, every dynamic program fails
+# at exec; caught by the boot gate (the dynamic musl program and the corpus).
+#
+# Target source: kernel/arch/x86_64/task_life.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/root-lib-alias-boot.txt build-gcc-Release
+
+### the interpreter is opened by its name as written, through no link
+--- old
+                interp_path = interp_walk.path;
++++ new
+                (void)interp_walk;

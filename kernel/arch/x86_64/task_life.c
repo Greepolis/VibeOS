@@ -8,6 +8,7 @@
 
 #include "arch_hw_internal.h"
 #include "vibeos/crash.h"
+#include "vibeos/path.h"
 
 #define VIBEOS_HW_KERNEL_DS 0x10u
 
@@ -602,6 +603,20 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
          * loader is at that path now and FAT reads its long name. */
         uint32_t interp_id = 0;
 
+        /* Through every symbolic link on the way, as Linux opens it: the
+         * hierarchy makes /lib an alias of /usr/lib (E4-023), and the reader
+         * below asks the mount table and the filesystem for the name as
+         * written, which follow no links. Static, because a walk result is a
+         * path's worth of bytes and this runs deep in exec's stack (E4-014);
+         * g_exec_lock makes it this exec's, as it does g_interp_elf. */
+        {
+            static vibeos_path_t interp_walk;
+
+            if (vibeos_path_walk("/", "/", interp_path, 0u, &interp_walk) == 0 &&
+                interp_walk.exists && !interp_walk.node.is_dir) {
+                interp_path = interp_walk.path;
+            }
+        }
         n = hw_read_file_cached(interp_path, g_interp_elf, g_interp_elf_cap,
                                 &interp_id);
         if (n <= 0) {
@@ -646,7 +661,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
          * call, or bracketed so it is one. */
         vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[EXEC] interpreter ");
-        vibeos_x86_64_serial_puts(interp_path);
+        vibeos_x86_64_serial_puts(img.interp);   /* as the program named it */
         vibeos_x86_64_serial_puts(" at 0x");
         vibeos_x86_64_serial_print_hex(bias);
         vibeos_x86_64_serial_puts("\n");
