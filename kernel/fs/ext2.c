@@ -722,56 +722,113 @@ int ext2_dir_block(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *dir, uint64_t
     return 0;
 }
 
+/* A directory block read a piece at a time, never whole (E4-014): the
+ * entries' headers and the names asked for, through the block cache, and the
+ * leaf checksum streamed a sector at a time. Directory scans used to hold a
+ * 4 KiB block in their frame - two of them nested, from list through resolve -
+ * and once C:\Windows was mapped onto ext4 every DLL an NT program loaded
+ * listed a directory that way and a Clang Release kernel ran into the guard
+ * page below its stack (CI, 2026-11-10). */
+static int dir_block_ok(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *dir, uint64_t phys) {
+    uint8_t tail[12], piece[VIBEOS_BLOCK_SIZE];
+    uint32_t crc, off = 0, end;
+
+    if (!fs->csum) {
+        return 0;
+    }
+    if (ext2_read_part(fs, phys, fs->block_size - 12u, tail, 12u) != 0) {
+        return -1;
+    }
+    if (!(rd32(tail) == 0u && rd16(tail + 4u) == 12u && tail[6] == 0u && tail[7] == 0xDEu)) {
+        return 0;   /* an htree node: its checksum is elsewhere (ext2_dir_block) */
+    }
+    crc = ext2_inode_seed(fs, ino, dir);
+    end = fs->block_size - 12u;
+    while (off < end) {
+        uint32_t take = end - off < VIBEOS_BLOCK_SIZE ? end - off : VIBEOS_BLOCK_SIZE;
+
+        if (ext2_read_part(fs, phys, off, piece, take) != 0) {
+            return -1;
+        }
+        crc = vibeos_ext2_crc32c(crc, piece, take);
+        off += take;
+    }
+    return crc == rd32(tail + 8u) ? 0 : ext2_csum_bad(phys);
+}
+
+/* The entry at `off`: its inode, record length and name length, judged as a
+ * scan must judge them. 1 for an entry, 0 for the end of the block (a corrupt
+ * record ends it, counted), -1 for a read that failed. */
+static int dir_entry_at(vibeos_ext2_t *fs, uint64_t phys, uint32_t off, uint32_t *ino,
+                        uint32_t *reclen, uint32_t *nlen) {
+    uint8_t h[8];
+
+    if (off + 8u > fs->block_size) {
+        return 0;
+    }
+    if (ext2_read_part(fs, phys, off, h, 8u) != 0) {
+        return -1;
+    }
+    *ino = rd32(h);
+    *reclen = rd16(h + 4u);
+    *nlen = h[6];
+    /* A zero or unaligned record length would loop forever or walk out of the
+     * block; a corrupt directory must end the scan, not hang the kernel.
+     * Removing this guard does not make a test fail, it makes the test suite
+     * hang - which is the whole reason it lives here rather than being left to
+     * the caller. */
+    if (*reclen < 8u || (*reclen & 3u) != 0u || off + *reclen > fs->block_size) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, *reclen);
+        return 0;
+    }
+    /* Bounded by the record, as readdir is (M-049): a name longer than its
+     * record would run into the next records. */
+    if (*nlen > *reclen - 8u) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, *nlen);
+        return 0;
+    }
+    return 1;
+}
+
 /* Find `name` in directory `dir_ino`. Returns the inode number, or 0. */
 uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
                               const char *name, uint32_t name_len) {
-    uint8_t block[EXT2_MAX_BLOCK];
+    uint8_t got[255];
     uint64_t size = ext2_inode_size(dir);
     uint32_t nblocks = ext2_dir_nblocks(fs, size);
     uint32_t bi;
 
+    if (name_len == 0u || name_len > sizeof(got)) {
+        return 0;
+    }
     for (bi = 0; bi < nblocks; bi++) {
         uint64_t phys = 0;
-        uint32_t off = 0;
+        uint32_t off = 0, ino, reclen, nlen;
+        int r;
+
         if (ext2_map_block(fs, dir_ino, dir, bi, &phys) != 0 || phys == 0u) {
             continue;
         }
-        if (ext2_dir_block(fs, dir_ino, dir, phys, block) != 0) {
+        if (dir_block_ok(fs, dir_ino, dir, phys) != 0) {
             return 0;
         }
-        while (off + 8u <= fs->block_size) {
-            uint32_t ino = rd32(block + off);
-            uint16_t reclen = rd16(block + off + 4u);
-            uint8_t nlen = block[off + 6u];
-
-            /* A zero or unaligned record length would loop forever or walk
-             * out of the block; a corrupt directory must end the scan, not
-             * hang the kernel. Removing this guard does not make a test fail,
-             * it makes the test suite hang - which is the whole reason it
-             * lives here rather than being left to the caller. */
-            if (reclen < 8u || (reclen & 3u) != 0u || off + reclen > fs->block_size) {
-                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, reclen);
-                break;
-            }
-            /* Bounded by the record, as readdir is (M-049): the block was the
-             * bound here, which kept a comparison inside the buffer but let it
-             * run into the next record. */
-            if (nlen > reclen - 8u) {
-                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, nlen);
-                break;
-            }
+        while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
             if (ino != 0u && nlen == name_len) {
                 uint32_t i;
-                for (i = 0; i < nlen; i++) {
-                    if (block[off + 8u + i] != (uint8_t)name[i]) {
-                        break;
-                    }
+
+                if (ext2_read_part(fs, phys, off + 8u, got, nlen) != 0) {
+                    return 0;
+                }
+                for (i = 0; i < nlen && got[i] == (uint8_t)name[i]; i++) {
                 }
                 if (i == nlen) {
                     return ino;
                 }
             }
             off += reclen;
+        }
+        if (r < 0) {
+            return 0;
         }
     }
     return 0;
@@ -835,7 +892,6 @@ long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
                             uint64_t offset, void *buf, uint32_t len) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
-    uint8_t block[EXT2_MAX_BLOCK];
     uint8_t *dst = (uint8_t *)buf;
     uint64_t size;
     uint32_t done = 0;
@@ -893,11 +949,10 @@ long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
                 dst[done + i] = 0;
             }
         } else {
-            if (ext2_read_block(fs, phys, block) != 0) {
+            /* Into the caller's buffer, not through a block on the stack
+             * (E4-014). */
+            if (ext2_read_part(fs, phys, within, dst + done, chunk) != 0) {
                 return (done > 0u) ? (long)done : -1;
-            }
-            for (i = 0; i < chunk; i++) {
-                dst[done + i] = block[within + i];
             }
         }
         done += chunk;
@@ -909,11 +964,10 @@ int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
                         uint32_t name_cap, uint64_t *out_size, int *out_is_dir) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t dir[EXT2_MAX_INODE_SIZE];
-    uint8_t block[EXT2_MAX_BLOCK];
     uint64_t size;
     uint32_t nblocks, bi, seen = 0, dir_ino;
 
-    if (!fs || !fs->mounted || (dir_ino = ext2_resolve(fs, path, dir)) == 0u) {
+    if (!fs || !fs->mounted || name_cap == 0u || (dir_ino = ext2_resolve(fs, path, dir)) == 0u) {
         return -1;
     }
     if (!ext2_inode_is_dir(dir)) {
@@ -923,38 +977,26 @@ int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
     nblocks = ext2_dir_nblocks(fs, size);
     for (bi = 0; bi < nblocks; bi++) {
         uint64_t phys = 0;
-        uint32_t off = 0;
+        uint32_t off = 0, ino, reclen, nlen;
+        int r;
+
         if (ext2_map_block(fs, dir_ino, dir, bi, &phys) != 0 || phys == 0u) {
             continue;
         }
-        if (ext2_dir_block(fs, dir_ino, dir, phys, block) != 0) {
+        if (dir_block_ok(fs, dir_ino, dir, phys) != 0) {
             return -1;
         }
-        while (off + 8u <= fs->block_size) {
-            uint32_t ino = rd32(block + off);
-            uint16_t reclen = rd16(block + off + 4u);
-            uint8_t nlen = block[off + 6u];
-
-            if (reclen < 8u || (reclen & 3u) != 0u || off + reclen > fs->block_size) {
-                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, reclen);
-                break;
-            }
-            /* The name lives inside its own record (M-049). This path had no
-             * bound on it at all - ext2_dir_find checked the block - so a
-             * name_len larger than the record copied the next records and, at
-             * the end of a block, up to 254 bytes of this function's stack past
-             * the block into an ordinary readdir(). */
-            if (nlen > reclen - 8u) {
-                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, nlen);
-                break;
-            }
+        while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
             if (ino != 0u && nlen > 0u) {
                 if (seen == index) {
-                    uint32_t i;
-                    for (i = 0; i + 1u < name_cap && i < nlen; i++) {
-                        name[i] = (char)block[off + 8u + i];
+                    uint32_t take = nlen < name_cap - 1u ? nlen : name_cap - 1u;
+
+                    /* The name inside its own record (M-049), and no more of
+                     * it than the caller has room for. */
+                    if (ext2_read_part(fs, phys, off + 8u, (uint8_t *)name, take) != 0) {
+                        return -1;
                     }
-                    name[i] = 0;
+                    name[take] = 0;
                     if (out_size || out_is_dir) {
                         uint8_t child[EXT2_MAX_INODE_SIZE];
                         if (ext2_read_inode(fs, ino, child) == 0) {
@@ -971,6 +1013,9 @@ int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
                 seen++;
             }
             off += reclen;
+        }
+        if (r < 0) {
+            return -1;
         }
     }
     return -1;   /* past the last entry */
