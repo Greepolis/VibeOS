@@ -61,7 +61,9 @@ python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" "$ESP_MB" || exit 1
 # full ESP: a CD holds no root partition, so it is the one medium where the
 # ESP has to be the whole system.
 DISK="$ART/vibeos_disk.img"
-ROOT_TREE="$ART/root_tree"
+# On the Linux side: the tree holds symbolic links (/lib -> usr/lib), which a
+# Windows filesystem mounted into WSL may refuse to create.
+ROOT_TREE="$(mktemp -d)"
 PROD_EFI="$ART/efi_root_production"
 PROD_ESP="$ART/vibeos_esp_production.img"
 rm -rf "$ROOT_TREE" "$PROD_EFI"

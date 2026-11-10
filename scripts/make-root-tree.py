@@ -21,6 +21,12 @@ that file init runs its built-in table, which is the boot gate's self-test -
 two minutes of stress before a prompt, on every boot of every VM image, until
 this flag existed. hierarchy.md: "A production build MUST omit them."
 
+/lib, /lib64, /bin, /sbin and /usr/sbin are symbolic links into /usr, as the
+hierarchy requires for the Linux personality's merged /usr (hierarchy.md;
+E4-023): the loaders and libraries live in /usr/lib, once, and a program that
+names /lib/ld-musl-x86_64.so.1 or /lib64/ld-linux-x86-64.so.2 reaches them
+through the link. The kernel follows it when it opens an interpreter.
+
 One script, because two callers build this tree - the boot gate's disk and
 the VM images - and two copies of the list would drift.
 """
@@ -34,6 +40,10 @@ import sys
 ROOT_TREE_DIRS = ("boot/efi", "dev", "etc/vibeos", "home", "mnt", "opt", "proc", "root",
                   "run", "sys", "tmp", "usr/bin", "usr/lib/windows", "usr/share",
                   "var/cache", "var/lib/windows", "var/log", "var/tmp")
+
+# The merged /usr: each of these is a symbolic link, never a directory.
+ALIASES = (("lib", "usr/lib"), ("lib64", "usr/lib"), ("bin", "usr/bin"),
+           ("sbin", "usr/bin"), ("usr/sbin", "bin"))
 
 # What the firmware and the kernel read from the ESP themselves, so not a
 # program for /usr/bin.
@@ -74,6 +84,22 @@ def make(efi_root, out, marker, production):
         shutil.copy2(os.path.join(boot_dir, n), os.path.join(out, "usr", "bin", n))
     for d in ROOT_TREE_DIRS:
         os.makedirs(os.path.join(out, d), exist_ok=True)
+    # The EFI tree's /lib and /lib64 move into /usr/lib, and each becomes a
+    # link to it. Nothing is in both: the musl loader, glibc's loader and the
+    # x86_64-linux-gnu directory have different names.
+    for old in ("lib", "lib64"):
+        src = os.path.join(out, old)
+        if os.path.isdir(src) and not os.path.islink(src):
+            for name in os.listdir(src):
+                dst = os.path.join(out, "usr", "lib", name)
+                if os.path.exists(dst):
+                    raise SystemExit("make-root-tree: %s is in /lib and /lib64 both" % name)
+                shutil.move(os.path.join(src, name), dst)
+            os.rmdir(src)
+    for link, target in ALIASES:
+        path = os.path.join(out, link)
+        if not os.path.lexists(path):
+            os.symlink(target, path)
     if marker:
         with open(os.path.join(out, "etc", "vibeos", "root"), "w") as f:
             f.write("VIBEOS_ROOT_MARKER\n")
