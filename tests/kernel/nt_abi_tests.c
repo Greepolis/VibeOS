@@ -2007,6 +2007,37 @@ static long map_view(uint64_t sec, uint64_t process, uint64_t *base, uint64_t *s
 }
 #endif
 
+/* C:\Windows is /usr/lib/windows (E4-023), whatever the case it is asked in,
+ * and only that component: C:\WindowsApps is a directory of its own name. */
+static void t_windows_dir(void) {
+    uint64_t fh;
+
+    fresh(47);
+    kf_fs_add("/usr", 0, 0, 1);
+    kf_fs_add("/usr/lib", 0, 0, 1);
+    kf_fs_add("/usr/lib/windows", 0, 0, 1);
+    kf_fs_add("/usr/lib/windows/system32", 0, 0, 1);
+    kf_fs_add("/usr/lib/windows/system32/kernel32.dll", "dll", 3, 0);
+    kf_fs_add("/WindowsApps", 0, 0, 1);
+    kf_fs_add("/WindowsApps/app.txt", "app", 3, 0);
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\Windows\\System32\\kernel32.dll") ==
+               ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, fh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "C:\\Windows\\System32 is /usr/lib/windows/system32");
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\WINDOWS\\system32\\KERNEL32.DLL") ==
+               ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, fh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "in any case");
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\WindowsApps\\app.txt") ==
+               ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, fh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "C:\\WindowsApps is not C:\\Windows");
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\usr\\lib\\windows\\system32\\kernel32.dll") ==
+               ST(VIBEOS_STATUS_SUCCESS) &&
+               nt(VIBEOS_NT_NR_NtClose, fh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "and the directory keeps its own name too");
+}
+
 static void t_sections(void) {
     uint64_t fh, sh;
 
@@ -2698,7 +2729,7 @@ static void t_reg_keys(void) {
         long n = -1;
         int fresh_there = 0;
 
-        if (vibeos_fs_resolve("/windows/system32/config/MACHINE.HIV", &m, &tail) == 0) {
+        if (vibeos_fs_resolve("/var/lib/windows/MACHINE.HIV", &m, &tail) == 0) {
             n = vibeos_fs_read_file(m, tail, hive, sizeof(hive));
         }
         for (long i = 0; n > 10 && i + 10 <= n; i++) {
@@ -2726,7 +2757,7 @@ static void t_reg_keys(void) {
         (void)set_value(k, "Second", VIBEOS_REG_DWORD, &forty_two, 4);
         (void)nt(VIBEOS_NT_NR_NtFlushKey, k, 0, 0, 0, 0);   /* the first save is the backup now */
         (void)nt(VIBEOS_NT_NR_NtClose, k, 0, 0, 0, 0);
-        if (vibeos_fs_resolve("/windows/system32/config/MACHINE.HIV", &m, &tail) == 0) {
+        if (vibeos_fs_resolve("/var/lib/windows/MACHINE.HIV", &m, &tail) == 0) {
             (void)vibeos_fs_write_file(m, tail, junk, sizeof(junk));
         }
         nt_reg_restart();
@@ -3582,6 +3613,7 @@ int test_nt_abi(void) {
     t_raise_exception();
     t_create_file();
     t_sections();
+    t_windows_dir();
     t_open_file_permissions();
     t_object_share();
     t_virtual_memory();

@@ -172,8 +172,11 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
 /* ---- NT paths onto the VFS (W2) --------------------------------------------------
  *
  * W2 knows one kind of NT path, the one a DOS path becomes: "\??\C:\dir\file".
- * Drive C: is the boot volume's root, provisionally, as /win is where our DLLs
- * live: the filesystem's hierarchy is the roadmap's next item and decides both.
+ * Drive C: is the process's root. C:\Windows is /usr/lib/windows - one place
+ * for Windows' system files, read-only and updated with the OS
+ * (docs/filesystem-design/hierarchy.md; E4-023) - so a program that asks for
+ * the system directory, or ntdll loading C:\Windows\System32\kernel32.dll,
+ * finds them where the hierarchy puts them, and no /windows exists at the top.
  * Separators become '/', and a name beyond ASCII becomes UTF-8 (W4 step 6).
  *
  * Asked without case (OBJ_CASE_INSENSITIVE, which is every Win32 open), each
@@ -298,6 +301,42 @@ static void nt_case_resolve(char *path) {
     }
 }
 
+/* C:\Windows, whatever its case - Windows' own name is not case sensitive
+ * here even when the rest of the open is - becomes /usr/lib/windows; the rest
+ * of the path follows it. -1 if that does not fit. */
+static int nt_windows_dir(char *path, uint32_t cap) {
+    static const char from[] = "/windows";
+    static const char to[] = "/usr/lib/windows";
+    uint32_t i, len = 0, grow = (uint32_t)(sizeof(to) - sizeof(from));
+
+    for (i = 0; from[i]; i++) {
+        char c = path[i];
+
+        if (c >= 'A' && c <= 'Z') {
+            c = (char)(c + 32);
+        }
+        if (c != from[i]) {
+            return 0;
+        }
+    }
+    if (path[i] != 0 && path[i] != '/') {
+        return 0;   /* C:\WindowsApps is not C:\Windows */
+    }
+    while (path[len]) {
+        len++;
+    }
+    if (len + grow + 1u > cap) {
+        return -1;
+    }
+    for (i = len + 1u; i-- > sizeof(from) - 1u;) {
+        path[i + grow] = path[i];
+    }
+    for (i = 0; to[i]; i++) {
+        path[i] = to[i];
+    }
+    return 0;
+}
+
 uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap) {
     static const char prefix[] = "\\??\\";
     uint32_t i, o = 0, units = 1;
@@ -359,6 +398,9 @@ uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap) {
         }
     }
     out[o] = 0;
+    if (nt_windows_dir(out, cap) != 0) {
+        return VIBEOS_STATUS_OBJECT_NAME_INVALID;
+    }
     if (n->insensitive) {
         nt_case_resolve(out);
     }
