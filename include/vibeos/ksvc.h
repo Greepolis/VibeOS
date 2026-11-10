@@ -138,6 +138,10 @@ int ks_signal_default_kills(uint32_t sig);
 
 uint64_t ks_ticks(void);
 uint32_t ks_hz(void);
+/* How far the wall clock is ahead of ks_ticks(), in ticks: the time since
+ * 1970 is ks_ticks() + ks_wall_base_ticks(). 0 when the machine read no
+ * clock, which leaves the realtime clocks counting from boot (E4-029). */
+uint64_t ks_wall_base_ticks(void);
 
 /* ---- user memory ---------------------------------------------------------------
  *

@@ -1098,6 +1098,19 @@ def root_volume_problems(root_img):
                            capture_output=True, text=True)
         if "ROOT_WRITE_OK" not in r.stdout:
             out.append("root_volume_lost_the_guests_file")
+        else:
+            # The file's time is the guest's wall clock (E4-029): it was 1970,
+            # the time since boot, until the kernel read the CMOS clock. QEMU's
+            # clock is the host's in UTC, so the time must be within a day of
+            # now - a day, because the boot and this check are minutes apart and
+            # a wrong clock is wrong by years.
+            r = subprocess.run([debugfs, "-R", "stat /var/tmp/written-by-the-guest", root_img],
+                               capture_output=True, text=True)
+            m = re.search(r"mtime: 0x([0-9a-f]+)", r.stdout)
+            if m is None:
+                out.append("root_file_time_unreadable")
+            elif abs(int(m.group(1), 16) - time.time()) > 86400:
+                out.append("root_file_time_wrong:%d" % int(m.group(1), 16))
     return out
 
 
@@ -1631,6 +1644,15 @@ def main():
                 problems.append("smp_report_truncated" if truncated else "no_smp_report")
             elif int(cpus.group(1), 16) != EXPECTED_CPUS:
                 problems.append(f"cpus_online={int(cpus.group(1), 16)}_expected={EXPECTED_CPUS}")
+
+            # The wall clock (E4-029): read from the CMOS at boot, and QEMU's is
+            # the host's in UTC. Within a day: the clock is wrong by years when
+            # it is wrong.
+            rtc = re.search(r"\[RTC\] wall clock \S+ epoch=0x([0-9a-f]{16})", text)
+            if rtc is None:
+                problems.append("rtc_not_read")
+            elif abs(int(rtc.group(1), 16) - time.time()) > 86400:
+                problems.append("rtc_wall_clock_wrong:%d" % int(rtc.group(1), 16))
 
             # The LAPIC timer is calibrated against the ACPI PM timer, which
             # QEMU's q35 describes in its FADT. Falling back to the PIT is

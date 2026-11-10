@@ -175,6 +175,7 @@ int ks_signal_default_kills(uint32_t sig) { return hw_signal_default_kills(sig);
 
 uint64_t ks_ticks(void) { return g_timer_ticks; }
 uint32_t ks_hz(void) { return VIBEOS_HW_TIMER_HZ; }
+uint64_t ks_wall_base_ticks(void) { return g_wall_base_ticks; }
 
 /* ---- user memory -------------------------------------------------------------------- */
 

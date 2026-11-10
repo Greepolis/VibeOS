@@ -224,6 +224,7 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/personality.c
     ${VIBEOS_LINUX_ABI_SOURCES}
     kernel/arch/x86_64/apic.c
+    kernel/arch/x86_64/rtc.c
     kernel/arch/x86_64/blk.c
     kernel/arch/x86_64/ahci.c
     kernel/arch/x86_64/virtio_blk.c

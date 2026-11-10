@@ -1098,6 +1098,10 @@ int ks_signal_default_kills(uint32_t sig) {
 
 uint64_t ks_ticks(void) { return g_ticks_v; }
 uint32_t ks_hz(void) { return 100u; }
+/* A wall clock well past zero, so a realtime reading that forgot it, or an
+ * absolute deadline that forgot to take it off again, is off by years rather
+ * than by nothing: 2026-11-10T00:00:00Z at tick 0. */
+uint64_t ks_wall_base_ticks(void) { return 1762732800ull * 100u; }
 
 static int kf_in_user(uint64_t base, uint64_t len) {
     uint64_t lo = (uint64_t)(uintptr_t)g_user;

@@ -1732,6 +1732,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     hw_enable_timer_irq();
     hw_boot_stage("timer");
+    hw_rtc_bringup();   /* before any filesystem stamps a time on anything */
 
     /* Move off the legacy PIC/PIT onto the local + IO APIC pair (per-CPU timer,
      * IO-APIC interrupt routing) now that basic IRQ delivery is proven. */

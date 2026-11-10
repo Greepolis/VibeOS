@@ -985,9 +985,10 @@ static void hw_tmpfs_page_hold(void *p) {
     vibeos_frame_get((uint64_t)(uintptr_t)p);
 }
 
-/* Uptime until there is a wall clock (L2). */
+/* The wall clock (rtc.c): what a file's times say. Uptime if no clock was
+ * read, which is what every file got before E4-029 - dated 1970. */
 static uint64_t hw_fs_clock_ns(void) {
-    return g_timer_ticks * (1000000000ull / VIBEOS_HW_TIMER_HZ);
+    return (g_timer_ticks + g_wall_base_ticks) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
 }
 
 static void hw_tmpfs_bringup(void) {

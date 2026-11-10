@@ -648,6 +648,11 @@ int hw_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint6
  * /usr/lib/windows/system32 (docs/filesystem-design/hierarchy.md, E4-023). */
 #define VIBEOS_HW_NTDLL_PATH "/usr/lib/windows/system32/ntdll.dll"
 
+/* The wall clock (rtc.c, E4-029): the CMOS clock read once at boot, as the
+ * ticks the wall clock is ahead of ks_ticks(). 0: no reading. */
+extern uint64_t g_wall_base_ticks;
+void hw_rtc_bringup(void);
+
 /* ---- shared with the task lifecycle (task_life.c) ---------------------------
  *
  * The lifecycle - creating, describing, signalling and ending tasks - used to sit in
