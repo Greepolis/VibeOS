@@ -130,3 +130,4 @@ or a subsystem of its own.
 | WO-103 | SystemParametersInfo and EnumDisplayDevices are missing (user32:sysparams, monitor) | open (with the UI) |
 | WO-104 | GDI regions, mapping modes, graphics modes and paths are missing (gdi32:gdiobj, clipping, dc, mapping stop at CreateRectRgn, SetMapMode, SetGraphicsMode) | open |
 | WO-105 | Pattern and DIB brushes, ExtCreatePen, DIBs and DIB sections, palettes, fonts and ICM are missing, and nothing is drawn (gdi32:brush, pen, bitmap, path, palette, font, icm) | open |
+| WO-106 | Windows' files were in three places (`/win`, `/windows/system32/config`, kernel32's `C:\win`) | **closed 2026-11-10** (E4-023): `C:\Windows` is `/usr/lib/windows`, the DLLs are in its `system32`, the hives in `/var/lib/windows`; only C: is mapped, and only that one directory of it |

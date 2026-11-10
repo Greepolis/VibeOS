@@ -69,6 +69,10 @@ for history or for a case VibeOS does not have:
   (read-only, ours, updated with the OS; `C:\Windows`) and
   `/var/lib/windows` (the machine's registry, which survives updates), in
   one change with the loader, the hive paths and the Wine test harness.
+  **Done 2026-11-10**: the DLLs are in `/usr/lib/windows/system32`, the kernel
+  maps `C:\Windows` onto `/usr/lib/windows`, kernel32 answers `C:\Windows` and
+  `C:\Windows\System32`, and the hives are in `/var/lib/windows`. `/win`
+  holds only the Windows test programs, on the boot gate's media.
 - **Per-user state follows XDG.** `~/.config`, `~/.local/share`,
   `~/.local/state` and `~/.cache`, decided now so the shell and the GUI do
   not each invent their own.
