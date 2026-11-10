@@ -1724,10 +1724,12 @@ static uint32_t put_path_a(const char *s, char *buf, uint32_t size) {
 
 uint32_t GetTempPathW(uint32_t size, uint16_t *buf) { return put_path_w("C:\\tmp\\", buf, size); }
 uint32_t GetTempPathA(uint32_t size, char *buf) { return put_path_a("C:\\tmp\\", buf, size); }
-uint32_t GetSystemDirectoryW(uint16_t *buf, uint32_t size) { return put_path_w("C:\\win", buf, size); }
-uint32_t GetSystemDirectoryA(char *buf, uint32_t size) { return put_path_a("C:\\win", buf, size); }
-uint32_t GetWindowsDirectoryW(uint16_t *buf, uint32_t size) { return put_path_w("C:\\win", buf, size); }
-uint32_t GetWindowsDirectoryA(char *buf, uint32_t size) { return put_path_a("C:\\win", buf, size); }
+/* Windows' own answers (E4-023): the kernel maps C:\Windows onto
+ * /usr/lib/windows, and our DLLs are in its System32. */
+uint32_t GetSystemDirectoryW(uint16_t *buf, uint32_t size) { return put_path_w("C:\\Windows\\System32", buf, size); }
+uint32_t GetSystemDirectoryA(char *buf, uint32_t size) { return put_path_a("C:\\Windows\\System32", buf, size); }
+uint32_t GetWindowsDirectoryW(uint16_t *buf, uint32_t size) { return put_path_w("C:\\Windows", buf, size); }
+uint32_t GetWindowsDirectoryA(char *buf, uint32_t size) { return put_path_a("C:\\Windows", buf, size); }
 
 /* ---- strings, times and the rest the file tests reach first (W4 step 9) ---------- */
 

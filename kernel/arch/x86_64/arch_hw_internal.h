@@ -644,9 +644,9 @@ int hw_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint6
 #define VIBEOS_HW_PE_EXE_MOVED (VIBEOS_HW_USER_BASE + 0x00800000ull)
 /* The PEB, the parameters and the TEB: five pages just below the mapping area. */
 #define VIBEOS_HW_NT_BLOCK (VIBEOS_HW_USER_MMAP_BASE - 0x00010000ull)
-/* Where the NT personality's DLL is on the boot volume. Provisional: the
- * filesystem's hierarchy is the roadmap's next item, and it decides. */
-#define VIBEOS_HW_NTDLL_PATH "/win/ntdll.dll"
+/* Where the NT personality's DLL is: C:\Windows\System32, which is
+ * /usr/lib/windows/system32 (docs/filesystem-design/hierarchy.md, E4-023). */
+#define VIBEOS_HW_NTDLL_PATH "/usr/lib/windows/system32/ntdll.dll"
 
 /* ---- shared with the task lifecycle (task_life.c) ---------------------------
  *

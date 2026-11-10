@@ -146,9 +146,13 @@ static int io_held(void) {
     return me >= 0 && __atomic_load_n(&g_io_owner, __ATOMIC_RELAXED) == me;
 }
 
-static const char *const g_hive_dirs[] = { "/windows", "/windows/system32", "/windows/system32/config" };
-static const char *const g_hive_file[2] = { "/windows/system32/config/MACHINE.HIV",
-                                            "/windows/system32/config/USER.HIV" };
+/* The machine's registry is state that survives an update of the OS, so it
+ * lives in /var/lib/windows, not beside the DLLs in /usr/lib/windows
+ * (docs/filesystem-design/hierarchy.md). It was /windows/system32/config, a
+ * third place for Windows' files. */
+static const char *const g_hive_dirs[] = { "/var", "/var/lib", "/var/lib/windows" };
+static const char *const g_hive_file[2] = { "/var/lib/windows/MACHINE.HIV",
+                                            "/var/lib/windows/USER.HIV" };
 static const char g_hive_root[2][8] = { "MACHINE", "USER" };
 
 static uint32_t ascii_units(const char *s, uint16_t *out) {

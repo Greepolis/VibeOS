@@ -15,7 +15,7 @@ hierarchy names is made, empty where nothing goes yet.
 guest is reading this volume and not another one.
 
 --production is the tree an image for people carries (E4-023): no test
-programs, no /corpus fixtures, no test executables under /win, and an
+programs, no /corpus fixtures, no Windows test programs (/win), and an
 /etc/vibeos/services that has init start the shell and nothing else. Without
 that file init runs its built-in table, which is the boot gate's self-test -
 two minutes of stress before a prompt, on every boot of every VM image, until
@@ -56,8 +56,8 @@ ESP_ONLY = ("VIBEOSKR.ELF", "SWAPFILE.BIN")
 PRODUCTION_PROGRAMS = ("INIT.ELF", "NATIVE_INIT.ELF", "BUSYBOX.ELF", "SH.ELF",
                        "CAT", "ECHO", "LS", "WC")
 
-# Test executables that sit beside the Windows DLLs.
-WIN_TESTS = ("hello.exe", "stubcall.exe")
+# /win holds the Windows test programs; the system's own files are in
+# /usr/lib/windows (C:\Windows), which a production root keeps.
 
 # What init starts on a production root: BusyBox's shell on the console, as a
 # session - when it ends, so does the machine's userland.
@@ -72,7 +72,7 @@ def make(efi_root, out, marker, production):
     ignore = ["*.tmp", "EFI", "startup.nsh"]
     if production:
         ignore.append("corpus")
-        ignore.extend(WIN_TESTS)
+        ignore.append("win")
     shutil.copytree(efi_root, out, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*ignore))
     os.makedirs(os.path.join(out, "usr", "bin"), exist_ok=True)
     boot_dir = os.path.join(efi_root, "EFI", "BOOT")

@@ -187,35 +187,31 @@ if(EXISTS "${PIE_ELF}")
     message(STATUS "EFI media includes a position-independent Linux binary: EFI/BOOT/PIE.ELF")
 endif()
 
-# The NT personality's DLL and the first Windows program (docs/abi/windows.md
-# W1), under /win - a provisional place: where Windows' files live is the
-# filesystem hierarchy's decision, the roadmap's next item.
-set(WIN_NTDLL "${CMAKE_BINARY_DIR}/win/ntdll.dll")
-set(WIN_HELLO "${CMAKE_BINARY_DIR}/win/hello.exe")
-if(EXISTS "${WIN_NTDLL}" AND EXISTS "${WIN_HELLO}")
-    file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/win")
-    file(COPY_FILE "${WIN_NTDLL}" "${EFI_ROOT_DIR}/win/ntdll.dll" ONLY_IF_DIFFERENT)
-    file(COPY_FILE "${WIN_HELLO}" "${EFI_ROOT_DIR}/win/hello.exe" ONLY_IF_DIFFERENT)
-    message(STATUS "EFI media includes the NT personality: /win/ntdll.dll and /win/hello.exe")
-endif()
-# Our C runtime (W2), beside ntdll. Nothing loads it before the loader learns
-# to load DLLs from disk, so its presence changes no boot.
-set(WIN_MSVCRT "${CMAKE_BINARY_DIR}/win/msvcrt.dll")
-if(EXISTS "${WIN_MSVCRT}")
-    file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/win")
-    file(COPY_FILE "${WIN_MSVCRT}" "${EFI_ROOT_DIR}/win/msvcrt.dll" ONLY_IF_DIFFERENT)
-    message(STATUS "EFI media includes our C runtime: /win/msvcrt.dll")
-endif()
-# The placeholders for the DLLs not written yet, and the program that calls
-# into one (W2).
-foreach(WIN_EXTRA kernel32.dll user32.dll advapi32.dll gdi32.dll hid.dll imm32.dll
-                  setupapi.dll stubcall.exe)
-    if(EXISTS "${CMAKE_BINARY_DIR}/win/${WIN_EXTRA}")
-        file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/win")
-        file(COPY_FILE "${CMAKE_BINARY_DIR}/win/${WIN_EXTRA}" "${EFI_ROOT_DIR}/win/${WIN_EXTRA}"
-             ONLY_IF_DIFFERENT)
+# Windows' system files go to /usr/lib/windows/system32 - C:\Windows\System32,
+# as the kernel maps it (docs/filesystem-design/hierarchy.md, E4-023) - and the
+# Windows test programs to /win, which only the boot gate's media carries. The
+# same paths on the ESP as on the root, so a disk without a root (the .iso)
+# finds them too.
+set(WIN_SYS_DIR "${EFI_ROOT_DIR}/usr/lib/windows/system32")
+foreach(WIN_DLL ntdll.dll msvcrt.dll kernel32.dll user32.dll advapi32.dll gdi32.dll hid.dll
+                imm32.dll setupapi.dll)
+    if(EXISTS "${CMAKE_BINARY_DIR}/win/${WIN_DLL}")
+        file(MAKE_DIRECTORY "${WIN_SYS_DIR}")
+        file(COPY_FILE "${CMAKE_BINARY_DIR}/win/${WIN_DLL}" "${WIN_SYS_DIR}/${WIN_DLL}" ONLY_IF_DIFFERENT)
     endif()
 endforeach()
+foreach(WIN_TEST hello.exe stubcall.exe)
+    if(EXISTS "${CMAKE_BINARY_DIR}/win/${WIN_TEST}")
+        file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/win")
+        file(COPY_FILE "${CMAKE_BINARY_DIR}/win/${WIN_TEST}" "${EFI_ROOT_DIR}/win/${WIN_TEST}" ONLY_IF_DIFFERENT)
+    endif()
+endforeach()
+# A DLL left in /win by a build from before the move would be found by nothing
+# and shipped by everything: take them off.
+file(GLOB WIN_STALE_DLLS "${EFI_ROOT_DIR}/win/*.dll")
+if(WIN_STALE_DLLS)
+    file(REMOVE ${WIN_STALE_DLLS})
+endif()
 
 # The dynamically linked one, plus the interpreter it names. Both are needed:
 # a dynamic executable without its loader is a file the kernel can parse and

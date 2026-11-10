@@ -242,11 +242,13 @@ static uint64_t find_module(const char *name) {
 
 static void resolve_imports(uint64_t base);
 
-/* Bring `name` in from \??\C:\win\, or end the process saying it is
+/* Bring `name` in from \??\C:\Windows\System32\ - our DLLs, where Windows
+ * keeps its own, and where the kernel finds /usr/lib/windows/system32 - or end
+ * the process saying it is
  * not there - unless the caller can take an answer: LoadLibrary is told no, with
  * STATUS_DLL_NOT_FOUND, where an import the program cannot run without ends it. */
 static uint64_t load_dll(const char *name, int optional) {
-    static const char dir[] = "\\??\\C:\\win\\";
+    static const char dir[] = "\\??\\C:\\Windows\\System32\\";
     uint16_t path[128];
     uint8_t us[VIBEOS_USTR_SIZE], oa[VIBEOS_OA_SIZE];
     uint64_t file = 0, section = 0, base = 0, size = 0;
