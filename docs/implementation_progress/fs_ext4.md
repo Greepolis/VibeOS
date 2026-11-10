@@ -222,8 +222,8 @@ writes an `ext4` volume it can keep true (the table below the step), and
   data over a freed block, an ignored revoke, the commit before the log) -
   random cuts land in them rarely, the every-write sweep of step 3 always.
 - **Runs**: `check.sh` runs `verify-ext4-torture.sh` (60 seeds, 12 with six
-  cuts, about a minute and a half); the nightly's `ext4-torture` job runs 3000
-  seeds and 400 with ten cuts, on a range that moves with the run number, and
+  cuts, about a minute and a half); the nightly's `ext4-torture` job runs 1000
+  seeds and 150 with ten cuts, sized from the measured cost (3000 and 400 ran into the job's timeout on the first night), on a range that moves with the run number, and
   uploads a failing seed's volume and script.
 
 ### Open after step 5

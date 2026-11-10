@@ -369,7 +369,8 @@ jobs:
     # docs/filesystem-design/ext4.md step 5: random operations run by the
     # host's kernel and by the driver, the trees compared, e2fsck after every
     # seed, and power cuts at random writes. The seed range moves with the run
-    # number, so each night covers seeds no earlier night did; a failing seed
+    # number, so each night covers seeds no earlier night did (1000 and 150 a
+    # night); a failing seed
     # is printed and its volume and script are uploaded.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -390,22 +391,25 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVIBEOS_BUILD_TESTS=ON
           cmake --build build --parallel --target vibeos_ext4_exercise
 
-      - name: Random operations, 3000 seeds
+      # Sized from measured cost, not chosen: about 5 s of CPU a seed and 15 s
+      # for one with ten cuts, on four cores. 3000 and 400 were the numbers of
+      # the first, lighter version of the test and ran into the job's timeout.
+      - name: Random operations, 1000 seeds
         env:
           RUN: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          first=$(( RUN * 3000 ))
-          python3 scripts/dev/ext4-torture.py build "$first" 3000 --keep /tmp/ext4-fail | tee /tmp/t.log
+          first=$(( RUN * 1000 ))
+          python3 scripts/dev/ext4-torture.py build "$first" 1000 --keep /tmp/ext4-fail | tee /tmp/t.log
           tail -1 /tmp/t.log | grep -q '^ext4_torture=ok'
 
-      - name: Power cuts at random writes, 400 seeds of 10 cuts
+      - name: Power cuts at random writes, 150 seeds of 10 cuts
         env:
           RUN: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          first=$(( 1000000000 + RUN * 400 ))
-          python3 scripts/dev/ext4-torture.py build "$first" 400 --cuts 10 --keep /tmp/ext4-fail | tee /tmp/c.log
+          first=$(( 1000000000 + RUN * 150 ))
+          python3 scripts/dev/ext4-torture.py build "$first" 150 --cuts 10 --keep /tmp/ext4-fail | tee /tmp/c.log
           tail -1 /tmp/c.log | grep -q '^ext4_torture=ok'
 
       - name: Keep a failing seed

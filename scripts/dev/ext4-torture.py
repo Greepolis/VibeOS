@@ -95,7 +95,7 @@ def listing(root):
 class Gen:
     """Makes up operations and runs each on the host's tree, which decides the answer."""
 
-    def __init__(self, rng, root, budget, inodes, block):
+    def __init__(self, rng, root, budget, inodes, block, states=True):
         self.rng = rng
         # The writer keeps at most four leaves of extents (EXT_CAP_MAX in
         # ext4_write.c; E4-008, E4-010): past that a write is short, then EFBIG,
@@ -108,6 +108,9 @@ class Gen:
         self.root = root
         self.budget = budget   # bytes the files may hold at once: the volume is small
         self.lines = []
+        # The tree after every line, which only a cut needs to judge by: listing
+        # it reads every file, so a seed without cuts keeps only the last one.
+        self.keep_states = states
         self.states = [listing(root)]
         # For a write over bytes the file already had: line index -> (every name
         # of the file, its bytes before, its bytes after). See torn_write().
@@ -162,7 +165,8 @@ class Gen:
             # the Linux handler's to decide, so the driver is only asked to refuse.
             words = (["refuse"] if words[0] in ("unlink", "mkdir") else ["fail", name]) + words
         self.lines.append("\t".join(str(w) for w in words))
-        self.states.append(listing(self.root))
+        if self.keep_states:
+            self.states.append(listing(self.root))
 
     def write(self, p, off, n, seed):
         ino = os.lstat(self.host(p)).st_ino
@@ -457,7 +461,8 @@ def one_seed(args):
                     f.write(pat(7, 0, 50000))
             start = os.path.join(work, "start")
             shutil.copytree(tree, start, symlinks=True)
-            gen = Gen(rng, tree, budget=rng.choice([3, 6]) * 1024 * 1024, inodes=inodes - 64, block=block)
+            gen = Gen(rng, tree, budget=rng.choice([3, 6]) * 1024 * 1024, inodes=inodes - 64, block=block,
+                      states=cuts > 0 and journal)
             for _ in range(nops):
                 gen.step()
         finally:
@@ -494,7 +499,7 @@ def one_seed(args):
         got, err = walk(ex, full)
         if got is None:
             return failed("driver_walk_failed", err)
-        want = gen.states[-1]
+        want = gen.states[-1] if gen.keep_states else listing(gen.root)
         if got != want:
             with open(os.path.join(work, "want.txt"), "w") as f:
                 f.write(want)
