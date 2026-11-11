@@ -61,3 +61,9 @@
 +++ new
     if (0) {
         return -VIBEOS_EINVAL;
+
+### mprotect narrows the page before its range too
+--- old
+            vibeos_umem_protect_pages(me, addr, end, linux_prot_of(prot));
++++ new
+            vibeos_umem_protect_pages(me, addr > 4096ull ? addr - 4096ull : addr, end, linux_prot_of(prot));

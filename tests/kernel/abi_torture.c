@@ -953,6 +953,26 @@ static int vm_model_access(const abi_vm_interval_t *v, uint32_t count,
     return 0;
 }
 
+/* The model held against the kernel, page by page: a page the model maps
+ * must read, one it does not must not, and a page is writable exactly where
+ * the model says so. Without this the interval set was asked only about
+ * itself and could never disagree with the kernel (#208 review). The write
+ * probe stores back the byte it read, so it changes nothing. */
+static int vm_model_matches_kernel(const abi_vm_interval_t *v, uint32_t count,
+                                   uint64_t lo, uint64_t hi) {
+    uint64_t a;
+    for (a = lo; a < hi; a += 4096u) {
+        uint8_t b = 0;
+        int readable = kf_peek(a, &b, 1u) == 0;
+        int writable = readable && kf_poke(a, &b, 1u) == 0;
+        if (readable != vm_model_access(v, count, a, 1u) ||
+            writable != vm_model_access(v, count, a, 2u)) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* The legacy pathname calls are distinct syscall-table entries which
  * delegate to the dirfd forms. Exercise those public entrypoints too. */
 static int test_legacy_path_wrappers(unsigned round) {
@@ -1023,6 +1043,7 @@ static int test_memory_model(unsigned round) {
 
     if (call_sys6(ABI_NR_MMAP, base, page * 2u, rw, map_flags, ~0ull, 0u) != (long)base ||
         vm_model_replace(vm, &vm_count, base, base + page * 2u, rw, 0) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         !vm_model_access(vm, vm_count, base, 3u) ||
         !vm_model_access(vm, vm_count, base + page, 3u)) {
         return fail(round, "mmap did not reserve the requested two-page interval");
@@ -1043,6 +1064,7 @@ static int test_memory_model(unsigned round) {
      * anonymous page must be zero-filled, not retain the old page's bytes. */
     if (call_sys6(ABI_NR_MMAP, base, page, rw, fixed_flags, ~0ull, 0u) != (long)base ||
         vm_model_replace(vm, &vm_count, base, base + page, rw, 1) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         !vm_model_access(vm, vm_count, base, 3u) ||
         !vm_model_access(vm, vm_count, base + page, 3u) ||
         kf_peek(base, got, sizeof(got)) != 0 || memcmp(got, zero, sizeof(zero)) != 0 ||
@@ -1055,6 +1077,7 @@ static int test_memory_model(unsigned round) {
     }
     if (call_sys(ABI_NR_MPROTECT, base + page, page, 1u, 0u) != 0 ||
         vm_model_protect(vm, &vm_count, base + page, base + page * 2u, 1u) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         !vm_model_access(vm, vm_count, base + page, 1u) ||
         vm_model_access(vm, vm_count, base + page, 2u) ||
         kf_poke(base + page, first, sizeof(first)) == 0 ||
@@ -1063,6 +1086,7 @@ static int test_memory_model(unsigned round) {
     }
     if (call_sys(ABI_NR_MPROTECT, base + page, page, rw, 0u) != 0 ||
         vm_model_protect(vm, &vm_count, base + page, base + page * 2u, rw) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         !vm_model_access(vm, vm_count, base + page, 3u) ||
         kf_poke(base + page, first, sizeof(first)) != 0 ||
         kf_peek(base + page, got, sizeof(got)) != 0 || memcmp(got, first, sizeof(first)) != 0) {
@@ -1070,6 +1094,7 @@ static int test_memory_model(unsigned round) {
     }
     if (call_sys(ABI_NR_MUNMAP, base + page, page, 0u, 0u) != 0 ||
         vm_model_unmap(vm, &vm_count, base + page, base + page * 2u) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         vm_model_access(vm, vm_count, base + page, 1u) ||
         kf_peek(base + page, got, sizeof(got)) == 0 ||
         kf_peek(base, got, sizeof(got)) != 0 || memcmp(got, first, sizeof(first)) != 0) {
@@ -1077,6 +1102,7 @@ static int test_memory_model(unsigned round) {
     }
     if (call_sys(ABI_NR_MUNMAP, base, page, 0u, 0u) != 0 ||
         vm_model_unmap(vm, &vm_count, base, base + page) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         vm_count != 0u || vm_model_access(vm, vm_count, base, 1u) ||
         kf_peek(base, got, sizeof(got)) == 0 ||
         call_sys6(ABI_NR_MMAP, 0u, 0u, rw, map_flags, ~0ull, 0u) != -VIBEOS_EINVAL) {
@@ -1092,6 +1118,7 @@ static int test_memory_model(unsigned round) {
         call_sys6(ABI_NR_MMAP, base, page, rw, private_file_flags, (uint64_t)fd, 0u) !=
         (long)base ||
         vm_model_replace(vm, &vm_count, base, base + page, rw, 0) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         !vm_model_access(vm, vm_count, base, 1u) ||
         kf_peek(base, got, sizeof(file_data)) != 0 ||
         memcmp(got, file_data, sizeof(file_data)) != 0 ||
@@ -1106,6 +1133,7 @@ static int test_memory_model(unsigned round) {
     if (call_sys6(ABI_NR_MMAP, base, page, rw, shared_file_flags, (uint64_t)fd, 0u) !=
         (long)base ||
         vm_model_replace(vm, &vm_count, base, base + page, rw, 0) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         !vm_model_access(vm, vm_count, base, 3u) ||
         kf_poke(base, shared_data, sizeof(shared_data)) != 0 ||
         call_sys(ABI_NR_PREAD64, (uint64_t)fd, filebuf, sizeof(file_data), 0u) !=
@@ -1120,6 +1148,7 @@ static int test_memory_model(unsigned round) {
         memcmp(got, file_data, sizeof(file_data)) != 0 ||
         call_sys(ABI_NR_MUNMAP, base, page, 0u, 0u) != 0 ||
         vm_model_unmap(vm, &vm_count, base, base + page) != 0 ||
+        vm_model_matches_kernel(vm, vm_count, base, base + page * 3u) != 0 ||
         call_sys(ABI_NR_CLOSE, (uint64_t)fd, 0u, 0u, 0u) != 0 ||
         call_sys(ABI_NR_UNLINKAT, ABI_AT_FDCWD, file_path, 0u, 0u) != 0) {
         return fail(round, "MAP_SHARED file writes were not visible through the mapping or cleanup failed");
