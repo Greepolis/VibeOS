@@ -80,6 +80,34 @@ static int model_counts_match(vibeos_process_table_t *pt,
     return 0;
 }
 
+/* How many threads the table still takes, asked by taking them (on init) and
+ * giving them back: it must be the capacity less the threads the ledger says
+ * are live. A slot left in use with no owner - so no id reaches it and the
+ * public count still agrees - shows here on the termination that leaked it,
+ * not a hundred rounds later when the table runs out. */
+static int thread_capacity_matches(vibeos_process_table_t *pt, const proc_model_t *model,
+                                   uint32_t init_pid, unsigned round) {
+    static uint32_t probe[VIBEOS_PROC_MAX_THREADS];
+    uint32_t live = 0, took = 0, i;
+
+    for (i = 0; i < MODEL_CAP; i++) {
+        if (model[i].in_use && !model[i].terminated) live += model[i].thread_count;
+    }
+    while (took < VIBEOS_PROC_MAX_THREADS && vibeos_thread_create(pt, init_pid, &probe[took]) == 0) {
+        took++;
+    }
+    for (i = 0; i < took; i++) {
+        if (vibeos_thread_exit(pt, probe[i]) != 0) {
+            return fail(round, "a probe thread could not be given back");
+        }
+    }
+    if (took != VIBEOS_PROC_MAX_THREADS - live) {
+        printf("PROC_TORTURE thread slots free=%u expected=%u\n", took, VIBEOS_PROC_MAX_THREADS - live);
+        return fail(round, "terminate left a thread slot in use that no thread owns");
+    }
+    return 0;
+}
+
 static int run_proc(unsigned rounds) {
     vibeos_process_table_t pt;
     proc_model_t model[MODEL_CAP] = {{0}};
@@ -161,6 +189,7 @@ static int run_proc(unsigned rounds) {
                 return fail(r, "terminated process retained an owned thread");
             }
         }
+        if (thread_capacity_matches(&pt, model, init_pid, r)) return 1;
         if (has_child &&
             (!vibeos_proc_are_related(&pt, init_pid, child) ||
              vibeos_proc_are_related(&pt, parent, child) ||
@@ -192,6 +221,7 @@ static int run_proc(unsigned rounds) {
                     return fail(r, "terminated child retained an owned thread");
                 }
             }
+            if (thread_capacity_matches(&pt, model, init_pid, r)) return 1;
             if (model_counts_match(&pt, model, r)) return 1;
             if (vibeos_proc_reap(&pt, child) != 0) {
                 return fail(r, "child reap");
