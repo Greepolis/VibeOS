@@ -50,6 +50,7 @@
 #define NLINK_MAX 65000u      /* where ext4 stops counting a file's names (and, without dir_nlink, a directory's) */
 #define DIR_TAIL 12u          /* the checksum entry that ends a directory block */
 #define EXT_CAP_MAX 1360u     /* the volume state's extent list: four leaves of 340 */
+#define WRITE_RUNS_MAX 64u    /* fresh runs one write takes before it returns short */
 #define INODE_FLAG_HUGE 0x00040000u
 #define S_ISDIR_(m) (((m) & VIBEOS_S_IFMT) == VIBEOS_S_IFDIR)
 
@@ -176,9 +177,21 @@ static int blk_write(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf) {
 /* A file's data: in place, ahead of the commit that names it (ordered mode),
  * through the journal only where that would overwrite what the last commit
  * still calls metadata (ext4_j_data_write). Bounded as blk_write is. */
+/* The n-th data write from now fails, once: the host exerciser's way to reach
+ * a write that fails half-way through a run (E4-009), which a device that
+ * fails at commit time never does. 0 is off, and nothing on the machine sets it. */
+static uint32_t g_data_fail_after;
+
+void vibeos_ext4_fail_data_after(uint32_t n) {
+    g_data_fail_after = n;
+}
+
 static int blk_data(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf) {
     if (block >= fs->blocks_count || block < fs->first_data_block) {
         vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, block);
+        return -VIBEOS_EIO;
+    }
+    if (g_data_fail_after != 0u && --g_data_fail_after == 0u) {
         return -VIBEOS_EIO;
     }
     return ext4_j_data_write(fs, block, buf);
@@ -1071,6 +1084,71 @@ static int ext_truncate(vibeos_ext2_t *fs, uint32_t keep) {
     return 0;
 }
 
+/* Take blocks [lblk, lblk + count) out of the file and give them back (E4-009):
+ * what an extent covering part of the range keeps is trimmed, one that covers
+ * it whole goes, and one the range falls inside is split - which needs a free
+ * slot in the list, or -EFBIG and nothing changed. A block of the range that
+ * no extent holds is already a hole. */
+static int ext_punch(vibeos_ext2_t *fs, uint32_t lblk, uint32_t count) {
+    uint32_t end = lblk + count, i = 0;
+
+    while (i < fs->ext_n) {
+        uint32_t a = fs->ext[i].lblk, len = e_len(fs, i), b = a + len;
+        uint64_t s = e_start(fs, i);
+        int un = e_uninit(fs, i);
+
+        if (b <= lblk || a >= end) {
+            i++;
+            continue;
+        }
+        if (a < lblk && b > end) {   /* inside: split in two */
+            uint32_t k;
+
+            if (fs->ext_n >= ext_cap(fs)) {
+                return -VIBEOS_EFBIG;
+            }
+            if (bfree(fs, s + (lblk - a), count) != 0) {
+                return -VIBEOS_EIO;
+            }
+            for (k = fs->ext_n; k > i + 1u; k--) {
+                fs->ext[k] = fs->ext[k - 1u];
+            }
+            fs->ext_n++;
+            e_put(fs, i, a, lblk - a, un, s);
+            e_put(fs, i + 1u, end, b - end, un, s + (end - a));
+            return 0;
+        }
+        if (a < lblk) {              /* the range takes the extent's tail */
+            if (bfree(fs, s + (lblk - a), b - lblk) != 0) {
+                return -VIBEOS_EIO;
+            }
+            e_put(fs, i, a, lblk - a, un, s);
+            i++;
+            continue;
+        }
+        if (b > end) {               /* the range takes the extent's head */
+            if (bfree(fs, s, end - a) != 0) {
+                return -VIBEOS_EIO;
+            }
+            e_put(fs, i, end, b - end, un, s + (end - a));
+            i++;
+            continue;
+        }
+        if (bfree(fs, s, len) != 0) {   /* the whole extent */
+            return -VIBEOS_EIO;
+        }
+        {
+            uint32_t k;
+
+            for (k = i; k + 1u < fs->ext_n; k++) {
+                fs->ext[k] = fs->ext[k + 1u];
+            }
+            fs->ext_n--;
+        }
+    }
+    return 0;
+}
+
 /* ---- the node as the VFS sees it ------------------------------------------ */
 
 static void node_fill(uint32_t ino, const uint8_t *inode, vibeos_fs_node_t *out) {
@@ -1760,6 +1838,12 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
     uint32_t bs = fs->block_size, ino = (uint32_t)node->id, done = 0;
     uint64_t size, end, fresh_from = 0, fresh_to = 0;
     int rc = 0, dirty = 0;
+    /* The runs this call took, so that a failure can give them back (E4-009).
+     * Bounded: past it the write is short, which POSIX allows. */
+    struct {
+        uint32_t lblk, count;
+    } runs[WRITE_RUNS_MAX];
+    uint32_t nruns = 0;
 
     if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, ino, inode) != 0) {
         return -VIBEOS_ENOENT;
@@ -1807,6 +1891,9 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
                 want = 32768u;
             }
             goal = nexti > 0u ? e_start(fs, nexti - 1u) + e_len(fs, nexti - 1u) : g_start(fs, (ino - 1u) / fs->inodes_per_group);
+            if (nruns == WRITE_RUNS_MAX) {
+                break;   /* a short write: every run this call took can still be given back */
+            }
             rc = balloc(fs, goal, want, &start, &got);
             if (rc == 0) {
                 rc = ext_add(fs, bi, got, start);
@@ -1820,6 +1907,9 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
             dirty = 1;
             fresh_from = bi;
             fresh_to = (uint64_t)bi + got;
+            runs[nruns].lblk = bi;
+            runs[nruns].count = got;
+            nruns++;
             phys = start;
         } else if (uninit) {
             rc = ext_make_init(fs, bi);
@@ -1844,6 +1934,25 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
             rc = blk_data(fs, phys, fs->wbuf);
         }
         if (rc != 0) {
+            /* A block of a run this call took, not written: the rest of the
+             * run would read as whatever those blocks last held - another
+             * file's bytes, perhaps (E4-009). Out of the file, back to the
+             * volume; and if the list cannot be split to do it, zeros. */
+            if (fresh && bi < fresh_to) {
+                if (ext_punch(fs, bi, (uint32_t)(fresh_to - bi)) != 0) {
+                    uint64_t k;
+
+                    memset(fs->wbuf, 0, bs);
+                    for (k = bi; k < fresh_to; k++) {
+                        int un = 0;
+                        uint64_t p = ext_map(fs, (uint32_t)k, &un);
+
+                        if (p != 0u && blk_data(fs, p, fs->wbuf) != 0) {
+                            vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, k);
+                        }
+                    }
+                }
+            }
             break;
         }
         done += chunk;
@@ -1852,6 +1961,14 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
         int rs = ext_store(fs, ino, inode);
 
         if (rs != 0) {
+            /* The tree could not take the new extents - no room for a leaf.
+             * The file is as it was, so the blocks this call took go back:
+             * they were leaked, marked in use and named by nothing (E4-009). */
+            uint32_t r;
+
+            for (r = 0; r < nruns; r++) {
+                (void)ext_punch(fs, runs[r].lblk, runs[r].count);
+            }
             return rs;
         }
     }

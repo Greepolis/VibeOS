@@ -138,6 +138,8 @@ uint64_t vibeos_ext2_cache_hits(void);
  * a count that must stay zero on a healthy volume, and the only way a host
  * test can tell a refusal for a checksum from one for any other reason. */
 uint64_t vibeos_ext2_csum_failures(void);
+/* Host tests only: the n-th data write from now fails once (E4-009). */
+void vibeos_ext4_fail_data_after(uint32_t n);
 
 /* The incompat feature bits the last refused mount did not know - what a
  * refusal for a feature names; zero when the last refusal was for something

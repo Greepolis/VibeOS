@@ -234,6 +234,42 @@ for v in plain v3; do
     cmp -s "$J/after.bin" "$J/theirs.bin" || fail "e2fsck replayed blocks 3000-3002 differently ($v)" journal_replays_disagree
 done
 
+# ---- a write that fails (E4-009) ---------------------------------------------
+# Two failures that leave e2fsck happy or nearly so, and the file wrong.
+#
+# A write whose data fits and whose extent leaf does not: an inode already
+# holding its four extents, a volume with exactly four blocks free, and a
+# fifth extent of four blocks. The data takes the four, the leaf finds none,
+# and the blocks must go back - they were left marked in use and named by
+# nothing.
+L="$T/leak"
+mkdir -p "$L"
+truncate -s 8M "$L/fs.img"
+mkfs.ext4 -q -F -b 1024 -N 64 -O ^has_journal "$L/fs.img" > /dev/null 2>&1 || fail "mkfs (leak)" mkfs_leak_failed
+printf 'create\t/a\t644\nstride\t/a\t4\t8192\t1024\t1\ncreate\t/f\t644\nfillup\t/f\t3\n' > "$L/script.txt"
+(cd "$L" && "$EX" apply) > "$L/a1.out" 2> "$L/a1.err" || fail "$(head -1 "$L/a1.err")" leak_setup_failed
+fsize="$(debugfs -R "stat /f" "$L/fs.img" 2> /dev/null | sed -n 's/.*Size: \([0-9]*\).*/\1/p' | head -1)"
+printf 'truncate\t/f\t%s\nfail\tENOSPC\twrite\t/a\t1048576\t4096\t2\n' $(( fsize - 4096 )) > "$L/script.txt"
+(cd "$L" && "$EX" apply) > "$L/a2.out" 2> "$L/a2.err" || fail "$(head -1 "$L/a2.err")" leaf_enospc_not_refused
+e2fsck -fn "$L/fs.img" > "$L/fsck.log" 2>&1 \
+    || fail "$(grep -v -E '^(e2fsck|Pass)' "$L/fsck.log" | head -3 | tr '\n' ' ')" leaf_enospc_leaked_blocks
+
+# A write that fails half-way through a run it took: the rest of the run must
+# leave the file, or a file grown over it later reads whatever those blocks
+# last held - here a deleted file's bytes. e2fsck calls both outcomes clean.
+S="$T/stale"
+mkdir -p "$S"
+truncate -s 16M "$S/fs.img"
+mkfs.ext4 -q -F -b 4096 -N 64 "$S/fs.img" > /dev/null 2>&1 || fail "mkfs (stale)" mkfs_stale_failed
+printf 'create\t/old\t644\nwrite\t/old\t0\t163840\t5\nunlink\t/old\ncreate\t/b\t644\nfaildata\t10\nwriteonce\t/b\t0\t163840\t6\n' > "$S/script.txt"
+(cd "$S" && "$EX" apply) > "$S/a1.out" 2> "$S/a1.err" || fail "$(head -1 "$S/a1.err")" stale_setup_failed
+bsize="$(debugfs -R "stat /b" "$S/fs.img" 2> /dev/null | sed -n 's/.*Size: \([0-9]*\).*/\1/p' | head -1)"
+[ -n "$bsize" ] && [ "$bsize" -gt 0 ] && [ "$bsize" -lt 163840 ] || fail "the failed write left /b at ${bsize:-?} bytes" stale_write_did_not_fail_half_way
+printf 'truncate\t/b\t163840\n' > "$S/script.txt"
+(cd "$S" && "$EX" apply) > "$S/a2.out" 2> "$S/a2.err" || fail "$(head -1 "$S/a2.err")" stale_truncate_failed
+debugfs -R "cat /b" "$S/fs.img" 2> /dev/null | tail -c +$(( bsize + 1 )) | tr -d '\0' | head -c 1 > "$S/tail.bin"
+[ ! -s "$S/tail.bin" ] || fail "/b past its failed write reads bytes that are not zero" failed_write_left_stale_data
+
 # ---- the refusals -----------------------------------------------------------
 # An inode whose checksum no longer matches: its low half set to zero.
 mkdir -p "$T/csum" "$T/feat"

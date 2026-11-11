@@ -270,10 +270,12 @@ static int write_pattern(const char *path, uint64_t off, uint64_t len, uint32_t 
         if (r < 0) {
             return (int)r;
         }
-        if ((uint64_t)r != n) {
-            return -VIBEOS_EIO;
+        if (r == 0) {
+            return -VIBEOS_EIO;   /* no progress: a short write that never ends */
         }
-        done += n;
+        /* A short write is a write, as every program that loops on write()
+         * takes it: the driver stops at the runs one call may take (E4-009). */
+        done += (uint64_t)r;
     }
     return 0;
 }
@@ -329,6 +331,30 @@ static int run(char **a, int n) {
             fprintf(stderr, "FAIL:ext4_exercise %s %s was done, wanted a refusal\n", a[1], n > 2 ? a[2] : "");
             return -1;
         }
+        return 0;
+    }
+    if (strcmp(c, "faildata") == 0 && n == 2) {
+        /* The n-th data write from here fails once (E4-009). */
+        vibeos_ext4_fail_data_after((uint32_t)strtoul(a[1], NULL, 10));
+        return 0;
+    }
+    if (strcmp(c, "writeonce") == 0 && n == 5) {
+        /* One write_at, its result printed and not retried: what a write that
+         * failed half-way left behind is the question, so nothing may write
+         * over it. */
+        static uint8_t buf[1u << 20];
+        uint64_t off = strtoull(a[2], NULL, 10), len = strtoull(a[3], NULL, 10);
+        uint32_t seed = (uint32_t)strtoul(a[4], NULL, 10);
+        long r;
+
+        if (len > sizeof(buf) || vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
+            return -VIBEOS_EINVAL;
+        }
+        for (uint64_t i = 0; i < len; i++) {
+            buf[i] = pat(seed, off + i);
+        }
+        r = vibeos_fs_write_at(&g_mnt, &node, off, buf, (uint32_t)len);
+        printf("writeonce %s returned %ld\n", a[1], r);
         return 0;
     }
     if (strcmp(c, "create") == 0 && n == 3) {

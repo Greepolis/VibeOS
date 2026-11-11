@@ -226,3 +226,19 @@
     /* Every block is full: the directory grows by one. */
     return -VIBEOS_ENOSPC;
     rc = ext_load(fs, dir_ino, dir);
+
+### the runs a write took are not given back when the tree has no room for them (E4-009)
+--- old
+            for (r = 0; r < nruns; r++) {
+                (void)ext_punch(fs, runs[r].lblk, runs[r].count);
+            }
++++ new
+            for (r = 0; r < 0u; r++) {
+                (void)ext_punch(fs, runs[r].lblk, runs[r].count);
+            }
+
+### a write that fails half-way leaves the rest of its run in the file (E4-009)
+--- old
+            if (fresh && bi < fresh_to) {
++++ new
+            if (0 && fresh && bi < fresh_to) {
