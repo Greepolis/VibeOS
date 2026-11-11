@@ -100,6 +100,7 @@ static int run_proc(unsigned rounds) {
         uint32_t i;
         int has_child = (rnd32() & 1u) != 0;
         vibeos_process_state_t state;
+        vibeos_thread_state_t thread_state;
 
         model[1] = (proc_model_t){0};
         model[2] = (proc_model_t){0};
@@ -155,7 +156,7 @@ static int run_proc(unsigned rounds) {
 
         for (i = 0; i < parent_threads; i++) {
             uint32_t owner = 0;
-            if (vibeos_thread_state(&pt, model[1].tids[i], &state) == 0 ||
+            if (vibeos_thread_state(&pt, model[1].tids[i], &thread_state) == 0 ||
                 vibeos_thread_owner(&pt, model[1].tids[i], &owner) == 0) {
                 return fail(r, "terminated process retained an owned thread");
             }
@@ -186,7 +187,7 @@ static int run_proc(unsigned rounds) {
             model[2].thread_count = 0;
             for (i = 0; i < child_threads; i++) {
                 uint32_t owner = 0;
-                if (vibeos_thread_state(&pt, model[2].tids[i], &state) == 0 ||
+                if (vibeos_thread_state(&pt, model[2].tids[i], &thread_state) == 0 ||
                     vibeos_thread_owner(&pt, model[2].tids[i], &owner) == 0) {
                     return fail(r, "terminated child retained an owned thread");
                 }
