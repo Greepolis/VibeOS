@@ -22,6 +22,22 @@ was decided.
 3. **The user's shell** - designed before written: login, prompt, line
    editing and completion, job control, which commands are built in, how it
    finds programs in the new hierarchy. It is also the terminal inside the GUI.
+   Decided 2026-11-11, before the design:
+   - **Three shells.** A native VibeOS shell with a syntax of its own - the
+     login shell and the terminal's - designed by taking what is good in
+     bash's and in cmd's, not by choosing one; and beside it bash and cmd for
+     the scripts written for them.
+   - **bash is the real one**, built from source against musl as SQLite and
+     Lua are, at `/usr/bin/bash`. Until then `/bin/sh` is BusyBox's ash; it
+     stays a POSIX shell either way, because Linux programs' `system()` and
+     `#!/bin/sh` need one.
+   - **cmd** is `C:\Windows\System32\cmd.exe`, run by the NT personality:
+     an interpreter of our own or Wine's, to be decided with the design.
+   - **A script runs by its type**, as on Windows: opening a `.bat` or `.cmd`
+     runs cmd, a `.sh` runs bash, from the shell and from the desktop alike.
+   - The names in `/usr/bin` (E4-021) are decided with this design: the
+     native programs `SH.ELF`, `CAT`, `LS`, `ECHO` and `WC` must not take the
+     names Linux programs expect.
 4. **The GUI** - decided 2026-11-03: an existing Wayland compositor on a
    minimal DRM/KMS (dumb buffers, one output) and evdev, as the README's "a
    desktop from Linux" said; extended later. The desktop and the shell stay
