@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/linux/names.c
+
+### renameat2 returns EEXIST when RENAME_NOREPLACE meets an existing target
+--- old
+    if (b.exists) {
+        if (flags & LINUX_RENAME_NOREPLACE) {
+            return -VIBEOS_EEXIST;
+        }
+        if (linux_same_path(a.path, b.path)) {
++++ new
+    if (b.exists) {
+        if (flags & LINUX_RENAME_NOREPLACE) {
+            return 0;
+        }
+        if (linux_same_path(a.path, b.path)) {
+
+### linkat creates a second name for the same inode
+--- old
+    return vibeos_fs_link(a.mnt, a.tail, b.tail);
++++ new
+    return -VIBEOS_EPERM;
+
+### symlinkat stores the requested target in the new link
+--- old
+    r = vibeos_fs_symlink(w.mnt, target, w.tail);
++++ new
+    r = -VIBEOS_EPERM;

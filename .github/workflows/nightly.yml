@@ -805,6 +805,44 @@ jobs:
             ./build-module-asan/vibeos_module_torture object "$seed" 25000
           done
 
+  module-abi-torture:
+    name: Linux ABI syscall model torture (ASan + UBSan)
+    # This is a useful scoped Linux ABI test, but it does not yet qualify
+    # the whole kernel/abi module for the coverage ratchet.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the handler-level ABI model
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-abi-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-abi-asan --parallel --target vibeos_abi_torture
+      - name: Replayable randomized syscall sequences
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in $(seq 1 80); do
+            ./build-abi-asan/vibeos_abi_torture "$seed" 5000
+          done
+      - name: Long descriptor and file-state sequences
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-abi-asan/vibeos_abi_torture "$seed" 50000
+          done
+
   fuzz-protocols:
     name: Fuzz the Receive Path
     # module: net

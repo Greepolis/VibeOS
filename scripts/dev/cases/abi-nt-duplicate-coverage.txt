@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/nt/object.c
+
+### NtDuplicateObject installs and returns a new handle
+--- old
+    if (dst_u != 0u) {
+        uint32_t access = (options & VIBEOS_DUPLICATE_SAME_ACCESS)
++++ new
+    if (dst_u == 0u) {
+        uint32_t access = (options & VIBEOS_DUPLICATE_SAME_ACCESS)

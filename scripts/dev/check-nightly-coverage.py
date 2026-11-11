@@ -13,8 +13,12 @@ picker. Timekeeping has an independent event-count model, boundary probes and
 production-source mutation checks. IPC channels/events/waitset policies are
 compared with independent FIFO, event-state and selection models; object
 handles are checked against a seeded ledger with a deterministic quota-boundary
-probe. ABI, the portable process table and journal recovery are deliberately
-not counted until their tests discriminate the relevant production properties.
+probe. The ABI syscall tests cover selected Linux file, descriptor, pipe, path,
+memory and fork-inheritance slices plus a separate NT handle/file slice; most
+of both personalities remains uncovered, so they do not qualify the whole ABI
+module. The portable process table
+and journal recovery are likewise not counted until their tests discriminate
+the relevant production properties.
 
 The reason is that a subsystem asked whether it is correct answers from the
 numbers it used to decide, so self-consistent defects survive. The model must
@@ -27,11 +31,11 @@ rejects unknown keys; a separate manifest would be a second source of truth.
 Step-level annotations do not count.
 
 The number may only go down. Eleven of thirteen modules had nothing when this
-rule was introduced. The earlier journal tortures were removed after their sabotages were caught on
-zero of thirty seeds; see scripts/dev/cases/io-journal.txt. ABI, PROC and TXN
-remain uncovered until independent tests discriminate their production
-properties. A test that cannot fail is not evidence of coverage, and lowering
-the baseline requires a test that discriminates.
+rule was introduced. The earlier journal tortures were removed after their
+sabotages were caught on zero of thirty seeds; see scripts/dev/cases/io-journal.txt.
+ABI, PROC and TXN remain uncovered until independent tests discriminate their
+production properties. A test that cannot fail is not evidence of coverage, and
+lowering the baseline requires a test that discriminates.
 """
 
 import argparse
@@ -40,11 +44,11 @@ import re
 import sys
 
 # Thirteen modules have qualifying intensive nightly tests. The three remaining
-# modules (abi, proc and txn) stay in the debt: their current nominal models do
-# not discriminate the properties that matter. IPC and object left the debt
-# only after their independent models and targeted production mutations were
-# strengthened in PR #207. The baseline is a hard upper bound and may only go
-# down when a new test proves it can detect a defect.
+# modules (abi, proc and txn) stay in the debt: their current scoped or nominal
+# models do not discriminate the properties that matter. IPC and object left
+# the debt only after their independent models and targeted production mutations
+# were strengthened in PR #207. The baseline is a hard upper bound and may only
+# go down when a new test proves it can detect a defect.
 BASELINE = 3
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 NIGHTLY = os.path.join(ROOT, ".github", "workflows", "nightly.yml")

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/nt/object.c
+
+### NtClose removes a live handle and reports success
+--- old
+    if (!f) {
+        return VIBEOS_STATUS_INVALID_HANDLE;
+    }
+    vibeos_file_put(f);   /* after the lock: the last reference may do work */
++++ new
+    if (f) {
+        return VIBEOS_STATUS_INVALID_HANDLE;
+    }
+    vibeos_file_put(f);   /* after the lock: the last reference may do work */

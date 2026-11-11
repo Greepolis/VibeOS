@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/nt/file.c
+
+### NtReadFile transfers the requested byte to the caller
+--- old
+        } else {
+            n = f->ops->read ? f->ops->read(f, buf, len) : -VIBEOS_EBADF;
+        }
++++ new
+        } else {
+            n = 0;
+        }

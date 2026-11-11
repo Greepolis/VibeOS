@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/nt/file.c
+
+### NtWriteFile stores the requested byte in the file
+--- old
+        } else if (write) {
+            n = f->ops->write ? f->ops->write(f, buf, len) : -VIBEOS_EBADF;
+        } else {
++++ new
+        } else if (write) {
+            n = 0;
+        } else {

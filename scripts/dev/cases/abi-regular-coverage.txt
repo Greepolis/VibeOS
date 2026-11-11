@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/files/regular.c
+
+### O_APPEND writes at the current end, not the descriptor offset
+--- old
+    at = (f->flags & VIBEOS_O_APPEND) ? regular_size(f) : f->pos;
++++ new
+    at = f->pos;
+
+### ftruncate changes the file's visible size
+--- old
+    r = vibeos_fs_truncate(f->mnt, &node, size);
+    if (r == 0) {
+        f->size = size;
++++ new
+    r = 0;
+    if (r == 0) {
+        f->size = size;
+
+### getdents64 includes entries from the directory tree
+--- old
+    if (vibeos_fs_list(f->mnt, tail, (uint32_t)(index - 2u), out->name, sizeof(out->name),
+                       &size, &is_dir) != 0) {
+        return VIBEOS_READDIR_END;
+    }
++++ new
+    return VIBEOS_READDIR_END;

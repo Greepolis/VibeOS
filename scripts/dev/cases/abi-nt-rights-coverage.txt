@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/nt/object.c
+
+### NT handles refuse operations not present in the granted access mask
+--- old
+    if ((access & need) != need) {
+        vibeos_file_put(f);
+        return VIBEOS_STATUS_ACCESS_DENIED;
+    }
++++ new
+    if (0 && (access & need) != need) {
+        vibeos_file_put(f);
+        return VIBEOS_STATUS_ACCESS_DENIED;
+    }

@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/linux/mm.c
+
+### mmap creates anonymous pages with the requested protection
+--- old
+        if (ks_map_anon(me, base + i * 4096ull, f ? fill : want) != 0) {
++++ new
+        if (ks_map_anon(me, base + i * 4096ull, VIBEOS_PROT_NONE) != 0) {
+
+### mprotect revokes write access from a read-only page
+--- old
+            vibeos_umem_protect_pages(me, addr, end, linux_prot_of(prot));
++++ new
+            vibeos_umem_protect_pages(me, addr, end,
+                                      (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                                                      VIBEOS_PROT_USER));
+
+### munmap removes the complete page-aligned requested range
+--- old
+    if ((addr & 0xFFFull) != 0u || len == 0u || len > ~0ull - 0xFFFull - addr) {
+        return -VIBEOS_EINVAL;
+    }
+    end = (addr + len + 0xFFFull) & ~0xFFFull;
++++ new
+    if ((addr & 0xFFFull) != 0u || len == 0u || len > ~0ull - 0xFFFull - addr) {
+        return -VIBEOS_EINVAL;
+    }
+    end = addr;
+
+### MAP_PRIVATE copies the file's bytes into process-owned pages
+--- old
+        long n = f->ops->pread(f, base + i * 4096ull, 4096u, off + i * 4096ull);
++++ new
+        long n = 0;
+
+### MAP_SHARED maps the file's own page
+--- old
+        if (ks_map_page(me, base + i * 4096ull, page, want) != 0) {
++++ new
+        if (ks_map_anon(me, base + i * 4096ull, want) != 0) {
+
+### MAP_FIXED replaces an existing mapping before installing the new pages
+--- old
+        } else {
+            if ((r = vibeos_umem_unmap(me, ps, addr, addr + bytes)) != 0) {
+                return r;
+            }
+        }
++++ new
+        } else {
+            if (0) {
+                return r;
+            }
+        }
+
+### mmap rejects a mapping with neither MAP_PRIVATE nor MAP_SHARED
+--- old
+    if ((flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE && (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED &&
+        (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED_VALIDATE) {
+        return -VIBEOS_EINVAL;
++++ new
+    if (0) {
+        return -VIBEOS_EINVAL;
+
+### mprotect narrows the page before its range too
+--- old
+            vibeos_umem_protect_pages(me, addr, end, linux_prot_of(prot));
++++ new
+            vibeos_umem_protect_pages(me, addr > 4096ull ? addr - 4096ull : addr, end, linux_prot_of(prot));

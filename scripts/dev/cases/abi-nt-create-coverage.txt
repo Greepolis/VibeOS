@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/abi/nt/file.c
+
+### NtCreateFile refuses FILE_CREATE when the name already exists
+--- old
+    if (w.exists && disposition == NT_FILE_CREATE) {
+        return NT_STATUS(VIBEOS_STATUS_OBJECT_NAME_COLLISION);
++++ new
+    if (w.exists && disposition == NT_FILE_OPEN) {
+        return NT_STATUS(VIBEOS_STATUS_OBJECT_NAME_COLLISION);
+
+### NtCreateFile must not create a missing name for FILE_OPEN or FILE_OVERWRITE
+--- old
+    if (!w.exists && (disposition == NT_FILE_OPEN || disposition == NT_FILE_OVERWRITE)) {
+        return NT_STATUS(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND);
++++ new
+    if (!w.exists && (disposition == NT_FILE_OPEN_IF || disposition == NT_FILE_OVERWRITE_IF)) {
+        return NT_STATUS(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND);
+    
+### NtCreateFile must distinguish a directory opened as a non-directory file
+--- old
+    if (isdir && (options & NT_FILE_NON_DIRECTORY_FILE)) {
+        return NT_STATUS(VIBEOS_STATUS_FILE_IS_A_DIRECTORY);
++++ new
+    if (isdir && (options & NT_FILE_NON_DIRECTORY_FILE)) {
+        return NT_STATUS(VIBEOS_STATUS_NOT_A_DIRECTORY);
