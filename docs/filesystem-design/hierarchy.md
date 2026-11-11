@@ -104,8 +104,10 @@ every writable production filesystem.
 
 ## 3. Path and name semantics
 
-- Native VibeOS and Linux paths use `/`, are case-sensitive, and preserve valid
-  UTF-8 byte sequences. Invalid UTF-8 is rejected at user-facing creation and
+- Native VibeOS and Linux paths use `/` and preserve valid UTF-8 byte
+  sequences. Whether a directory compares names with or without case is
+  decided per directory (below, decided 2026-11-11); names are always stored
+  as written. Invalid UTF-8 is rejected at user-facing creation and
   import boundaries; the filesystem MUST NOT silently normalize names into a
   collision.
 - The VFS MUST preserve the existing bounded component/path checks, make limits
@@ -118,10 +120,27 @@ every writable production filesystem.
 - Security-sensitive opens MUST support no-follow and beneath/in-root
   resolution semantics; a caller cannot validate a string and later follow a
   different symlink target in a second walk.
-- Case-insensitive Windows lookup is scoped to the NT volume/path translator.
-  If two names collide under its defined Unicode case-folding rule, lookup MUST
-  fail deterministically rather than select an arbitrary entry. The on-disk
-  namespace is not globally case-folded.
+- **Case: like Windows where people and Windows live, like Linux where the
+  system lives** (decided 2026-11-11, replacing "the on-disk namespace is not
+  globally case-folded" as the whole rule). Names are case-insensitive and
+  case-preserving - `Foo.txt` is opened as `FOO.TXT` and listed as `Foo.txt`,
+  and two names that differ only in case cannot share a directory - in
+  `/home`, `/usr/lib/windows` and `/var/lib/windows`, and in whatever is made
+  under them. Everywhere else - `/usr` but its Windows directory, `/etc`,
+  `/var` but its Windows state, `/opt`, `/tmp` - names are case-sensitive as
+  Linux programs expect: `Makefile` and `makefile` are two files, as git
+  repositories, the Linux sources and LTP need them to be.
+  - The mechanism is ext4's own casefold (the `casefold` feature at mkfs, the
+    `+F` attribute per directory, inherited by what is made in it; Unicode
+    folding as Linux does it), so a volume written here reads the same on Linux
+    and the reverse. Android and Steam's Proton draw the same line.
+  - The FAT ESP is case-insensitive by its format, as it always was.
+  - The NT path translator keeps folding only where the filesystem does not:
+    in a case-sensitive directory a Windows program still finds `FOO.TXT` as
+    `foo.txt`. If two names there collide under its folding rule, lookup MUST
+    fail deterministically rather than select an arbitrary entry.
+  - Not implemented yet: the ext4 driver neither reads nor writes casefolded
+    directories (E4-030), and the root is made without the feature.
 
 ## 4. Boot and test payload separation
 
