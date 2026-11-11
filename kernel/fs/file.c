@@ -160,7 +160,13 @@ int vibeos_file_node(const vibeos_file_t *f, vibeos_fs_node_t *out) {
     if (!f || !f->mnt || f->isdir || f->node == 0u) {
         return -VIBEOS_EINVAL;
     }
+    /* Every field, then the ones the description knows: held was filled field
+     * by field, and when the node gained `gen` (E4-012) it arrived holding
+     * whatever was on the stack - ext4 called the description's own file a
+     * stranger, and every image read through it failed. */
+    held = (vibeos_fs_node_t){0};
     held.id = f->node;
+    held.gen = f->node_gen;
     held.size = f->size;
     held.is_dir = 0;
     r = vibeos_fs_getattr(f->mnt, &held, out);

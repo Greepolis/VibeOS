@@ -883,6 +883,7 @@ int ext2_op_lookup(void *fsv, const char *path, vibeos_fs_node_t *out) {
         return -1;
     }
     out->id = ino;
+    out->gen = ext2_inode_gen(inode);
     out->size = ext2_inode_size(inode);
     out->is_dir = ext2_inode_is_dir(inode);
     return 0;
@@ -904,6 +905,9 @@ long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
      * identity that cannot hold driver-private data. */
     if (ext2_read_inode(fs, (uint32_t)node->id, inode) != 0) {
         return -1;
+    }
+    if (ext2_node_stale(node, inode)) {
+        return -1;   /* the file is gone, whatever has its number now (E4-012) */
     }
     size = ext2_inode_size(inode);
     if (offset >= size) {

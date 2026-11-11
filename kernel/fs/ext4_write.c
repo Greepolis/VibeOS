@@ -1155,6 +1155,7 @@ static void node_fill(uint32_t ino, const uint8_t *inode, vibeos_fs_node_t *out)
     uint32_t mode = le16(inode);
 
     out->id = ino;
+    out->gen = ext2_inode_gen(inode);
     out->size = ext2_inode_size(inode);
     out->mode = mode;
     out->is_dir = S_ISDIR_(mode);
@@ -1747,10 +1748,9 @@ static int w_getattr(void *fsv, const vibeos_fs_node_t *node, vibeos_fs_node_t *
     if (ext2_read_inode(fs, (uint32_t)node->id, inode) != 0) {
         return -VIBEOS_EIO;
     }
-    /* A node whose last name has gone: the inode is free, and the number may
-     * name something else by the time anyone asks (no inode generation in the
-     * node; the same gap as FAT's). */
-    if (le16(inode + 0x1Au) == 0u || le16(inode) == 0u) {
+    /* A node whose last name has gone, or whose inode has since gone to
+     * another file: its generation says which (E4-012). */
+    if (ext2_node_stale(node, inode)) {
         return -VIBEOS_ENOENT;
     }
     node_fill((uint32_t)node->id, inode, out);
@@ -1845,8 +1845,9 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
     } runs[WRITE_RUNS_MAX];
     uint32_t nruns = 0;
 
-    if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, ino, inode) != 0) {
-        return -VIBEOS_ENOENT;
+    if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, ino, inode) != 0 ||
+        ext2_node_stale(node, inode)) {
+        return -VIBEOS_ENOENT;   /* not into a file that took a gone file's number (E4-012) */
     }
     rc = file_check(inode);
     if (rc != 0) {
@@ -1991,8 +1992,9 @@ static int x_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
     uint64_t size;
     int rc;
 
-    if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, ino, inode) != 0) {
-        return -VIBEOS_ENOENT;
+    if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, ino, inode) != 0 ||
+        ext2_node_stale(node, inode)) {
+        return -VIBEOS_ENOENT;   /* E4-012 */
     }
     rc = file_check(inode);
     if (rc != 0) {
@@ -2344,7 +2346,7 @@ static int x_setattr_node(void *fsv, const vibeos_fs_node_t *node, const vibeos_
     uint8_t inode[EXT2_MAX_INODE_SIZE];
 
     if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, (uint32_t)node->id, inode) != 0 ||
-        le16(inode + 0x1Au) == 0u) {
+        ext2_node_stale(node, inode)) {
         return -VIBEOS_ENOENT;
     }
     return attr_apply(fs, (uint32_t)node->id, inode, attr);

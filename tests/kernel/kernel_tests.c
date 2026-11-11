@@ -6943,8 +6943,15 @@ static void e2_w32(uint8_t *p, uint32_t v) {
 static uint8_t *e2_block(uint32_t n) { return g_e2 + (uint64_t)n * E2_BLOCK; }
 
 /* One inode, written into the table at block 3. */
+/* An inode the fixture fills in, with the one link every file in use has: an
+ * inode with none is a free one, and since E4-012 the reader refuses a node
+ * whose inode has no links - the fixture used to leave i_links_count zero,
+ * which no volume a real tool wrote ever does. */
 static uint8_t *e2_inode(uint32_t ino) {
-    return e2_block(3) + (uint64_t)(ino - 1u) * E2_INODE_SIZE;
+    uint8_t *p = e2_block(3) + (uint64_t)(ino - 1u) * E2_INODE_SIZE;
+
+    p[0x1A] = 1u;
+    return p;
 }
 
 static void e2_dirent(uint8_t *at, uint32_t ino, const char *name, uint16_t reclen) {

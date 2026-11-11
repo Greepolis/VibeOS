@@ -46,10 +46,10 @@
         return -VIBEOS_EINVAL;
     }
     {
-        vibeos_fs_node_t held;
+        vibeos_fs_node_t held = {0};   /* every field (E4-012: gen arrived as stack garbage) */
 +++ new
     {
-        vibeos_fs_node_t held;
+        vibeos_fs_node_t held = {0};   /* every field (E4-012: gen arrived as stack garbage) */
 
 ### AT_EMPTY_PATH is not honoured
 --- old

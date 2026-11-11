@@ -270,6 +270,20 @@ printf 'truncate\t/b\t163840\n' > "$S/script.txt"
 debugfs -R "cat /b" "$S/fs.img" 2> /dev/null | tail -c +$(( bsize + 1 )) | tr -d '\0' | head -c 1 > "$S/tail.bin"
 [ ! -s "$S/tail.bin" ] || fail "/b past its failed write reads bytes that are not zero" failed_write_left_stale_data
 
+# ---- a node outlives its file (E4-012) ----------------------------------------
+# A node held across its file's last unlink, once the inode number has gone to
+# a new file: reading or writing through it must be refused, not done to the
+# new file. The exerciser checks the number really was reused.
+G="$T/stale-node"
+mkdir -p "$G"
+truncate -s 16M "$G/fs.img"
+mkfs.ext4 -q -F -N 64 "$G/fs.img" > /dev/null 2>&1 || fail "mkfs (stale node)" mkfs_stale_node_failed
+printf 'staleness
+' > "$G/script.txt"
+(cd "$G" && "$EX" apply) > "$G/a.out" 2> "$G/a.err"     || fail "$(grep -m1 FAIL "$G/a.err" || head -1 "$G/a.err")" stale_node_reached_another_file
+e2fsck -fn "$G/fs.img" > "$G/fsck.log" 2>&1 || fail "$(head -3 "$G/fsck.log" | tr '
+' ' ')" stale_node_volume_not_clean
+
 # ---- the refusals -----------------------------------------------------------
 # An inode whose checksum no longer matches: its low half set to zero.
 mkdir -p "$T/csum" "$T/feat"

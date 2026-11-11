@@ -93,4 +93,23 @@ int ext4_j_recover(vibeos_ext2_t *fs);
 int ext4_j_begin(vibeos_ext2_t *fs);
 int ext4_j_end(vibeos_ext2_t *fs);
 
+/* A node found before its inode was freed, or before the inode went to
+ * another file (E4-012): the inode has no links or no type, or its
+ * i_generation is not the one the node was found with. A node with gen 0 was
+ * made by somebody who did not ask (an id built by hand) and is judged by the
+ * links and type alone. */
+static inline int ext2_node_stale(const vibeos_fs_node_t *node, const uint8_t *inode) {
+    uint32_t gen = (uint32_t)inode[0x64] | ((uint32_t)inode[0x65] << 8) |
+                   ((uint32_t)inode[0x66] << 16) | ((uint32_t)inode[0x67] << 24);
+    uint32_t links = (uint32_t)inode[0x1A] | ((uint32_t)inode[0x1B] << 8);
+    uint32_t mode = (uint32_t)inode[0] | ((uint32_t)inode[1] << 8);
+
+    return links == 0u || mode == 0u || (node->gen != 0u && node->gen != gen);
+}
+
+static inline uint32_t ext2_inode_gen(const uint8_t *inode) {
+    return (uint32_t)inode[0x64] | ((uint32_t)inode[0x65] << 8) |
+           ((uint32_t)inode[0x66] << 16) | ((uint32_t)inode[0x67] << 24);
+}
+
 #endif

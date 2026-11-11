@@ -314,10 +314,11 @@ long linux_walk_fd(uint64_t fd, vibeos_path_t *w) {
         return -VIBEOS_EINVAL;
     }
     {
-        vibeos_fs_node_t held;
+        vibeos_fs_node_t held = {0};   /* every field (E4-012: gen arrived as stack garbage) */
         uint32_t i;
 
         held.id = f->node;
+        held.gen = f->node_gen;
         held.size = f->size;
         held.is_dir = f->isdir;
         r = vibeos_fs_getattr(f->mnt, &held, &w->node);

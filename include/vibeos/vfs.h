@@ -74,6 +74,12 @@ typedef struct {
     uint64_t atime_ns;            /* nanoseconds on vibeos_fs_now_ns's clock */
     uint64_t mtime_ns;
     uint64_t ctime_ns;
+    /* Which life of `id` this node was found in, for a driver whose ids are
+     * reused (ext2/ext4: the inode's i_generation). A driver asked about a
+     * node whose id has since been freed or given to another file says
+     * ENOENT rather than act on the stranger (E4-012). 0: not tracked. Opaque
+     * above this line, like id; carried by an open description. */
+    uint32_t gen;
 } vibeos_fs_node_t;
 
 /* What setattr may change: the fields named in `valid`. */

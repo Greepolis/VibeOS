@@ -182,6 +182,7 @@ struct vibeos_file {
     vibeos_fsmount_t *mnt;
     uint32_t tail;
     uint64_t node;                /* the filesystem's identity, opaque        */
+    uint32_t node_gen;            /* and which life of it (vfs.h, E4-012)     */
     uint64_t size;
     int isdir;
     /* The name goes when the last descriptor does: memfd_create's file, which

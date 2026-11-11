@@ -35,8 +35,10 @@ static void file_notify(const vibeos_file_t *f, uint32_t event) {
 }
 
 static vibeos_fs_node_t node_of(const vibeos_file_t *f) {
-    vibeos_fs_node_t n;
+    vibeos_fs_node_t n = {0};   /* every field: a field added later must not hold stack garbage (E4-012) */
+
     n.id = f->node;
+    n.gen = f->node_gen;
     n.size = f->size;
     n.is_dir = f->isdir;
     return n;
@@ -598,10 +600,7 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
     uint32_t k;
     long r;
 
-    node.id = 0;
-    node.size = 0;
-    node.is_dir = 0;
-    node.mode = 0;
+    node = (vibeos_fs_node_t){0};
     if (acc == VIBEOS_O_ACCMODE) {
         *err = -VIBEOS_EINVAL;   /* 3 is not an access mode */
         return 0;
@@ -642,6 +641,7 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
                 f->mnt = mnt;
                 f->tail = (uint32_t)(w->tail - abs);
                 f->node = node.id;
+                f->node_gen = node.gen;
             }
             return f;
         }
@@ -686,6 +686,7 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
     f->mnt = mnt;
     f->tail = (uint32_t)(w->tail - abs);
     f->node = node.id;
+    f->node_gen = node.gen;
     f->size = node.size;
     f->isdir = node.is_dir;
     *err = 0;

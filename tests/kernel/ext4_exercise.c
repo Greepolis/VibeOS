@@ -333,6 +333,48 @@ static int run(char **a, int n) {
         }
         return 0;
     }
+    if (strcmp(c, "staleness") == 0 && n == 1) {
+        /* A node held across its file's last unlink, once the inode number has
+         * gone to a new file (E4-012): reading and writing through it must be
+         * refused, and the new file must be untouched. The number is checked
+         * to be reused, or the test proves nothing. */
+        static const uint8_t mine[8] = "OLDFILE!", theirs[8] = "NEWFILE!";
+        vibeos_fs_node_t held, now;
+        uint8_t got[8];
+        long r;
+
+        if (vibeos_fs_create(&g_mnt, "/stale-a", 0644, &held) != 0 ||
+            vibeos_fs_write_at(&g_mnt, &held, 0, mine, 8u) != 8 ||
+            vibeos_fs_lookup(&g_mnt, "/stale-a", &held) != 0 ||
+            vibeos_fs_unlink(&g_mnt, "/stale-a") != 0 ||
+            vibeos_fs_create(&g_mnt, "/stale-b", 0644, &now) != 0 ||
+            vibeos_fs_write_at(&g_mnt, &now, 0, theirs, 8u) != 8) {
+            fprintf(stderr, "FAIL:ext4_exercise staleness setup\n");
+            return -1;
+        }
+        if (now.id != held.id) {
+            fprintf(stderr, "FAIL:ext4_exercise staleness: inode %llu not reused (got %llu)\n",
+                    (unsigned long long)held.id, (unsigned long long)now.id);
+            return -1;
+        }
+        r = vibeos_fs_read_at(&g_mnt, &held, 0, got, 8u);
+        if (r >= 0) {
+            fprintf(stderr, "FAIL:ext4_exercise a node of a removed file read %ld bytes of the file that took its inode\n", r);
+            return -1;
+        }
+        r = vibeos_fs_write_at(&g_mnt, &held, 0, mine, 8u);
+        if (r >= 0) {
+            fprintf(stderr, "FAIL:ext4_exercise a node of a removed file wrote into the file that took its inode\n");
+            return -1;
+        }
+        if (vibeos_fs_lookup(&g_mnt, "/stale-b", &now) != 0 || vibeos_fs_read_at(&g_mnt, &now, 0, got, 8u) != 8 ||
+            memcmp(got, theirs, 8u) != 0) {
+            fprintf(stderr, "FAIL:ext4_exercise the new file changed\n");
+            return -1;
+        }
+        printf("staleness ok inode=%llu\n", (unsigned long long)held.id);
+        return 0;
+    }
     if (strcmp(c, "faildata") == 0 && n == 2) {
         /* The n-th data write from here fails once (E4-009). */
         vibeos_ext4_fail_data_after((uint32_t)strtoul(a[1], NULL, 10));
