@@ -1187,15 +1187,31 @@ def main():
                 except FileNotFoundError:
                     pass
         esp_mb = max(96, min(127, content // (1024 * 1024) + 16))
+        here = os.path.dirname(os.path.abspath(__file__))
+        # The disk always has the native root. Every program runs from
+        # /usr/bin, which only the root has, so a disk without one - the bare
+        # ESP this used to fall back to without mkfs.ext4, or on asking with
+        # VIBEOS_SMOKE_ROOT=0 - started no program at all, and had not since
+        # the programs moved (E4-022). Said and stopped, not booted.
+        if shutil.which("mkfs.ext4") is None:
+            raise SystemExit("qemu-cli-smoke: mkfs.ext4 (e2fsprogs) is needed to build the root partition")
+        # The ESP carries what the firmware and the kernel read from it - the
+        # loader, the kernel, INIT.ELF, the swap file and the filesystem
+        # images the kernel mounts as loop devices - and not the programs,
+        # which are on the root.
+        esp_tree = tempfile.mkdtemp(prefix="vibeos-esp-")
         subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
-                        os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "make_esp_image.py"),
-                        efi_root, esp_img, str(esp_mb)],
+                        os.path.join(here, "make-root-tree.py"), "--esp", efi_root, esp_tree,
+                        "--test-images"],
                        check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+                        os.path.join(here, "make_esp_image.py"),
+                        esp_tree, esp_img, str(esp_mb)],
+                       check=True, stdout=subprocess.DEVNULL)
+        shutil.rmtree(esp_tree, ignore_errors=True)
         # The native root beside it (docs/filesystem-design/ext4.md step 4):
         # one disk, an MBR, the ESP and an ext4 partition mkfs.ext4 made from
-        # the hierarchy's tree. Without mkfs.ext4 the disk is the bare ESP as
-        # before, and the verdict says root_absent.
+        # the hierarchy's tree.
         root_tree = tempfile.mkdtemp(prefix="vibeos-root-")
         # The tree is make-root-tree.py's, which the VM images use too.
         subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
@@ -1210,15 +1226,8 @@ def main():
                             "make", esp_img, root_tree, disk_img, str(esp_mb + 64)],
                            capture_output=True, text=True)
         shutil.rmtree(root_tree, ignore_errors=True)
-        if os.environ.get("VIBEOS_SMOKE_ROOT", "1") == "0":
-            # Asked for the bare ESP: the layout before step 4, kept for
-            # comparing the two (a boot with the root against one without).
-            r = subprocess.CompletedProcess([], 3, "", "")
         if r.returncode == 0:
             esp_drive = f"if=none,id=esp,format=raw,file={disk_img}"
-        elif r.returncode == 3:
-            disk_img = None
-            esp_drive = f"if=none,id=esp,format=raw,file={esp_img}"
         else:
             raise SystemExit("make-boot-disk.py: " + (r.stdout + r.stderr).strip())
     elif ESP == "vvfat":
@@ -3823,9 +3832,6 @@ def main():
                 # Said in the verdict, not left to be noticed: these workloads
                 # were skipped because their programs were not built.
                 reason += " corpus_absent=" + "+".join(corpus_absent)
-            if ESP == "image" and not disk_img:
-                # No mkfs.ext4 on the host: the disk was the bare ESP.
-                reason += " root_absent=" + ("asked" if os.environ.get("VIBEOS_SMOKE_ROOT", "1") == "0" else "no_mkfs.ext4")
             if ESP == "image" and not L5_DNS_NAME:
                 # A skip that is allowed is printed where the result is read.
                 reason += " dns_absent"

@@ -68,11 +68,7 @@ PROD_EFI="$ART/efi_root_production"
 PROD_ESP="$ART/vibeos_esp_production.img"
 rm -rf "$ROOT_TREE" "$PROD_EFI"
 python3 "$SCRIPT_DIR/make-root-tree.py" "$EFI_ROOT" "$ROOT_TREE" --production || exit 1
-mkdir -p "$PROD_EFI/EFI/BOOT"
-for f in BOOTX64.EFI VIBEOSKR.ELF INIT.ELF SWAPFILE.BIN; do
-  [ -f "$EFI_ROOT/EFI/BOOT/$f" ] && cp "$EFI_ROOT/EFI/BOOT/$f" "$PROD_EFI/EFI/BOOT/"
-done
-[ -f "$EFI_ROOT/startup.nsh" ] && cp "$EFI_ROOT/startup.nsh" "$PROD_EFI/"
+python3 "$SCRIPT_DIR/make-root-tree.py" --esp "$EFI_ROOT" "$PROD_EFI" || exit 1
 PROD_ESP_MB=$(du -sm --apparent-size "$PROD_EFI" | cut -f1)
 PROD_ESP_MB=$(( PROD_ESP_MB + PROD_ESP_MB / 2 + 8 ))
 if [[ "$PROD_ESP_MB" -lt 24 ]]; then PROD_ESP_MB=24; fi

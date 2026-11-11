@@ -4,6 +4,7 @@
 hierarchy.md, ext4.md step 4).
 
     make-root-tree.py <efi_root> <out_dir> [--marker] [--production]
+    make-root-tree.py --esp <efi_root> <out_dir> [--test-images]
 
 The root is "/": the programs go to /usr/bin, and the rest of the EFI tree -
 /corpus, /lib, /lib64, /win, /etc - comes along as it is. What stays on the
@@ -26,6 +27,12 @@ hierarchy requires for the Linux personality's merged /usr (hierarchy.md;
 E4-023): the loaders and libraries live in /usr/lib, once, and a program that
 names /lib/ld-musl-x86_64.so.1 or /lib64/ld-linux-x86-64.so.2 reaches them
 through the link. The kernel follows it when it opens an interpreter.
+
+--esp builds the ESP beside such a root instead (E4-022): what the firmware
+and the kernel read from it themselves - the loader, the kernel, INIT.ELF for
+a disk with no root, the swap file - and, with --test-images, the filesystem
+images the kernel mounts as loop devices for the boot gate. Not the programs:
+they are on the root, and two copies of /usr/bin is one too many.
 
 One script, because two callers build this tree - the boot gate's disk and
 the VM images - and two copies of the list would drift.
@@ -134,11 +141,30 @@ def normalise_modes(out):
             os.chmod(p, 0o755 if executable else 0o644)
 
 
+# What the firmware and the kernel read from the ESP. The kernel's loop
+# images (*.IMG) are the boot gate's, and only --test-images keeps them.
+ESP_FILES = ("BOOTX64.EFI", "VIBEOSKR.ELF", "INIT.ELF", "SWAPFILE.BIN")
+
+
+def make_esp(efi_root, out, test_images):
+    boot_dir = os.path.join(efi_root, "EFI", "BOOT")
+    os.makedirs(os.path.join(out, "EFI", "BOOT"), exist_ok=True)
+    for n in sorted(os.listdir(boot_dir)):
+        if n in ESP_FILES or (test_images and n.endswith(".IMG")):
+            shutil.copy2(os.path.join(boot_dir, n), os.path.join(out, "EFI", "BOOT", n))
+    nsh = os.path.join(efi_root, "startup.nsh")
+    if os.path.exists(nsh):
+        shutil.copy2(nsh, os.path.join(out, "startup.nsh"))
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) != 2:
         print(__doc__.strip().splitlines()[3].strip())
         return 2
+    if "--esp" in sys.argv[1:]:
+        make_esp(args[0], args[1], "--test-images" in sys.argv[1:])
+        return 0
     make(args[0], args[1], "--marker" in sys.argv[1:], "--production" in sys.argv[1:])
     return 0
 
