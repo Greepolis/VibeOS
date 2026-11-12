@@ -95,6 +95,9 @@ typedef struct {
      * Full, a file is freed at once, as before - and counted. */
     uint32_t orphan_n;
     uint32_t orphan[32];
+    /* Bytes this mount has written, not yet added to s_kbytes_written: the
+     * superblock takes them whenever it is next written (E4-013). */
+    uint64_t written_pending;
 
     /* ---- the journal's (docs/filesystem-design/ext4.md step 3) ----
      * One operation is one transaction. What it changes of the metadata is

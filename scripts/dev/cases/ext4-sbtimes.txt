@@ -1,0 +1,30 @@
+# What Linux keeps in the superblock and in atime as it goes (E4-013), broken.
+# Caught by scripts/dev/verify-ext4.sh against dumpe2fs and debugfs.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release'" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-sbtimes.txt build-gcc-Release
+
+### a mount is not counted
+--- old
+    st16(fs->sb + 0x34u, (uint16_t)(le16(fs->sb + 0x34u) + 1u));
++++ new
+    st16(fs->sb + 0x34u, (uint16_t)(le16(fs->sb + 0x34u) + 0u));
+
+### the lifetime writes are never added
+--- old
+        life += kb;
++++ new
+        life += 0;
+
+### a read never sets atime
+--- old
+    time_set(inode, T_ATIME, now);
+    (void)inode_put(fs, (uint32_t)node->id, inode);
++++ new
+    (void)inode_put(fs, (uint32_t)node->id, inode);
+
+### every read sets atime (strictatime, not relatime)
+--- old
+    if (at > time_get(inode, T_MTIME) && at > time_get(inode, T_CTIME) && (now < at || now - at < 86400ull * NS)) {
++++ new
+    if (0) {

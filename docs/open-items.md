@@ -6,9 +6,9 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-78 open in 3 registers.
+77 open in 3 registers.
 
-## [ext4](implementation_progress/fs_ext4.md) - 12
+## [ext4](implementation_progress/fs_ext4.md) - 11
 
 | ID | What | Status |
 |---|---|---|
@@ -21,7 +21,6 @@ is [next-steps.md](next-steps.md).
 | E4-008 | A tree Linux grew to depth 2 (more than 1360 extents) is read, and a write that would change it is `EFBIG` (a write that reaches the cap is first short, then ... | open |
 | E4-010 | The rule that a `BLOCK_UNINIT` group's bitmap holds other groups' tables that lie inside it (flex_bg) is coded and untested: this mke2fs puts every table in ... | open |
 | E4-011 | Allocation is first-fit from the parent's group: directories are not spread (Orlov), no preallocation, no delayed allocation; no `fallocate`, hole punching, ... | open |
-| E4-013 | `s_wtime`, `s_mnt_count`, `s_kbytes_written`, the state word and the backup superblocks and descriptors are not maintained (Linux keeps the backups stale too, ... | open |
 | E4-004 | The high 16 bits of an extent's start are read, and no fixture is past 2^32 blocks to need them | open |
 | E4-005 | htree is read linearly: a lookup in a directory of a million entries reads all of it | open (perf phase) |
 

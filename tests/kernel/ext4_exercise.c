@@ -513,6 +513,22 @@ static int run(char **a, int n) {
         free(big);
         return r < 0 ? (int)r : (uint64_t)r == len ? 0 : -VIBEOS_EIO;
     }
+    if (strcmp(c, "read") == 0 && n == 2) {
+        /* The whole file, through the mount's read: what a read changes is
+         * atime (E4-013). */
+        static uint8_t rbuf[65536];
+        uint64_t at = 0;
+        long got;
+
+        if (vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
+            return -VIBEOS_ENOENT;
+        }
+        do {
+            got = vibeos_fs_read_at(&g_mnt, &node, at, rbuf, sizeof(rbuf));
+            at += got > 0 ? (uint64_t)got : 0u;
+        } while (got > 0);
+        return got < 0 ? (int)got : 0;
+    }
     if (strcmp(c, "truncate") == 0 && n == 3) {
         if (vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
             return -VIBEOS_ENOENT;
@@ -817,6 +833,9 @@ int main(int argc, char **argv) {
         printf("refused features=0x%x\n", vibeos_ext2_last_refused_features());
         return vibeos_ext2_last_refused_features() != 0u ? 0 : 1;
     }
+    /* Before the mount, as on the machine (hw_rtc_bringup): a mount dates
+     * itself (E4-013). */
+    vibeos_fs_set_clock(clock_fn);
     if (mount_volume() != 0) {
         fprintf(stderr, "FAIL:ext4_exercise cannot mount what mkfs.ext4 made (refused=0x%x)\n",
                 vibeos_ext2_last_refused_features());

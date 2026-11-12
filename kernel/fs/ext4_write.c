@@ -90,6 +90,8 @@ static uint32_t crc32c(uint32_t seed, const void *p, uint32_t n) {
     return vibeos_ext2_crc32c(seed, p, n);
 }
 
+#define NS 1000000000ull
+
 /* ---- mount ---------------------------------------------------------------- */
 
 /* What the writer keeps true is a short list, and a volume outside it is read
@@ -98,6 +100,7 @@ static uint32_t crc32c(uint32_t seed, const void *p, uint32_t n) {
  * sparse_super2). The compat and ro_compat words are the ones that matter for
  * a writer; the incompat ones are already the reader's. */
 static void orphans_at_mount(vibeos_ext2_t *fs);
+static void mount_count(vibeos_ext2_t *fs);
 
 void ext4_w_mount(vibeos_ext2_t *fs) {
     uint32_t compat, known_ro;
@@ -125,12 +128,32 @@ void ext4_w_mount(vibeos_ext2_t *fs) {
         return;
     }
     fs->writable = 1;
+    fs->written_pending = 0;
+    mount_count(fs);
     orphans_at_mount(fs);
 }
 
 /* ---- the superblock ------------------------------------------------------- */
 
 static int sb_store(vibeos_ext2_t *fs) {
+    uint64_t now = vibeos_fs_now_ns() / NS, kb;
+
+    /* What Linux keeps in the superblock as it goes (E4-013): when it was
+     * last written, and how much has been written to the volume in its life.
+     * The time only once the clock is set: a mount stores the superblock
+     * before anything has told it the date. */
+    if (now != 0u) {
+        st32(fs->sb + 0x30u, (uint32_t)now);
+    }
+    kb = fs->written_pending / 1024u;
+    if (kb != 0u) {
+        uint64_t life = (uint64_t)le32(fs->sb + 0x178u) | ((uint64_t)le32(fs->sb + 0x17Cu) << 32);
+
+        life += kb;
+        st32(fs->sb + 0x178u, (uint32_t)life);
+        st32(fs->sb + 0x17Cu, (uint32_t)(life >> 32));
+        fs->written_pending -= kb * 1024u;
+    }
     st32(fs->sb + 0x3FCu, crc32c(~0u, fs->sb, 0x3FCu));
     if (ext4_j_meta_write(fs, fs->part_lba + 2u, fs->sb) != 0 ||
         ext4_j_meta_write(fs, fs->part_lba + 3u, fs->sb + VIBEOS_BLOCK_SIZE) != 0) {
@@ -168,6 +191,7 @@ static int blk_write(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf) {
         vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, block);
         return -VIBEOS_EIO;
     }
+    fs->written_pending += fs->block_size;
     for (i = 0; i < sectors; i++) {
         int rc = ext4_j_meta_write(fs, fs->part_lba + block * sectors + i, buf + (uint64_t)i * VIBEOS_BLOCK_SIZE);
 
@@ -198,6 +222,7 @@ static int blk_data(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf) {
     if (g_data_fail_after != 0u && --g_data_fail_after == 0u) {
         return -VIBEOS_EIO;
     }
+    fs->written_pending += fs->block_size;
     return ext4_j_data_write(fs, block, buf);
 }
 
@@ -692,7 +717,6 @@ static int inode_get(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
 
 /* ---- times ---------------------------------------------------------------- */
 
-#define NS 1000000000ull
 
 /* i_atime, i_ctime, i_mtime and their _extra words (nanoseconds in the top 30
  * bits, two more bits of seconds below). The extra words exist when the
@@ -1713,6 +1737,22 @@ static int x_release_node(void *fsv, uint64_t id) {
     return rc;
 }
 
+/* A mount, as Linux counts one (E4-013): s_mnt_count, and s_mtime once the
+ * clock is set. Its own transaction; a failure leaves the count as it was. */
+static void mount_count(vibeos_ext2_t *fs) {
+    uint64_t now = vibeos_fs_now_ns() / NS;
+
+    if (ext4_j_begin(fs) != 0) {
+        return;
+    }
+    st16(fs->sb + 0x34u, (uint16_t)(le16(fs->sb + 0x34u) + 1u));
+    if (now != 0u) {
+        st32(fs->sb + 0x2Cu, (uint32_t)now);
+    }
+    (void)sb_store(fs);
+    (void)ext4_j_end(fs);
+}
+
 /* What a stopped machine left on the list: one transaction per inode, so a
  * long list never outgrows one. Whatever this driver cannot free (a
  * block-mapped file) stays on the list for e2fsck. */
@@ -2522,6 +2562,33 @@ J_OP_INT(link, (void *fsv, const char *existing, const char *path), (fsv, existi
 J_OP_INT(rename, (void *fsv, const char *from, const char *to, uint32_t flags), (fsv, from, to, flags))
 J_OP_INT(setattr, (void *fsv, const char *path, const vibeos_fs_attr_t *attr), (fsv, path, attr))
 J_OP_INT(setattr_node, (void *fsv, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *attr), (fsv, node, attr))
+/* A read, and atime as Linux's default (relatime) keeps it (E4-013): set when
+ * it is not after the last change, or is a day old - so a file read again and
+ * again is written once, not on every read. A clock that went backwards is not
+ * a day. The read's answer is the read's; a failed update loses only the time. */
+static long w_read_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, void *buf, uint32_t len) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+    long r = ext2_op_read_at(fsv, node, off, buf, len);
+    uint64_t now = vibeos_fs_now_ns(), at;
+
+    if (r < 0 || now == 0u || fs->j.dead || node->id == 0u || node->id > 0xFFFFFFFFull ||
+        ext2_read_inode(fs, (uint32_t)node->id, inode) != 0 || ext2_node_stale(fs, node, inode)) {
+        return r;
+    }
+    at = time_get(inode, T_ATIME);
+    if (at > time_get(inode, T_MTIME) && at > time_get(inode, T_CTIME) && (now < at || now - at < 86400ull * NS)) {
+        return r;
+    }
+    if (ext4_j_begin(fs) != 0) {
+        return r;
+    }
+    time_set(inode, T_ATIME, now);
+    (void)inode_put(fs, (uint32_t)node->id, inode);
+    (void)ext4_j_end(fs);
+    return r;
+}
+
 /* Every close of an ext4 file comes here: one that kept nothing opens no
  * transaction. */
 static int w_release_node(void *fsv, uint64_t id) {
@@ -2543,7 +2610,7 @@ J_OP_LONG(write_file, (void *fsv, const char *path, const void *buf, uint32_t le
 
 static const vibeos_fs_ops_t g_ext4_rw = {
     .lookup = w_lookup,
-    .read_at = ext2_op_read_at,
+    .read_at = w_read_at,
     .write_file = w_write_file,
     .list = ext2_op_list,
     .unlink = w_unlink,

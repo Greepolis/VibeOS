@@ -341,6 +341,33 @@ e2fsck -fn "$O/linux/fs.img" > "$O/linux/fsck.log" 2>&1 \
 [ -z "$(orph_head "$O/linux/fs.img")" ] && [ "$(orph_free "$O/linux/fs.img")" = "$before" ] \
     || fail "after the mount: free $(orph_free "$O/linux/fs.img") wanted $before" orphan_linux_not_freed
 
+# ---- what Linux keeps as it goes (E4-013) ------------------------------------
+# A mount is counted and dated, the superblock says when it was last written
+# and how much the volume has taken in its life, and a read sets atime the way
+# relatime does: once after a change, not again until the next change or a
+# day. The exerciser's clock starts at the same second every run, so the second
+# run's read is earlier than the first's atime - not a day later - and must
+# leave it alone.
+A13="$T/sbtimes"
+mkdir -p "$A13"
+truncate -s 16M "$A13/fs.img"
+mkfs.ext4 -q -F -N 64 "$A13/fs.img" > /dev/null 2>&1 || fail "mkfs (superblock times)" mkfs_sbtimes_failed
+sbf() { dumpe2fs -h "$A13/fs.img" 2>/dev/null | sed -n "s/^$1: *//p"; }
+mc0=$(sbf "Mount count"); lw0=$(sbf "Lifetime writes")
+printf 'create\t/t\t644\nwrite\t/t\t0\t300000\t9\nread\t/t\n' > "$A13/script.txt"
+(cd "$A13" && "$EX" apply) > "$A13/a.out" 2> "$A13/a.err" || fail "$(head -1 "$A13/a.err")" sbtimes_apply_failed
+[ "$(sbf "Mount count")" = "$((mc0 + 1))" ] || fail "mount count $(sbf "Mount count"), was $mc0" mount_not_counted
+[ "$(sbf "Lifetime writes")" != "$lw0" ] || fail "lifetime writes still $lw0" lifetime_writes_not_kept
+case "$(sbf "Last write time")" in *2023*) ;; *) fail "last write time $(sbf "Last write time")" write_time_not_kept ;; esac
+case "$(sbf "Last mount time")" in *2023*) ;; *) fail "last mount time $(sbf "Last mount time")" mount_time_not_kept ;; esac
+itime() { debugfs -R "stat /t" "$A13/fs.img" 2>/dev/null | sed -n "s/^ *$1: *0x\([0-9a-f]*\):.*/\1/p"; }
+at1=$(itime atime); mt1=$(itime mtime)
+[ -n "$at1" ] && [ $((0x$at1)) -gt $((0x$mt1)) ] || fail "atime $at1 not after mtime $mt1 after a read" atime_not_set_by_read
+printf 'read\t/t\n' > "$A13/script.txt"
+(cd "$A13" && "$EX" apply) > "$A13/a.out" 2> "$A13/a.err" || fail "$(head -1 "$A13/a.err")" sbtimes_apply_failed
+[ "$(itime atime)" = "$at1" ] || fail "atime moved from $at1 to $(itime atime) on a read with nothing changed" atime_not_relatime
+e2fsck -fn "$A13/fs.img" > "$A13/fsck.log" 2>&1 || fail "$(head -3 "$A13/fsck.log" | tr '\n' ' ')" sbtimes_volume_not_clean
+
 # ---- a damaged directory block (E4-002) -------------------------------------
 # debugfs has no command that breaks a directory leaf's checksum, so one byte
 # is changed by hand - in the name of an entry the lookup does not ask for.
