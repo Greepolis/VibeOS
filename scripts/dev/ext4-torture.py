@@ -73,23 +73,56 @@ def pat(seed, off, n):
     return bytes(out)
 
 
-def listing(root):
-    """The tree as `vibeos_ext4_exercise walk` prints it, sorted."""
+def listing(root, owners, pinned=False):
+    """The tree as `vibeos_ext4_exercise walk attrs` prints it, sorted, after
+    norm(): each file and directory with its permission bits, owner and group
+    (E4-027). The owner is the generator's model, not the host's - the host's
+    run is not root, so a chown there is only recorded (Gen.owners). The mtime
+    is compared only where utimes set it and nothing has changed it since
+    (pinned): the host's clock and the exerciser's are different clocks, and
+    every other mtime is one of them. A cut's states never carry it."""
     rows = []
     for d, dirs, files in os.walk(root):
         rel = os.path.relpath(d, root)
         base = "" if rel == "." else "/" + rel.replace(os.sep, "/")
         for name in dirs + files:
             p = os.path.join(d, name)
+            st = os.lstat(p)
             if os.path.islink(p):
                 rows.append("%s/%s\tL\t%s" % (base, name, os.readlink(p)))
-            elif os.path.isdir(p):
-                rows.append("%s/%s\tD" % (base, name))
+                continue
+            u, g = owners.get(st.st_ino, (0, 0))
+            mt = str(st.st_mtime_ns // 10**9) if pinned and is_pinned(st) else "-"
+            tail = "\t%o\t%d\t%d\t%s" % (st.st_mode & 0o7777, u, g, mt)
+            if os.path.isdir(p):
+                rows.append("%s/%s\tD%s" % (base, name, tail))
             else:
                 with open(p, "rb") as f:
                     data = f.read()
-                rows.append("%s/%s\tF\t%d\t%08x" % (base, name, len(data), zlib.crc32(data) & 0xFFFFFFFF))
+                rows.append("%s/%s\tF\t%d\t%08x%s" % (base, name, len(data), zlib.crc32(data) & 0xFFFFFFFF, tail))
     return "\n".join(sorted(rows)) + "\n"
+
+
+# utimes sets whole seconds in this range; Linux's own clock never lands on an
+# exact second inside it, so a file whose mtime is one is a file utimes set
+# and nothing has written since.
+PIN_LO, PIN_HI = 1000000000, 1500000000
+
+
+def is_pinned(st):
+    return st.st_mtime_ns % 10**9 == 0 and PIN_LO <= st.st_mtime_ns // 10**9 < PIN_HI and not stat.S_ISDIR(st.st_mode)
+
+
+def norm(text, pins):
+    """The exerciser's listing with every mtime the host cannot vouch for as
+    '-': all of them for a cut's state, the pinned files' kept otherwise."""
+    out = []
+    for l in text.splitlines():
+        w = l.split("\t")
+        if len(w) >= 6 and w[1] in ("F", "D") and w[0] not in pins:
+            w[-1] = "-"
+        out.append("\t".join(w))
+    return "\n".join(sorted(out)) + "\n"
 
 
 class Gen:
@@ -111,7 +144,16 @@ class Gen:
         # The tree after every line, which only a cut needs to judge by: listing
         # it reads every file, so a seed without cuts keeps only the last one.
         self.keep_states = states
-        self.states = [listing(root)]
+        # Owners as the driver must hold them: what mkfs.ext4 -d copied for
+        # the tree it was given, root for anything made since, and whatever
+        # chown said after that. Keyed by inode, pruned of the dead after every
+        # line - the host reuses numbers.
+        self.owners = {}
+        for q, k in self.entries():
+            if k != "l":
+                st = os.lstat(self.host(q))
+                self.owners[st.st_ino] = (st.st_uid, st.st_gid)
+        self.states = [listing(root, self.owners)]
         # For a write over bytes the file already had: line index -> (every name
         # of the file, its bytes before, its bytes after). See torn_write().
         self.mix = {}
@@ -165,10 +207,16 @@ class Gen:
             # the Linux handler's to decide, so the driver is only asked to refuse.
             words = (["refuse"] if words[0] in ("unlink", "mkdir") else ["fail", name]) + words
         self.lines.append("\t".join(str(w) for w in words))
+        live = {os.lstat(self.host(q)).st_ino for q, k in self.entries() if k != "l"}
+        self.owners = {i: o for i, o in self.owners.items() if i in live}
         if self.keep_states:
-            self.states.append(listing(self.root))
+            self.states.append(listing(self.root, self.owners))
 
-    def write(self, p, off, n, seed):
+    def pins(self):
+        """The paths whose mtime utimes set and nothing has changed since."""
+        return {q for q, k in self.entries() if k == "f" and is_pinned(os.lstat(self.host(q)))}
+
+    def write(self, p, off, n, seed, word="write"):
         ino = os.lstat(self.host(p)).st_ino
         # The host reuses a removed file's inode number when it likes, so a
         # count left behind would pass to whichever file gets it next - and
@@ -189,7 +237,7 @@ class Gen:
             finally:
                 os.close(fd)
         at = len(self.lines)
-        self.emit(["write", p, off, n, seed], w)
+        self.emit([word, p, off, n, seed], w)
         if off < len(before) and len(self.lines) > at:
             with open(self.host(p), "rb") as f:
                 self.mix[at] = (names, before, f.read())
@@ -198,8 +246,8 @@ class Gen:
         r = self.rng
         op = r.choices(
             ["create", "write", "truncate", "mkdir", "rmdir", "unlink", "rename", "link",
-             "symlink", "chmod", "writefile", "stride", "fill"],
-            weights=[14, 22, 8, 10, 6, 8, 10, 5, 5, 4, 8, 3, 2])[0]
+             "symlink", "chmod", "writefile", "stride", "fill", "chown", "utimes", "bigwrite"],
+            weights=[14, 22, 8, 10, 6, 8, 10, 5, 5, 4, 8, 3, 2, 4, 4, 1])[0]
         room = self.budget - self.used()
         if op in ("create", "mkdir", "symlink", "fill", "writefile") and len(self.entries()) >= self.inodes - 130:
             op = "unlink"
@@ -254,7 +302,8 @@ class Gen:
             self.emit(["truncate", p, to], lambda: os.truncate(self.host(p), to))
         elif op == "mkdir":
             p = self.fresh()
-            self.emit(["mkdir", p], lambda: os.mkdir(self.host(p)))
+            # 0755, the mode the driver's mkdir makes (the umask here is 0).
+            self.emit(["mkdir", p], lambda: os.mkdir(self.host(p), 0o755))
         elif op == "rmdir":
             p = self.pick("d") if r.random() < 0.85 else self.fresh()
             if p is None:
@@ -313,6 +362,32 @@ class Gen:
             # it out of its own tree would end the sequence, not test it.
             mode = r.choice([0o700, 0o755, 0o750] if os.path.isdir(self.host(p)) else [0o600, 0o644, 0o640, 0o664])
             self.emit(["chmod", p, "%o" % mode], lambda: os.chmod(self.host(p), mode))
+        elif op == "chown":
+            # Recorded, not done: the host's run cannot give a file away. A
+            # name that is not there is still asked, for Linux's ENOENT.
+            p = self.pick("fd") if r.random() < 0.85 else self.fresh()
+            if p is None or os.path.islink(self.host(p)):
+                return
+            u, g = r.choice([0, 1000, 65534, 123456]), r.choice([0, 100, 1000, 65534])
+
+            def ch():
+                self.owners[os.lstat(self.host(p)).st_ino] = (u, g)
+            self.emit(["chown", p, u, g], ch)
+        elif op == "utimes":
+            p = self.pick("f")
+            if p is None:
+                return
+            at, mt = r.randrange(PIN_LO, PIN_HI), r.randrange(PIN_LO, PIN_HI)
+            self.emit(["utimes", p, at, mt], lambda: os.utime(self.host(p), (at, mt)))
+        elif op == "bigwrite":
+            # One call past 2 MiB (E4-026): `write` hands the driver at most
+            # 1 MiB at a time.
+            p = self.pick("f")
+            if p is None or room < (2 << 20) + (1 << 20):
+                return
+            n = r.randrange((2 << 20) + 1, min(4 << 20, room - (512 << 10)))
+            off = r.choice([0, os.lstat(self.host(p)).st_size, r.randrange(0, 70000)])
+            self.write(p, off, n, r.randrange(1, 250), word="bigwrite")
         elif op == "writefile":
             p = self.pick("f") if r.random() < 0.6 else self.fresh()
             if p is None:
@@ -326,7 +401,8 @@ class Gen:
             seed = r.randrange(1, 250)
 
             def wf():
-                with open(hp, "wb") as f:
+                # A new file is 0644, as the driver's write_file makes it.
+                with os.fdopen(os.open(hp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644), "wb") as f:
                     f.write(pat(seed, 0, n))
             self.emit(["writefile", p, n, seed], wf)
 
@@ -407,12 +483,11 @@ def superblock_problem(img):
     return ""
 
 
-def walk(ex, d):
-    r = run([ex, "walk"], d)
+def walk(ex, d, pins=()):
+    r = run([ex, "walk", "attrs"], d)
     if r.returncode != 0:
         return None, r.stdout
-    lines = [l for l in r.stdout.splitlines() if l]
-    return "\n".join(sorted(lines)) + "\n", ""
+    return norm("\n".join(l for l in r.stdout.splitlines() if l), set(pins)), ""
 
 
 def one_seed(args):
@@ -496,10 +571,10 @@ def one_seed(args):
         why = superblock_problem(os.path.join(full, "fs.img"))
         if why:
             return failed(why)
-        got, err = walk(ex, full)
+        got, err = walk(ex, full, gen.pins())
         if got is None:
             return failed("driver_walk_failed", err)
-        want = gen.states[-1] if gen.keep_states else listing(gen.root)
+        want = listing(gen.root, gen.owners, pinned=True)
         if got != want:
             with open(os.path.join(work, "want.txt"), "w") as f:
                 f.write(want)

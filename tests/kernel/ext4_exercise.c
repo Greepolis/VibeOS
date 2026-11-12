@@ -185,13 +185,25 @@ static long long file_crc(const char *path, uint64_t size) {
     return crc;
 }
 
+/* `walk attrs`: each file and directory also carries its permission bits,
+ * owner, group and mtime in seconds, for the torture to judge (E4-027). The
+ * plain walk is held to a tree mkfs.ext4 -d made, whose owners are the host's. */
+static int g_walk_attrs;
+
+static void attrs(const vibeos_fs_node_t *node) {
+    if (g_walk_attrs) {
+        printf("\t%o\t%u\t%u\t%llu", (unsigned)(node->mode & 07777u), (unsigned)node->uid, (unsigned)node->gid,
+               (unsigned long long)(node->mtime_ns / 1000000000ull));
+    }
+}
+
 static int walk(const char *dir) {
     char name[256], path[1024];
     uint64_t size;
     int is_dir, bad = 0;
 
     for (uint32_t i = 0; g_ops->list(&g_fs, dir, i, name, sizeof(name), &size, &is_dir) == 0; i++) {
-        vibeos_fs_node_t node;
+        vibeos_fs_node_t node = {0};
 
         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0 || strcmp(name, "lost+found") == 0) {
             continue;
@@ -209,7 +221,9 @@ static int walk(const char *dir) {
             target[got] = 0;
             printf("%s\tL\t%s\n", path, target);
         } else if (is_dir) {
-            printf("%s\tD\n", path);
+            printf("%s\tD", path);
+            attrs(&node);
+            printf("\n");
             bad |= walk(path);
         } else {
             long long crc = file_crc(path, size);
@@ -219,7 +233,9 @@ static int walk(const char *dir) {
                 bad = 1;
                 continue;
             }
-            printf("%s\tF\t%llu\t%08llx\n", path, (unsigned long long)size, crc);
+            printf("%s\tF\t%llu\t%08llx", path, (unsigned long long)size, crc);
+            attrs(&node);
+            printf("\n");
         }
     }
     return bad;
@@ -473,6 +489,29 @@ static int run(char **a, int n) {
     if (strcmp(c, "write") == 0 && n == 5) {
         return write_pattern(a[1], strtoull(a[2], NULL, 10), strtoull(a[3], NULL, 10),
                              (uint32_t)strtoul(a[4], NULL, 10));
+    }
+    if (strcmp(c, "bigwrite") == 0 && n == 5) {
+        /* One write_at of the whole length - past 2 MiB, where `write` cuts
+         * its pieces at 1 MiB (E4-026). Short is a failure: nothing here is
+         * near the end of the volume. */
+        uint64_t off = strtoull(a[2], NULL, 10), len = strtoull(a[3], NULL, 10);
+        uint32_t seed = (uint32_t)strtoul(a[4], NULL, 10);
+        uint8_t *big;
+        long r;
+
+        if (len == 0u || len > (64u << 20) || vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
+            return -VIBEOS_EINVAL;
+        }
+        big = malloc(len);
+        if (!big) {
+            return -VIBEOS_EINVAL;
+        }
+        for (uint64_t i = 0; i < len; i++) {
+            big[i] = pat(seed, off + i);
+        }
+        r = vibeos_fs_write_at(&g_mnt, &node, off, big, (uint32_t)len);
+        free(big);
+        return r < 0 ? (int)r : (uint64_t)r == len ? 0 : -VIBEOS_EIO;
     }
     if (strcmp(c, "truncate") == 0 && n == 3) {
         if (vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
@@ -813,6 +852,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (strcmp(argv[1], "walk") == 0) {
+        g_walk_attrs = argc == 3 && strcmp(argv[2], "attrs") == 0;
         int bad = walk("/");
 
         if (vibeos_ext2_csum_failures() != 0u) {
