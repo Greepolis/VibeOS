@@ -1,0 +1,21 @@
+# A directory leaf block's checksum (E4-002), broken: the reader no longer
+# checks it, so a lookup through a damaged block succeeds. Caught by
+# scripts/dev/verify-ext4.sh, on a block damaged by hand outside the name
+# looked up.
+#
+# Target source: kernel/fs/ext2.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release'" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/ext4-dir-csum.txt build-gcc-Release
+
+### a directory leaf is read without its checksum
+--- old
+        if (dir_block_ok(fs, dir_ino, dir, phys) != 0) {
+            return 0;
+        }
+        while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
+            if (ino != 0u && nlen == name_len) {
++++ new
+        if (0) {
+            return 0;
+        }
+        while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
+            if (ino != 0u && nlen == name_len) {

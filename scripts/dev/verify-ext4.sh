@@ -341,6 +341,30 @@ e2fsck -fn "$O/linux/fs.img" > "$O/linux/fsck.log" 2>&1 \
 [ -z "$(orph_head "$O/linux/fs.img")" ] && [ "$(orph_free "$O/linux/fs.img")" = "$before" ] \
     || fail "after the mount: free $(orph_free "$O/linux/fs.img") wanted $before" orphan_linux_not_freed
 
+# ---- a damaged directory block (E4-002) -------------------------------------
+# debugfs has no command that breaks a directory leaf's checksum, so one byte
+# is changed by hand - in the name of an entry the lookup does not ask for.
+# The name asked for is intact, so only the checksum can refuse it: a reader
+# that skipped the check would find /cdir/wanted and read it.
+D2="$T/dircsum"
+mkdir -p "$D2/tree/cdir"
+printf 'wanted\n' > "$D2/tree/cdir/wanted"
+printf 'other\n' > "$D2/tree/cdir/zzzzother"
+truncate -s 16M "$D2/fs.img"
+mkfs.ext4 -q -F -N 64 -d "$D2/tree" "$D2/fs.img" > /dev/null 2>&1 || fail "mkfs (dir checksum)" mkfs_dircsum_failed
+(cd "$D2" && "$EX" refused-file /cdir/wanted) > /dev/null 2>&1 \
+    && fail "a healthy directory was refused" dircsum_healthy_refused
+dbs=$(dumpe2fs -h "$D2/fs.img" 2>/dev/null | sed -n 's/^Block size: *//p')
+dblk=$(debugfs -R "bmap /cdir 0" "$D2/fs.img" 2>/dev/null)
+dd if="$D2/fs.img" of="$D2/block" bs="$dbs" skip="$dblk" count=1 2> /dev/null
+doff=$(grep -obUa zzzzother "$D2/block" | head -1 | cut -d: -f1)
+[ -n "$dbs" ] && [ -n "$dblk" ] && [ -n "$doff" ] || fail "cannot find /cdir's leaf block" dircsum_setup_failed
+printf 'Y' | dd of="$D2/fs.img" bs=1 seek=$((dblk * dbs + doff)) conv=notrunc 2> /dev/null
+debugfs -R "ls /cdir" "$D2/fs.img" 2>&1 | grep -qi "checksum" \
+    || fail "debugfs does not call the damaged block bad: the damage missed" dircsum_setup_failed
+(cd "$D2" && "$EX" refused-file /cdir/wanted) > "$D2/out" 2> "$D2/err" \
+    || fail "$(cat "$D2/err" "$D2/out" | head -1)" bad_dir_block_checksum_read
+
 # ---- the refusals -----------------------------------------------------------
 # An inode whose checksum no longer matches: its low half set to zero.
 mkdir -p "$T/csum" "$T/feat"

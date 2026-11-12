@@ -391,7 +391,7 @@ writes an `ext4` volume it can keep true (the table below the step), and
 | ID | What | Status |
 |---|---|---|
 | E4-001 | A symbolic link is read as a file: a fast link keeps its target in i_block, which read_at maps as block pointers. Pre-existing in the ext2 reader; the fixture has no links | **closed in step 2** |
-| E4-002 | A directory leaf block's checksum is checked, but no damaged copy proves it: debugfs has no command that breaks one | open |
+| E4-002 | A directory leaf block's checksum is checked, but no damaged copy proves it: debugfs has no command that breaks one | closed: `verify-ext4.sh` changes one byte by hand in a leaf of a directory mkfs.ext4 made - in the name of an entry the lookup does not ask for, so only the checksum can refuse the one it does - confirms debugfs now calls the block bad, and requires the lookup to be refused and counted (`cases/ext4-dir-csum.txt` goes red) |
 | E4-003 | Uninitialised extents read as zeros, and no fixture has one: mkfs.ext4 -d never writes them | **closed in step 2** |
 | E4-004 | The high 16 bits of an extent's start are read, and no fixture is past 2^32 blocks to need them | open |
 | E4-005 | htree is read linearly: a lookup in a directory of a million entries reads all of it | open (perf phase) |
