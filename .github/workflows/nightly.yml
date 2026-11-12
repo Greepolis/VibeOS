@@ -880,6 +880,43 @@ jobs:
             ./build-proc-asan/vibeos_proc_torture "$seed" 20000
           done
 
+  module-txn-torture:
+    name: Kernel TXN power-cut model torture (ASan + UBSan)
+    # module: txn
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the journal power-cut model
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-txn-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-txn-asan --parallel --target vibeos_txn_torture
+      - name: Replayable power-cut seeds
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in $(seq 1 80); do
+            ./build-txn-asan/vibeos_txn_torture "$seed" 1
+          done
+      - name: Longer durability sweeps
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-txn-asan/vibeos_txn_torture "$seed" 4
+          done
+
   fuzz-protocols:
     name: Fuzz the Receive Path
     # module: net
