@@ -25,6 +25,13 @@ static int g_lock_depth;
 static int g_alloc_limit = -1;     /* -1: no limit */
 static uint64_t g_clock;
 
+/* The open-file layer's answer, for the one node a test says is held. */
+static uint64_t g_held;
+static int t_held(const void *fs, uint64_t id) {
+    (void)fs;
+    return g_held != 0u && id == g_held;
+}
+
 static void expect(int cond, const char *what) {
     if (!cond) {
         printf("FAIL:tmpfs %s\n", what);
@@ -121,7 +128,8 @@ static int listed(const char *dir, const char *name) {
 
 int test_tmpfs(void) {
     static uint8_t big[3 * VIBEOS_TMPFS_PAGE], back[3 * VIBEOS_TMPFS_PAGE];
-    vibeos_fs_node_t n, n2;
+    vibeos_fs_node_t n, n2, held;
+    vibeos_fs_open_query_t prev_query;
     vibeos_fs_statfs_t sf;
     vibeos_fs_attr_t a;
     char lb[64];
@@ -211,6 +219,21 @@ int test_tmpfs(void) {
            "a description holding a freed file gets ENOENT, not another file's bytes");
     expect(mk("reuse") == 0 && vibeos_fs_read_at(&g_m, &n, 0, back, 1) == -VIBEOS_ENOENT,
            "even after its inode is reused");
+
+    /* ---- the last name of an open file (E4-019's twin) ---- */
+    g_held = 0;
+    prev_query = vibeos_fs_set_open_query(t_held);
+    expect(mk("kept") == 0 && wr("kept", 0, big, 300) == 300 && node("kept", &n) == 0, "a file to keep");
+    g_held = n.id;
+    expect(vibeos_fs_unlink(&g_m, "kept") == 0 && node("kept", &held) != 0, "its last name goes");
+    expect(vibeos_fs_read_at(&g_m, &n, 0, back, 10) == 10 && memcmp(back, big, 10) == 0,
+           "an open file reads after its last name has gone");
+    expect(vibeos_fs_getattr(&g_m, &n, &held) == 0 && held.nlink == 0u && held.size == 300u,
+           "and says it has no links");
+    g_held = 0;
+    expect(vibeos_fs_release_node(&g_m, n.id) == 0 && vibeos_fs_read_at(&g_m, &n, 0, back, 1) == -VIBEOS_ENOENT,
+           "the last close frees it");
+    (void)vibeos_fs_set_open_query(prev_query);
 
     /* ---- symbolic links ---- */
     expect(vibeos_fs_symlink(&g_m, "../somewhere/else", "sl") == 0 && node("sl", &n) == 0 &&

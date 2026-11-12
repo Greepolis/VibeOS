@@ -780,7 +780,7 @@ static void nt_standard(uint8_t *b, uint32_t at, const vibeos_file_stat_t *s, co
     int dir = (s->mode & 0170000u) == 0040000u;
     put64(b, at + 0u, dir ? 0u : (s->size + 4095u) & ~4095ull);
     put64(b, at + 8u, dir ? 0u : s->size);
-    put32(b, at + 16u, s->nlink ? s->nlink : 1u);
+    put32(b, at + 16u, s->nlink || s->unlinked ? s->nlink : 1u);
     b[at + 20u] = f->unlink_on_release ? 1u : 0u;
     b[at + 21u] = dir ? 1u : 0u;
 }

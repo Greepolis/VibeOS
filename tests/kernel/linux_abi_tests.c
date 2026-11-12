@@ -6106,8 +6106,13 @@ static void t_fork_snapshot_and_groups(void) {
                (((linux_stat_t *)kf_uptr(sb))->st_mode & 0777u) == 0640u,
                "fstat reports the descriptor's file, not the one now at its old name");
         expect(SYS2(138, (uint64_t)fd, fsb) == 0, "fstatfs needs only the descriptor's mount");
-        expect(SYS1(87, ustr("/tmp/id-b")) == 0 && SYS2(91, (uint64_t)fd, 0600) == -VIBEOS_ENOENT,
-               "a file whose last name is gone cannot be asked for: ENOENT, not somebody else's");
+        /* Linux keeps a file whose last name goes while it is open: the
+         * descriptor still changes and stats it, and it says nlink 0
+         * (E4-019; this asserted ENOENT before tmpfs kept such a file). */
+        expect(SYS1(87, ustr("/tmp/id-b")) == 0 && SYS2(91, (uint64_t)fd, 0600) == 0 &&
+               SYS2(5, (uint64_t)fd, sb) == 0 && ((linux_stat_t *)kf_uptr(sb))->st_nlink == 0u &&
+               (((linux_stat_t *)kf_uptr(sb))->st_mode & 0777u) == 0600u,
+               "a file whose last name is gone is still its descriptor's, with no links");
         (void)SYS1(3, (uint64_t)fd);
         (void)SYS1(87, ustr("/tmp/id-a"));
     }

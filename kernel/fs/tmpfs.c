@@ -349,6 +349,7 @@ static void tf_fill(const vibeos_tmpfs_t *t, uint32_t i, vibeos_fs_node_t *out) 
     out->size = out->is_dir ? 0u : in->size;
     out->mode = in->mode;
     out->nlink = in->nlink;
+    out->unlinked = in->nlink == 0u && !tf_is(in, VIBEOS_S_IFDIR);
     out->uid = in->uid;
     out->gid = in->gid;
     out->atime_ns = in->atime_ns;
@@ -597,6 +598,13 @@ static int tf_make(vibeos_tmpfs_t *t, const char *path, uint32_t mode, uint32_t 
 /* One name fewer for `ino`; the last one frees it. */
 static void tf_unref(vibeos_tmpfs_t *t, uint32_t ino) {
     vibeos_tmpfs_inode_t *in = &t->inode[ino];
+    if (!tf_is(in, VIBEOS_S_IFDIR) && in->nlink <= 1u && vibeos_fs_node_is_open(t, tf_id(t, ino))) {
+        /* The last name, and a description still reads it: kept, with no
+         * names, until the last close (release_node, E4-019's twin). */
+        in->nlink = 0;
+        in->ctime_ns = vibeos_fs_now_ns();
+        return;
+    }
     if (tf_is(in, VIBEOS_S_IFDIR) || in->nlink <= 1u) {
         tf_free_inode(t, ino);
         return;
@@ -1161,6 +1169,18 @@ static int tf_op_getattr(void *fs, const vibeos_fs_node_t *node, vibeos_fs_node_
     return r;
 }
 
+/* The last description of a node has gone: a file kept for it goes too. */
+static int tf_op_release_node(void *fs, uint64_t id) {
+    uint32_t ino;
+
+    T->lock();
+    if (tf_from_id(T, id, &ino) == 0 && !tf_is(&T->inode[ino], VIBEOS_S_IFDIR) && T->inode[ino].nlink == 0u) {
+        tf_free_inode(T, ino);
+    }
+    T->unlock();
+    return 0;
+}
+
 static int tf_op_setattr_node(void *fs, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *a) {
     uint32_t ino;
     int r;
@@ -1209,6 +1229,7 @@ static const vibeos_fs_ops_t g_tmpfs_ops = {
     .readlink = tf_op_readlink,
     .setattr = tf_op_setattr,
     .getattr = tf_op_getattr,
+    .release_node = tf_op_release_node,
     .setattr_node = tf_op_setattr_node,
     .statfs = tf_op_statfs,
     .share_page = tf_op_share_page,

@@ -349,6 +349,7 @@ void vibeos_file_stat_from_node(vibeos_file_stat_t *st, const vibeos_fs_node_t *
     st->size = node->is_dir ? 0u : node->size;   /* 64-bit: do not narrow (M-018) */
     st->ino = node->id ? node->id : 2u;
     st->nlink = node->nlink;
+    st->unlinked = node->unlinked;
     st->uid = node->uid;
     st->gid = node->gid;
     st->rdev = node->rdev;

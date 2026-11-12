@@ -68,7 +68,8 @@ typedef struct vibeos_file_stat {
     uint32_t mode;       /* S_IF* | permissions */
     uint64_t size;
     uint64_t ino;
-    uint32_t nlink;      /* 0 is reported as 1 */
+    uint32_t nlink;      /* 0 is reported as 1, unless unlinked */
+    uint8_t unlinked;    /* open with no names left: nlink 0 is true (E4-019) */
     uint32_t uid;
     uint32_t gid;
     uint32_t rdev;       /* a device's number, vibeos/devfs.h's encoding */

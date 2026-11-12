@@ -95,7 +95,7 @@ static long linux_sys_statx(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, 
     }
     k.stx_mask = LINUX_STATX_BASIC_STATS;
     k.stx_blksize = 512u;
-    k.stx_nlink = st.nlink ? st.nlink : 1u;
+    k.stx_nlink = st.nlink || st.unlinked ? st.nlink : 1u;
     k.stx_uid = st.uid;
     k.stx_gid = st.gid;
     k.stx_mode = (uint16_t)st.mode;

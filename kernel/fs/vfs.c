@@ -228,8 +228,11 @@ int vibeos_fs_unlink(vibeos_fsmount_t *mnt, const char *path) {
 
 static int (*g_open_query)(const void *fs, uint64_t id);
 
-void vibeos_fs_set_open_query(int (*query)(const void *fs, uint64_t id)) {
+vibeos_fs_open_query_t vibeos_fs_set_open_query(vibeos_fs_open_query_t query) {
+    vibeos_fs_open_query_t old = g_open_query;
+
     g_open_query = query;
+    return old;
 }
 
 int vibeos_fs_node_is_open(const void *fs, uint64_t id) {

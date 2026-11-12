@@ -1826,7 +1826,7 @@ static long linux_write_stat(uint64_t ubuf, const vibeos_file_stat_t *st, uint64
     }
     k.st_dev = dev;
     k.st_ino = st->ino;
-    k.st_nlink = st->nlink ? st->nlink : 1u;
+    k.st_nlink = st->nlink || st->unlinked ? st->nlink : 1u;
     k.st_mode = st->mode;
     k.st_uid = st->uid;
     k.st_gid = st->gid;

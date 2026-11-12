@@ -111,3 +111,15 @@
     if (next >= VIBEOS_TMPFS_INODES || t->inode[next].mode == 0u) {
 +++ new
     if (next >= VIBEOS_TMPFS_INODES) {
+
+### an open file goes with its last name. Expect "an open file reads after its last name has gone".
+--- old
+    if (!tf_is(in, VIBEOS_S_IFDIR) && in->nlink <= 1u && vibeos_fs_node_is_open(t, tf_id(t, ino))) {
++++ new
+    if (!tf_is(in, VIBEOS_S_IFDIR) && in->nlink <= 1u && 0) {
+
+### the last close keeps the file. Expect "the last close frees it".
+--- old
+    if (tf_from_id(T, id, &ino) == 0 && !tf_is(&T->inode[ino], VIBEOS_S_IFDIR) && T->inode[ino].nlink == 0u) {
++++ new
+    if (0) {

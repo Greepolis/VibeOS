@@ -365,7 +365,9 @@ void vibeos_fs_set_lock(void (*lock)(void), void (*unlock)(void));
  * itself (vibeos_file_reset). A driver asks it when a file loses its last
  * name, under the mount's lock; with nobody registered the answer is no, and
  * the file goes at once, as it always did. */
-void vibeos_fs_set_open_query(int (*query)(const void *fs, uint64_t id));
+typedef int (*vibeos_fs_open_query_t)(const void *fs, uint64_t id);
+/* Returns the query it replaces, for a test that stands in for a while. */
+vibeos_fs_open_query_t vibeos_fs_set_open_query(vibeos_fs_open_query_t query);
 int vibeos_fs_node_is_open(const void *fs, uint64_t id);
 /* Tell the mount's driver that the last description of `id` has gone. */
 int vibeos_fs_release_node(vibeos_fsmount_t *mnt, uint64_t id);
