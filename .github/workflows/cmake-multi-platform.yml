@@ -151,6 +151,16 @@ jobs:
         if: matrix.compiler == 'gcc' && matrix.build_type == 'Release'
         run: bash scripts/dev/static-checks.sh build
 
+      # The modules with no intensive nightly test, by name, every run (#201):
+      # static-checks.sh shows only each check's verdict line, so the list was
+      # in no CI output at all. The step summary keeps it on the run's page.
+      - name: Uncovered Modules (nightly coverage)
+        if: matrix.compiler == 'gcc' && matrix.build_type == 'Release'
+        run: |
+          set -euo pipefail
+          python3 scripts/dev/check-nightly-coverage.py | tee coverage.txt
+          { echo '### Nightly module coverage'; echo '```'; cat coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build Boot Artifacts
         run: cmake --build build --target vibeos_image
 
