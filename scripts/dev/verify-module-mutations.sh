@@ -70,3 +70,5 @@ SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
 SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
     python3 scripts/dev/sabotage.py kernel/abi/nt/file.c \
         scripts/dev/cases/abi-nt-create-coverage.txt "$build_dir"
+
+run_case proc kernel/proc/process.c scripts/dev/cases/proc-coverage.txt

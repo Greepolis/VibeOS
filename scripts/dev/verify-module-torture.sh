@@ -2,21 +2,26 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 build_dir="${1:-build-module-asan}"
-if ! cmake --build "$build_dir" --parallel --target vibeos_module_torture; then
-    echo BUILD_FAILED
-    exit 2
-fi
 if [ "$#" -ge 2 ]; then
     modules=("$2")
 else
     modules=(ipc object)
 fi
-for seed in 1 7; do
-    for module in "${modules[@]}"; do
-        case "$module" in
-            ipc|object) rounds=4000 ;;
-            *) echo "unknown module: $module"; exit 2 ;;
-        esac
-        "./$build_dir/vibeos_module_torture" "$module" "$seed" "$rounds"
+for module in "${modules[@]}"; do
+    case "$module" in
+        ipc|object) target=vibeos_module_torture; binary=vibeos_module_torture; rounds=4000 ;;
+        proc) target=vibeos_proc_torture; binary=vibeos_proc_torture; rounds=5000 ;;
+        *) echo "unknown module: $module"; exit 2 ;;
+    esac
+    if ! cmake --build "$build_dir" --parallel --target "$target"; then
+        echo BUILD_FAILED
+        exit 2
+    fi
+    for seed in 1 7; do
+        if [ "$module" = "proc" ]; then
+            "./$build_dir/$binary" "$seed" "$rounds"
+        else
+            "./$build_dir/$binary" "$module" "$seed" "$rounds"
+        fi
     done
 done

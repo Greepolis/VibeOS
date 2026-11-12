@@ -104,6 +104,8 @@ int vibeos_proc_revoke_handle_lineage_scoped(vibeos_process_table_t *pt, uint32_
 int vibeos_proc_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t *out_state);
 int vibeos_proc_set_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t state);
 int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid);
+/* Reclaim a terminated process's slot; live processes cannot be reaped. */
+int vibeos_proc_reap(vibeos_process_table_t *pt, uint32_t pid);
 int vibeos_proc_bind_process_handle(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t target_pid, uint32_t rights, uint32_t *out_handle);
 int vibeos_proc_bind_thread_handle(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t target_tid, uint32_t rights, uint32_t *out_handle);
 int vibeos_proc_resolve_object_handle(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t handle, vibeos_object_type_t *out_object_type, uint32_t *out_object_id);

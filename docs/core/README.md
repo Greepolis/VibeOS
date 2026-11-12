@@ -56,10 +56,11 @@ either direction, would be invented.
 
 `kernel/core/syscall.c` and `kernel/proc/process.c` look like the portable
 kernel this plan wants. They are what a portable kernel looks like when nobody
-runs it, which is the state this plan exists to end, and they carry three
-uncorrected defects: thread creation with no check on the caller, a process
-slot that is never freed, and a caller identity read from an argument the
-caller supplies.
+runs it, which is the state this plan exists to end, and they carry two
+remaining defects: thread creation with no check on the caller and a caller
+identity read from an argument the caller supplies. The process-slot
+reclamation defect now has an explicit terminate/reap lifecycle in the
+portable model; this does not satisfy the reachability gate.
 
 > **Nothing there may become reachable from ring 3 before those are fixed. Not
 > afterwards. Not in the same change.**

@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NOT REACHED BY THE RUNNING KERNEL.
  *
- * The portable process table. It carries two of the three defects C3 names:
- * thread creation with no check on the caller, and a process slot that is
- * never freed.
+ * The portable process table. Its bounded process slots now have explicit
+ * terminate/reap semantics. The caller check for thread creation and caller
+ * identity defects from C3 remain open; this file is still not runtime code.
  *
  * The machine runs kernel/arch/x86_64/arch_hw.c. Nothing in the arch layer
  * names anything in this file, so every line below executes only under
@@ -518,6 +518,42 @@ int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid) {
         }
     }
     entry->state = VIBEOS_PROCESS_STATE_TERMINATED;
+    return 0;
+}
+
+/* Release a terminated process's table slot. Termination deliberately
+ * leaves a queryable tombstone; reaping is the separate operation that makes
+ * the bounded slot reusable. Public PIDs remain monotonic and are never
+ * recycled when a physical slot is reused. */
+int vibeos_proc_reap(vibeos_process_table_t *pt, uint32_t pid) {
+    vibeos_process_entry_t *entry = find_process_entry(pt, pid);
+    if (!entry || entry->state != VIBEOS_PROCESS_STATE_TERMINATED) {
+        return -1;
+    }
+    /* terminate() has already released handles and removed every owned
+     * thread. Refuse to recycle a slot if that lifecycle invariant regresses. */
+    {
+        uint32_t i;
+        for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
+            if (pt->threads[i].in_use && pt->threads[i].owner_pid == pid) {
+                return -1;
+            }
+        }
+    }
+    entry->pid = 0;
+    entry->parent_pid = 0;
+    entry->process_group_id = 0;
+    entry->session_id = 0;
+    entry->session_leader = 0;
+    entry->in_use = 0;
+    entry->state = VIBEOS_PROCESS_STATE_TERMINATED;
+    entry->security_label = 0;
+    entry->token.uid = 0;
+    entry->token.gid = 0;
+    entry->token.capability_mask = 0;
+    if (pt->process_count > 0) {
+        pt->process_count--;
+    }
     return 0;
 }
 

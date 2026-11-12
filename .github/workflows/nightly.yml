@@ -843,6 +843,43 @@ jobs:
             ./build-abi-asan/vibeos_abi_torture "$seed" 50000
           done
 
+  module-proc-torture:
+    name: Kernel PROC lifecycle model torture (ASan + UBSan)
+    # module: proc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the process lifecycle model
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-proc-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-proc-asan --parallel --target vibeos_proc_torture
+      - name: Replayable lifecycle seeds
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in $(seq 1 80); do
+            ./build-proc-asan/vibeos_proc_torture "$seed" 2500
+          done
+      - name: Long slot-reuse runs
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          for seed in 1 7 19 43; do
+            ./build-proc-asan/vibeos_proc_torture "$seed" 20000
+          done
+
   fuzz-protocols:
     name: Fuzz the Receive Path
     # module: net
