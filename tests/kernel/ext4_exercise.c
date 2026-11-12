@@ -492,8 +492,10 @@ static int run(char **a, int n) {
     }
     if (strcmp(c, "bigwrite") == 0 && n == 5) {
         /* One write_at of the whole length - past 2 MiB, where `write` cuts
-         * its pieces at 1 MiB (E4-026). Short is a failure: nothing here is
-         * near the end of the volume. */
+         * its pieces at 1 MiB (E4-026). The driver may answer short - after
+         * WRITE_RUNS_MAX fresh runs, on a fragmented volume, which POSIX
+         * allows and the Linux handler's 4 KiB pieces never reach - so the
+         * rest is asked for as a caller would, and every answer must move. */
         uint64_t off = strtoull(a[2], NULL, 10), len = strtoull(a[3], NULL, 10);
         uint32_t seed = (uint32_t)strtoul(a[4], NULL, 10);
         uint8_t *big;
@@ -509,9 +511,15 @@ static int run(char **a, int n) {
         for (uint64_t i = 0; i < len; i++) {
             big[i] = pat(seed, off + i);
         }
-        r = vibeos_fs_write_at(&g_mnt, &node, off, big, (uint32_t)len);
+        for (uint64_t done = 0; done < len; done += (uint64_t)r) {
+            r = vibeos_fs_write_at(&g_mnt, &node, off + done, big + done, (uint32_t)(len - done));
+            if (r <= 0) {
+                free(big);
+                return r < 0 ? (int)r : -VIBEOS_EIO;   /* no progress */
+            }
+        }
         free(big);
-        return r < 0 ? (int)r : (uint64_t)r == len ? 0 : -VIBEOS_EIO;
+        return 0;
     }
     if (strcmp(c, "read") == 0 && n == 2) {
         /* The whole file, through the mount's read: what a read changes is

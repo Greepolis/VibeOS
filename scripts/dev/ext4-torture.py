@@ -22,7 +22,7 @@ Each seed is then judged by tools that are not the driver:
     a clean volume, the two must agree, and the tree must be one the host's
     tree passed through - never a mixture of two operations.
 
-The seed picks the block size (1 KiB or 4 KiB), the inode count and the mix of
+The seed picks the block size (1, 2 or 4 KiB), the inode count and the mix of
 operations, so a run covers more than one volume shape. Names come from a small
 pool, so operations collide: an existing name, a directory that is not empty,
 a rename over something already there.
@@ -513,7 +513,7 @@ def one_seed(args):
         # The volume's shape: block size, inode count and size, so that some
         # seeds have one block group and others several - with groups mkfs left
         # uninitialised, which the driver has to bring up on first use.
-        block = rng.choice([1024, 4096])
+        block = rng.choice([1024, 2048, 4096])
         inodes = rng.choice([512, 1024, 2048])
         mib = rng.choice([16, 64, 128])
         # A fifth without a journal: step 2's writer, which keeps the
