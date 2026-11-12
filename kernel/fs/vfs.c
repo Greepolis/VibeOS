@@ -86,7 +86,7 @@ static void fs_node_complete(vibeos_fs_node_t *n) {
         }
     }
     n->is_dir = (n->mode & VIBEOS_S_IFMT) == VIBEOS_S_IFDIR;
-    if (n->nlink == 0u) {
+    if (n->nlink == 0u && !n->unlinked) {
         n->nlink = 1u;
     }
 }
@@ -223,6 +223,28 @@ int vibeos_fs_unlink(vibeos_fsmount_t *mnt, const char *path) {
     if (r == 0 && had) {
         fs_notify_gone(mnt, path, &n);
     }
+    return r;
+}
+
+static int (*g_open_query)(const void *fs, uint64_t id);
+
+void vibeos_fs_set_open_query(int (*query)(const void *fs, uint64_t id)) {
+    g_open_query = query;
+}
+
+int vibeos_fs_node_is_open(const void *fs, uint64_t id) {
+    return g_open_query ? g_open_query(fs, id) : 0;
+}
+
+int vibeos_fs_release_node(vibeos_fsmount_t *mnt, uint64_t id) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !mnt->ops->release_node || id == 0u) {
+        return 0;
+    }
+    fs_enter(mnt);
+    r = mnt->ops->release_node(mnt->fs, id);
+    fs_leave(mnt);
     return r;
 }
 

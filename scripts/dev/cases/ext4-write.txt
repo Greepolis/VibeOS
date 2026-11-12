@@ -151,14 +151,14 @@
         touch_c(inode);
         return inode_put(fs, ino, inode);
     }
-    return inode_release(fs, ino, inode);
+    return last_name_gone(fs, ino, inode);
 +++ new
     if (0) {
         st16(inode + 0x1Au, links - 1u);
         touch_c(inode);
         return inode_put(fs, ino, inode);
     }
-    return inode_release(fs, ino, inode);
+    return last_name_gone(fs, ino, inode);
 
 ### rename over an existing name replaces it despite NOREPLACE
 --- old

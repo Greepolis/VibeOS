@@ -1,0 +1,30 @@
+# A file open when its last name goes (E4-019), broken four ways. Caught by
+# scripts/dev/verify-ext4.sh: the open file must still read, be on the orphan
+# list, leave it when closed, and be freed by the next mount if never closed.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release'" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-orphan.txt build-gcc-Release
+
+### the last name frees the file even while it is open
+--- old
+    if (fs->orphan_n >= ORPHAN_MAX || !vibeos_fs_node_is_open(fs, ino)) {
++++ new
+    if (fs->orphan_n >= ORPHAN_MAX || 1) {
+
+### the kept file is not put on the volume's orphan list
+--- old
+        st32(fs->sb + SB_LAST_ORPHAN, ino);
++++ new
+        (void)0;
+
+### the close frees the file and leaves it on the list
+--- old
+    rc = orphan_unlink(fs, ino, le32(inode + 0x14u));
++++ new
+    rc = 0;
+
+### a mount leaves what the list names
+--- old
+    orphans_at_mount(fs);
++++ new
+    (void)0;

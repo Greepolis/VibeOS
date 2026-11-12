@@ -284,6 +284,63 @@ printf 'staleness
 e2fsck -fn "$G/fs.img" > "$G/fsck.log" 2>&1 || fail "$(head -3 "$G/fsck.log" | tr '
 ' ' ')" stale_node_volume_not_clean
 
+# ---- a file open when its last name goes (E4-019) ---------------------------
+# Held by a description, the file must outlive its name: readable through the
+# description, and on the volume's orphan list so that a machine that stops
+# before the close still frees it. Three ways out, each judged by e2fsck and by
+# the free counts against the volume before the file existed:
+#   closed  - the close frees it;
+#   crashed - the image is left with the file still open, and the next mount
+#             frees what the list names;
+#   linux   - an orphan this driver did not make: debugfs puts a file on the
+#             list the way Linux's own unlink would, and the mount frees it.
+orph_free() { dumpe2fs -h "$1" 2>/dev/null | sed -n 's/^Free \(blocks\|inodes\): *//p' | tr '\n' ' '; }
+orph_head() { dumpe2fs -h "$1" 2>/dev/null | sed -n 's/^First orphan inode: *//p'; }
+O="$T/orphan"
+mkdir -p "$O/closed" "$O/crashed" "$O/linux"
+truncate -s 16M "$O/base.img"
+mkfs.ext4 -q -F -N 64 "$O/base.img" > /dev/null 2>&1 || fail "mkfs (orphan)" mkfs_orphan_failed
+before=$(orph_free "$O/base.img")
+for k in closed crashed linux; do cp "$O/base.img" "$O/$k/fs.img"; done
+printf 'orphankeep	/held	300000	7\norphanclose\n' > "$O/closed/script.txt"
+(cd "$O/closed" && "$EX" apply) > "$O/closed/a.out" 2> "$O/closed/a.err" \
+    || fail "$(grep -m1 FAIL "$O/closed/a.err" || head -1 "$O/closed/a.err")" orphan_open_file_lost
+e2fsck -fn "$O/closed/fs.img" > "$O/closed/fsck.log" 2>&1 \
+    || fail "$(head -3 "$O/closed/fsck.log" | tr '\n' ' ')" orphan_closed_volume_not_clean
+[ "$(orph_free "$O/closed/fs.img")" = "$before" ] \
+    || fail "free after close: $(orph_free "$O/closed/fs.img") wanted $before" orphan_close_leaked
+[ -z "$(orph_head "$O/closed/fs.img")" ]     || fail "the closed file is still on the orphan list: $(orph_head "$O/closed/fs.img")" orphan_close_left_listed
+
+printf 'orphankeep	/held	300000	7\n' > "$O/crashed/script.txt"
+(cd "$O/crashed" && "$EX" apply) > "$O/crashed/a.out" 2> "$O/crashed/a.err" \
+    || fail "$(grep -m1 FAIL "$O/crashed/a.err" || head -1 "$O/crashed/a.err")" orphan_open_file_lost
+[ -n "$(orph_head "$O/crashed/fs.img")" ] || fail "an open file without names is on no orphan list" orphan_not_listed
+(cd "$O/crashed" && "$EX" recover) > "$O/crashed/r.out" 2> "$O/crashed/r.err" \
+    || fail "$(head -1 "$O/crashed/r.err")" orphan_recover_failed
+e2fsck -fn "$O/crashed/fs.img" > "$O/crashed/fsck.log" 2>&1 \
+    || fail "$(head -3 "$O/crashed/fsck.log" | tr '\n' ' ')" orphan_crashed_volume_not_clean
+[ -z "$(orph_head "$O/crashed/fs.img")" ] && [ "$(orph_free "$O/crashed/fs.img")" = "$before" ] \
+    || fail "after the mount: free $(orph_free "$O/crashed/fs.img") wanted $before, list $(orph_head "$O/crashed/fs.img")" orphan_mount_did_not_free
+
+head -c 300000 /dev/urandom > "$O/linux/payload"
+debugfs -w -f - "$O/linux/fs.img" > /dev/null 2>&1 <<EOF2
+write $O/linux/payload held
+EOF2
+lino=$(debugfs -R "stat /held" "$O/linux/fs.img" 2>/dev/null | sed -n 's/^Inode: *\([0-9]*\).*/\1/p')
+[ -n "$lino" ] || fail "debugfs did not write the file" orphan_linux_setup_failed
+debugfs -w -f - "$O/linux/fs.img" > /dev/null 2>&1 <<EOF2
+unlink /held
+sif <$lino> links_count 0
+ssv last_orphan $lino
+EOF2
+[ "$(orph_head "$O/linux/fs.img")" = "$lino" ] || fail "debugfs did not list the orphan" orphan_linux_setup_failed
+(cd "$O/linux" && "$EX" recover) > "$O/linux/r.out" 2> "$O/linux/r.err" \
+    || fail "$(head -1 "$O/linux/r.err")" orphan_recover_failed
+e2fsck -fn "$O/linux/fs.img" > "$O/linux/fsck.log" 2>&1 \
+    || fail "$(head -3 "$O/linux/fsck.log" | tr '\n' ' ')" orphan_linux_volume_not_clean
+[ -z "$(orph_head "$O/linux/fs.img")" ] && [ "$(orph_free "$O/linux/fs.img")" = "$before" ] \
+    || fail "after the mount: free $(orph_free "$O/linux/fs.img") wanted $before" orphan_linux_not_freed
+
 # ---- the refusals -----------------------------------------------------------
 # An inode whose checksum no longer matches: its low half set to zero.
 mkdir -p "$T/csum" "$T/feat"

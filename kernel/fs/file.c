@@ -49,8 +49,29 @@ static void file_clear(vibeos_file_t *f) {
     f->nt_ob = -1;   /* 0 is a slot of the NT object table, not "none" */
 }
 
+/* vibeos_fs_set_open_query: called by a driver under its mount's lock, so
+ * the order is mount, then this table - and put never calls a driver holding
+ * the table's lock. A description whose put is running (refs 0, ops still
+ * set) no longer holds anything. */
+static int file_node_open(const void *fs, uint64_t id) {
+    uint32_t i;
+    int found = 0;
+
+    lock();
+    for (i = 0; i < VIBEOS_FILE_MAX && !found; i++) {
+        const vibeos_file_t *f = &g_files[i];
+
+        found = f->ops != 0 && __atomic_load_n(&f->refs, __ATOMIC_ACQUIRE) != 0u && f->mnt != 0 &&
+                f->mnt->fs == fs && f->node == id && !f->isdir;
+    }
+    unlock();
+    return found;
+}
+
 void vibeos_file_reset(void) {
     uint32_t i;
+
+    vibeos_fs_set_open_query(file_node_open);
 
     lock();
     for (i = 0; i < VIBEOS_FILE_MAX; i++) {
@@ -249,7 +270,9 @@ void vibeos_file_on_release(void (*fn)(vibeos_file_t *f)) {
 }
 
 void vibeos_file_put(vibeos_file_t *f) {
-    uint32_t n;
+    uint32_t n, i;
+    vibeos_fsmount_t *mnt;
+    uint64_t node;
 
     if (!f) {
         return;
@@ -290,8 +313,26 @@ void vibeos_file_put(vibeos_file_t *f) {
         f->ops->release(f);
     }
     lock();
+    mnt = f->mnt;
+    node = f->isdir ? 0u : f->node;
     f->ops = 0;
+    if (mnt && node != 0u) {
+        for (i = 0; i < VIBEOS_FILE_MAX; i++) {
+            const vibeos_file_t *o = &g_files[i];
+
+            if (o->ops != 0 && o->refs != 0u && o->mnt == mnt && o->node == node && !o->isdir) {
+                node = 0u;   /* somebody else still reads it */
+                break;
+            }
+        }
+    }
     unlock();
+    /* The slot may be somebody else's already: what it named was copied out.
+     * A file whose last name went while it was open is given back now
+     * (E4-019); for every other node the driver has nothing to do. */
+    if (mnt && node != 0u) {
+        (void)vibeos_fs_release_node(mnt, node);
+    }
 }
 
 void vibeos_file_stat_clear(vibeos_file_stat_t *st) {

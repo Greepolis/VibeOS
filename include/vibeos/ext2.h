@@ -90,6 +90,11 @@ typedef struct {
         uint32_t start_lo;
     } ext[1360];                  /* four leaves of 340: depth 1 at most */
     uint8_t cached_ptrs[4096];
+    /* Files whose last name went while a description held them (E4-019):
+     * kept, on the volume's orphan list, until the last description goes.
+     * Full, a file is freed at once, as before - and counted. */
+    uint32_t orphan_n;
+    uint32_t orphan[32];
 
     /* ---- the journal's (docs/filesystem-design/ext4.md step 3) ----
      * One operation is one transaction. What it changes of the metadata is

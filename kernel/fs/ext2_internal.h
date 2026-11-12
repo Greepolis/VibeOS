@@ -98,13 +98,26 @@ int ext4_j_end(vibeos_ext2_t *fs);
  * i_generation is not the one the node was found with. A node with gen 0 was
  * made by somebody who did not ask (an id built by hand) and is judged by the
  * links and type alone. */
-static inline int ext2_node_stale(const vibeos_fs_node_t *node, const uint8_t *inode) {
+static inline int ext2_is_orphan(const vibeos_ext2_t *fs, uint64_t ino) {
+    uint32_t i;
+
+    for (i = 0; i < fs->orphan_n; i++) {
+        if (fs->orphan[i] == ino) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A node is stale when its inode is free or another file's. No links is free
+ * unless the file is one this mount kept for an open description (E4-019). */
+static inline int ext2_node_stale(const vibeos_ext2_t *fs, const vibeos_fs_node_t *node, const uint8_t *inode) {
     uint32_t gen = (uint32_t)inode[0x64] | ((uint32_t)inode[0x65] << 8) |
                    ((uint32_t)inode[0x66] << 16) | ((uint32_t)inode[0x67] << 24);
     uint32_t links = (uint32_t)inode[0x1A] | ((uint32_t)inode[0x1B] << 8);
     uint32_t mode = (uint32_t)inode[0] | ((uint32_t)inode[1] << 8);
 
-    return links == 0u || mode == 0u || (node->gen != 0u && node->gen != gen);
+    return (links == 0u && !ext2_is_orphan(fs, node->id)) || mode == 0u || (node->gen != 0u && node->gen != gen);
 }
 
 static inline uint32_t ext2_inode_gen(const uint8_t *inode) {

@@ -7,6 +7,6 @@
 
 ### a node is judged by its inode's links alone, not its generation
 --- old
-    return links == 0u || mode == 0u || (node->gen != 0u && node->gen != gen);
+    return (links == 0u && !ext2_is_orphan(fs, node->id)) || mode == 0u || (node->gen != 0u && node->gen != gen);
 +++ new
-    return links == 0u || mode == 0u || (node->gen != 0u && 0);
+    return (links == 0u && !ext2_is_orphan(fs, node->id)) || mode == 0u || (node->gen != 0u && 0);

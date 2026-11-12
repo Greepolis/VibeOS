@@ -141,7 +141,18 @@ static int load(const char *path) {
 
 /* Mounted the way the storage scan mounts it: through the driver, which decides
  * between the reading operations and the writing ones. */
+/* The open-file layer's part (vibeos_fs_set_open_query): one node held by a
+ * description that the script opens with orphankeep and closes with
+ * orphanclose (E4-019). */
+static vibeos_fs_node_t g_held;
+static int g_holding;
+
+static int held_query(const void *fs, uint64_t id) {
+    return fs == (const void *)&g_fs && g_holding && id == g_held.id;
+}
+
 static int mount_volume(void) {
+    vibeos_fs_set_open_query(held_query);
     memset(&g_state, 0, sizeof(g_state));
     if (vibeos_ext4_fs_driver()->mount(&g_mnt, &g_bc, 0, g_sectors, &g_state) != 0) {
         return -1;
@@ -373,6 +384,63 @@ static int run(char **a, int n) {
             return -1;
         }
         printf("staleness ok inode=%llu\n", (unsigned long long)held.id);
+        return 0;
+    }
+    if (strcmp(c, "orphankeep") == 0 && n == 4) {
+        /* A file written, held by a description, and its last name removed
+         * (E4-019): the description must still read every byte, the name must
+         * be gone, and the file must say it has no links. */
+        static uint8_t buf[1u << 20], got[1u << 20];
+        uint64_t len = strtoull(a[2], NULL, 10);
+        uint32_t seed = (uint32_t)strtoul(a[3], NULL, 10);
+        vibeos_fs_node_t now;
+
+        if (len > sizeof(buf) || g_holding) {
+            return -VIBEOS_EINVAL;
+        }
+        for (uint64_t i = 0; i < len; i++) {
+            buf[i] = pat(seed, i);
+        }
+        if (vibeos_fs_create(&g_mnt, a[1], 0644, &g_held) != 0 ||
+            vibeos_fs_write_at(&g_mnt, &g_held, 0, buf, (uint32_t)len) != (long)len ||
+            vibeos_fs_lookup(&g_mnt, a[1], &g_held) != 0) {
+            fprintf(stderr, "FAIL:ext4_exercise orphankeep setup\n");
+            return -1;
+        }
+        g_holding = 1;
+        if (vibeos_fs_unlink(&g_mnt, a[1]) != 0 || vibeos_fs_lookup(&g_mnt, a[1], &now) == 0) {
+            fprintf(stderr, "FAIL:ext4_exercise orphankeep: the name was not removed\n");
+            return -1;
+        }
+        if (vibeos_fs_read_at(&g_mnt, &g_held, 0, got, (uint32_t)len) != (long)len || memcmp(got, buf, len) != 0) {
+            fprintf(stderr, "FAIL:ext4_exercise an open file lost its contents with its last name\n");
+            return -1;
+        }
+        if (vibeos_fs_getattr(&g_mnt, &g_held, &now) != 0 || now.nlink != 0u || now.size != len) {
+            fprintf(stderr, "FAIL:ext4_exercise an open file without names says nlink=%u size=%llu\n",
+                    (unsigned)now.nlink, (unsigned long long)now.size);
+            return -1;
+        }
+        printf("orphankeep ok inode=%llu\n", (unsigned long long)g_held.id);
+        return 0;
+    }
+    if (strcmp(c, "orphanclose") == 0 && n == 1) {
+        /* The last description goes: the file goes with it. */
+        uint8_t b;
+
+        if (!g_holding) {
+            return -VIBEOS_EINVAL;
+        }
+        g_holding = 0;
+        if (vibeos_fs_release_node(&g_mnt, g_held.id) != 0) {
+            fprintf(stderr, "FAIL:ext4_exercise orphanclose: the release failed\n");
+            return -1;
+        }
+        if (vibeos_fs_read_at(&g_mnt, &g_held, 0, &b, 1u) >= 0) {
+            fprintf(stderr, "FAIL:ext4_exercise a closed orphan still reads\n");
+            return -1;
+        }
+        printf("orphanclose ok\n");
         return 0;
     }
     if (strcmp(c, "faildata") == 0 && n == 2) {

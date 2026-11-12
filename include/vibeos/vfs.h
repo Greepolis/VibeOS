@@ -80,6 +80,9 @@ typedef struct {
      * ENOENT rather than act on the stranger (E4-012). 0: not tracked. Opaque
      * above this line, like id; carried by an open description. */
     uint32_t gen;
+    /* Set by a driver for a file whose last name has gone while it was open
+     * (E4-019): its nlink of 0 is the answer, not a field it left empty. */
+    uint8_t unlinked;
 } vibeos_fs_node_t;
 
 /* What setattr may change: the fields named in `valid`. */
@@ -185,6 +188,13 @@ typedef struct {
      * one that keeps it in clusters on a disk has no page to give, and a
      * mapping of its files is private or refused. */
     int (*share_page)(void *fs, const vibeos_fs_node_t *node, uint64_t offset, void **page);
+
+    /* The last open description of node `id` has gone (E4-019). A file whose
+     * last name was removed while it was open is kept until this - its blocks
+     * are what the description still reads - and given back here. Called for
+     * every node, named or not, and possibly twice for one release: the driver
+     * frees only what it kept. Optional. */
+    int (*release_node)(void *fs, uint64_t id);
 
     /* Set by a driver that wants the VFS to serialise it: every call into it
      * is made holding its mount's lock, so a driver with shared state needs
@@ -350,6 +360,16 @@ void vibeos_fs_set_lock(void (*lock)(void), void (*unlock)(void));
 /* The architecture's lock for one mount's word, for drivers that ask to be
  * serialised (vibeos_fs_ops_t.serialize). With none registered - the host
  * tests, one thread - calls run unlocked. */
+/* Who answers "does an open description still hold node `id` of the volume
+ * whose driver state is `fs`" (E4-019): the open-file layer, which registers
+ * itself (vibeos_file_reset). A driver asks it when a file loses its last
+ * name, under the mount's lock; with nobody registered the answer is no, and
+ * the file goes at once, as it always did. */
+void vibeos_fs_set_open_query(int (*query)(const void *fs, uint64_t id));
+int vibeos_fs_node_is_open(const void *fs, uint64_t id);
+/* Tell the mount's driver that the last description of `id` has gone. */
+int vibeos_fs_release_node(vibeos_fsmount_t *mnt, uint64_t id);
+
 void vibeos_fs_set_mount_lock(void (*lock)(volatile uint32_t *word), void (*unlock)(volatile uint32_t *word));
 
 /* Attach a mounted volume at `path`. `path` must start with '/'.

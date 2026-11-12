@@ -97,10 +97,13 @@ static uint32_t crc32c(uint32_t seed, const void *p, uint32_t n) {
  * leave stale (a quota file, a project id, the second superblock of
  * sparse_super2). The compat and ro_compat words are the ones that matter for
  * a writer; the incompat ones are already the reader's. */
+static void orphans_at_mount(vibeos_ext2_t *fs);
+
 void ext4_w_mount(vibeos_ext2_t *fs) {
     uint32_t compat, known_ro;
 
     fs->writable = 0;
+    fs->orphan_n = 0;
     if (vibeos_blockcache_read(fs->cache, fs->part_lba + 2u, fs->sb) != 0 ||
         vibeos_blockcache_read(fs->cache, fs->part_lba + 3u, fs->sb + VIBEOS_BLOCK_SIZE) != 0) {
         return;
@@ -122,6 +125,7 @@ void ext4_w_mount(vibeos_ext2_t *fs) {
         return;
     }
     fs->writable = 1;
+    orphans_at_mount(fs);
 }
 
 /* ---- the superblock ------------------------------------------------------- */
@@ -1591,6 +1595,7 @@ static uint32_t ftype_of(uint32_t mode) {
  * an inode that is free but not zero. */
 static int inode_release(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
     int is_dir = ext2_inode_is_dir(inode), rc;
+    uint32_t dtime;
 
     if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) != 0u) {
         rc = ext_load(fs, ino, inode);
@@ -1607,12 +1612,141 @@ static int inode_release(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
     st16(inode + 0x1Au, 0);
     set_size(inode, 0);
     set_blocks(inode, 0);
-    st32(inode + 0x14u, (uint32_t)(vibeos_fs_now_ns() / NS));
+    /* A deleted inode's dtime is a time, and e2fsck says what is not: 0 is
+     * "never deleted", and anything below the inode count is a link of the
+     * orphan list. A mount frees orphans before anything has set the clock
+     * (E4-019), so then it is the volume's last write time. */
+    dtime = (uint32_t)(vibeos_fs_now_ns() / NS);
+    if (dtime < le32(fs->sb + 0x00u)) {
+        dtime = le32(fs->sb + 0x30u);
+    }
+    if (dtime < le32(fs->sb + 0x00u)) {
+        dtime = le32(fs->sb + 0x00u);
+    }
+    st32(inode + 0x14u, dtime);
     rc = inode_put(fs, ino, inode);
     if (rc != 0) {
         return rc;
     }
     return ifree(fs, ino, is_dir);
+}
+
+/* ---- the orphan list (E4-019) ----------------------------------------------
+ * A file whose last name goes while a description still reads it keeps its
+ * inode and its blocks until that description goes. If the machine stops
+ * first, nothing would ever free them: so the inode is put on the volume's
+ * orphan list - the superblock's s_last_orphan (0xE8) names the first, each
+ * one's i_dtime names the next - in the same transaction that removes the
+ * name, and taken off it in the one that frees the inode. A mount frees
+ * whatever is still on it, as Linux and e2fsck do. */
+#define SB_LAST_ORPHAN 0xE8u
+#define ORPHAN_MAX ((uint32_t)(sizeof(((vibeos_ext2_t *)0)->orphan) / sizeof(uint32_t)))
+
+/* The last name of a regular file or a symlink has gone (its links are being
+ * taken to zero). */
+static int last_name_gone(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
+    int rc;
+
+    if (fs->orphan_n >= ORPHAN_MAX || !vibeos_fs_node_is_open(fs, ino)) {
+        /* Nobody reads it, or no room to keep it: a description that
+         * outlives the file is then refused as stale (E4-012), as before. */
+        return inode_release(fs, ino, inode);
+    }
+    st16(inode + 0x1Au, 0);
+    touch_c(inode);
+    st32(inode + 0x14u, le32(fs->sb + SB_LAST_ORPHAN));
+    rc = inode_put(fs, ino, inode);
+    if (rc == 0) {
+        st32(fs->sb + SB_LAST_ORPHAN, ino);
+        rc = sb_store(fs);
+    }
+    if (rc == 0) {
+        fs->orphan[fs->orphan_n++] = ino;
+    }
+    return rc;
+}
+
+/* Take `ino`, whose i_dtime is `next`, off the on-disk list. */
+static int orphan_unlink(vibeos_ext2_t *fs, uint32_t ino, uint32_t next) {
+    uint8_t prev[EXT2_MAX_INODE_SIZE];
+    uint32_t cur = le32(fs->sb + SB_LAST_ORPHAN), steps;
+
+    if (cur == ino) {
+        st32(fs->sb + SB_LAST_ORPHAN, next);
+        return sb_store(fs);
+    }
+    /* Every entry is one of this mount's: the mount emptied the list. */
+    for (steps = 0; cur != 0u && steps <= ORPHAN_MAX; steps++) {
+        if (ext2_read_inode(fs, cur, prev) != 0) {
+            return -VIBEOS_EIO;
+        }
+        if (le32(prev + 0x14u) == ino) {
+            st32(prev + 0x14u, next);
+            return inode_put(fs, cur, prev);
+        }
+        cur = le32(prev + 0x14u);
+    }
+    return -VIBEOS_EIO;   /* not on the list it was put on */
+}
+
+static int x_release_node(void *fsv, uint64_t id) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+    uint32_t i, ino = (uint32_t)id;
+    int rc;
+
+    for (i = 0; i < fs->orphan_n && fs->orphan[i] != id; i++) {
+    }
+    if (i == fs->orphan_n) {
+        return 0;   /* a file with a name, or one already given back */
+    }
+    if (ext2_read_inode(fs, ino, inode) != 0) {
+        return -VIBEOS_EIO;
+    }
+    rc = orphan_unlink(fs, ino, le32(inode + 0x14u));
+    if (rc == 0) {
+        rc = inode_release(fs, ino, inode);
+    }
+    if (rc == 0) {
+        fs->orphan[i] = fs->orphan[--fs->orphan_n];
+    }
+    return rc;
+}
+
+/* What a stopped machine left on the list: one transaction per inode, so a
+ * long list never outgrows one. Whatever this driver cannot free (a
+ * block-mapped file) stays on the list for e2fsck. */
+static void orphans_at_mount(vibeos_ext2_t *fs) {
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+    uint32_t head = le32(fs->sb + SB_LAST_ORPHAN), count = le32(fs->sb + 0x00u), steps, next;
+    int rc, end;
+
+    for (steps = 0; head != 0u && steps < count; steps++) {
+        if (head > count || ext2_read_inode(fs, head, inode) != 0) {
+            return;
+        }
+        if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) == 0u && !ext2_inode_is_fast_symlink(fs, inode) &&
+            le32(inode + 0x1Cu) != 0u) {
+            return;
+        }
+        if (ext4_j_begin(fs) != 0) {
+            return;
+        }
+        next = le32(inode + 0x14u);
+        st32(fs->sb + SB_LAST_ORPHAN, next);
+        rc = sb_store(fs);
+        if (rc == 0 && le16(inode + 0x1Au) == 0u) {
+            rc = inode_release(fs, head, inode);
+        } else if (rc == 0) {
+            st32(inode + 0x14u, 0);   /* a name came back: only off the list */
+            rc = inode_put(fs, head, inode);
+        }
+        end = ext4_j_end(fs);
+        if (rc != 0 || end != 0) {
+            return;
+        }
+        head = next;
+    }
 }
 
 /* mkdir, create and symlink: a name in a directory for a new inode of `mode`. */
@@ -1750,10 +1884,11 @@ static int w_getattr(void *fsv, const vibeos_fs_node_t *node, vibeos_fs_node_t *
     }
     /* A node whose last name has gone, or whose inode has since gone to
      * another file: its generation says which (E4-012). */
-    if (ext2_node_stale(node, inode)) {
+    if (ext2_node_stale(fs, node, inode)) {
         return -VIBEOS_ENOENT;
     }
     node_fill((uint32_t)node->id, inode, out);
+    out->unlinked = ext2_is_orphan(fs, node->id);
     return 0;
 }
 
@@ -1846,7 +1981,7 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
     uint32_t nruns = 0;
 
     if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, ino, inode) != 0 ||
-        ext2_node_stale(node, inode)) {
+        ext2_node_stale(fs, node, inode)) {
         return -VIBEOS_ENOENT;   /* not into a file that took a gone file's number (E4-012) */
     }
     rc = file_check(inode);
@@ -1993,7 +2128,7 @@ static int x_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
     int rc;
 
     if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, ino, inode) != 0 ||
-        ext2_node_stale(node, inode)) {
+        ext2_node_stale(fs, node, inode)) {
         return -VIBEOS_ENOENT;   /* E4-012 */
     }
     rc = file_check(inode);
@@ -2125,7 +2260,7 @@ static int remove_name(vibeos_ext2_t *fs, const char *path, int want_dir) {
         touch_c(inode);
         return inode_put(fs, ino, inode);
     }
-    return inode_release(fs, ino, inode);
+    return last_name_gone(fs, ino, inode);
 }
 
 static int x_unlink(void *fsv, const char *path) {
@@ -2295,7 +2430,7 @@ static int x_rename(void *fsv, const char *from, const char *to, uint32_t flags)
             touch_c(dst);
             rc = inode_put(fs, dino, dst);
         } else {
-            rc = inode_release(fs, dino, dst);
+            rc = last_name_gone(fs, dino, dst);
         }
         if (rc != 0) {
             return rc;
@@ -2346,7 +2481,7 @@ static int x_setattr_node(void *fsv, const vibeos_fs_node_t *node, const vibeos_
     uint8_t inode[EXT2_MAX_INODE_SIZE];
 
     if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, (uint32_t)node->id, inode) != 0 ||
-        ext2_node_stale(node, inode)) {
+        ext2_node_stale(fs, node, inode)) {
         return -VIBEOS_ENOENT;
     }
     return attr_apply(fs, (uint32_t)node->id, inode, attr);
@@ -2387,6 +2522,23 @@ J_OP_INT(link, (void *fsv, const char *existing, const char *path), (fsv, existi
 J_OP_INT(rename, (void *fsv, const char *from, const char *to, uint32_t flags), (fsv, from, to, flags))
 J_OP_INT(setattr, (void *fsv, const char *path, const vibeos_fs_attr_t *attr), (fsv, path, attr))
 J_OP_INT(setattr_node, (void *fsv, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *attr), (fsv, node, attr))
+/* Every close of an ext4 file comes here: one that kept nothing opens no
+ * transaction. */
+static int w_release_node(void *fsv, uint64_t id) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    int rc, end;
+
+    if (id > 0xFFFFFFFFull || !ext2_is_orphan(fs, id)) {
+        return 0;
+    }
+    rc = ext4_j_begin(fs);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = x_release_node(fsv, id);
+    end = ext4_j_end(fs);
+    return end != 0 ? end : rc;
+}
 J_OP_LONG(write_file, (void *fsv, const char *path, const void *buf, uint32_t len), (fsv, path, buf, len))
 
 static const vibeos_fs_ops_t g_ext4_rw = {
@@ -2409,6 +2561,7 @@ static const vibeos_fs_ops_t g_ext4_rw = {
     .setattr_node = w_setattr_node,
     .statfs = w_statfs,
     .sync = w_sync,
+    .release_node = w_release_node,
     .serialize = 1,
 };
 
