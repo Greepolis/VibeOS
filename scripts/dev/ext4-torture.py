@@ -207,8 +207,17 @@ class Gen:
             # the Linux handler's to decide, so the driver is only asked to refuse.
             words = (["refuse"] if words[0] in ("unlink", "mkdir") else ["fail", name]) + words
         self.lines.append("\t".join(str(w) for w in words))
+        # Everything keyed by the host's inode number forgets the dead after
+        # every line, before any later line can make a file. The host gives a
+        # removed file's number to the next file it makes whenever it likes -
+        # which depends on what else is using its disk - so a count left until
+        # the next write was inherited by a new file one run in some, and the
+        # generator made a different sequence (E4-031: 26135 operations where
+        # it usually made 26140, measured in 45 of 60 seeds as files born
+        # with a dead file's count).
         live = {os.lstat(self.host(q)).st_ino for q, k in self.entries() if k != "l"}
         self.owners = {i: o for i, o in self.owners.items() if i in live}
+        self.writes = {i: c for i, c in self.writes.items() if i in live}
         if self.keep_states:
             self.states.append(listing(self.root, self.owners))
 
@@ -218,11 +227,6 @@ class Gen:
 
     def write(self, p, off, n, seed, word="write"):
         ino = os.lstat(self.host(p)).st_ino
-        # The host reuses a removed file's inode number when it likes, so a
-        # count left behind would pass to whichever file gets it next - and
-        # the sequence would differ from one run to the next. Drop the dead.
-        live = {os.lstat(self.host(q)).st_ino for q, k in self.entries() if k == "f"}
-        self.writes = {i: c for i, c in self.writes.items() if i in live}
         if self.writes.get(ino, 0) >= self.max_writes:
             return
         self.writes[ino] = self.writes.get(ino, 0) + 1

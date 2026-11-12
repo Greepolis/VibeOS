@@ -6,13 +6,12 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-79 open in 3 registers.
+78 open in 3 registers.
 
-## [ext4](implementation_progress/fs_ext4.md) - 13
+## [ext4](implementation_progress/fs_ext4.md) - 12
 
 | ID | What | Status |
 |---|---|---|
-| E4-031 | The torture's generator is not wholly deterministic: 60 seeds have twice given 26135 operations where they usually give 26140, with no change to the generator ... | open |
 | E4-030 | Casefolded directories (hierarchy.md section 3, decided 2026-11-11): the root is made with the `casefold` feature and `/home`, `/usr/lib/windows` and ... | open |
 | E4-021 | The programs keep their ESP names (`BUSYBOX.ELF`, `SVC_OK.ELF`): the gate recognises many of them by those names. Lower-case command names without the ... | open - deferred 2026-11-11 to the shell's design (next-steps item 3): which ... |
 | E4-016 | One operation is one transaction with five flushes, emptied at once: no group commit, no asynchronous checkpoint, no reuse of the log across transactions. ... | open (perf phase) |
