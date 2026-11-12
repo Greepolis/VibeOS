@@ -4,7 +4,8 @@ The live roadmap: what comes next, in order. Updated every time something
 changes; **when an item is done it is removed from here** and what it did is
 recorded where it belongs (its plan, `implementation_progress.md`, the open
 items registers). [roadmap.md](roadmap.md) keeps the history of how the order
-was decided.
+was decided. What is still open in every register is gathered, generated, in
+[open-items.md](open-items.md).
 
 ## Now
 

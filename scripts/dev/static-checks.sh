@@ -81,6 +81,9 @@ run net-stable             python3 scripts/dev/check-net-stable.py
 run abi-layering           python3 scripts/dev/check-abi-layering.py
 # docs/abi/ A5: every Linux layout is compared with Linux's own headers.
 run linux-layout           python3 scripts/dev/check-linux-layout.py
+# The open rows of every register, gathered beside next-steps.md; a register
+# changed without re-running the generator is red here.
+run open-items             python3 scripts/dev/make-open-items.py --check
 # A deliberate fault planted to test the panic path once got committed,
 # because removing it was a separate step that a change of plan skipped.
 if grep -rn 'TEMPORARY' kernel/ --include=*.c > /dev/null 2>&1; then
