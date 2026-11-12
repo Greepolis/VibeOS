@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Target source: kernel/txn/journal.c
+
+### committed targets must be durable before descriptor retirement
+--- old
+    /* The targets must be durable before the descriptor is retired, or a crash
+     * here would leave a volume that is half updated and no longer has a
+     * record saying so. */
+    return journal_flush(j);
++++ new
+    /* The checkpoint is intentionally not flushed before retirement. */
+    return 0;

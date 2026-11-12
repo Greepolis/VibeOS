@@ -16,9 +16,8 @@ handles are checked against a seeded ledger with a deterministic quota-boundary
 probe. The ABI syscall tests cover selected Linux file, descriptor, pipe, path,
 memory and fork-inheritance slices plus a separate NT handle/file slice; most
 of both personalities remains uncovered, so they do not qualify the whole ABI
-module. The portable process table has an independent lifecycle model; journal
-recovery is not counted until its test discriminates the relevant production
-properties.
+module. The portable process table and journal recovery have independent models with
+production mutation controls.
 
 The reason is that a subsystem asked whether it is correct answers from the
 numbers it used to decide, so self-consistent defects survive. The model must
@@ -33,9 +32,9 @@ Step-level annotations do not count.
 The number may only go down. Eleven of thirteen modules had nothing when this
 rule was introduced. The earlier journal tortures were removed after their
 sabotages were caught on zero of thirty seeds; see scripts/dev/cases/io-journal.txt.
-ABI and TXN remain uncovered until independent tests discriminate their
-production properties. A test that cannot fail is not evidence of coverage, and
-lowering the baseline requires a test that discriminates.
+ABI remains uncovered until an independent test discriminates its whole
+surface. A test that cannot fail is not evidence of coverage, and lowering the
+baseline requires a test that discriminates.
 """
 
 import argparse
@@ -43,13 +42,13 @@ import os
 import re
 import sys
 
-# Fourteen modules have qualifying intensive nightly tests. The two remaining
-# modules (abi and txn) stay in the debt: ABI's model is scoped to part of
-# the Linux surface, and TXN's does not yet discriminate commit order. IPC and
-# object left the debt in PR #207; PROC left it with an independent
-# lifecycle ledger and a production mutation. The baseline is a hard upper
-# bound and may only go down when a new test proves it can detect a defect.
-BASELINE = 2
+# Fifteen modules have qualifying intensive nightly tests. ABI stays in the
+# debt: its model is scoped to part of the Linux surface and none of NT's
+# beyond the file calls. IPC and object left the debt in PR #207, PROC with
+# an independent lifecycle ledger, TXN with a power cut after every device write and a mutation proving that
+# committed targets are durable before descriptor retirement. The baseline is a hard upper bound and may only go down when a new
+# test proves it can detect a defect.
+BASELINE = 1
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 NIGHTLY = os.path.join(ROOT, ".github", "workflows", "nightly.yml")
 KERNEL = os.path.join(ROOT, "kernel")

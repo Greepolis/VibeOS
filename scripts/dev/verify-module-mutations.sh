@@ -72,3 +72,4 @@ SABOTAGE_VERIFY="bash scripts/dev/verify-nt-abi-torture.sh $build_dir" \
         scripts/dev/cases/abi-nt-create-coverage.txt "$build_dir"
 
 run_case proc kernel/proc/process.c scripts/dev/cases/proc-coverage.txt
+run_case txn kernel/txn/journal.c scripts/dev/cases/txn-coverage.txt
