@@ -1258,6 +1258,11 @@ def main():
     last_guest_phase = "boot"
     last_serial_timestamp = 0.0
     phase_history = []
+    # When each piece of serial output arrived: (seconds since start, offset
+    # in serial_text). The phases are a dozen coarse markers and one of them
+    # holds nine tenths of a boot; this is what says where those seconds go.
+    # Written beside the serial log as qemu-cli-serial-timed*.log.
+    chunk_times = []
     last_expected = "startup"
     verbose = os.environ.get("VIBEOS_QEMU_VERBOSE", "") == "1"
 
@@ -1408,6 +1413,7 @@ def main():
 
             def on_serial_chunk(chunk):
                 nonlocal serial_text, last_rx, last_guest_phase, last_serial_timestamp
+                chunk_times.append((time.monotonic() - started, len(serial_text)))
                 serial_text += chunk.decode("utf-8", errors="replace")
                 last_serial_timestamp = time.monotonic() - started
                 new_phase = detect_guest_phase(serial_text)
@@ -3859,6 +3865,17 @@ def main():
             with open(err_log_path, "rb") as fp:
                 err_text = fp.read().decode("utf-8", errors="replace")
         write(serial_log_path, serial_text)
+        try:
+            timed, k, at = [], 0, 0
+            for line in serial_text.splitlines(keepends=True):
+                while k + 1 < len(chunk_times) and chunk_times[k + 1][1] <= at:
+                    k += 1
+                t = chunk_times[k][0] if chunk_times else 0.0
+                timed.append("%8.3f %s" % (t, line))
+                at += len(line)
+            write(serial_log_path.replace("qemu-cli-serial", "qemu-cli-serial-timed"), "".join(timed))
+        except Exception as exc:      # a timing aid must never cost the verdict
+            print("[QEMU-CLI] timed serial log not written: %s" % exc)
         write(summary_path, "\n".join([
             f"status={status}",
             f"reason={reason}",
