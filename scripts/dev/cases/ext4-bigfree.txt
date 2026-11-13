@@ -1,0 +1,30 @@
+# A release larger than one transaction (E4-018), broken. Caught by
+# scripts/dev/verify-ext4.sh: an unlink and a truncate of a file over
+# hundreds of groups, and power cuts through the unlink.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release'" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-bigfree.txt build-gcc-Release
+
+### the whole release in one transaction, as before
+--- old
+        if (fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u && fs->ext_n > 0u &&
++++ new
+        if (0 && fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u && fs->ext_n > 0u &&
+
+### pieces committed without the orphan list
+--- old
+                rc = orphan_list_add(fs, ino, inode);
+                if (rc != 0) {
+                    return rc;
+                }
+                *listed = 1;
++++ new
+                rc = 0;
+
+### a truncate's size set after the blocks, not before
+--- old
+        set_size(inode, new_size);
+        touch_mc(inode);
+        rc = free_tail(fs, ino, inode, keep, &listed);
++++ new
+        rc = free_tail(fs, ino, inode, keep, &listed);

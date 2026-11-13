@@ -1617,18 +1617,82 @@ static uint32_t ftype_of(uint32_t mode) {
 /* Take away what an inode owns and give the inode back: its blocks (and the
  * tree's), then the inode itself, with the deletion time e2fsck wants to see on
  * an inode that is free but not zero. */
-static int inode_release(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
-    int is_dir = ext2_inode_is_dir(inode), rc;
-    uint32_t dtime;
+static int orphan_list_add(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode);
+static int orphan_unlink(vibeos_ext2_t *fs, uint32_t ino, uint32_t next);
 
-    if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) != 0u) {
-        rc = ext_load(fs, ino, inode);
-        if (rc == 0) {
-            rc = ext_truncate(fs, 0);
+/* A file's blocks from the end down to `keep`, in pieces (E4-018). One
+ * transaction logs at most fs->j.cap blocks, and freeing a large file touches
+ * a bitmap and a descriptor block in every group it lies in - a few hundred
+ * groups was enough to make an unlink fail half done. So once a piece leaves
+ * the transaction half full it is committed and another begun; before the
+ * first such commit the file goes on the orphan list (*listed), so a machine
+ * stopped between pieces has its next mount finish the job, as Linux's does.
+ * Each commit leaves the inode consistent: its tree names exactly the blocks
+ * it still has. The caller has a transaction open and finds one open after. */
+static int free_tail(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, uint32_t keep, int *listed) {
+    uint32_t step = fs->blocks_per_group * (fs->j.cap / 16u > 1u ? fs->j.cap / 16u : 1u);
+    int rc;
+
+    while (fs->ext_n > 0u) {
+        uint32_t i = fs->ext_n - 1u, end = fs->ext[i].lblk + e_len(fs, i), cut;
+
+        if (end <= keep) {
+            break;
         }
+        cut = end - keep > step ? end - step : keep;
+        if (cut < fs->ext[i].lblk && fs->ext[i].lblk >= keep) {
+            cut = fs->ext[i].lblk;   /* a whole extent past a hole: one piece */
+        }
+        rc = ext_truncate(fs, cut);
         if (rc == 0) {
             rc = ext_store(fs, ino, inode);
         }
+        if (rc == 0) {
+            rc = inode_put(fs, ino, inode);
+        }
+        if (rc != 0) {
+            return rc;
+        }
+        if (fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u && fs->ext_n > 0u &&
+            fs->ext[fs->ext_n - 1u].lblk + e_len(fs, fs->ext_n - 1u) > keep) {
+            if (!*listed) {
+                rc = orphan_list_add(fs, ino, inode);
+                if (rc != 0) {
+                    return rc;
+                }
+                *listed = 1;
+            }
+            rc = ext4_j_end(fs);
+            if (rc == 0) {
+                rc = ext4_j_begin(fs);
+            }
+            if (rc != 0) {
+                return rc;
+            }
+        }
+    }
+    return 0;
+}
+
+/* inode_release for a file that is on the orphan list already (`listed`): it
+ * leaves the list in the transaction that frees it. */
+static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, int listed) {
+    int is_dir = ext2_inode_is_dir(inode), rc;
+    uint32_t dtime;
+
+    /* No names from here, whatever a commit between pieces shows. */
+    st16(inode + 0x1Au, 0);
+    if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) != 0u) {
+        rc = ext_load(fs, ino, inode);
+        if (rc == 0) {
+            rc = free_tail(fs, ino, inode, 0, &listed);
+        }
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    if (listed) {
+        rc = orphan_unlink(fs, ino, le32(inode + 0x14u));
         if (rc != 0) {
             return rc;
         }
@@ -1655,6 +1719,10 @@ static int inode_release(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
     return ifree(fs, ino, is_dir);
 }
 
+static int inode_release(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
+    return inode_release_listed(fs, ino, inode, 0);
+}
+
 /* ---- the orphan list (E4-019) ----------------------------------------------
  * A file whose last name goes while a description still reads it keeps its
  * inode and its blocks until that description goes. If the machine stops
@@ -1678,14 +1746,22 @@ static int last_name_gone(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
     }
     st16(inode + 0x1Au, 0);
     touch_c(inode);
+    rc = orphan_list_add(fs, ino, inode);
+    if (rc == 0) {
+        fs->orphan[fs->orphan_n++] = ino;
+    }
+    return rc;
+}
+
+/* Put `ino` at the head of the on-disk list, in the open transaction. */
+static int orphan_list_add(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
+    int rc;
+
     st32(inode + 0x14u, le32(fs->sb + SB_LAST_ORPHAN));
     rc = inode_put(fs, ino, inode);
     if (rc == 0) {
         st32(fs->sb + SB_LAST_ORPHAN, ino);
         rc = sb_store(fs);
-    }
-    if (rc == 0) {
-        fs->orphan[fs->orphan_n++] = ino;
     }
     return rc;
 }
@@ -1717,7 +1793,6 @@ static int x_release_node(void *fsv, uint64_t id) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
     uint32_t i, ino = (uint32_t)id;
-    int rc;
 
     for (i = 0; i < fs->orphan_n && fs->orphan[i] != id; i++) {
     }
@@ -1727,14 +1802,10 @@ static int x_release_node(void *fsv, uint64_t id) {
     if (ext2_read_inode(fs, ino, inode) != 0) {
         return -VIBEOS_EIO;
     }
-    rc = orphan_unlink(fs, ino, le32(inode + 0x14u));
-    if (rc == 0) {
-        rc = inode_release(fs, ino, inode);
-    }
-    if (rc == 0) {
-        fs->orphan[i] = fs->orphan[--fs->orphan_n];
-    }
-    return rc;
+    /* Off the in-memory list first: a release in pieces commits between them,
+     * and the file must not be taken for an open one meanwhile. */
+    fs->orphan[i] = fs->orphan[--fs->orphan_n];
+    return inode_release_listed(fs, ino, inode, 1);
 }
 
 /* A mount, as Linux counts one (E4-013): s_mnt_count, and s_mtime once the
@@ -1773,13 +1844,28 @@ static void orphans_at_mount(vibeos_ext2_t *fs) {
             return;
         }
         next = le32(inode + 0x14u);
-        st32(fs->sb + SB_LAST_ORPHAN, next);
-        rc = sb_store(fs);
-        if (rc == 0 && le16(inode + 0x1Au) == 0u) {
-            rc = inode_release(fs, head, inode);
-        } else if (rc == 0) {
-            st32(inode + 0x14u, 0);   /* a name came back: only off the list */
-            rc = inode_put(fs, head, inode);
+        if (le16(inode + 0x1Au) == 0u) {
+            rc = inode_release_listed(fs, head, inode, 1);
+        } else {
+            /* A file with names: a truncate cut short (E4-018). Its size is
+             * already the new one; the blocks past it go, then the list. */
+            int listed = 1;
+
+            rc = 0;
+            if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) != 0u) {
+                rc = ext_load(fs, head, inode);
+                if (rc == 0) {
+                    rc = free_tail(fs, head, inode,
+                                   (uint32_t)((ext2_inode_size(inode) + fs->block_size - 1u) / fs->block_size), &listed);
+                }
+            }
+            if (rc == 0) {
+                rc = orphan_unlink(fs, head, next);
+            }
+            if (rc == 0) {
+                st32(inode + 0x14u, 0);
+                rc = inode_put(fs, head, inode);
+            }
         }
         end = ext4_j_end(fs);
         if (rc != 0 || end != 0) {
@@ -2206,9 +2292,16 @@ static int x_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
                 }
             }
         }
-        rc = ext_truncate(fs, keep);
-        if (rc == 0) {
-            rc = ext_store(fs, ino, inode);
+        /* The new size first, so that a commit between pieces - and a mount
+         * that finishes the job from the orphan list - frees past it. */
+        int listed = 0;
+
+        set_size(inode, new_size);
+        touch_mc(inode);
+        rc = free_tail(fs, ino, inode, keep, &listed);
+        if (rc == 0 && listed) {
+            rc = orphan_unlink(fs, ino, le32(inode + 0x14u));
+            st32(inode + 0x14u, 0);
         }
         if (rc != 0) {
             return rc;

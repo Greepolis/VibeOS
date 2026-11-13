@@ -19,9 +19,11 @@
 
 ### the close frees the file and leaves it on the list
 --- old
-    rc = orphan_unlink(fs, ino, le32(inode + 0x14u));
+    if (listed) {
+        rc = orphan_unlink(fs, ino, le32(inode + 0x14u));
 +++ new
-    rc = 0;
+    if (listed) {
+        rc = 0;
 
 ### a mount leaves what the list names
 --- old

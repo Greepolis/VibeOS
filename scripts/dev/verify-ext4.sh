@@ -341,6 +341,73 @@ e2fsck -fn "$O/linux/fs.img" > "$O/linux/fsck.log" 2>&1 \
 [ -z "$(orph_head "$O/linux/fs.img")" ] && [ "$(orph_free "$O/linux/fs.img")" = "$before" ] \
     || fail "after the mount: free $(orph_free "$O/linux/fs.img") wanted $before" orphan_linux_not_freed
 
+# ---- a release larger than one transaction (E4-018) -------------------------
+# A file over hundreds of small groups: freeing it touches a bitmap and a
+# descriptor block in each, more than one transaction may log. The unlink and
+# the truncate must succeed - in pieces, committed between - and leave a clean
+# volume with every block back. Then the power is cut at points through the
+# unlink: whatever the cut left, the next mount must finish it from the orphan
+# list - a clean volume, nothing listed, and the file either whole (cut before
+# its name went) or gone with every block back.
+B18="$T/bigfree"
+mkdir -p "$B18"
+truncate -s 400M "$B18/base.img"
+mkfs.ext4 -q -F -b 1024 -g 768 -N 512 "$B18/base.img" > /dev/null 2>&1 || fail "mkfs (big release)" mkfs_bigfree_failed
+free0=$(orph_free "$B18/base.img")
+for op in unlink truncate; do
+    cp "$B18/base.img" "$B18/fs.img"
+    if [ "$op" = unlink ]; then last='unlink\t/big'; else last='truncate\t/big\t0'; fi
+    printf "create\t/big\t644\nwrite\t/big\t0\t390000000\t3\n$last\n" > "$B18/script.txt"
+    (cd "$B18" && "$EX" apply) > "$B18/a.out" 2> "$B18/a.err" \
+        || fail "$op: $(grep -m1 FAIL "$B18/a.err" || head -1 "$B18/a.err")" big_release_refused
+    e2fsck -fn "$B18/fs.img" > "$B18/fsck.log" 2>&1 \
+        || fail "$op: $(head -3 "$B18/fsck.log" | tr '\n' ' ')" big_release_volume_not_clean
+    want="$free0"
+    [ "$op" = truncate ] && want=$(echo "$free0" | awk '{print $1, $2 - 1}')
+    [ "$(orph_free "$B18/fs.img")" = "$want " ] || [ "$(orph_free "$B18/fs.img")" = "$want" ] \
+        || fail "$op: free $(orph_free "$B18/fs.img") wanted $want" big_release_leaked
+done
+# The cuts: the writes the first two lines take, then points through the last
+# line. The file must come back whole - its size and every block - or as the
+# operation left it: gone with every block back after an unlink, empty with no
+# blocks after a truncate. Its size alone would not tell a truncate that freed
+# blocks under the old size (a sparse file reads as zeros there, and e2fsck
+# calls that clean).
+bstat() { debugfs -R "stat /big" "$B18/fs.img" 2>/dev/null; }
+cp "$B18/base.img" "$B18/fs.img"
+printf 'create\t/big\t644\nwrite\t/big\t0\t390000000\t3\n' > "$B18/script.txt"
+w_pre=$(cd "$B18" && "$EX" powercut 0 2>/dev/null | sed -n 's/^writes=\([0-9]*\).*/\1/p')
+full_blocks=$(bstat | sed -n 's/.*Blockcount: *\([0-9]*\).*/\1/p')
+size_big=390000000
+for op in unlink truncate; do
+    if [ "$op" = unlink ]; then last='unlink\t/big'; else last='truncate\t/big\t0'; fi
+    cp "$B18/base.img" "$B18/fs.img"
+    printf "create\t/big\t644\nwrite\t/big\t0\t390000000\t3\n$last\n" > "$B18/script.txt"
+    w_all=$(cd "$B18" && "$EX" powercut 0 2>/dev/null | sed -n 's/^writes=\([0-9]*\).*/\1/p')
+    [ -n "$w_pre" ] && [ -n "$w_all" ] && [ -n "$full_blocks" ] && [ "$w_all" -gt "$w_pre" ] \
+        || fail "cannot count the $op's writes ($w_pre, $w_all, $full_blocks)" big_release_setup_failed
+    for k in 1 2 3 4 5 6 7; do
+        n=$((w_pre + (w_all - w_pre) * k / 8))
+        cp "$B18/base.img" "$B18/fs.img"
+        (cd "$B18" && "$EX" powercut "$n") > /dev/null 2>&1
+        (cd "$B18" && "$EX" recover) > "$B18/r.out" 2> "$B18/r.err" \
+            || fail "$op cut at $n: $(head -1 "$B18/r.err")" big_release_recover_failed
+        e2fsck -fn "$B18/fs.img" > "$B18/fsck.log" 2>&1 \
+            || fail "$op cut at $n: $(head -3 "$B18/fsck.log" | tr '\n' ' ')" big_release_cut_not_clean
+        [ -z "$(orph_head "$B18/fs.img")" ] || fail "$op cut at $n: still listed $(orph_head "$B18/fs.img")" big_release_cut_left_listed
+        got=$(bstat | sed -n 's/.*Size: *\([0-9]*\).*/\1/p' | head -1)
+        blk=$(bstat | sed -n 's/.*Blockcount: *\([0-9]*\).*/\1/p')
+        case "$op:$got:$blk" in
+            *:$size_big:$full_blocks) ;;
+            truncate:0:0) ;;
+            unlink::)
+                [ "$(orph_free "$B18/fs.img")" = "$free0" ] \
+                    || fail "$op cut at $n: free $(orph_free "$B18/fs.img") wanted $free0" big_release_cut_leaked ;;
+            *) fail "$op cut at $n: /big is size $got with $blk blocks (whole: $size_big, $full_blocks)" big_release_cut_half_file ;;
+        esac
+    done
+done
+
 # ---- what Linux keeps as it goes (E4-013) ------------------------------------
 # A mount is counted and dated, the superblock says when it was last written
 # and how much the volume has taken in its life, and a read sets atime the way
