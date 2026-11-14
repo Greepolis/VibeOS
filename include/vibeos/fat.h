@@ -30,6 +30,9 @@ void vibeos_fat_set_boot_device(int (*read)(uint64_t lba, void *buf),
                                 int (*write)(uint64_t lba, const void *buf),
                                 int (*read_many)(uint64_t lba, void *buf, uint32_t sectors));
 
+/* And a run of sectors out in one command, where the device can (E4-017). */
+void vibeos_fat_set_boot_write_many(int (*write_many)(uint64_t lba, const void *buf, uint32_t sectors));
+
 /* The driver's lock, taken for the whole of every operation. With none
  * registered - the host tests - operations run unlocked. */
 void vibeos_fat_set_lock(void (*lock)(void), void (*unlock)(void));

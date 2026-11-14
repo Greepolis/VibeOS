@@ -1984,6 +1984,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     vibeos_fat_set_mount_hook(hw_fat_mounted);
     vibeos_fat_set_boot_device(vibeos_x86_64_blk_read, vibeos_x86_64_blk_write,
                                vibeos_x86_64_blk_read_many);
+    vibeos_fat_set_boot_write_many(vibeos_x86_64_blk_write_many);
     {
         uint32_t d, n = vibeos_x86_64_blk_adapter_count();
         for (d = 0; d < n; d++) {

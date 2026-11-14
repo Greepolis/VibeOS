@@ -6,16 +6,15 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-72 open in 3 registers.
+71 open in 3 registers.
 
-## [ext4](implementation_progress/fs_ext4.md) - 6
+## [ext4](implementation_progress/fs_ext4.md) - 5
 
 | ID | What | Status |
 |---|---|---|
 | E4-030 | Casefolded directories (hierarchy.md section 3, decided 2026-11-11): the root is made with the `casefold` feature and `/home`, `/usr/lib/windows` and ... | open |
 | E4-021 | The programs keep their ESP names (`BUSYBOX.ELF`, `SVC_OK.ELF`): the gate recognises many of them by those names. Lower-case command names without the ... | open - deferred 2026-11-11 to the shell's design (next-steps item 3): which ... |
 | E4-016 | One operation is one transaction with five flushes, emptied at once: no group commit, no asynchronous checkpoint, no reuse of the log across transactions. ... | open (perf phase) |
-| E4-017 | The block layer writes one 512-byte sector at a time, so a structure across two sectors (the superblock, whose checksum is in the second) is atomic only if the ... | open |
 | E4-020 | An external journal, a block-mapped one (ext3's), v2 checksums and fast commits are not written - the volume is mounted read-only - and a volume needing a ... | open |
 | E4-011 | Allocation is first-fit from the parent's group: directories are not spread (Orlov), no preallocation, no delayed allocation; no `fallocate`, hole punching, ... | open |
 

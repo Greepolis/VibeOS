@@ -38,11 +38,18 @@ typedef int (*vibeos_blockdev_write_fn)(void *ctx, uint64_t lba, const void *buf
  * a power cut the drive may have kept the last write and dropped an earlier
  * one. Everything the journal claims rests on this call existing. */
 typedef int (*vibeos_blockdev_flush_fn)(void *ctx);
+/* `sectors` consecutive sectors from `lba` in one command (E4-017): a structure
+ * that spans sectors - ext4's superblock, its checksum in the second - reaches
+ * the device as one write, and a disk with 4 KiB physical sectors keeps it whole
+ * or not at all. One sector at a time, it was atomic only if the device chose
+ * to treat the run as one. */
+typedef int (*vibeos_blockdev_write_many_fn)(void *ctx, uint64_t lba, const void *buf, uint32_t sectors);
 
 typedef struct {
     vibeos_blockdev_read_fn read;
     vibeos_blockdev_write_fn write;   /* may be NULL: a read-only device */
     vibeos_blockdev_flush_fn flush;   /* may be NULL: no volatile cache */
+    vibeos_blockdev_write_many_fn write_many;   /* may be NULL: one sector a command */
     void *ctx;
     uint64_t sectors;                 /* 0 when the size is unknown */
 } vibeos_blockdev_t;
@@ -77,6 +84,8 @@ typedef struct {
      * would not go. MUST BE ZERO: the alternative to failing here is dropping
      * a write the caller believes succeeded. */
     uint64_t evict_failed;
+    /* Flushes' runs given to write_many, one command each (E4-017). */
+    uint64_t runs;
 } vibeos_blockcache_t;
 
 /* Its own lock, by registration.

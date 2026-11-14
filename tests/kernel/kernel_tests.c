@@ -6662,6 +6662,62 @@ static int test_blockcache_eviction(void) {
     return 0;
 }
 
+/* E4-017: consecutive dirty sectors go to write_many as one command - the
+ * pair ext4's superblock is, above all - and the data is what was written. */
+static uint32_t g_bct_runs, g_bct_run_lba[8], g_bct_run_n[8];
+
+static int bct_write_many(void *ctx, uint64_t lba, const void *buf, uint32_t n) {
+    bct_disk_t *d = (bct_disk_t *)ctx;
+    uint32_t k;
+
+    if (lba + n > BCT_SECTORS || g_bct_runs >= 8u) {
+        return -1;
+    }
+    for (k = 0; k < n; k++) {
+        memcpy(d->disk[lba + k], (const uint8_t *)buf + k * VIBEOS_BLOCK_SIZE, VIBEOS_BLOCK_SIZE);
+    }
+    g_bct_run_lba[g_bct_runs] = (uint32_t)lba;
+    g_bct_run_n[g_bct_runs] = n;
+    g_bct_runs++;
+    return 0;
+}
+
+static int test_blockcache_runs(void) {
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    uint8_t a[VIBEOS_BLOCK_SIZE], b[VIBEOS_BLOCK_SIZE], c[VIBEOS_BLOCK_SIZE];
+
+    bct_setup(&bc, &dev, 1);
+    dev.write_many = bct_write_many;
+    g_bct_runs = 0;
+    memset(a, 0xA1, sizeof(a));
+    memset(b, 0xB2, sizeof(b));
+    memset(c, 0xC3, sizeof(c));
+    /* Out of order on purpose: the run is by sector, not by when or where. */
+    if (vibeos_blockcache_write(&bc, 3, b) != 0 || vibeos_blockcache_write(&bc, 10, c) != 0 ||
+        vibeos_blockcache_write(&bc, 2, a) != 0 || vibeos_blockcache_flush(&bc) != 0) {
+        printf("FAIL: test_blockcache_runs setup\n");
+        return 1;
+    }
+    if (g_bct_runs != 2u || g_bct_run_lba[0] != 2u || g_bct_run_n[0] != 2u || g_bct_run_lba[1] != 10u ||
+        g_bct_run_n[1] != 1u) {
+        printf("FAIL: test_blockcache_runs: %u commands, first at %u of %u sectors - wanted 2: 2+2 and 10+1\n",
+               g_bct_runs, g_bct_run_lba[0], g_bct_run_n[0]);
+        return 1;
+    }
+    if (memcmp(g_bct.disk[2], a, sizeof(a)) != 0 || memcmp(g_bct.disk[3], b, sizeof(b)) != 0 ||
+        memcmp(g_bct.disk[10], c, sizeof(c)) != 0 || g_bct.writes != 0u || bc.runs != 2u) {
+        printf("FAIL: test_blockcache_runs: the bytes, or a single-sector write made\n");
+        return 1;
+    }
+    /* Clean afterwards: a second flush sends nothing. */
+    if (vibeos_blockcache_flush(&bc) != 0 || g_bct_runs != 2u) {
+        printf("FAIL: test_blockcache_runs: a flushed run went again\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int test_blockcache_failures(void) {
     vibeos_blockcache_t bc;
     vibeos_blockdev_t dev;
@@ -10547,6 +10603,7 @@ int main(void) {
     RUN_TEST(test_blockcache_writeback);
     RUN_TEST(test_blockcache_eviction);
     RUN_TEST(test_blockcache_failures);
+    RUN_TEST(test_blockcache_runs);
     RUN_TEST(test_partition_mbr);
     RUN_TEST(test_partition_gpt);
     RUN_TEST(test_partition_gpt_refusals);

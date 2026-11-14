@@ -333,6 +333,15 @@ int vibeos_x86_64_blk_read_many(uint64_t lba, void *buf, uint32_t sectors) {
     return vibeos_blk_read((uint32_t)dev, lba, sectors, buf);
 }
 
+int vibeos_x86_64_blk_write_many(uint64_t lba, const void *buf, uint32_t sectors) {
+    int dev = vibeos_x86_64_blk_device();
+
+    if (dev < 0) {
+        return -1;
+    }
+    return vibeos_blk_write((uint32_t)dev, lba, sectors, buf);
+}
+
 int vibeos_x86_64_blk_write(uint64_t lba, const void *buf) {
     int dev = vibeos_x86_64_blk_device();
 

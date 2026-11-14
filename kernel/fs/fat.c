@@ -23,6 +23,7 @@
 static int (*g_boot_read)(uint64_t lba, void *buf);
 static int (*g_boot_write)(uint64_t lba, const void *buf);
 static int (*g_boot_read_many)(uint64_t lba, void *buf, uint32_t sectors);
+static int (*g_boot_write_many)(uint64_t lba, const void *buf, uint32_t sectors);
 static void (*g_mount_hook)(int is_fat32, uint32_t part_lba, uint32_t data_lba);
 
 void vibeos_fat_set_boot_device(int (*read)(uint64_t lba, void *buf),
@@ -31,6 +32,10 @@ void vibeos_fat_set_boot_device(int (*read)(uint64_t lba, void *buf),
     g_boot_read = read;
     g_boot_write = write;
     g_boot_read_many = read_many;
+}
+
+void vibeos_fat_set_boot_write_many(int (*write_many)(uint64_t lba, const void *buf, uint32_t sectors)) {
+    g_boot_write_many = write_many;
 }
 
 void vibeos_fat_set_mount_hook(void (*hook)(int is_fat32, uint32_t part_lba, uint32_t data_lba)) {
@@ -178,6 +183,11 @@ static int bc_dev_write(void *ctx, uint64_t lba, const void *buf) {
     return boot_write(lba, buf);
 }
 
+static int bc_dev_write_many(void *ctx, uint64_t lba, const void *buf, uint32_t sectors) {
+    (void)ctx;
+    return g_boot_write_many ? g_boot_write_many(lba, buf, sectors) : -1;
+}
+
 /* Brought up on mount, and torn down the same way: a cache that outlived a
  * mount would answer for a volume that is no longer there. */
 static void fat_cache_bringup(void) {
@@ -193,6 +203,9 @@ static void fat_cache_bringup(void) {
     g_bc_dev.read = bc_dev_read;
     g_bc_dev.write = bc_dev_write;
     g_bc_dev.flush = 0;
+    /* A run of sectors in one command where the architecture can (E4-017):
+     * the boot volume is ext4's root too, and its superblock is two. */
+    g_bc_dev.write_many = g_boot_write_many ? bc_dev_write_many : 0;
     g_bc_dev.ctx = 0;
     /* Zero means "the size is unknown", and the cache then declines to
      * bounds-check. It is checked one layer down by kernel/io/blkdev.c, which

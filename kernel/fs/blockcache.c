@@ -69,6 +69,7 @@ int vibeos_blockcache_init(vibeos_blockcache_t *bc, const vibeos_blockdev_t *dev
     bc->evictions = 0;
     bc->writebacks = 0;
     bc->evict_failed = 0;
+    bc->runs = 0;
     return 0;
 }
 
@@ -81,6 +82,11 @@ static vibeos_block_slot_t *find(vibeos_blockcache_t *bc, uint64_t lba) {
     }
     return 0;
 }
+
+/* A run of consecutive dirty sectors, staged for one write_many. Under the
+ * cache's lock, which every flush holds: one buffer serves every cache. */
+#define RUN_MAX 8u   /* 4 KiB: the physical sector of anything current */
+static uint8_t g_run[RUN_MAX * VIBEOS_BLOCK_SIZE];
 
 static int writeback(vibeos_blockcache_t *bc, vibeos_block_slot_t *s) {
     if (!s->valid || !s->dirty) {
@@ -244,7 +250,43 @@ int vibeos_blockcache_flush(vibeos_blockcache_t *bc) {
             }
             first = 0;
             after = next->lba;
-            if (writeback(bc, next) != 0) {
+            if (bc->dev->write_many != 0) {
+                /* The sectors that follow it, while they are dirty too and the
+                 * run fits a physical sector: one command (E4-017). */
+                vibeos_block_slot_t *run[RUN_MAX];
+                uint32_t n = 1, k;
+
+                run[0] = next;
+                while (n < RUN_MAX) {
+                    vibeos_block_slot_t *f = 0;
+
+                    for (i = 0; i < bc->slot_count; i++) {
+                        vibeos_block_slot_t *s = &bc->slots[i];
+
+                        if (s->valid && s->dirty && s->lba == next->lba + n) {
+                            f = s;
+                            break;
+                        }
+                    }
+                    if (f == 0) {
+                        break;
+                    }
+                    run[n++] = f;
+                }
+                for (k = 0; k < n; k++) {
+                    block_copy(g_run + k * VIBEOS_BLOCK_SIZE, run[k]->data);
+                }
+                if (bc->dev->write_many(bc->dev->ctx, next->lba, g_run, n) != 0) {
+                    rc = -1;
+                } else {
+                    for (k = 0; k < n; k++) {
+                        run[k]->dirty = 0;
+                        bc->writebacks++;
+                    }
+                }
+                after = next->lba + n - 1u;
+                bc->runs++;
+            } else if (writeback(bc, next) != 0) {
                 rc = -1;
             }
         }

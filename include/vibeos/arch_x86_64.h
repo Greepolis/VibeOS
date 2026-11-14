@@ -139,6 +139,7 @@ const char *vibeos_x86_64_blk_name(void);
 int vibeos_x86_64_blk_present(void);
 int vibeos_x86_64_blk_read(uint64_t lba, void *buf);
 int vibeos_x86_64_blk_read_many(uint64_t lba, void *buf, uint32_t sectors);
+int vibeos_x86_64_blk_write_many(uint64_t lba, const void *buf, uint32_t sectors);
 int vibeos_x86_64_blk_write(uint64_t lba, const void *buf);
 
 /* Which device index the bound driver was given in the block layer. Negative

@@ -1,0 +1,25 @@
+# A flush's runs (E4-017), broken. Caught by test_blockcache_runs in
+# tests/kernel/kernel_tests.c: sectors 3, 10 and 2 dirty must leave as two
+# commands, 2+2 and 10+1.
+#
+# Target source: kernel/fs/blockcache.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/blockcache.c scripts/dev/cases/blockcache-runs.txt
+
+### a run stops at its first sector
+--- old
+                while (n < RUN_MAX) {
++++ new
+                while (n < 1u) {
+
+### the next sector of a run is any dirty one
+--- old
+                        if (s->valid && s->dirty && s->lba == next->lba + n) {
++++ new
+                        if (s->valid && s->dirty && s->lba != next->lba) {
+
+### a run's sectors stay dirty after the command
+--- old
+                        run[k]->dirty = 0;
+                        bc->writebacks++;
++++ new
+                        bc->writebacks++;
