@@ -7099,6 +7099,20 @@ static void robust_recycle(void) {
     ks_set_ps(g_robust_slot, ks_ps(g_robust_root));
 }
 
+/* sched_yield with nothing else to run returns at once, as Linux's does: it
+ * used to sleep a tick every time, and a program polling with it paid 10 ms a
+ * look (the threads test's race rounds, 38 s of a boot). The fake kernel has
+ * nothing else to run, and its clock moves only when the task waits. */
+static void t_yield_alone(void) {
+    uint64_t before = ks_ticks();
+    int k;
+
+    for (k = 0; k < 50; k++) {
+        expect(SYS0(24) == 0, "sched_yield returns 0");
+    }
+    expect(ks_ticks() == before, "sched_yield with nothing else to run does not wait for the clock");
+}
+
 static void t_robust_list_recycled(void) {
     uint64_t head = kf_ualloc(8), len = kf_ualloc(8);
     int me = fresh(82), them = kf_spawn(83, 83);
@@ -7337,6 +7351,7 @@ int test_linux_handlers(void) {
     t_credentials();
     t_ioctl_judged();
     t_issue_creds();
+    t_yield_alone();
     t_robust_list_recycled();
     t_link_stale_name();
     t_o_path();

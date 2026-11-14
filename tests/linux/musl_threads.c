@@ -337,10 +337,24 @@ static unsigned long long race_random(void)
     return g_race_rng;
 }
 
+/* The jitter is time spent, not a count of yields. It was 0-127 yields, which
+ * moved the boundary by up to 1.3 s only because each yield cost the kernel a
+ * whole tick; once sched_yield returns at once with nothing else to run, as
+ * Linux's does, that would be no jitter at all. So a seeded spin of a random
+ * length, with a yield in it - which still hands the core over whenever
+ * another thread is waiting for one. */
 static void race_jitter(void)
 {
     unsigned int n = (unsigned int)(race_random() & 127u);
-    while (n-- != 0u) sched_yield();
+    volatile unsigned int sink = 0;
+
+    while (n-- != 0u) {
+        unsigned int k;
+
+        for (k = 0; k < 2000u; k++) sink += k;
+        sched_yield();
+    }
+    (void)sink;
 }
 
 /* C7_BLOCKED_UNMAP (#200): wait until /proc reports that the reader is
@@ -852,8 +866,18 @@ int main(int argc, char **argv)
                 _exit(3);
             }
             exit_group_go = 1;
-            for (n = 0; n < 200; n++) {
-                sched_yield();
+            /* Keep running until the worker's exit_group ends the process -
+             * ten seconds, by the clock. This was 200 yields, which gave the
+             * worker two seconds only because each yield cost the kernel a
+             * tick; with yields that return at once, as Linux's do, main got
+             * to its own exit_group first and the parent saw 7. */
+            {
+                struct timespec t0;
+
+                clock_gettime(CLOCK_MONOTONIC, &t0);
+                for (n = 0; elapsed_ms(&t0) < 10000L; n++) {
+                    sched_yield();
+                }
             }
             syscall(SYS_exit_group, 7);
         }

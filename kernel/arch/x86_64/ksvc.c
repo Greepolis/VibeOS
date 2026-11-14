@@ -103,6 +103,16 @@ void ks_block_point(void) {
     __asm__ __volatile__("sti; hlt" ::: "memory");
 }
 void ks_wait_tick(void) { ks_block_point(); }
+int ks_others_runnable(void) {
+    uint32_t i;
+
+    for (i = 0; i < (uint32_t)VIBEOS_HW_MAX_TASKS; i++) {
+        if (hw_task_runnable(0, i, 0)) {
+            return 1;   /* ready, not idle, on no core: so not the caller either */
+        }
+    }
+    return 0;
+}
 void ks_wake_waiters(void) { hw_keyboard_wake(); }
 int ks_signal_interrupts(int slot) { return hw_signal_interrupts(slot); }
 int ks_signal_raise(int slot, uint32_t sig) { return hw_signal_raise(slot, sig); }

@@ -1989,8 +1989,15 @@ static long linux_sys_set_tid_address(uint64_t addr) {
 
 /* Give up the rest of this slice honestly: hlt parks the CPU until the next timer
  * interrupt, which is where the switch happens. */
+/* Linux's yield: the core goes to another task that is waiting for one, and
+ * with none the call returns at once. It was `sti; hlt` every time - a tick
+ * of nothing, 10 ms - so a program that polled with sched_yield paid a tick a
+ * look: the threads test's race rounds spent 38 s of a boot waiting on the
+ * clock with every other core idle. */
 static long linux_sys_yield(void) {
-    ks_idle();
+    if (ks_others_runnable()) {
+        ks_idle();
+    }
     return 0;
 }
 

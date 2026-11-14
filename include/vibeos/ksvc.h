@@ -119,6 +119,9 @@ void ks_irq_off(void);
 void ks_irq_on(void);
 void ks_idle(void);                    /* interrupts on, sleep until the next one  */
 void ks_block_point(void);
+/* Whether a task other than the caller is waiting for a core: what a yield
+ * would give it to. A sample, not a promise - it can change at once. */
+int ks_others_runnable(void);
 /* Give the core away until the clock has moved: what a wait with a deadline
  * does between looks at the time. Always returns, a tick later at most. */
 void ks_wait_tick(void);             /* a task giving up the core to wait: idle  */

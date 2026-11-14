@@ -1005,6 +1005,8 @@ void ks_idle(void) {
     }
 }
 void ks_block_point(void) { kf_escape(KF_BLOCKED); }
+/* One task runs here at a time, and nothing else is ever waiting for it. */
+int ks_others_runnable(void) { return 0; }
 void ks_wait_tick(void) { ks_idle(); }
 void ks_wake_waiters(void) {}
 int ks_signal_interrupts(int slot) {
