@@ -1338,6 +1338,8 @@ static int rec_ok(const vibeos_ext2_t *fs, const uint8_t *b, uint32_t off, uint3
     return reclen >= 8u && (reclen & 3u) == 0u && off + reclen <= limit && b[off + 6u] <= reclen - 8u;
 }
 
+static int bm_migrate(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode);
+
 static int dir_add_entry(vibeos_ext2_t *fs, uint32_t dir_ino, const char *name, uint32_t nlen, uint32_t ino,
                          uint32_t ftype) {
     uint8_t dir[EXT2_MAX_INODE_SIZE];
@@ -1397,8 +1399,14 @@ static int dir_add_entry(vibeos_ext2_t *fs, uint32_t dir_ino, const char *name, 
             off += reclen;
         }
     }
-    /* Every block is full: the directory grows by one. */
-    rc = ext_load(fs, dir_ino, dir);
+    /* Every block is full: the directory grows by one. A block-mapped one -
+     * from before the volume was upgraded - becomes extent-mapped first, as a
+     * file does before it is written (E4-008). */
+    if ((le32(dir + 0x20u) & INODE_FLAG_EXTENTS) == 0u) {
+        rc = bm_migrate(fs, dir_ino, dir);
+    } else {
+        rc = ext_load(fs, dir_ino, dir);
+    }
     if (rc != 0) {
         return rc;
     }
@@ -1768,6 +1776,118 @@ static int bm_free(vibeos_ext2_t *fs, uint8_t *inode) {
 static int is_block_mapped(vibeos_ext2_t *fs, const uint8_t *inode) {
     return (le32(inode + 0x20u) & INODE_FLAG_EXTENTS) == 0u && !ext2_inode_is_fast_symlink(fs, inode) &&
            le32(inode + 0x1Cu) != 0u;
+}
+
+/* One data block of a block-mapped file, at file block `lblk`, onto the end of
+ * fs->ext: joined to the last extent when both its file and volume positions
+ * follow on. In order, because the walk is. */
+static int bm_add(vibeos_ext2_t *fs, uint64_t lblk, uint64_t phys) {
+    uint32_t n = fs->ext_n;
+
+    if (phys == 0u) {
+        return 0;
+    }
+    if (phys >= fs->blocks_count || phys < fs->first_data_block || lblk > 0xFFFFFFFFull) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, phys);
+        return -VIBEOS_EIO;
+    }
+    if (n > 0u && e_len(fs, n - 1u) < 32768u && fs->ext[n - 1u].lblk + e_len(fs, n - 1u) == lblk &&
+        e_start(fs, n - 1u) + e_len(fs, n - 1u) == phys) {
+        e_put(fs, n - 1u, fs->ext[n - 1u].lblk, e_len(fs, n - 1u) + 1u, 0, e_start(fs, n - 1u));
+        return 0;
+    }
+    if (n >= ext_cap(fs)) {
+        return -VIBEOS_EFBIG;   /* more runs than the writer's list holds: deeper trees are E4-008's rest */
+    }
+    e_put(fs, n, (uint32_t)lblk, 1u, 0, phys);
+    fs->ext_n = n + 1u;
+    return 0;
+}
+
+/* The data blocks under indirect block `blk`, `level` deep, whose first covers
+ * file block `base`: into fs->ext (collect), or the indirect blocks themselves
+ * freed and nothing else (!collect). Pointers read one at a time, as bm_tree. */
+static int bm_walk(vibeos_ext2_t *fs, uint64_t blk, uint32_t level, uint64_t base, int collect, bm_run_t *r) {
+    uint32_t i, ppb = fs->block_size / 4u;
+    uint64_t span = 1u;
+    int rc;
+
+    if (blk == 0u) {
+        return 0;
+    }
+    if (blk >= fs->blocks_count || blk < fs->first_data_block) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, blk);
+        return -VIBEOS_EIO;
+    }
+    for (i = 1; i < level; i++) {
+        span *= ppb;
+    }
+    for (i = 0; i < ppb; i++) {
+        uint8_t p[4];
+        uint32_t ptr;
+
+        if (ext2_read_part(fs, blk, i * 4u, p, 4u) != 0) {
+            return -VIBEOS_EIO;
+        }
+        ptr = le32(p);
+        if (ptr == 0u) {
+            continue;
+        }
+        if (level > 1u) {
+            rc = bm_walk(fs, ptr, level - 1u, base + (uint64_t)i * span, collect, r);
+        } else {
+            rc = collect ? bm_add(fs, base + i, ptr) : 0;
+        }
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    return collect ? 0 : bm_put(fs, r, blk);
+}
+
+/* A block-mapped regular file becomes extent-mapped before it is written or
+ * truncated (E4-008): the same blocks holding the same bytes, described as
+ * runs, and its indirect blocks given back - what `chattr +e` does on Linux
+ * (ext4_ext_migrate). This writer changes extents and nothing else, and a file
+ * from before the upgrade could not be changed at all. One transaction: the
+ * data blocks do not move, so a cut leaves the file either as it was or
+ * converted. The walk ends before ext_store, which writes its tree where the
+ * block numbers were. Leaves fs->ext loaded with the file's extents. */
+static int bm_migrate(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
+    uint64_t ppb = fs->block_size / 4u;
+    bm_run_t r = {0, 0};
+    uint32_t i;
+    int rc = 0;
+
+    fs->ext_n = 0;
+    for (i = 0; i < 12u && rc == 0; i++) {
+        rc = bm_add(fs, i, le32(inode + 0x28u + i * 4u));
+    }
+    if (rc == 0) {
+        rc = bm_walk(fs, le32(inode + 0x28u + 12u * 4u), 1u, 12u, 1, &r);
+    }
+    if (rc == 0) {
+        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u + ppb, 1, &r);
+    }
+    if (rc == 0) {
+        rc = bm_walk(fs, le32(inode + 0x28u + 14u * 4u), 3u, 12u + ppb + ppb * ppb, 1, &r);
+    }
+    for (i = 0; i < 3u && rc == 0; i++) {   /* now the indirect blocks themselves */
+        rc = bm_walk(fs, le32(inode + 0x28u + (12u + i) * 4u), i + 1u, 0, 0, &r);
+    }
+    if (rc == 0 && r.len != 0u) {
+        rc = bfree(fs, r.start, r.len);
+    }
+    if (rc != 0) {
+        return rc;
+    }
+    memset(inode + 0x28u, 0, 60u);   /* depth 0, no entries: ext_store's root starts clean */
+    st32(inode + 0x20u, le32(inode + 0x20u) | INODE_FLAG_EXTENTS);
+    rc = ext_store(fs, ino, inode);
+    if (rc == 0) {
+        rc = inode_put(fs, ino, inode);
+    }
+    return rc;
 }
 
 /* inode_release for a file that is on the orphan list already (`listed`): it
@@ -2179,6 +2299,20 @@ static int file_check(const uint8_t *inode) {
     return 0;
 }
 
+/* A regular file the writer can change only once it is extent-mapped: a
+ * block-mapped one is converted first (bm_migrate), in the operation's own
+ * transaction. A huge_file inode counts its blocks in another unit and stays
+ * refused. */
+static int file_migrate(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
+    uint32_t flags = le32(inode + 0x20u);
+
+    if ((le16(inode) & VIBEOS_S_IFMT) != VIBEOS_S_IFREG || (flags & INODE_FLAG_EXTENTS) != 0u ||
+        (flags & INODE_FLAG_HUGE) != 0u) {
+        return 0;
+    }
+    return bm_migrate(fs, ino, inode);
+}
+
 /* write_at: `len` bytes at `off`, the file growing as needed.
  *
  * The file's extents are loaded into the volume's list once, and each block of
@@ -2213,7 +2347,10 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
         ext2_node_stale(fs, node, inode)) {
         return -VIBEOS_ENOENT;   /* not into a file that took a gone file's number (E4-012) */
     }
-    rc = file_check(inode);
+    rc = file_migrate(fs, ino, inode);
+    if (rc == 0) {
+        rc = file_check(inode);
+    }
     if (rc != 0) {
         return rc;
     }
@@ -2360,7 +2497,10 @@ static int x_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
         ext2_node_stale(fs, node, inode)) {
         return -VIBEOS_ENOENT;   /* E4-012 */
     }
-    rc = file_check(inode);
+    rc = file_migrate(fs, ino, inode);
+    if (rc == 0) {
+        rc = file_check(inode);
+    }
     if (rc != 0) {
         return rc;
     }

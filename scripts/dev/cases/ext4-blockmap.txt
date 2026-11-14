@@ -27,9 +27,50 @@
 
 ### the last run is never given back
 --- old
+        rc = bm_tree(fs, le32(inode + 0x28u + (12u + i) * 4u), i + 1u, &r);
+    }
     if (rc == 0 && r.len != 0u) {
         rc = bfree(fs, r.start, r.len);
     }
 +++ new
+        rc = bm_tree(fs, le32(inode + 0x28u + (12u + i) * 4u), i + 1u, &r);
+    }
     if (0) {
     }
+
+### a block-mapped file is not converted before it is written
+--- old
+    return bm_migrate(fs, ino, inode);
+}
++++ new
+    return 0;
+}
+
+### the conversion keeps the indirect blocks
+--- old
+    for (i = 0; i < 3u && rc == 0; i++) {   /* now the indirect blocks themselves */
++++ new
+    for (i = 3u; i < 3u && rc == 0; i++) {   /* now the indirect blocks themselves */
+
+### the double indirect tree is placed where the single one ends
+--- old
+        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u + ppb, 1, &r);
++++ new
+        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u, 1, &r);
+
+# Not a case, and why. Leaving the block numbers where ext_store writes the
+# tree went NOT RED, correctly for this volume: ext_store reads the root's depth
+# from the high half of the second direct block number, which is 1 only for a
+# block from 65,536 to 131,071, and this 64 MiB volume of 1 KiB blocks has
+# 65,536 in all. There ext_store would take four block numbers for old leaves
+# and free whatever data blocks they named. Correct and unverifiable here, so
+# kept as this note: "no case exists" and "this volume cannot tell" are
+# different things.
+
+### a block-mapped directory is grown without being converted
+--- old
+    if ((le32(dir + 0x20u) & INODE_FLAG_EXTENTS) == 0u) {
+        rc = bm_migrate(fs, dir_ino, dir);
+    } else {
++++ new
+    {

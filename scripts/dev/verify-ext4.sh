@@ -445,6 +445,51 @@ e2fsck -fn "$M8/fs.img" > "$M8/fsck.log" 2>&1 \
 [ "$(orph_free "$M8/fs.img")" = "$(orph_free "$M8/empty.img")" ] \
     || fail "free $(orph_free "$M8/fs.img"), an empty volume has $(orph_free "$M8/empty.img")" blockmap_blocks_leaked
 
+# Written and truncated: a block-mapped file becomes extent-mapped first (the
+# same blocks, its indirect blocks given back - chattr +e on Linux), and then
+# changes as any other. The expected bytes are made here by the exerciser's
+# own pattern, applied to the files the volume was made from; debugfs reads
+# what the driver left, and e2fsck says no block was lost on the way.
+W8="$T/blockmap-write"
+mkdir -p "$W8"
+cp -r "$M8/tree" "$W8/want"
+mk8 "$M8/tree" "$W8/fs.img" || fail "cannot make the upgraded volume" blockmap_setup_failed
+printf 'write\t/d/one\t100000\t5000\t7\nwrite\t/d/one\t300000\t70000\t9\nwrite\t/d/two\t4990000\t30000\t8\ntruncate\t/d/two\t2000000\ntruncate\t/d/small\t1000\n' > "$W8/script.txt"
+# And the block-mapped directory grows: entries past its one block.
+for k in $(seq 1 40); do printf 'create\t/d/e%03d-%s\t644\n' "$k" xxxxxxxxxxxxxxxxxxxxxxxx >> "$W8/script.txt"; done
+python3 - "$W8/want" <<'PYEOF'
+import os, sys
+root = sys.argv[1]
+def pat(seed, p):    # pat() in tests/kernel/ext4_exercise.c
+    return (seed * 31 + (p >> 8) * ((seed << 1) | 1) + (p & 255)) & 0xFF
+def write(name, off, n, seed):
+    path = os.path.join(root, name)
+    with open(path, "r+b") as f:
+        f.seek(off)
+        f.write(bytes(pat(seed, off + i) for i in range(n)))
+def trunc(name, size):
+    os.truncate(os.path.join(root, name), size)
+write("d/one", 100000, 5000, 7)
+write("d/one", 300000, 70000, 9)
+write("d/two", 4990000, 30000, 8)
+trunc("d/two", 2000000)
+trunc("d/small", 1000)
+PYEOF
+(cd "$W8" && "$EX" apply) > "$W8/a.out" 2> "$W8/a.err" \
+    || fail "$(grep -m1 FAIL "$W8/a.err" || head -1 "$W8/a.err")" blockmap_write_refused
+e2fsck -fn "$W8/fs.img" > "$W8/fsck.log" 2>&1 \
+    || fail "$(head -3 "$W8/fsck.log" | tr '\n' ' ')" blockmap_write_volume_not_clean
+for f in d/one d/two d/small; do
+    debugfs -R "dump /$f $W8/got" "$W8/fs.img" > /dev/null 2>&1
+    cmp -s "$W8/got" "$W8/want/$f" || fail "/$f is not what the writes made it" blockmap_write_wrong_bytes
+    debugfs -R "stat /$f" "$W8/fs.img" 2>/dev/null | grep -q "Flags: 0x80000" \
+        || fail "/$f was changed and is still block-mapped" blockmap_not_migrated
+done
+[ "$(debugfs -R "ls /d" "$W8/fs.img" 2>/dev/null | tr -s ' ' '\n' | grep -c '^e[0-9]')" = 40 ] \
+    || fail "the block-mapped directory did not take its 40 new entries" blockmap_dir_not_grown
+debugfs -R "stat /d" "$W8/fs.img" 2>/dev/null | grep -q "Flags: 0x80000" \
+    || fail "/d grew and is still block-mapped" blockmap_dir_not_migrated
+
 # ---- what Linux keeps as it goes (E4-013) ------------------------------------
 # A mount is counted and dated, the superblock says when it was last written
 # and how much the volume has taken in its life, and a read sets atime the way

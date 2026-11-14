@@ -220,12 +220,19 @@
 
 ### a directory that fills up does not grow
 --- old
-    /* Every block is full: the directory grows by one. */
-    rc = ext_load(fs, dir_ino, dir);
+        rc = ext_load(fs, dir_ino, dir);
+    }
+    if (rc != 0) {
+        return rc;
+    }
+    goal = fs->ext_n
 +++ new
-    /* Every block is full: the directory grows by one. */
-    return -VIBEOS_ENOSPC;
-    rc = ext_load(fs, dir_ino, dir);
+        rc = ext_load(fs, dir_ino, dir);
+    }
+    if (rc == 0) {
+        return -VIBEOS_ENOSPC;
+    }
+    goal = fs->ext_n
 
 ### the runs a write took are not given back when the tree has no room for them (E4-009)
 --- old
