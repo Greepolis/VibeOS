@@ -296,12 +296,19 @@ static int hw_logsink_write(void *ctx, uint64_t lba, const void *buf) {
          ? -1 : vibeos_blk_write((uint32_t)g_logsink_dev, lba, 1u, buf);
 }
 
-/* The disk as a sink of the kernel log (kernel/diag/klog.c): every event, not
- * only the ones the serial level lets through - the point of the medium is the
- * quiet lines nobody was printing when the machine stopped. A boot raises a few
- * dozen, so the cost is a few dozen sector writes against the thousands of reads
- * a boot already does. The module keeps a write from logging into itself: the
- * block layer logs when it refuses a request. */
+/* The disk as a sink of the kernel log (kernel/diag/klog.c): every event from
+ * INFO up, which is more than the serial level lets through - the point of the
+ * medium is the quiet lines nobody was printing when the machine stopped. The
+ * module keeps a write from logging into itself: the block layer logs when it
+ * refuses a request.
+ *
+ * Not DEBUG. This took DEBUG on the reckoning that "a boot raises a few dozen";
+ * a boot raised 22,225 - a copy-on-write fault, a futex wake or wait, an mmap,
+ * each one a sector written to this disk on the path that raised it. munmap's
+ * one event per page alone was 28 seconds of a boot. And an 8,191-slot ring fed
+ * that fast keeps only the last few seconds, which is the opposite of what a
+ * log that survives the machine is for. DEBUG stays in the ring in memory,
+ * where the console's `log` reads it. */
 static int hw_disk_sink_write(void *ctx, const char *line, uint32_t len) {
     (void)ctx;
     return vibeos_logsink_write(line, len);
@@ -309,7 +316,7 @@ static int hw_disk_sink_write(void *ctx, const char *line, uint32_t len) {
 
 static const vibeos_klog_sink_t g_disk_sink = {
     .name = "disk",
-    .min_level = VIBEOS_LOG_DEBUG,
+    .min_level = VIBEOS_LOG_INFO,
     .prefix = 0,
     .numbered = 0,
     .newline = 0,
