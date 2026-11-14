@@ -818,8 +818,13 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
 
             vibeos_x86_64_serial_puts("[MM] SWAP slots=0x");
             kernel_log_u64_hex((uint64_t)vibeos_swap_slots());
+            /* From the map under its lock, not the running count: the count
+             * and the SWAP_HELD walk below were two reads at two moments, and
+             * one CI boot printed allocated=1 and then held nothing - a slot
+             * given back between them, called a leak by the gate. The walk
+             * below starts from this same map. */
             vibeos_x86_64_serial_puts(" allocated=0x");
-            kernel_log_u64_hex(sw->allocated);
+            kernel_log_u64_hex((uint64_t)vibeos_swap_held_count());
             vibeos_x86_64_serial_puts(" peak=0x");
             kernel_log_u64_hex(sw->peak);
             vibeos_x86_64_serial_puts(" full=0x");

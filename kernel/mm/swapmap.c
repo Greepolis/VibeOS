@@ -200,6 +200,17 @@ int vibeos_swap_held(uint32_t n, uint32_t *slot, uint64_t *va, uint64_t *root) {
     return rc;
 }
 
+uint32_t vibeos_swap_held_count(void) {
+    uint32_t s, n = 0;
+
+    sm_lock();
+    for (s = 0; g_ready && s < g_slots; s++) {
+        n += bit_test(s);
+    }
+    sm_unlock();
+    return n;
+}
+
 int vibeos_swap_is_allocated(uint32_t slot) {
     int set;
 

@@ -75,6 +75,9 @@ uint32_t vibeos_swap_slots(void);
 /* Slots not allocated: a sample, read without the map's lock, for a caller
  * deciding whether a search for a page to evict could end anywhere. */
 uint32_t vibeos_swap_free_slots(void);
+/* The slots held, counted from the map itself under its lock: what the
+ * end-of-boot report and SWAP_HELD are both read from, so they agree. */
+uint32_t vibeos_swap_held_count(void);
 
 typedef struct vibeos_swap_stats {
     uint64_t allocated;      /* slots currently held                          */
