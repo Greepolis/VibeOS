@@ -495,7 +495,10 @@ def walk(ex, d, pins=()):
     r = run([ex, "walk", "attrs"], d)
     if r.returncode != 0:
         return None, r.stdout
-    return norm("\n".join(l for l in r.stdout.splitlines() if l), set(pins)), ""
+    # run() takes stderr with stdout; the walk's count of htree lookups is
+    # stderr's, and is not a file of the tree.
+    return norm("\n".join(l for l in r.stdout.splitlines() if l and not l.startswith("dx_lookups=")),
+                set(pins)), ""
 
 
 def one_seed(args):

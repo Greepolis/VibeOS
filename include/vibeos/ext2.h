@@ -111,6 +111,10 @@ typedef struct {
     /* Files whose last name went while a description held them (E4-019):
      * kept, on the volume's orphan list, until the last description goes.
      * Full, a file is freed at once, as before - and counted. */
+    /* What a directory's htree is hashed with (E4-005): s_hash_seed, the
+     * default version, and whether the volume hashes names as unsigned chars. */
+    uint32_t hash_seed[4];
+    uint8_t hash_unsigned;
     uint32_t orphan_n;
     uint32_t orphan[32];
     /* Bytes this mount has written, not yet added to s_kbytes_written: the
@@ -164,6 +168,8 @@ uint64_t vibeos_ext2_cache_hits(void);
  * a count that must stay zero on a healthy volume, and the only way a host
  * test can tell a refusal for a checksum from one for any other reason. */
 uint64_t vibeos_ext2_csum_failures(void);
+/* Lookups a directory's htree answered (E4-005), for the host exerciser. */
+uint64_t vibeos_ext2_dx_lookups(void);
 /* Host tests only: the n-th data write from now fails once (E4-009). */
 void vibeos_ext4_fail_data_after(uint32_t n);
 

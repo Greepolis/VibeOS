@@ -207,6 +207,14 @@ static int ext2_mount_once(vibeos_ext2_t *fs, vibeos_blockcache_t *cache, uint64
     fs->blocks_per_group = rd32(sb + 32);
     fs->inodes_per_group = rd32(sb + 40);
     fs->first_data_block = rd32(sb + 20);
+    {
+        uint32_t k;
+
+        for (k = 0; k < 4u; k++) {
+            fs->hash_seed[k] = rd32(sb + 0xECu + k * 4u);
+        }
+        fs->hash_unsigned = (rd32(sb + 0x160u) & 0x2u) != 0u;
+    }
 
     /* The feature words exist from revision 1; revision 0 has none. */
     fs->incompat = rd32(sb + 76) >= 1u ? rd32(sb + 0x60) : 0u;
@@ -791,15 +799,28 @@ static int dir_entry_at(vibeos_ext2_t *fs, uint64_t phys, uint32_t off, uint32_t
 }
 
 /* Find `name` in directory `dir_ino`. Returns the inode number, or 0. */
+static int dx_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir, const char *name, uint32_t len,
+                   uint32_t *out);
+static uint64_t g_dx_lookups;   /* lookups the index answered: the exerciser asks */
+
+uint64_t vibeos_ext2_dx_lookups(void) {
+    return g_dx_lookups;
+}
+
 uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
                               const char *name, uint32_t name_len) {
     uint8_t got[255];
     uint64_t size = ext2_inode_size(dir);
     uint32_t nblocks = ext2_dir_nblocks(fs, size);
-    uint32_t bi;
+    uint32_t bi, found;
 
     if (name_len == 0u || name_len > sizeof(got)) {
         return 0;
+    }
+    /* The index first: a few blocks instead of all of them (E4-005). */
+    if (dx_find(fs, dir_ino, dir, name, name_len, &found)) {
+        g_dx_lookups++;
+        return found;
     }
     for (bi = 0; bi < nblocks; bi++) {
         uint64_t phys = 0;
@@ -832,6 +853,266 @@ uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
         }
     }
     return 0;
+}
+
+/* ---- htree: a directory's index (E4-005) -----------------------------------
+ * A directory with INODE_FLAG_INDEX carries a hashed index in its first block,
+ * and a lookup reads the few blocks the name's hash leads to rather than every
+ * block. The hashes are Linux's (fs/ext4/hash.c): legacy, half-MD4 and TEA,
+ * each with names read as signed or unsigned chars as the superblock says.
+ * Whatever the index looks like, a lookup that cannot use it falls back to the
+ * linear scan below, which is always right: the leaves are ordinary blocks with
+ * their own checksums. */
+#define DX_LEGACY 0u
+#define DX_HALF_MD4 1u
+#define DX_TEA 2u
+
+static uint32_t dx_legacy(const char *name, uint32_t len, int unsig) {
+    uint32_t h0 = 0x12a3fe2du, h1 = 0x37abe8f9u, i;
+
+    for (i = 0; i < len; i++) {
+        int32_t c = unsig ? (int32_t)(uint8_t)name[i] : (int32_t)(int8_t)name[i];
+        uint32_t h = h1 + (h0 ^ (uint32_t)(c * 7152373));
+
+        if ((h & 0x80000000u) != 0u) {
+            h -= 0x7fffffffu;
+        }
+        h1 = h0;
+        h0 = h;
+    }
+    return h0 << 1;
+}
+
+/* str2hashbuf: the name packed into `num` words, padded with its length. */
+/* `num` is signed, as Linux's is: its last decrement goes below zero, and an
+ * unsigned one wrapped there and filled memory past the buffer. */
+static void dx_pack(const char *msg, uint32_t len, uint32_t *buf, int num, int unsig) {
+    uint32_t pad, val, i;
+
+    pad = len | (len << 8);
+    pad |= pad << 16;
+    val = pad;
+    if (len > (uint32_t)num * 4u) {
+        len = (uint32_t)num * 4u;
+    }
+    for (i = 0; i < len; i++) {
+        int32_t c = unsig ? (int32_t)(uint8_t)msg[i] : (int32_t)(int8_t)msg[i];
+
+        val = (uint32_t)c + (val << 8);
+        if ((i % 4u) == 3u) {
+            *buf++ = val;
+            val = pad;
+            num--;
+        }
+    }
+    if (num-- > 0) {
+        *buf++ = val;
+    }
+    while (num-- > 0) {
+        *buf++ = pad;
+    }
+}
+
+#define DX_ROTL(x, n) (((x) << (n)) | ((x) >> (32u - (n))))
+#define DX_F(x, y, z) ((z) ^ ((x) & ((y) ^ (z))))
+#define DX_G(x, y, z) (((x) & (y)) + (((x) ^ (y)) & (z)))
+#define DX_H(x, y, z) ((x) ^ (y) ^ (z))
+#define DX_ROUND(f, a, b, c, d, x, s) ((a) += f((b), (c), (d)) + (x), (a) = DX_ROTL((a), (s)))
+#define DX_K2 0x5A827999u
+#define DX_K3 0x6ED9EBA1u
+
+static void dx_half_md4(uint32_t *buf, const uint32_t *in) {
+    uint32_t a = buf[0], b = buf[1], c = buf[2], d = buf[3];
+
+    DX_ROUND(DX_F, a, b, c, d, in[0], 3);
+    DX_ROUND(DX_F, d, a, b, c, in[1], 7);
+    DX_ROUND(DX_F, c, d, a, b, in[2], 11);
+    DX_ROUND(DX_F, b, c, d, a, in[3], 19);
+    DX_ROUND(DX_F, a, b, c, d, in[4], 3);
+    DX_ROUND(DX_F, d, a, b, c, in[5], 7);
+    DX_ROUND(DX_F, c, d, a, b, in[6], 11);
+    DX_ROUND(DX_F, b, c, d, a, in[7], 19);
+    DX_ROUND(DX_G, a, b, c, d, in[1] + DX_K2, 3);
+    DX_ROUND(DX_G, d, a, b, c, in[3] + DX_K2, 5);
+    DX_ROUND(DX_G, c, d, a, b, in[5] + DX_K2, 9);
+    DX_ROUND(DX_G, b, c, d, a, in[7] + DX_K2, 13);
+    DX_ROUND(DX_G, a, b, c, d, in[0] + DX_K2, 3);
+    DX_ROUND(DX_G, d, a, b, c, in[2] + DX_K2, 5);
+    DX_ROUND(DX_G, c, d, a, b, in[4] + DX_K2, 9);
+    DX_ROUND(DX_G, b, c, d, a, in[6] + DX_K2, 13);
+    DX_ROUND(DX_H, a, b, c, d, in[3] + DX_K3, 3);
+    DX_ROUND(DX_H, d, a, b, c, in[7] + DX_K3, 9);
+    DX_ROUND(DX_H, c, d, a, b, in[2] + DX_K3, 11);
+    DX_ROUND(DX_H, b, c, d, a, in[6] + DX_K3, 15);
+    DX_ROUND(DX_H, a, b, c, d, in[1] + DX_K3, 3);
+    DX_ROUND(DX_H, d, a, b, c, in[5] + DX_K3, 9);
+    DX_ROUND(DX_H, c, d, a, b, in[0] + DX_K3, 11);
+    DX_ROUND(DX_H, b, c, d, a, in[4] + DX_K3, 15);
+    buf[0] += a;
+    buf[1] += b;
+    buf[2] += c;
+    buf[3] += d;
+}
+
+static void dx_tea(uint32_t *buf, const uint32_t *in) {
+    uint32_t sum = 0, b0 = buf[0], b1 = buf[1], n = 16;
+
+    while (n-- > 0u) {
+        sum += 0x9E3779B9u;
+        b0 += ((b1 << 4) + in[0]) ^ (b1 + sum) ^ ((b1 >> 5) + in[1]);
+        b1 += ((b0 << 4) + in[2]) ^ (b0 + sum) ^ ((b0 >> 5) + in[3]);
+    }
+    buf[0] += b0;
+    buf[1] += b1;
+}
+
+/* A name's major hash, low bit clear, as ext4fs_dirhash computes it. */
+static uint32_t dx_hash(const vibeos_ext2_t *fs, uint32_t version, const char *name, uint32_t len, int *ok) {
+    uint32_t buf[4] = {0x67452301u, 0xefcdab89u, 0x98badcfeu, 0x10325476u}, in[8], h, i;
+    int unsig = fs->hash_unsigned;
+
+    if (version >= 3u && version <= 5u) {
+        version -= 3u;   /* the unsigned variants, said outright */
+        unsig = 1;
+    }
+
+    *ok = 1;
+    if (fs->hash_seed[0] | fs->hash_seed[1] | fs->hash_seed[2] | fs->hash_seed[3]) {
+        for (i = 0; i < 4u; i++) {
+            buf[i] = fs->hash_seed[i];
+        }
+    }
+    switch (version) {
+    case DX_LEGACY:
+        h = dx_legacy(name, len, unsig);
+        break;
+    case DX_HALF_MD4:
+        for (i = 0; i < len; i += 32u, name += 32) {
+            dx_pack(name, len - i, in, 8u, unsig);
+            dx_half_md4(buf, in);
+        }
+        h = buf[1];
+        break;
+    case DX_TEA:
+        for (i = 0; i < len; i += 16u, name += 16) {
+            dx_pack(name, len - i, in, 4u, unsig);
+            dx_tea(buf, in);
+        }
+        h = buf[0];
+        break;
+    default:
+        *ok = 0;   /* siphash, for casefolded and encrypted names: not read here */
+        return 0;
+    }
+    return h & ~1u;
+}
+
+/* One leaf: the inode of `name`, 0 if absent, -1 if the block is bad. */
+static int64_t dir_block_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir, uint64_t phys,
+                              const char *name, uint32_t name_len) {
+    uint8_t got[255];
+    uint32_t off = 0, ino, reclen, nlen;
+    int r;
+
+    if (dir_block_ok(fs, dir_ino, dir, phys) != 0) {
+        return -1;
+    }
+    while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
+        if (ino != 0u && nlen == name_len) {
+            uint32_t i;
+
+            if (ext2_read_part(fs, phys, off + 8u, got, nlen) != 0) {
+                return -1;
+            }
+            for (i = 0; i < nlen && got[i] == (uint8_t)name[i]; i++) {
+            }
+            if (i == nlen) {
+                return ino;
+            }
+        }
+        off += reclen;
+    }
+    return r < 0 ? -1 : 0;
+}
+
+/* The index, read: 1 and *out (an inode, or 0 for "not in this directory")
+ * when it could be used; 0 when it could not, and the caller scans. */
+static int dx_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir, const char *name, uint32_t len,
+                   uint32_t *out) {
+    uint8_t w[8];
+    uint32_t bs = fs->block_size, version, levels, h, at, count, limit, i, lblk = 0, level;
+    uint64_t phys;
+    int ok;
+
+    if ((rd32(dir + 0x20u) & INODE_FLAG_INDEX) == 0u || ext2_map_block(fs, dir_ino, dir, 0, &phys) != 0 ||
+        phys == 0u || ext2_read_part(fs, phys, 24u, w, 8u) != 0) {
+        return 0;
+    }
+    version = w[4];
+    levels = w[6];
+    if (rd32(w) != 0u || w[5] != 8u || levels > 2u) {
+        return 0;
+    }
+    h = dx_hash(fs, version, name, len, &ok);
+    if (!ok) {
+        return 0;
+    }
+    at = 32u;   /* the root's count and limit, past "." and ".." and its info */
+    for (level = 0; ; level++) {
+        uint32_t pick = 0, next_hash = 0, have_next = 0;
+
+        if (ext2_read_part(fs, phys, at, w, 4u) != 0) {
+            return 0;
+        }
+        limit = rd16(w);
+        count = rd16(w + 2u);
+        if (count == 0u || count > limit || at + limit * 8u > bs) {
+            return 0;
+        }
+        for (i = 1; i < count; i++) {
+            if (ext2_read_part(fs, phys, at + i * 8u, w, 4u) != 0) {
+                return 0;
+            }
+            if (rd32(w) > h) {
+                next_hash = rd32(w);
+                have_next = 1;
+                break;
+            }
+            pick = i;
+        }
+        if (ext2_read_part(fs, phys, at + pick * 8u + 4u, w, 4u) != 0) {
+            return 0;
+        }
+        lblk = rd32(w) & 0x0FFFFFFFu;
+        if (level == levels) {
+            int64_t r;
+
+            if (ext2_map_block(fs, dir_ino, dir, lblk, &phys) != 0 || phys == 0u) {
+                return 0;
+            }
+            r = dir_block_find(fs, dir_ino, dir, phys, name, len);
+            if (r < 0) {
+                return 0;
+            }
+            if (r > 0) {
+                *out = (uint32_t)r;
+                return 1;
+            }
+            /* Not in its leaf. Absent - unless the next entry's hash is this
+             * one with the low bit set, which says names of this hash ran on
+             * into the next leaf: that rare case is scanned linearly. */
+            if (have_next && (next_hash & 1u) != 0u && (next_hash & ~1u) == h) {
+                return 0;
+            }
+            *out = 0;
+            return 1;
+        }
+        if (ext2_map_block(fs, dir_ino, dir, lblk, &phys) != 0 || phys == 0u ||
+            ext2_read_part(fs, phys, 0u, w, 8u) != 0 || rd32(w) != 0u || rd16(w + 4u) != bs) {
+            return 0;   /* an interior node starts with an empty entry the size of the block */
+        }
+        at = 8u;   /* then its count and limit */
+    }
 }
 
 /* Walk a '/'-separated path from the root. */

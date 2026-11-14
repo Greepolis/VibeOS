@@ -6,9 +6,9 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-74 open in 3 registers.
+73 open in 3 registers.
 
-## [ext4](implementation_progress/fs_ext4.md) - 8
+## [ext4](implementation_progress/fs_ext4.md) - 7
 
 | ID | What | Status |
 |---|---|---|
@@ -19,7 +19,6 @@ is [next-steps.md](next-steps.md).
 | E4-020 | An external journal, a block-mapped one (ext3's), v2 checksums and fast commits are not written - the volume is mounted read-only - and a volume needing a ... | open |
 | E4-011 | Allocation is first-fit from the parent's group: directories are not spread (Orlov), no preallocation, no delayed allocation; no `fallocate`, hole punching, ... | open |
 | E4-004 | The high 16 bits of an extent's start are read, and no fixture is past 2^32 blocks to need them | open |
-| E4-005 | htree is read linearly: a lookup in a directory of a million entries reads all of it | open (perf phase) |
 
 ## [Review findings tracker](implementation_progress/review_findings_tracker.md) - 6
 

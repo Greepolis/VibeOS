@@ -125,6 +125,38 @@ if ! diff "$T/want.txt" "$T/seen.txt" > "$T/diff.txt"; then
     fail "$(head -4 "$T/diff.txt" | tr '\n' ' ')" listing_differs
 fi
 entries="$(grep -c . "$T/seen.txt")"
+# The walk looked every name of /many up, and the index answered (E4-005).
+many="$(grep -c '^/many/' "$T/seen.txt")"
+dx="$(sed -n 's/^dx_lookups=//p' "$T/walk.err")"
+[ "${dx:-0}" -ge "$many" ] || fail "the htree answered ${dx:-0} lookups, /many has $many names" htree_not_used
+
+# Each of Linux's hashes, with names whose bytes have the high bit set - where
+# a signed and an unsigned char hash apart - on a directory e2fsck -D indexed:
+# every name found, and found through the index.
+for alg in legacy half_md4 tea; do
+    H="$T/hash-$alg"
+    mkdir -p "$H/tree/d"
+    python3 - "$H/tree/d" <<'PYEOF'
+import os, sys
+d = sys.argv[1]
+for k in range(1500):
+    name = ("f%04d-" % k) + ("été-" if k % 3 == 0 else "") + "n" * (k % 30)
+    with open(os.path.join(d, name), "w") as f:
+        f.write(str(k))
+PYEOF
+    truncate -s 64M "$H/fs.img"
+    mkfs.ext4 -q -F -b 1024 -N 2048 -d "$H/tree" "$H/fs.img" > /dev/null 2>&1 || fail "mkfs ($alg)" htree_setup_failed
+    tune2fs -E hash_alg="$alg" "$H/fs.img" > /dev/null 2>&1 || fail "tune2fs hash_alg=$alg" htree_setup_failed
+    e2fsck -fyD "$H/fs.img" > /dev/null 2>&1
+    e2fsck -fn "$H/fs.img" > /dev/null 2>&1 || fail "the $alg volume is not clean" htree_setup_failed
+    debugfs -R "htree /d" "$H/fs.img" 2>/dev/null | grep -qi "hash version: $( [ "$alg" = legacy ] && echo 0 || ([ "$alg" = half_md4 ] && echo 1 || echo 2))" \
+        || fail "/d is not indexed with $alg" htree_setup_failed
+    python3 scripts/dev/ext4-tree.py list "$H/tree" > "$H/want.txt"
+    (cd "$H" && "$EX" walk) 2> "$H/walk.err" | sort > "$H/seen.txt"
+    diff -q "$H/want.txt" "$H/seen.txt" > /dev/null || fail "$alg: the listing differs" htree_lookup_wrong
+    dx="$(sed -n 's/^dx_lookups=//p' "$H/walk.err")"
+    [ "${dx:-0}" -ge 1500 ] || fail "$alg: the htree answered ${dx:-0} of 1500 lookups" htree_not_used
+done
 
 # ---- writing ----------------------------------------------------------------
 mkdir -p "$T/w"

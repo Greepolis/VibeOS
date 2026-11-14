@@ -36,9 +36,12 @@
  * read, and counts as a checksum failure; a volume that claims a feature this
  * driver does not read must not mount, and names the feature bits. */
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "vibeos/abi_linux.h"
 #include "vibeos/ext2.h"
@@ -115,6 +118,13 @@ static uint32_t crc32_of(const uint8_t *p, uint64_t n, uint32_t crc) {
     return ~crc;
 }
 
+/* A volume past a gigabyte is mapped, not read: E4-004's has more than 2^32
+ * blocks, 8 TiB of sparse file, and is never in memory. Writes then land in
+ * the file as they are made, so save_image has nothing to do - and a power cut
+ * cannot be told from no cut, so such a volume is for apply and walk only. */
+static int g_mapped;
+static int save_image(void);
+
 static int load(const char *path) {
     FILE *f = fopen(path, "rb");
     long n;
@@ -122,11 +132,28 @@ static int load(const char *path) {
     if (!f || fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) <= 0 || fseek(f, 0, SEEK_SET) != 0) {
         return -1;
     }
-    g_img = (uint8_t *)malloc((size_t)n);
-    if (!g_img || fread(g_img, 1, (size_t)n, f) != (size_t)n) {
-        return -1;
+    if ((uint64_t)n > (1ull << 30)) {
+        int fd = open(path, g_writable_dev ? O_RDWR : O_RDONLY);
+        void *m;
+
+        fclose(f);
+        if (fd < 0) {
+            return -1;
+        }
+        m = mmap(NULL, (size_t)n, g_writable_dev ? PROT_READ | PROT_WRITE : PROT_READ, MAP_SHARED, fd, 0);
+        close(fd);
+        if (m == MAP_FAILED) {
+            return -1;
+        }
+        g_img = (uint8_t *)m;
+        g_mapped = 1;
+    } else {
+        g_img = (uint8_t *)malloc((size_t)n);
+        if (!g_img || fread(g_img, 1, (size_t)n, f) != (size_t)n) {
+            return -1;
+        }
+        fclose(f);
     }
-    fclose(f);
     g_sectors = (uint64_t)n / 512u;
     for (uint32_t i = 0; i < SLOTS; i++) {
         g_slots[i].data = g_slot_data[i];
@@ -727,14 +754,13 @@ static int apply(void) {
                 (unsigned long long)vibeos_ext2_csum_failures());
         return 1;
     }
-    /* Written over the image that is there, never created: "w" would make one
-     * with mode 0666 if it were gone, which code scanning reports (#357). */
-    f = fopen("fs.img", "r+b");
-    if (!f || fwrite(g_img, 1, (size_t)(g_sectors * 512u), f) != (size_t)(g_sectors * 512u)) {
-        fprintf(stderr, "FAIL:ext4_exercise cannot write fs.img back\n");
+    /* Through save_image, as every other mode: this wrote the image back on
+     * its own, and for a mapped volume (E4-004's, 8 TiB of sparse file) that
+     * was every byte of it written - zeros over every hole - and 333 GB of a
+     * disk gone before anything noticed. */
+    if (save_image() != 0) {
         return 1;
     }
-    fclose(f);
     (void)vibeos_fs_statfs(&g_mnt, &sf);
     printf("applied lines=%u blocks_free=%llu files_free=%llu\n", lines, (unsigned long long)sf.blocks_free,
            (unsigned long long)sf.files_free);
@@ -742,7 +768,16 @@ static int apply(void) {
 }
 
 static int save_image(void) {
-    FILE *f = fopen("fs.img", "r+b");
+    FILE *f;
+
+    if (g_mapped) {
+        /* Shared, so already the file's: what the driver wrote is in the
+         * file's pages, and a reader after this process sees it. Writing the
+         * mapping back as the other modes do writes every byte of 8 TiB -
+         * zeros over every hole - which is how one run filled a disk. */
+        return 0;
+    }
+    f = fopen("fs.img", "r+b");
 
     if (!f || fwrite(g_img, 1, (size_t)(g_sectors * 512u), f) != (size_t)(g_sectors * 512u)) {
         fprintf(stderr, "FAIL:ext4_exercise cannot write fs.img back\n");
@@ -887,6 +922,10 @@ int main(int argc, char **argv) {
                     (unsigned long long)vibeos_ext2_csum_failures());
             bad = 1;
         }
+        /* How many of the walk's lookups an htree answered (E4-005): on
+         * stderr, so the listing on stdout stays what it always was. */
+        fflush(stdout);   /* the listing first, whole: a caller may read both streams as one */
+        fprintf(stderr, "dx_lookups=%llu\n", (unsigned long long)vibeos_ext2_dx_lookups());
         return bad;
     }
     if (strcmp(argv[1], "refused-file") == 0 && argc == 3) {

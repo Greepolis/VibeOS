@@ -1,0 +1,45 @@
+# A directory's htree read (E4-005), broken. Caught by scripts/dev/verify-ext4.sh:
+# directories e2fsck -D indexed with each of Linux's hashes, names with the high
+# bit set among them, are walked; every name must be found, and found through the
+# index.
+#
+# Target source: kernel/fs/ext2.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release'" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/ext4-htree.txt build-gcc-Release
+
+### the index is never used
+--- old
+    if (dx_find(fs, dir_ino, dir, name, name_len, &found)) {
++++ new
+    if (0 && dx_find(fs, dir_ino, dir, name, name_len, &found)) {
+
+### half-MD4's hash is taken from the wrong word
+--- old
+        h = buf[1];
+        break;
+    case DX_TEA:
++++ new
+        h = buf[0];
+        break;
+    case DX_TEA:
+
+### names are always hashed as unsigned chars
+--- old
+    int unsig = fs->hash_unsigned;
++++ new
+    int unsig = 1;
+
+### TEA runs one round short
+--- old
+    uint32_t sum = 0, b0 = buf[0], b1 = buf[1], n = 16;
++++ new
+    uint32_t sum = 0, b0 = buf[0], b1 = buf[1], n = 15;
+
+### the legacy hash forgets its fold
+--- old
+        if ((h & 0x80000000u) != 0u) {
+            h -= 0x7fffffffu;
+        }
++++ new
+        if (0) {
+            h -= 0x7fffffffu;
+        }
