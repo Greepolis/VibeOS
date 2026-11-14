@@ -6,9 +6,9 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-75 open in 3 registers.
+74 open in 3 registers.
 
-## [ext4](implementation_progress/fs_ext4.md) - 9
+## [ext4](implementation_progress/fs_ext4.md) - 8
 
 | ID | What | Status |
 |---|---|---|
@@ -17,7 +17,6 @@ is [next-steps.md](next-steps.md).
 | E4-016 | One operation is one transaction with five flushes, emptied at once: no group commit, no asynchronous checkpoint, no reuse of the log across transactions. ... | open (perf phase) |
 | E4-017 | The block layer writes one 512-byte sector at a time, so a structure across two sectors (the superblock, whose checksum is in the second) is atomic only if the ... | open |
 | E4-020 | An external journal, a block-mapped one (ext3's), v2 checksums and fast commits are not written - the volume is mounted read-only - and a volume needing a ... | open |
-| E4-008 | A tree Linux grew to depth 2 (more than 1360 extents) is read, and a write that would change it is `EFBIG` (a write that reaches the cap is first short, then ... | open: removing a block-mapped file is done (2026-11-14) - unlink, rmdir, a ... |
 | E4-011 | Allocation is first-fit from the parent's group: directories are not spread (Orlov), no preallocation, no delayed allocation; no `fallocate`, hole punching, ... | open |
 | E4-004 | The high 16 bits of an extent's start are read, and no fixture is past 2^32 blocks to need them | open |
 | E4-005 | htree is read linearly: a lookup in a directory of a million entries reads all of it | open (perf phase) |

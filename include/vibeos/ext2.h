@@ -83,6 +83,24 @@ typedef struct {
     uint8_t fuzz_wbuf2_guard[16];
 #endif
     uint32_t ext_n;               /* the file being changed: its extents, in order */
+    /* When the file's tree has an index level, ext[] holds a window of it and
+     * not the whole file (E4-008): up to three neighbouring leaves under one
+     * parent - the root, or an index block under it - and the file blocks
+     * [lo, hi) those leaves may hold. A store writes those leaves back and
+     * the parent's entries for them, so a file's extents are not bounded by
+     * what ext[] holds. */
+    struct {
+        int on;                   /* ext[] is a window, not the whole file */
+        uint32_t ino;             /* whose */
+        uint32_t depth;           /* of the tree: 1 or 2 */
+        uint64_t parent;          /* the index block holding the leaves; 0: the root */
+        uint32_t rslot;           /* depth 2: the root entry naming `parent` */
+        uint32_t first, count;    /* the leaves: the parent's entries [first, first + count) */
+        uint32_t first_key;       /* the parent's key for leaf `first` as loaded */
+        uint64_t lo, hi;          /* file blocks the window holds */
+        uint64_t data;            /* data blocks its extents held when loaded */
+        uint64_t leaf[3];         /* its leaves as loaded */
+    } win;
     struct {
         uint32_t lblk;            /* first block of the file it covers */
         uint16_t len;             /* blocks, 1..32768 */

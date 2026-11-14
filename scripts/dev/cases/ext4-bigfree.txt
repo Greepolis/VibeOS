@@ -7,9 +7,9 @@
 
 ### the whole release in one transaction, as before
 --- old
-        if (fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u && fs->ext_n > 0u &&
+        if (fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u) {
 +++ new
-        if (0 && fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u && fs->ext_n > 0u &&
+        if (0 && fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u) {
 
 ### pieces committed without the orphan list
 --- old

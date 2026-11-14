@@ -37,6 +37,7 @@
 #define memset(d, v, n) __builtin_memset((d), (v), (n))
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n))
 #define memcmp(a, b, n) __builtin_memcmp((a), (b), (n))
+#define memmove(d, s, n) __builtin_memmove((d), (s), (n))
 
 #include "vibeos/storage.h"
 #include "vibeos/ext2.h"
@@ -800,36 +801,107 @@ static int leaf_csum_ok(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, c
            crc32c(ext2_inode_seed(fs, ino, inode), leaf, at) == le32(leaf + at);
 }
 
-/* Read the file's extents into fs->ext. Uses wbuf for the leaves. */
-static int ext_load(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode) {
+/* ---- the tree's index levels (E4-008) -------------------------------------
+ * A node is the root (60 bytes in the inode, four entries) or a block; an index
+ * entry is a key - the first file block under it - and the child's block. */
+static uint64_t x_child(const uint8_t *x) {
+    return le32(x + 4u) | ((uint64_t)le16(x + 8u) << 32);
+}
+
+static void x_put(uint8_t *x, uint32_t key, uint64_t child) {
+    st32(x, key);
+    st32(x + 4u, (uint32_t)child);
+    st16(x + 8u, (uint32_t)(child >> 32));
+    st16(x + 10u, 0);
+}
+
+/* The entry whose key is the last at or below `lblk`; the first if none is. */
+static uint32_t node_slot(const uint8_t *n, uint32_t lblk) {
+    uint32_t e = le16(n + 2u), j = 0;
+
+    while (j + 1u < e && le32(n + 12u + (j + 1u) * 12u) <= lblk) {
+        j++;
+    }
+    return j;
+}
+
+static void node_csum_set(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint8_t *blk) {
+    uint32_t at = 12u + le16(blk + 4u) * 12u;
+
+    st32(blk + at, crc32c(ext2_inode_seed(fs, ino, inode), blk, at));
+}
+
+/* An index block read into `b`: its header, its depth and its checksum. */
+static int index_read(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint64_t blk, uint8_t *b) {
+    if (ext2_read_block(fs, blk, b) != 0) {
+        return -VIBEOS_EIO;
+    }
+    if (le16(b) != EXTENT_MAGIC || le16(b + 6u) != 1u || le16(b + 2u) == 0u || le16(b + 2u) > le16(b + 4u) ||
+        12u + (uint32_t)le16(b + 4u) * 12u + 4u > fs->block_size || !leaf_csum_ok(fs, ino, inode, b)) {
+        ext2_csum_bad(blk);
+        return -VIBEOS_EIO;
+    }
+    return 0;
+}
+
+/* Read the file's extents into fs->ext: all of them when they sit in the inode,
+ * else the window around file block `lblk` (fs->win). Uses wbuf. */
+static int ext_load(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint32_t lblk) {
     const uint8_t *r = inode + 40u;
     uint32_t entries = le16(r + 2u), depth = le16(r + 6u), n = 0, i, k;
     uint8_t *leaf = fs->wbuf;
 
     fs->ext_n = 0;
+    fs->win.on = 0;
     if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) == 0u) {
         return -VIBEOS_EOPNOTSUPP;
     }
     if (le16(r) != EXTENT_MAGIC || entries > 4u || le16(r + 4u) < entries) {
         return -VIBEOS_EIO;
     }
-    if (depth > 1u) {
-        return -VIBEOS_EFBIG;   /* a tree Linux grew deeper is read, not rewritten */
+    if (depth > 2u) {
+        return -VIBEOS_EFBIG;   /* three index levels: more than any file this writer is given */
     }
-    if (depth == 0u) {
-        for (i = 0; i < entries; i++) {
-            const uint8_t *e = r + 12u + i * 12u;
+    if (depth > 0u) {
+        uint64_t keys_child[3], next = 0x100000000ull, lo = 0;
+        uint32_t pe, j, first, count, rslot = 0, kfirst;
+        uint64_t parent = 0;
+        const uint8_t *pn = r;
 
-            fs->ext[n].lblk = le32(e);
-            fs->ext[n].len = le16(e + 4u);
-            fs->ext[n].start_hi = le16(e + 6u);
-            fs->ext[n].start_lo = le32(e + 8u);
-            n++;
+        if (entries == 0u) {
+            return -VIBEOS_EIO;
         }
-    } else {
-        for (k = 0; k < entries; k++) {
-            const uint8_t *x = r + 12u + k * 12u;
-            uint64_t child = le32(x + 4u) | ((uint64_t)le16(x + 8u) << 32);
+        if (depth == 2u) {
+            rslot = node_slot(r, lblk);
+            parent = x_child(r + 12u + rslot * 12u);
+            if (rslot + 1u < entries) {
+                next = le32(r + 12u + (rslot + 1u) * 12u);
+            }
+            if (rslot > 0u) {
+                lo = le32(r + 12u + rslot * 12u);
+            }
+            if (index_read(fs, ino, inode, parent, leaf) != 0) {
+                return -VIBEOS_EIO;
+            }
+            pn = leaf;
+        }
+        pe = le16(pn + 2u);
+        j = node_slot(pn, lblk);
+        first = j > 0u ? j - 1u : 0u;
+        count = pe - first < 3u ? pe - first : 3u;
+        if (first > 0u) {
+            lo = le32(pn + 12u + first * 12u);
+        }
+        if (first + count < pe) {
+            next = le32(pn + 12u + (first + count) * 12u);
+        }
+        kfirst = le32(pn + 12u + first * 12u);
+        for (k = 0; k < count; k++) {
+            keys_child[k] = x_child(pn + 12u + (first + k) * 12u);
+        }
+        /* pn may be wbuf: everything needed from it is copied out above. */
+        for (k = 0; k < count; k++) {
+            uint64_t child = keys_child[k];
             uint32_t cnt;
 
             if (ext2_read_block(fs, child, leaf) != 0) {
@@ -845,7 +917,7 @@ static int ext_load(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode) {
                 const uint8_t *e = leaf + 12u + i * 12u;
 
                 if (n >= ext_cap(fs)) {
-                    return -VIBEOS_EFBIG;
+                    return -VIBEOS_EIO;
                 }
                 fs->ext[n].lblk = le32(e);
                 fs->ext[n].len = le16(e + 4u);
@@ -853,6 +925,35 @@ static int ext_load(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode) {
                 fs->ext[n].start_lo = le32(e + 8u);
                 n++;
             }
+            fs->win.leaf[k] = child;
+        }
+        fs->win.on = 1;
+        fs->win.ino = ino;
+        fs->win.depth = depth;
+        fs->win.parent = parent;
+        fs->win.rslot = rslot;
+        fs->win.first = first;
+        fs->win.count = count;
+        fs->win.first_key = kfirst;
+        fs->win.lo = lo;
+        fs->win.hi = next;
+        fs->win.data = 0;
+        for (i = 0; i < n; i++) {
+            fs->win.data += (uint64_t)(fs->ext[i].len > 32768u ? fs->ext[i].len - 32768u : fs->ext[i].len);
+            if (fs->ext[i].lblk < lo || (uint64_t)fs->ext[i].lblk + (fs->ext[i].len > 32768u ? fs->ext[i].len - 32768u : fs->ext[i].len) > next) {
+                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, ino);
+                return -VIBEOS_EIO;   /* an extent outside what its parent says the leaf holds */
+            }
+        }
+    } else {
+        for (i = 0; i < entries; i++) {
+            const uint8_t *e = r + 12u + i * 12u;
+
+            fs->ext[n].lblk = le32(e);
+            fs->ext[n].len = le16(e + 4u);
+            fs->ext[n].start_hi = le16(e + 6u);
+            fs->ext[n].start_lo = le32(e + 8u);
+            n++;
         }
     }
     /* Sorted and not overlapping, or the list is not a file's. */
@@ -877,10 +978,245 @@ static void set_blocks(uint8_t *inode, uint64_t blocks512) {
  * after, so a failure to find room leaves the tree as it was. Sets i_blocks
  * from the list (data, leaves, the attribute block if there is one). The caller
  * writes the inode. Uses wbuf. */
+/* i_blocks moved by `delta` volume blocks: a window's store knows what it
+ * changed, not what the whole file holds. */
+static void add_blocks(vibeos_ext2_t *fs, uint8_t *inode, int64_t delta) {
+    uint64_t cur = le32(inode + 0x1Cu) | ((uint64_t)le16(inode + 0x74u) << 32);
+
+    set_blocks(inode, (uint64_t)((int64_t)cur + delta * (int64_t)(fs->block_size / VIBEOS_BLOCK_SIZE)));
+}
+
+/* Room in the window's parent for `need` entries more (E4-008). A full root
+ * becomes an index block under a root of one entry - the tree one level
+ * deeper - and a full index block is split in two under the root, at a point
+ * that keeps the window's leaves on one side. The tree is whole after each
+ * step; only where the window's leaves are listed moves. */
+static int tree_make_room(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, uint32_t need) {
+    uint8_t *r = inode + 40u, *b = fs->wbuf;
+    uint32_t ipb = ext_per_leaf(fs), bs = fs->block_size, pe, re, h, got;
+    uint64_t x, ykey;
+    int rc;
+
+    if (fs->win.depth == 1u) {
+        pe = le16(r + 2u);
+        if (pe + need <= 4u) {
+            return 0;
+        }
+        rc = balloc(fs, fs->win.leaf[0], 1u, &x, &got);
+        if (rc != 0) {
+            return rc;
+        }
+        memset(b, 0, bs);
+        st16(b, EXTENT_MAGIC);
+        st16(b + 2u, pe);
+        st16(b + 4u, ipb);
+        st16(b + 6u, 1u);
+        memcpy(b + 12u, r + 12u, pe * 12u);
+        node_csum_set(fs, ino, inode, b);
+        if (blk_write(fs, x, b) != 0) {
+            return -VIBEOS_EIO;
+        }
+        memset(r + 12u, 0, 48u);
+        st16(r + 2u, 1u);
+        st16(r + 6u, 2u);
+        x_put(r + 12u, le32(b + 12u), x);
+        add_blocks(fs, inode, 1);
+        fs->win.depth = 2u;
+        fs->win.parent = x;
+        fs->win.rslot = 0;
+        return 0;
+    }
+    rc = index_read(fs, ino, inode, fs->win.parent, b);
+    if (rc != 0) {
+        return rc;
+    }
+    pe = le16(b + 2u);
+    if (pe + need <= ipb) {
+        return 0;
+    }
+    re = le16(r + 2u);
+    if (re >= 4u) {
+        return -VIBEOS_EFBIG;   /* the root is full of full index blocks: a third level is not written */
+    }
+    h = fs->win.first >= pe / 2u ? fs->win.first : fs->win.first + fs->win.count;
+    if (h == 0u || h >= pe) {
+        h = pe / 2u;
+    }
+    rc = balloc(fs, fs->win.parent, 1u, &x, &got);
+    if (rc != 0) {
+        return rc;
+    }
+    /* The upper half into the new block, then the lower half written back:
+     * one buffer, so the parent is read twice. */
+    ykey = le32(b + 12u + h * 12u);
+    memmove(b + 12u, b + 12u + h * 12u, (pe - h) * 12u);
+    memset(b + 12u + (pe - h) * 12u, 0, h * 12u);
+    st16(b + 2u, pe - h);
+    node_csum_set(fs, ino, inode, b);
+    if (blk_write(fs, x, b) != 0) {
+        return -VIBEOS_EIO;
+    }
+    rc = index_read(fs, ino, inode, fs->win.parent, b);
+    if (rc != 0) {
+        return rc;
+    }
+    memset(b + 12u + h * 12u, 0, (pe - h) * 12u);
+    st16(b + 2u, h);
+    node_csum_set(fs, ino, inode, b);
+    if (blk_write(fs, fs->win.parent, b) != 0) {
+        return -VIBEOS_EIO;
+    }
+    memmove(r + 12u + (fs->win.rslot + 2u) * 12u, r + 12u + (fs->win.rslot + 1u) * 12u,
+            (re - fs->win.rslot - 1u) * 12u);
+    x_put(r + 12u + (fs->win.rslot + 1u) * 12u, (uint32_t)ykey, x);
+    st16(r + 2u, re + 1u);
+    add_blocks(fs, inode, 1);
+    if (fs->win.first >= h) {
+        fs->win.parent = x;
+        fs->win.rslot++;
+        fs->win.first -= h;
+    }
+    return 0;
+}
+
+/* A window written back (E4-008): its extents as new leaves, spread evenly, in
+ * the place of the leaves it was loaded from, and the parent's entries for
+ * them - keyed, as Linux keys them, by each child's first file block, the
+ * root's entry for an index block too. A parent left empty goes, and a root
+ * left empty is a tree of depth 0 again. The list is stale after: whoever
+ * changes the file again loads it again. */
+static int ext_store_win(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
+    uint32_t bs = fs->block_size, per = ext_per_leaf(fs), n = fs->ext_n, nl, i, k, pe, total, tail, at;
+    uint64_t newl[4], goal, data = 0;
+    uint32_t firstof[5];
+    uint8_t *r = inode + 40u, *b = fs->wbuf, *pn;
+    int rc;
+
+    nl = n == 0u ? 0u : (n + per - 1u) / per;
+    if (nl > 4u) {
+        return -VIBEOS_EFBIG;
+    }
+    if (nl > fs->win.count) {
+        rc = tree_make_room(fs, ino, inode, nl - fs->win.count);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    for (k = 0; k <= nl; k++) {   /* even shares: no leaf left nearly empty beside a full one */
+        firstof[k] = nl == 0u ? 0u : (uint32_t)(((uint64_t)n * k) / nl);
+    }
+    goal = n > 0u ? e_start(fs, 0) : fs->win.leaf[0];
+    for (k = 0; k < nl; k++) {
+        uint32_t got;
+
+        rc = balloc(fs, goal, 1u, &newl[k], &got);
+        if (rc != 0) {
+            for (i = 0; i < k; i++) {
+                (void)bfree(fs, newl[i], 1u);
+            }
+            return rc;
+        }
+        goal = newl[k] + 1u;
+    }
+    for (k = 0; k < nl; k++) {
+        uint32_t cnt = firstof[k + 1u] - firstof[k];
+
+        at = 12u + per * 12u;
+        memset(b, 0, bs);
+        st16(b, EXTENT_MAGIC);
+        st16(b + 2u, cnt);
+        st16(b + 4u, per);
+        for (i = 0; i < cnt; i++) {
+            uint8_t *e = b + 12u + i * 12u;
+            uint32_t j = firstof[k] + i;
+
+            st32(e, fs->ext[j].lblk);
+            st16(e + 4u, fs->ext[j].len);
+            st16(e + 6u, fs->ext[j].start_hi);
+            st32(e + 8u, fs->ext[j].start_lo);
+        }
+        st32(b + at, crc32c(ext2_inode_seed(fs, ino, inode), b, at));
+        if (blk_write(fs, newl[k], b) != 0) {
+            return -VIBEOS_EIO;
+        }
+    }
+    if (fs->win.depth == 2u) {
+        rc = index_read(fs, ino, inode, fs->win.parent, b);
+        if (rc != 0) {
+            return rc;
+        }
+        pn = b;
+    } else {
+        pn = r;
+    }
+    pe = le16(pn + 2u);
+    if (fs->win.first + fs->win.count > pe) {
+        return -VIBEOS_EIO;
+    }
+    tail = pe - fs->win.first - fs->win.count;
+    total = pe - fs->win.count + nl;
+    memmove(pn + 12u + (fs->win.first + nl) * 12u, pn + 12u + (fs->win.first + fs->win.count) * 12u, tail * 12u);
+    for (k = 0; k < nl; k++) {
+        x_put(pn + 12u + (fs->win.first + k) * 12u, fs->ext[firstof[k]].lblk, newl[k]);
+    }
+    if (total < pe) {
+        memset(pn + 12u + total * 12u, 0, (pe - total) * 12u);
+    }
+    st16(pn + 2u, total);
+    if (fs->win.depth == 2u) {
+        uint32_t re = le16(r + 2u);
+
+        if (total == 0u) {
+            /* The index block is empty: it goes, and its entry in the root. */
+            rc = bfree(fs, fs->win.parent, 1u);
+            if (rc != 0) {
+                return rc;
+            }
+            add_blocks(fs, inode, -1);
+            memmove(r + 12u + fs->win.rslot * 12u, r + 12u + (fs->win.rslot + 1u) * 12u,
+                    (re - fs->win.rslot - 1u) * 12u);
+            memset(r + 12u + (re - 1u) * 12u, 0, 12u);
+            st16(r + 2u, re - 1u);
+            if (re == 1u) {
+                st16(r + 6u, 0);   /* nothing left under the root */
+            }
+        } else {
+            node_csum_set(fs, ino, inode, b);
+            if (blk_write(fs, fs->win.parent, b) != 0) {
+                return -VIBEOS_EIO;
+            }
+            st32(r + 12u + fs->win.rslot * 12u, le32(b + 12u));
+        }
+    } else if (total == 0u) {
+        st16(r + 6u, 0);
+    }
+    for (k = 0; k < fs->win.count; k++) {
+        rc = bfree(fs, fs->win.leaf[k], 1u);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    for (i = 0; i < n; i++) {
+        data += e_len(fs, i);
+    }
+    add_blocks(fs, inode, (int64_t)data - (int64_t)fs->win.data + (int64_t)nl - (int64_t)fs->win.count);
+    fs->win.on = 0;
+    fs->ext_n = 0;
+    return 0;
+}
+
 static int ext_store(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
     uint32_t bs = fs->block_size, per = ext_per_leaf(fs), n = fs->ext_n, nleaves = 0, nold = 0, i, k;
     uint64_t oldl[4], newl[4], data = 0, goal, blocks;
     uint8_t *r = inode + 40u, *leaf = fs->wbuf;
+
+    /* A window is stored as one only for the file it was loaded from: a list
+     * built by hand for a new inode once went to the windowed store of the
+     * deep file loaded before it, and a mkdir failed. */
+    if (fs->win.on && fs->win.ino == ino) {
+        return ext_store_win(fs, ino, inode);
+    }
+    fs->win.on = 0;
 
     if (le16(r + 6u) == 1u) {
         nold = le16(r + 2u);
@@ -1402,10 +1738,12 @@ static int dir_add_entry(vibeos_ext2_t *fs, uint32_t dir_ino, const char *name, 
     /* Every block is full: the directory grows by one. A block-mapped one -
      * from before the volume was upgraded - becomes extent-mapped first, as a
      * file does before it is written (E4-008). */
+    rc = 0;
     if ((le32(dir + 0x20u) & INODE_FLAG_EXTENTS) == 0u) {
         rc = bm_migrate(fs, dir_ino, dir);
-    } else {
-        rc = ext_load(fs, dir_ino, dir);
+    }
+    if (rc == 0) {
+        rc = ext_load(fs, dir_ino, dir, (uint32_t)(ext2_inode_size(dir) / fs->block_size));
     }
     if (rc != 0) {
         return rc;
@@ -1641,28 +1979,27 @@ static int free_tail(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, uint32_t k
     uint32_t step = fs->blocks_per_group * (fs->j.cap / 16u > 1u ? fs->j.cap / 16u : 1u);
     int rc;
 
-    while (fs->ext_n > 0u) {
-        uint32_t i = fs->ext_n - 1u, end = fs->ext[i].lblk + e_len(fs, i), cut;
+    /* Loaded afresh for every piece: in a tree with an index level the list is
+     * a window, the last few leaves, and a piece that empties them makes the
+     * next load the window before (E4-008). */
+    for (;;) {
+        uint32_t i, end, cut;
 
-        if (end <= keep) {
-            break;
-        }
-        cut = end - keep > step ? end - step : keep;
-        if (cut < fs->ext[i].lblk && fs->ext[i].lblk >= keep) {
-            cut = fs->ext[i].lblk;   /* a whole extent past a hole: one piece */
-        }
-        rc = ext_truncate(fs, cut);
-        if (rc == 0) {
-            rc = ext_store(fs, ino, inode);
-        }
-        if (rc == 0) {
-            rc = inode_put(fs, ino, inode);
-        }
+        rc = ext_load(fs, ino, inode, 0xFFFFFFFFu);
         if (rc != 0) {
             return rc;
         }
-        if (fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u && fs->ext_n > 0u &&
-            fs->ext[fs->ext_n - 1u].lblk + e_len(fs, fs->ext_n - 1u) > keep) {
+        if (fs->ext_n == 0u) {
+            return fs->win.on ? -VIBEOS_EIO : 0;   /* a leaf with nothing in it is not a tree */
+        }
+        i = fs->ext_n - 1u;
+        end = fs->ext[i].lblk + e_len(fs, i);
+        if (end <= keep) {
+            return 0;
+        }
+        /* More to do and the transaction half full: commit, the file on the
+         * orphan list first so a cut from here on is finished by a mount. */
+        if (fs->j.on && fs->j.open && fs->j.n > fs->j.cap / 2u) {
             if (!*listed) {
                 rc = orphan_list_add(fs, ino, inode);
                 if (rc != 0) {
@@ -1678,8 +2015,21 @@ static int free_tail(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, uint32_t k
                 return rc;
             }
         }
+        cut = end - keep > step ? end - step : keep;
+        if (cut < fs->ext[i].lblk && fs->ext[i].lblk >= keep) {
+            cut = fs->ext[i].lblk;   /* a whole extent past a hole: one piece */
+        }
+        rc = ext_truncate(fs, cut);
+        if (rc == 0) {
+            rc = ext_store(fs, ino, inode);
+        }
+        if (rc == 0) {
+            rc = inode_put(fs, ino, inode);
+        }
+        if (rc != 0) {
+            return rc;
+        }
     }
-    return 0;
 }
 
 /* ---- block-mapped files (E4-008) --------------------------------------------
@@ -1778,12 +2128,92 @@ static int is_block_mapped(vibeos_ext2_t *fs, const uint8_t *inode) {
            le32(inode + 0x1Cu) != 0u;
 }
 
-/* One data block of a block-mapped file, at file block `lblk`, onto the end of
- * fs->ext: joined to the last extent when both its file and volume positions
- * follow on. In order, because the walk is. */
-static int bm_add(vibeos_ext2_t *fs, uint64_t lblk, uint64_t phys) {
-    uint32_t n = fs->ext_n;
+/* Where a block-mapped file's data blocks go as the walk finds them, in file
+ * order (E4-008): joined into runs, and the runs counted (first pass) or laid
+ * into leaves one after another (second). A leaf is built in wbuf and written
+ * when full; fs->ext keeps one entry per leaf - its first file block and its
+ * block - not one per extent, so a file is held to what two index levels
+ * hold, not to what ext[] holds. */
+typedef struct {
+    int build;                /* 0: count only; 1: into leaves; 2: into fs->ext */
+    uint64_t lblk, phys;      /* the run being gathered */
+    uint32_t len;
+    uint32_t runs, leaves, fill, ind;
+    uint64_t data;
+    uint32_t ino;
+    const uint8_t *inode;
+} bm_sink_t;
 
+static int sink_leaf_flush(vibeos_ext2_t *fs, bm_sink_t *k) {
+    uint32_t per = ext_per_leaf(fs), at = 12u + per * 12u, got;
+    uint64_t blk;
+    int rc;
+
+    if (k->fill == 0u) {
+        return 0;
+    }
+    st16(fs->wbuf + 2u, k->fill);
+    st32(fs->wbuf + at, crc32c(ext2_inode_seed(fs, k->ino, k->inode), fs->wbuf, at));
+    rc = balloc(fs, fs->ext[k->leaves].start_lo | ((uint64_t)fs->ext[k->leaves].start_hi << 32), 1u, &blk, &got);
+    if (rc != 0) {
+        return rc;
+    }
+    if (blk_write(fs, blk, fs->wbuf) != 0) {
+        return -VIBEOS_EIO;
+    }
+    e_put(fs, k->leaves, fs->ext[k->leaves].lblk, 1u, 0, blk);
+    k->leaves++;
+    k->fill = 0;
+    return 0;
+}
+
+static int sink_emit(vibeos_ext2_t *fs, bm_sink_t *k) {
+    uint32_t per = ext_per_leaf(fs);
+    uint8_t *e;
+    int rc;
+
+    if (k->len == 0u) {
+        return 0;
+    }
+    k->runs++;
+    k->data += k->len;
+    if (k->build == 0) {
+        return 0;
+    }
+    if (k->build == 2) {   /* four runs or fewer: the root's own extents */
+        if (fs->ext_n >= 4u) {
+            return -VIBEOS_EIO;
+        }
+        e_put(fs, fs->ext_n, (uint32_t)k->lblk, k->len, 0, k->phys);
+        fs->ext_n++;
+        return 0;
+    }
+    if (k->fill == per) {
+        rc = sink_leaf_flush(fs, k);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    if (k->fill == 0u) {
+        if (k->leaves >= ext_cap(fs)) {
+            return -VIBEOS_EFBIG;
+        }
+        memset(fs->wbuf, 0, fs->block_size);
+        st16(fs->wbuf, EXTENT_MAGIC);
+        st16(fs->wbuf + 4u, per);
+        /* The leaf's key, and a goal for its block: beside its first run. */
+        e_put(fs, k->leaves, (uint32_t)k->lblk, 1u, 0, k->phys);
+    }
+    e = fs->wbuf + 12u + k->fill * 12u;
+    st32(e, (uint32_t)k->lblk);
+    st16(e + 4u, k->len);
+    st16(e + 6u, (uint32_t)(k->phys >> 32));
+    st32(e + 8u, (uint32_t)k->phys);
+    k->fill++;
+    return 0;
+}
+
+static int sink_add(vibeos_ext2_t *fs, bm_sink_t *k, uint64_t lblk, uint64_t phys) {
     if (phys == 0u) {
         return 0;
     }
@@ -1791,23 +2221,27 @@ static int bm_add(vibeos_ext2_t *fs, uint64_t lblk, uint64_t phys) {
         vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, phys);
         return -VIBEOS_EIO;
     }
-    if (n > 0u && e_len(fs, n - 1u) < 32768u && fs->ext[n - 1u].lblk + e_len(fs, n - 1u) == lblk &&
-        e_start(fs, n - 1u) + e_len(fs, n - 1u) == phys) {
-        e_put(fs, n - 1u, fs->ext[n - 1u].lblk, e_len(fs, n - 1u) + 1u, 0, e_start(fs, n - 1u));
+    if (k->len != 0u && k->len < 32768u && k->lblk + k->len == lblk && k->phys + k->len == phys) {
+        k->len++;
         return 0;
     }
-    if (n >= ext_cap(fs)) {
-        return -VIBEOS_EFBIG;   /* more runs than the writer's list holds: deeper trees are E4-008's rest */
+    {
+        int rc = sink_emit(fs, k);
+
+        if (rc != 0) {
+            return rc;
+        }
     }
-    e_put(fs, n, (uint32_t)lblk, 1u, 0, phys);
-    fs->ext_n = n + 1u;
+    k->lblk = lblk;
+    k->phys = phys;
+    k->len = 1u;
     return 0;
 }
 
 /* The data blocks under indirect block `blk`, `level` deep, whose first covers
- * file block `base`: into fs->ext (collect), or the indirect blocks themselves
- * freed and nothing else (!collect). Pointers read one at a time, as bm_tree. */
-static int bm_walk(vibeos_ext2_t *fs, uint64_t blk, uint32_t level, uint64_t base, int collect, bm_run_t *r) {
+ * file block `base`: into the sink, or (no sink) the indirect blocks
+ * themselves freed and nothing else. Pointers read one at a time, as bm_tree. */
+static int bm_walk(vibeos_ext2_t *fs, uint64_t blk, uint32_t level, uint64_t base, bm_sink_t *sink, bm_run_t *r) {
     uint32_t i, ppb = fs->block_size / 4u;
     uint64_t span = 1u;
     int rc;
@@ -1818,6 +2252,9 @@ static int bm_walk(vibeos_ext2_t *fs, uint64_t blk, uint32_t level, uint64_t bas
     if (blk >= fs->blocks_count || blk < fs->first_data_block) {
         vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, blk);
         return -VIBEOS_EIO;
+    }
+    if (sink) {
+        sink->ind++;
     }
     for (i = 1; i < level; i++) {
         span *= ppb;
@@ -1834,43 +2271,113 @@ static int bm_walk(vibeos_ext2_t *fs, uint64_t blk, uint32_t level, uint64_t bas
             continue;
         }
         if (level > 1u) {
-            rc = bm_walk(fs, ptr, level - 1u, base + (uint64_t)i * span, collect, r);
+            rc = bm_walk(fs, ptr, level - 1u, base + (uint64_t)i * span, sink, r);
         } else {
-            rc = collect ? bm_add(fs, base + i, ptr) : 0;
+            rc = sink ? sink_add(fs, sink, base + i, ptr) : 0;
         }
         if (rc != 0) {
             return rc;
         }
     }
-    return collect ? 0 : bm_put(fs, r, blk);
+    return sink ? 0 : bm_put(fs, r, blk);
 }
 
-/* A block-mapped regular file becomes extent-mapped before it is written or
- * truncated (E4-008): the same blocks holding the same bytes, described as
- * runs, and its indirect blocks given back - what `chattr +e` does on Linux
- * (ext4_ext_migrate). This writer changes extents and nothing else, and a file
- * from before the upgrade could not be changed at all. One transaction: the
- * data blocks do not move, so a cut leaves the file either as it was or
- * converted. The walk ends before ext_store, which writes its tree where the
- * block numbers were. Leaves fs->ext loaded with the file's extents. */
-static int bm_migrate(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
+/* Every data block of the block-mapped inode, in file order, into the sink. */
+static int bm_scan(vibeos_ext2_t *fs, const uint8_t *inode, bm_sink_t *k) {
     uint64_t ppb = fs->block_size / 4u;
-    bm_run_t r = {0, 0};
     uint32_t i;
     int rc = 0;
 
-    fs->ext_n = 0;
     for (i = 0; i < 12u && rc == 0; i++) {
-        rc = bm_add(fs, i, le32(inode + 0x28u + i * 4u));
+        rc = sink_add(fs, k, i, le32(inode + 0x28u + i * 4u));
     }
     if (rc == 0) {
-        rc = bm_walk(fs, le32(inode + 0x28u + 12u * 4u), 1u, 12u, 1, &r);
+        rc = bm_walk(fs, le32(inode + 0x28u + 12u * 4u), 1u, 12u, k, 0);
     }
     if (rc == 0) {
-        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u + ppb, 1, &r);
+        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u + ppb, k, 0);
     }
     if (rc == 0) {
-        rc = bm_walk(fs, le32(inode + 0x28u + 14u * 4u), 3u, 12u + ppb + ppb * ppb, 1, &r);
+        rc = bm_walk(fs, le32(inode + 0x28u + 14u * 4u), 3u, 12u + ppb + ppb * ppb, k, 0);
+    }
+    if (rc == 0) {
+        rc = sink_emit(fs, k);   /* the last run */
+        k->len = 0;
+    }
+    return rc;
+}
+
+/* A block-mapped regular file or directory becomes extent-mapped before it is
+ * changed (E4-008): the same blocks holding the same bytes, described as runs,
+ * and its indirect blocks given back - what `chattr +e` does on Linux
+ * (ext4_ext_migrate). This writer changes extents and nothing else, and a file
+ * from before the upgrade could not be changed at all.
+ *
+ * One transaction: there is no state between the two forms that ext4 allows,
+ * so a cut must find the file as it was or converted, never half. The first
+ * pass counts what the tree will take - leaves, index blocks, the indirect
+ * blocks to free - and a conversion the log could not hold is refused with
+ * ENOSPC before anything changes. The second lays the runs into leaves as the
+ * walk finds them, so a file is held to two index levels (EFBIG past that)
+ * rather than to what fs->ext holds; the block numbers are read from the inode
+ * until the root is written over them, last. Leaves fs->ext stale. */
+static int bm_migrate(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
+    uint32_t per = ext_per_leaf(fs), ipb = per, nleaves, nidx = 0, k, i, got;
+    bm_sink_t cnt = {0}, b = {0};
+    bm_run_t r = {0, 0};
+    uint64_t idx[4];
+    uint8_t *root = inode + 40u;
+    int rc;
+
+    fs->ext_n = 0;
+    fs->win.on = 0;   /* fs->ext is the leaves' list here, not anybody's window */
+    cnt.ino = b.ino = ino;
+    cnt.inode = b.inode = inode;
+    rc = bm_scan(fs, inode, &cnt);
+    if (rc != 0) {
+        return rc;
+    }
+    nleaves = cnt.runs <= 4u ? 0u : (cnt.runs + per - 1u) / per;
+    if (nleaves > 4u) {
+        nidx = (nleaves + ipb - 1u) / ipb;
+    }
+    if (nidx > 4u) {
+        return -VIBEOS_EFBIG;   /* more than two index levels hold */
+    }
+    /* What the log takes: each new leaf and index block, the bitmaps and
+     * descriptors of where they and the freed indirect blocks lie - counted
+     * as one each, the most they can be - and the inode and superblock. */
+    if (fs->j.on && fs->j.n + 2u * (nleaves + nidx) + 2u * cnt.ind + 8u > fs->j.cap) {
+        return -VIBEOS_ENOSPC;
+    }
+    b.build = nleaves == 0u ? 2 : 1;
+    rc = bm_scan(fs, inode, &b);
+    if (rc == 0 && b.build == 1) {
+        rc = sink_leaf_flush(fs, &b);
+    }
+    if (rc != 0) {
+        return rc;
+    }
+    /* The index blocks, from the leaves' list. */
+    for (k = 0; k < nidx; k++) {
+        uint32_t first = k * ipb, n = nleaves - first < ipb ? nleaves - first : ipb;
+
+        memset(fs->wbuf, 0, fs->block_size);
+        st16(fs->wbuf, EXTENT_MAGIC);
+        st16(fs->wbuf + 2u, n);
+        st16(fs->wbuf + 4u, ipb);
+        st16(fs->wbuf + 6u, 1u);
+        for (i = 0; i < n; i++) {
+            x_put(fs->wbuf + 12u + i * 12u, fs->ext[first + i].lblk, e_start(fs, first + i));
+        }
+        node_csum_set(fs, ino, inode, fs->wbuf);
+        rc = balloc(fs, e_start(fs, first), 1u, &idx[k], &got);
+        if (rc != 0) {
+            return rc;
+        }
+        if (blk_write(fs, idx[k], fs->wbuf) != 0) {
+            return -VIBEOS_EIO;
+        }
     }
     for (i = 0; i < 3u && rc == 0; i++) {   /* now the indirect blocks themselves */
         rc = bm_walk(fs, le32(inode + 0x28u + (12u + i) * 4u), i + 1u, 0, 0, &r);
@@ -1881,13 +2388,38 @@ static int bm_migrate(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
     if (rc != 0) {
         return rc;
     }
-    memset(inode + 0x28u, 0, 60u);   /* depth 0, no entries: ext_store's root starts clean */
-    st32(inode + 0x20u, le32(inode + 0x20u) | INODE_FLAG_EXTENTS);
-    rc = ext_store(fs, ino, inode);
-    if (rc == 0) {
-        rc = inode_put(fs, ino, inode);
+    /* Last, the root, where the block numbers were. */
+    memset(root, 0, 60u);
+    st16(root, EXTENT_MAGIC);
+    st16(root + 4u, 4u);
+    if (nidx > 0u) {
+        st16(root + 2u, nidx);
+        st16(root + 6u, 2u);
+        for (k = 0; k < nidx; k++) {
+            x_put(root + 12u + k * 12u, fs->ext[k * ipb].lblk, idx[k]);
+        }
+    } else if (nleaves > 0u) {
+        st16(root + 2u, nleaves);
+        st16(root + 6u, 1u);
+        for (k = 0; k < nleaves; k++) {
+            x_put(root + 12u + k * 12u, fs->ext[k].lblk, e_start(fs, k));
+        }
+    } else {
+        st16(root + 2u, fs->ext_n);
+        for (k = 0; k < fs->ext_n; k++) {
+            uint8_t *e = root + 12u + k * 12u;
+
+            st32(e, fs->ext[k].lblk);
+            st16(e + 4u, fs->ext[k].len);
+            st16(e + 6u, fs->ext[k].start_hi);
+            st32(e + 8u, fs->ext[k].start_lo);
+        }
     }
-    return rc;
+    st32(inode + 0x20u, le32(inode + 0x20u) | INODE_FLAG_EXTENTS);
+    set_blocks(inode, (cnt.data + nleaves + nidx + (le32(inode + 0x68u) != 0u ? 1u : 0u)) *
+                          (fs->block_size / VIBEOS_BLOCK_SIZE));
+    fs->ext_n = 0;
+    return inode_put(fs, ino, inode);
 }
 
 /* inode_release for a file that is on the orphan list already (`listed`): it
@@ -1899,10 +2431,7 @@ static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode,
     /* No names from here, whatever a commit between pieces shows. */
     st16(inode + 0x1Au, 0);
     if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) != 0u) {
-        rc = ext_load(fs, ino, inode);
-        if (rc == 0) {
-            rc = free_tail(fs, ino, inode, 0, &listed);
-        }
+        rc = free_tail(fs, ino, inode, 0, &listed);
         if (rc != 0) {
             return rc;
         }
@@ -2076,11 +2605,8 @@ static void orphans_at_mount(vibeos_ext2_t *fs) {
 
             rc = 0;
             if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) != 0u) {
-                rc = ext_load(fs, head, inode);
-                if (rc == 0) {
-                    rc = free_tail(fs, head, inode,
-                                   (uint32_t)((ext2_inode_size(inode) + fs->block_size - 1u) / fs->block_size), &listed);
-                }
+                rc = free_tail(fs, head, inode,
+                               (uint32_t)((ext2_inode_size(inode) + fs->block_size - 1u) / fs->block_size), &listed);
             }
             if (rc == 0) {
                 rc = orphan_unlink(fs, head, next);
@@ -2171,6 +2697,7 @@ static int node_create(vibeos_ext2_t *fs, const char *path, uint32_t mode, const
             rc = blk_write(fs, blk, b);
             if (rc == 0) {
                 fs->ext_n = 0;
+                fs->win.on = 0;   /* a new inode's list, not anybody's window */
                 rc = ext_add(fs, 0, 1u, blk);
             }
             if (rc == 0) {
@@ -2365,7 +2892,7 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
     if (end > 0x7FFFFFFFull && (fs->ro_compat & RO_COMPAT_LARGE_FILE) == 0u) {
         return -VIBEOS_EFBIG;
     }
-    rc = ext_load(fs, ino, inode);
+    rc = ext_load(fs, ino, inode, (uint32_t)(off / bs));
     if (rc != 0) {
         return rc;
     }
@@ -2377,6 +2904,11 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
 
         if (chunk > len - done) {
             chunk = len - done;
+        }
+        /* Past the window's leaves the list knows nothing: a short write, and
+         * the caller's next call loads the window there (E4-008). */
+        if (fs->win.on && (bi < fs->win.lo || bi >= fs->win.hi)) {
+            break;
         }
         phys = ext_map(fs, bi, &uninit);
         if (phys == 0u) {
@@ -2391,6 +2923,9 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
             }
             if (want > 32768u) {
                 want = 32768u;
+            }
+            if (fs->win.on && (uint64_t)bi + want > fs->win.hi) {
+                want = (uint32_t)(fs->win.hi - bi);
             }
             goal = nexti > 0u ? e_start(fs, nexti - 1u) + e_len(fs, nexti - 1u) : g_start(fs, (ino - 1u) / fs->inodes_per_group);
             if (nruns == WRITE_RUNS_MAX) {
@@ -2511,7 +3046,7 @@ static int x_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
     if (new_size < size) {
         uint32_t keep = (uint32_t)((new_size + bs - 1u) / bs);
 
-        rc = ext_load(fs, ino, inode);
+        rc = ext_load(fs, ino, inode, (uint32_t)(new_size / bs));
         if (rc != 0) {
             return rc;
         }

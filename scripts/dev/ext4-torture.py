@@ -130,12 +130,16 @@ class Gen:
 
     def __init__(self, rng, root, budget, inodes, block, states=True):
         self.rng = rng
-        # The writer keeps at most four leaves of extents (EXT_CAP_MAX in
-        # ext4_write.c; E4-008, E4-010): past that a write is short, then EFBIG,
-        # where Linux grows the tree a level. Each write into a file can add at
-        # most two extents - its own and the one a hole splits off - so the
-        # writes a file may take are counted, and kept under half the cap.
-        self.max_writes = (min(4 * ((block - 12) // 12), 1360) - 8) // 2
+        # The writer keeps a tree two index levels deep at most: four index
+        # blocks under the root, of (bs-12)/12 leaves of as many extents each
+        # (E4-008). Past that a write is EFBIG where Linux grows a third level.
+        # Each write into a file can add at most two extents - its own and the
+        # one a hole splits off - so the writes a file may take are counted and
+        # kept under half of that; and under 3,000, so that a seed stays a
+        # seed's worth of time. Files past one leaf's worth, past four leaves
+        # and past one index block are all inside that, on 1 KiB blocks.
+        per = (block - 12) // 12
+        self.max_writes = min((4 * per * per - 8) // 2, 3000)
         self.writes = {}   # st_ino -> writes made into it
         self.inodes = inodes   # names the tree may hold: more and Linux, unbounded, would disagree
         self.root = root

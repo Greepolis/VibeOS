@@ -54,9 +54,9 @@
 
 ### the double indirect tree is placed where the single one ends
 --- old
-        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u + ppb, 1, &r);
+        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u + ppb, k, 0);
 +++ new
-        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u, 1, &r);
+        rc = bm_walk(fs, le32(inode + 0x28u + 13u * 4u), 2u, 12u, k, 0);
 
 # Not a case, and why. Leaving the block numbers where ext_store writes the
 # tree went NOT RED, correctly for this volume: ext_store reads the root's depth
@@ -71,6 +71,29 @@
 --- old
     if ((le32(dir + 0x20u) & INODE_FLAG_EXTENTS) == 0u) {
         rc = bm_migrate(fs, dir_ino, dir);
-    } else {
+    }
 +++ new
-    {
+    if (0) {
+        rc = bm_migrate(fs, dir_ino, dir);
+    }
+
+### the conversion's last leaf is never written
+--- old
+    if (rc == 0 && b.build == 1) {
+        rc = sink_leaf_flush(fs, &b);
+    }
++++ new
+    if (0) {
+    }
+
+### a converted file's index blocks are keyed from the wrong leaf
+--- old
+            x_put(fs->wbuf + 12u + i * 12u, fs->ext[first + i].lblk, e_start(fs, first + i));
++++ new
+            x_put(fs->wbuf + 12u + i * 12u, fs->ext[first].lblk, e_start(fs, first + i));
+
+### a converted file's i_blocks leaves its index blocks out
+--- old
+    set_blocks(inode, (cnt.data + nleaves + nidx + (le32(inode + 0x68u) != 0u ? 1u : 0u)) *
++++ new
+    set_blocks(inode, (cnt.data + nleaves + (le32(inode + 0x68u) != 0u ? 1u : 0u)) *

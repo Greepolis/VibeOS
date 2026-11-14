@@ -220,14 +220,14 @@
 
 ### a directory that fills up does not grow
 --- old
-        rc = ext_load(fs, dir_ino, dir);
+        rc = ext_load(fs, dir_ino, dir, (uint32_t)(ext2_inode_size(dir) / fs->block_size));
     }
     if (rc != 0) {
         return rc;
     }
     goal = fs->ext_n
 +++ new
-        rc = ext_load(fs, dir_ino, dir);
+        rc = ext_load(fs, dir_ino, dir, (uint32_t)(ext2_inode_size(dir) / fs->block_size));
     }
     if (rc == 0) {
         return -VIBEOS_ENOSPC;

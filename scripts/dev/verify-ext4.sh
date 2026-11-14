@@ -424,6 +424,16 @@ head -c 5000000 /dev/urandom > "$M8/tree/d/two"      # and a double indirect, at
 head -c 5000 /dev/urandom > "$M8/tree/d/small"
 head -c 90000 /dev/urandom > "$M8/tree/over"
 ln -s small "$M8/tree/d/link"
+# 3,000 runs with a hole after each: more than the writer's list of extents
+# holds, so its conversion has to lay the tree out leaf by leaf (two index
+# levels on 1 KiB blocks).
+python3 - "$M8/tree/d/frag" <<'PYEOF'
+import sys
+with open(sys.argv[1], "wb") as f:
+    for k in range(3000):
+        f.seek(k * 2048)
+        f.write(bytes((k * 3 + j) & 255 for j in range(1024)))
+PYEOF
 mk8() {   # tree image
     truncate -s 64M "$2"
     mkfs.ext3 -q -F -b 1024 -I 256 -N 64 ${1:+-d "$1"} "$2" > /dev/null 2>&1 &&
@@ -437,7 +447,7 @@ debugfs -R "stat /d/two" "$M8/fs.img" 2>/dev/null | grep -q "(DIND)" \
     || fail "the fixture has no double indirect block" blockmap_setup_failed
 debugfs -R "stat /d" "$M8/fs.img" 2>/dev/null | grep -q "Flags: 0x0" \
     || fail "the fixture's directory is not block-mapped" blockmap_setup_failed
-printf 'create\t/new\t644\nwrite\t/new\t0\t7000\t4\nrename\t/new\t/over\nunlink\t/over\nunlink\t/d/one\nunlink\t/d/two\nunlink\t/d/small\nunlink\t/d/link\nrmdir\t/d\n' > "$M8/script.txt"
+printf 'create\t/new\t644\nwrite\t/new\t0\t7000\t4\nrename\t/new\t/over\nunlink\t/over\nunlink\t/d/one\nunlink\t/d/two\nunlink\t/d/small\nunlink\t/d/link\nunlink\t/d/frag\nrmdir\t/d\n' > "$M8/script.txt"
 (cd "$M8" && "$EX" apply) > "$M8/a.out" 2> "$M8/a.err" \
     || fail "$(grep -m1 FAIL "$M8/a.err" || head -1 "$M8/a.err")" blockmap_remove_refused
 e2fsck -fn "$M8/fs.img" > "$M8/fsck.log" 2>&1 \
@@ -454,7 +464,7 @@ W8="$T/blockmap-write"
 mkdir -p "$W8"
 cp -r "$M8/tree" "$W8/want"
 mk8 "$M8/tree" "$W8/fs.img" || fail "cannot make the upgraded volume" blockmap_setup_failed
-printf 'write\t/d/one\t100000\t5000\t7\nwrite\t/d/one\t300000\t70000\t9\nwrite\t/d/two\t4990000\t30000\t8\ntruncate\t/d/two\t2000000\ntruncate\t/d/small\t1000\n' > "$W8/script.txt"
+printf 'write\t/d/one\t100000\t5000\t7\nwrite\t/d/one\t300000\t70000\t9\nwrite\t/d/two\t4990000\t30000\t8\ntruncate\t/d/two\t2000000\ntruncate\t/d/small\t1000\nwrite\t/d/frag\t3000000\t5000\t3\n' > "$W8/script.txt"
 # And the block-mapped directory grows: entries past its one block.
 for k in $(seq 1 40); do printf 'create\t/d/e%03d-%s\t644\n' "$k" xxxxxxxxxxxxxxxxxxxxxxxx >> "$W8/script.txt"; done
 python3 - "$W8/want" <<'PYEOF'
@@ -469,6 +479,7 @@ def write(name, off, n, seed):
         f.write(bytes(pat(seed, off + i) for i in range(n)))
 def trunc(name, size):
     os.truncate(os.path.join(root, name), size)
+write("d/frag", 3000000, 5000, 3)
 write("d/one", 100000, 5000, 7)
 write("d/one", 300000, 70000, 9)
 write("d/two", 4990000, 30000, 8)
@@ -479,16 +490,94 @@ PYEOF
     || fail "$(grep -m1 FAIL "$W8/a.err" || head -1 "$W8/a.err")" blockmap_write_refused
 e2fsck -fn "$W8/fs.img" > "$W8/fsck.log" 2>&1 \
     || fail "$(head -3 "$W8/fsck.log" | tr '\n' ' ')" blockmap_write_volume_not_clean
-for f in d/one d/two d/small; do
+for f in d/one d/two d/small d/frag; do
     debugfs -R "dump /$f $W8/got" "$W8/fs.img" > /dev/null 2>&1
     cmp -s "$W8/got" "$W8/want/$f" || fail "/$f is not what the writes made it" blockmap_write_wrong_bytes
     debugfs -R "stat /$f" "$W8/fs.img" 2>/dev/null | grep -q "Flags: 0x80000" \
         || fail "/$f was changed and is still block-mapped" blockmap_not_migrated
 done
+debugfs -R "ex /d/frag" "$W8/fs.img" 2>/dev/null | grep -q "^ 1/ 2" \
+    || fail "/d/frag's conversion did not make a tree two index levels deep" blockmap_frag_not_deep
 [ "$(debugfs -R "ls /d" "$W8/fs.img" 2>/dev/null | tr -s ' ' '\n' | grep -c '^e[0-9]')" = 40 ] \
     || fail "the block-mapped directory did not take its 40 new entries" blockmap_dir_not_grown
 debugfs -R "stat /d" "$W8/fs.img" 2>/dev/null | grep -q "Flags: 0x80000" \
     || fail "/d grew and is still block-mapped" blockmap_dir_not_migrated
+
+# ---- trees with index levels (E4-008) ---------------------------------------
+# On 1 KiB blocks a leaf holds 84 extents and an index block 84 leaves, so a
+# file of 3,000 one-block extents with a hole after each is two index levels
+# deep - mkfs.ext4 -d builds it, Linux's own tree. The driver changes it in the
+# middle and at the end, cuts it in the middle, and the bytes debugfs reads are
+# held to the same changes made here with the exerciser's pattern. Then the
+# driver grows a tree of its own past what one index block holds (8,000
+# separate pieces: the root becomes an index level, and an index block splits),
+# and both files go - truncated to nothing, then unlinked - leaving the free
+# counts of the same volume made with nothing in it.
+D8="$T/deep"
+mkdir -p "$D8/tree" "$D8/emptytree"
+python3 - "$D8/tree/frag" <<'PYEOF'
+import sys
+with open(sys.argv[1], "wb") as f:
+    for k in range(3000):
+        f.seek(k * 2048)
+        f.write(bytes((k * 7 + j) & 255 for j in range(1024)))
+PYEOF
+cp "$D8/tree/frag" "$D8/want"
+truncate -s 64M "$D8/fs.img" "$D8/empty.img"
+mkfs.ext4 -q -F -b 1024 -N 64 -d "$D8/tree" "$D8/fs.img" > /dev/null 2>&1 || fail "mkfs (deep tree)" deep_setup_failed
+mkfs.ext4 -q -F -b 1024 -N 64 -d "$D8/emptytree" "$D8/empty.img" > /dev/null 2>&1 || fail "mkfs (deep tree)" deep_setup_failed
+debugfs -R "ex /frag" "$D8/fs.img" 2>/dev/null | grep -q "^ 1/ 2" \
+    || fail "mkfs.ext4 did not make /frag two index levels deep" deep_setup_failed
+printf 'write\t/frag\t1500000\t3000\t5\nwrite\t/frag\t6142000\t9000\t6\nwrite\t/frag\t1000\t100\t2\nwrite\t/frag\t2200000\t1000000\t4\nwrite\t/frag\t2200000\t1000000\t8\ntruncate\t/frag\t4000000\n' > "$D8/script.txt"
+python3 - "$D8/want" <<'PYEOF'
+import os, sys
+path = sys.argv[1]
+def pat(seed, p):    # pat() in tests/kernel/ext4_exercise.c
+    return (seed * 31 + (p >> 8) * ((seed << 1) | 1) + (p & 255)) & 0xFF
+with open(path, "r+b") as f:
+    # The last two run through far more leaves than a window holds. The first
+    # fills the holes there, and is cut short by the fresh runs one call may
+    # take long before it leaves a window; the second, over blocks that are
+    # all there now, takes none, and crosses window after window.
+    for off, n, seed in ((1500000, 3000, 5), (6142000, 9000, 6), (1000, 100, 2), (2200000, 1000000, 4),
+                         (2200000, 1000000, 8)):
+        f.seek(off)
+        f.write(bytes(pat(seed, off + i) for i in range(n)))
+os.truncate(path, 4000000)
+PYEOF
+(cd "$D8" && "$EX" apply) > "$D8/a.out" 2> "$D8/a.err" \
+    || fail "$(grep -m1 FAIL "$D8/a.err" || head -1 "$D8/a.err")" deep_change_refused
+e2fsck -fn "$D8/fs.img" > "$D8/fsck.log" 2>&1 \
+    || fail "$(head -3 "$D8/fsck.log" | tr '\n' ' ')" deep_volume_not_clean
+debugfs -R "dump /frag $D8/got" "$D8/fs.img" > /dev/null 2>&1
+cmp -s "$D8/got" "$D8/want" || fail "/frag is not what the writes and the cut made it" deep_wrong_bytes
+printf 'create\t/grown\t644\nstride\t/grown\t8000\t2048\t1024\t9\n' > "$D8/script.txt"
+(cd "$D8" && "$EX" apply) > "$D8/a.out" 2> "$D8/a.err" \
+    || fail "$(grep -m1 FAIL "$D8/a.err" || head -1 "$D8/a.err")" deep_grow_refused
+e2fsck -fn "$D8/fs.img" > "$D8/fsck.log" 2>&1 \
+    || fail "$(head -3 "$D8/fsck.log" | tr '\n' ' ')" deep_grown_not_clean
+debugfs -R "ex /grown" "$D8/fs.img" 2>/dev/null | grep -q "^ 1/ 2" \
+    || fail "8,000 pieces did not make /grown two index levels deep" deep_not_grown
+[ "$(debugfs -R "ex /grown" "$D8/fs.img" 2>/dev/null | grep -c '^ 0/ 2')" -ge 2 ] \
+    || fail "no index block was split under /grown's root" deep_not_split
+python3 - "$D8/gwant" <<'PYEOF'
+import sys
+def pat(seed, p):
+    return (seed * 31 + (p >> 8) * ((seed << 1) | 1) + (p & 255)) & 0xFF
+with open(sys.argv[1], "wb") as f:
+    for k in range(8000):
+        f.seek(k * 2048)
+        f.write(bytes(pat(9, k * 2048 + i) for i in range(1024)))
+PYEOF
+debugfs -R "dump /grown $D8/got" "$D8/fs.img" > /dev/null 2>&1
+cmp -s "$D8/got" "$D8/gwant" || fail "/grown is not what its 8,000 writes made it" deep_grown_wrong_bytes
+printf 'truncate\t/frag\t0\nunlink\t/frag\nunlink\t/grown\n' > "$D8/script.txt"
+(cd "$D8" && "$EX" apply) > "$D8/a.out" 2> "$D8/a.err" \
+    || fail "$(grep -m1 FAIL "$D8/a.err" || head -1 "$D8/a.err")" deep_release_refused
+e2fsck -fn "$D8/fs.img" > "$D8/fsck.log" 2>&1 \
+    || fail "$(head -3 "$D8/fsck.log" | tr '\n' ' ')" deep_released_not_clean
+[ "$(orph_free "$D8/fs.img")" = "$(orph_free "$D8/empty.img")" ] \
+    || fail "free $(orph_free "$D8/fs.img"), an empty volume has $(orph_free "$D8/empty.img")" deep_blocks_leaked
 
 # ---- what Linux keeps as it goes (E4-013) ------------------------------------
 # A mount is counted and dated, the superblock says when it was last written
