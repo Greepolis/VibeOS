@@ -37,6 +37,7 @@
 #define SYS_mprotect 10
 #define SYS_exit    60
 #define SYS_sysinfo 99
+#define SYS_clock_gettime 228
 
 #define PROT_READ  0x1
 #define PROT_WRITE 0x2
@@ -88,6 +89,14 @@ static unsigned put_dec(char *dst, unsigned at, uint64_t v) {
 
 /* One line, one write: a line built from several would interleave with other
  * programs' output, and the gate reads these. */
+/* Milliseconds on the monotonic clock: where the read-back's time goes. */
+static uint64_t now_ms(void) {
+    uint64_t ts[2] = {0, 0};
+
+    (void)sys3(SYS_clock_gettime, 1, (uint64_t)(uintptr_t)ts, 0);
+    return ts[0] * 1000u + ts[1] / 1000000u;
+}
+
 static void say4(const char *a, uint64_t av, const char *b, uint64_t bv,
                  const char *c, uint64_t cv, const char *d, uint64_t dv) {
     char line[192];
@@ -381,16 +390,26 @@ int vibeos_main(void) {
      * nothing for 45 seconds, called the machine wedged. Checking and
      * releasing together means every page-in finds the frames the previous
      * blocks gave back; and it says how far it has got. */
-    for (i = 0; i < got; i++) {
-        for (p = 0; p < BLOCK_PAGES; p++) {
-            const uint64_t *w = (const uint64_t *)(g_block[i] + p * 4096u);
-            if (w[0] != stamp(i, p) || w[256] != ~stamp(i, p)) {
-                bad++;
+    {
+        uint64_t read_ms = 0, unmap_ms = 0, t;
+
+        for (i = 0; i < got; i++) {
+            t = now_ms();
+            for (p = 0; p < BLOCK_PAGES; p++) {
+                const uint64_t *w = (const uint64_t *)(g_block[i] + p * 4096u);
+                if (w[0] != stamp(i, p) || w[256] != ~stamp(i, p)) {
+                    bad++;
+                }
             }
-        }
-        (void)sys3(SYS_munmap, (uint64_t)(uintptr_t)g_block[i], BLOCK_BYTES, 0);
-        if ((i % 256u) == 255u) {
-            say4("RECLAIM_CHECKED ", (uint64_t)i + 1u, " bad=", bad, 0, 0, 0, 0);
+            read_ms += now_ms() - t;
+            t = now_ms();
+            (void)sys3(SYS_munmap, (uint64_t)(uintptr_t)g_block[i], BLOCK_BYTES, 0);
+            unmap_ms += now_ms() - t;
+            if ((i % 256u) == 255u) {
+                /* Where the time went: reading (page-ins) or giving back. */
+                say4("RECLAIM_CHECKED ", (uint64_t)i + 1u, " bad=", bad, " read_ms=", read_ms,
+                     " unmap_ms=", unmap_ms);
+            }
         }
     }
     if (bad != 0u) {

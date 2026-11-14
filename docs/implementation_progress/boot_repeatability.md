@@ -797,3 +797,28 @@ The table says where things stand; this is how they got there.
 ### Boot Repeatability (as of 2026-09-29)
 
 **24 boots clean out of 24**, from a long-standing 1 in 8. Six defects fixed: three were in the diagnostics rather than the kernel they watched, and three came from CI and nightly logs - a copy-on-write fast path deciding on a fact its compare-exchange could not guard, a kernel address handed to ring 3 as AT_BASE, and a panic that stopped one core instead of the machine, which is what separated every silent wedge from its cause. 24/24 is a good number and not a proof; what is stronger is that two of the three are asserted deterministically and the third turns a silence into a named panic
+
+### Where a boot's seconds go (2026-11-14)
+
+The gate's phases are a dozen markers and one of them, `busybox_cat`, held
+about 200 of a boot's 210 seconds, so a slower boot could not be placed. The
+gate now writes `qemu-cli-serial-timed*.log`, every serial line with the second
+it arrived, and charging the gaps to the program running showed three programs
+taking more than half the boot: `SVC_RECL` 65 s, `THREADS` 46 s, BusyBox 26 s.
+
+- `THREADS` (46 s to 3.6 s): `sched_yield` was `sti; hlt`, a tick of nothing
+  per call even with every other core idle, and its race rounds poll with it.
+  It returns at once now when no other task is waiting for a core, as Linux's
+  does. Two waits in the test that counted yields as time were rewritten to
+  count time: C5 handed the worker two seconds as 200 yields, and the race
+  jitter was a number of yields.
+- `SVC_RECL` (65 s to 26 s): timing its read-back and its unmapping apart put
+  28 of 30 seconds in `munmap`, which logged one DEBUG event per page - and
+  the disk log sink takes DEBUG, so 91,584 writes to the volume, which also
+  pushed everything else out of the log on disk. One event per call now. The
+  first guess, reclaim scanning with swap full, was measured wrong: an early
+  exit for a full swap area cut the scans by a third and the seconds not at all.
+
+Six boots measured after all three: 6/6, median 119 s against 201 s, with the
+corpus staged on both sides (a comparison without it had earlier put a 30%
+slowdown on the wrong change).
