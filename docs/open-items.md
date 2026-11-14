@@ -6,9 +6,9 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-73 open in 3 registers.
+72 open in 3 registers.
 
-## [ext4](implementation_progress/fs_ext4.md) - 7
+## [ext4](implementation_progress/fs_ext4.md) - 6
 
 | ID | What | Status |
 |---|---|---|
@@ -18,7 +18,6 @@ is [next-steps.md](next-steps.md).
 | E4-017 | The block layer writes one 512-byte sector at a time, so a structure across two sectors (the superblock, whose checksum is in the second) is atomic only if the ... | open |
 | E4-020 | An external journal, a block-mapped one (ext3's), v2 checksums and fast commits are not written - the volume is mounted read-only - and a volume needing a ... | open |
 | E4-011 | Allocation is first-fit from the parent's group: directories are not spread (Orlov), no preallocation, no delayed allocation; no `fallocate`, hole punching, ... | open |
-| E4-004 | The high 16 bits of an extent's start are read, and no fixture is past 2^32 blocks to need them | open |
 
 ## [Review findings tracker](implementation_progress/review_findings_tracker.md) - 6
 
