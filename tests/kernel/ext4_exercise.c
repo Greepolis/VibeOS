@@ -36,12 +36,16 @@
  * read, and counts as a checksum failure; a volume that claims a feature this
  * driver does not read must not mount, and names the feature bits. */
 
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+/* Mapping a volume past a gigabyte (load): POSIX only. The Windows host job
+ * builds this exerciser and never gives it a volume that size. */
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 
 #include "vibeos/abi_linux.h"
 #include "vibeos/ext2.h"
@@ -132,6 +136,7 @@ static int load(const char *path) {
     if (!f || fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) <= 0 || fseek(f, 0, SEEK_SET) != 0) {
         return -1;
     }
+#ifndef _WIN32
     if ((uint64_t)n > (1ull << 30)) {
         int fd = open(path, g_writable_dev ? O_RDWR : O_RDONLY);
         void *m;
@@ -147,7 +152,9 @@ static int load(const char *path) {
         }
         g_img = (uint8_t *)m;
         g_mapped = 1;
-    } else {
+    } else
+#endif
+    {
         g_img = (uint8_t *)malloc((size_t)n);
         if (!g_img || fread(g_img, 1, (size_t)n, f) != (size_t)n) {
             return -1;
