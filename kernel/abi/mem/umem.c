@@ -116,7 +116,7 @@ long vibeos_umem_unmap(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t e
 long vibeos_umem_unmap_vm(vibeos_vmspace_t *vm, vibeos_procstate_t *ps, uint64_t addr,
                           uint64_t end) {
     vibeos_vmspace_t v = *vm;
-    uint64_t va;
+    uint64_t va, released = 0;
 
     /* The middle of a region needs a descriptor to split it with, and the
      * pool can be empty: then nothing is unmapped and the caller says ENOMEM,
@@ -145,8 +145,16 @@ long vibeos_umem_unmap_vm(vibeos_vmspace_t *vm, vibeos_procstate_t *ps, uint64_t
          * belonged, a forked child reading back something it had not
          * written. */
         if (vibeos_vmspace_unmap(&v, va) == 1) {
-            ks_log(VIBEOS_LOG_DEBUG, 45u, va, 0, "munmap released a page (a0 = address)");
+            released++;
         }
+    }
+    /* One event for the call, not one a page. The disk sink takes DEBUG, so
+     * each event was a write to the volume: svc-reclaim giving back 1,431
+     * blocks of 64 pages wrote 91,584 of them - 28 of its 30 seconds of
+     * unmapping, measured by timing the read and the unmap apart - and pushed
+     * everything else out of the log on disk. */
+    if (released != 0u) {
+        ks_log(VIBEOS_LOG_DEBUG, 45u, addr, released, "munmap released pages (a0 = start, a1 = pages)");
     }
     /* A shootdown still does not belong here, and the gap it left is closed a
      * different way.
