@@ -408,6 +408,43 @@ for op in unlink truncate; do
     done
 done
 
+# ---- block-mapped files on an upgraded volume (E4-008) ----------------------
+# A volume made as ext3 and upgraded keeps the files written before the upgrade
+# block-mapped: direct blocks and indirect trees, not extents. Removing every
+# one of them - a file under a single indirect block, one deep enough for a
+# double, a fast symlink, a block-mapped directory, and a file replaced by a
+# rename - must leave the volume e2fsck calls clean with exactly the free
+# blocks and inodes of the same volume made empty. The journal is made again
+# after the upgrade: ext3's is block-mapped too, and this driver does not write
+# one (E4-020).
+M8="$T/blockmap"
+mkdir -p "$M8/tree/d" "$M8/empty"
+head -c 300000 /dev/urandom > "$M8/tree/d/one"       # direct and single indirect
+head -c 5000000 /dev/urandom > "$M8/tree/d/two"      # and a double indirect, at 1 KiB
+head -c 5000 /dev/urandom > "$M8/tree/d/small"
+head -c 90000 /dev/urandom > "$M8/tree/over"
+ln -s small "$M8/tree/d/link"
+mk8() {   # tree image
+    truncate -s 64M "$2"
+    mkfs.ext3 -q -F -b 1024 -I 256 -N 64 ${1:+-d "$1"} "$2" > /dev/null 2>&1 &&
+    tune2fs -O extent,metadata_csum,huge_file,dir_nlink,extra_isize "$2" > /dev/null 2>&1 &&
+    e2fsck -fy "$2" > /dev/null 2>&1
+    tune2fs -O ^has_journal "$2" > /dev/null 2>&1 && tune2fs -j "$2" > /dev/null 2>&1
+}
+mk8 "$M8/tree" "$M8/fs.img" || fail "cannot make the upgraded volume" blockmap_setup_failed
+mk8 "" "$M8/empty.img" || fail "cannot make the empty upgraded volume" blockmap_setup_failed
+debugfs -R "stat /d/two" "$M8/fs.img" 2>/dev/null | grep -q "(DIND)" \
+    || fail "the fixture has no double indirect block" blockmap_setup_failed
+debugfs -R "stat /d" "$M8/fs.img" 2>/dev/null | grep -q "Flags: 0x0" \
+    || fail "the fixture's directory is not block-mapped" blockmap_setup_failed
+printf 'create\t/new\t644\nwrite\t/new\t0\t7000\t4\nrename\t/new\t/over\nunlink\t/over\nunlink\t/d/one\nunlink\t/d/two\nunlink\t/d/small\nunlink\t/d/link\nrmdir\t/d\n' > "$M8/script.txt"
+(cd "$M8" && "$EX" apply) > "$M8/a.out" 2> "$M8/a.err" \
+    || fail "$(grep -m1 FAIL "$M8/a.err" || head -1 "$M8/a.err")" blockmap_remove_refused
+e2fsck -fn "$M8/fs.img" > "$M8/fsck.log" 2>&1 \
+    || fail "$(head -3 "$M8/fsck.log" | tr '\n' ' ')" blockmap_volume_not_clean
+[ "$(orph_free "$M8/fs.img")" = "$(orph_free "$M8/empty.img")" ] \
+    || fail "free $(orph_free "$M8/fs.img"), an empty volume has $(orph_free "$M8/empty.img")" blockmap_blocks_leaked
+
 # ---- what Linux keeps as it goes (E4-013) ------------------------------------
 # A mount is counted and dated, the superblock says when it was last written
 # and how much the volume has taken in its life, and a read sets atime the way

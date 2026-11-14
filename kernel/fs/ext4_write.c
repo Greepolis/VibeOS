@@ -1674,6 +1674,102 @@ static int free_tail(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, uint32_t k
     return 0;
 }
 
+/* ---- block-mapped files (E4-008) --------------------------------------------
+ * A volume that began as ext2 or ext3 keeps the files written then in the old
+ * form: twelve direct block numbers in the inode, then a single, a double and a
+ * triple indirect tree. The reader always read them; removing one was
+ * EOPNOTSUPP, so a file from before the upgrade could never be deleted. These
+ * free every block such a file holds. Each pointer is read on its own
+ * (ext2_read_part, through the block cache), so no block is held while blocks
+ * are freed: bfree has wbuf2, and a buffer per level was 12 KiB of kernel stack
+ * - the shape E4-014 was. Freed as runs, since what ext3 wrote is mostly
+ * contiguous. */
+typedef struct {
+    uint64_t start, len;
+} bm_run_t;
+
+static int bm_put(vibeos_ext2_t *fs, bm_run_t *r, uint64_t b) {
+    int rc;
+
+    if (b == 0u) {
+        return 0;
+    }
+    if (b >= fs->blocks_count || b < fs->first_data_block) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, b);
+        return -VIBEOS_EIO;
+    }
+    if (r->len != 0u && r->start + r->len == b) {
+        r->len++;
+        return 0;
+    }
+    if (r->len != 0u) {
+        rc = bfree(fs, r->start, r->len);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    r->start = b;
+    r->len = 1;
+    return 0;
+}
+
+/* Every block under the indirect block `blk`, `level` levels deep, then `blk`
+ * itself: it is read until its last pointer has been. */
+static int bm_tree(vibeos_ext2_t *fs, uint64_t blk, uint32_t level, bm_run_t *r) {
+    uint32_t i, ppb = fs->block_size / 4u;
+    int rc;
+
+    if (blk == 0u) {
+        return 0;
+    }
+    if (blk >= fs->blocks_count || blk < fs->first_data_block) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, blk);
+        return -VIBEOS_EIO;
+    }
+    for (i = 0; i < ppb; i++) {
+        uint8_t p[4];
+        uint32_t ptr;
+
+        if (ext2_read_part(fs, blk, i * 4u, p, 4u) != 0) {
+            return -VIBEOS_EIO;
+        }
+        ptr = le32(p);
+        if (ptr == 0u) {
+            continue;
+        }
+        rc = level > 1u ? bm_tree(fs, ptr, level - 1u, r) : bm_put(fs, r, ptr);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    return bm_put(fs, r, blk);
+}
+
+static int bm_free(vibeos_ext2_t *fs, uint8_t *inode) {
+    bm_run_t r = {0, 0};
+    uint32_t i;
+    int rc = 0;
+
+    for (i = 0; i < 12u && rc == 0; i++) {
+        rc = bm_put(fs, &r, le32(inode + 0x28u + i * 4u));
+    }
+    for (i = 0; i < 3u && rc == 0; i++) {
+        rc = bm_tree(fs, le32(inode + 0x28u + (12u + i) * 4u), i + 1u, &r);
+    }
+    if (rc == 0 && r.len != 0u) {
+        rc = bfree(fs, r.start, r.len);
+    }
+    if (rc == 0) {
+        memset(inode + 0x28u, 0, 60u);
+    }
+    return rc;
+}
+
+static int is_block_mapped(vibeos_ext2_t *fs, const uint8_t *inode) {
+    return (le32(inode + 0x20u) & INODE_FLAG_EXTENTS) == 0u && !ext2_inode_is_fast_symlink(fs, inode) &&
+           le32(inode + 0x1Cu) != 0u;
+}
+
 /* inode_release for a file that is on the orphan list already (`listed`): it
  * leaves the list in the transaction that frees it. */
 static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, int listed) {
@@ -1687,6 +1783,14 @@ static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode,
         if (rc == 0) {
             rc = free_tail(fs, ino, inode, 0, &listed);
         }
+        if (rc != 0) {
+            return rc;
+        }
+    } else if (is_block_mapped(fs, inode)) {
+        /* In one transaction: a block-mapped tree is not cut in pieces the
+         * way free_tail cuts extents, so a file whose bitmaps outgrow one is
+         * refused with ENOSPC as every large release was before E4-018. */
+        rc = bm_free(fs, inode);
         if (rc != 0) {
             return rc;
         }
@@ -1836,9 +1940,8 @@ static void orphans_at_mount(vibeos_ext2_t *fs) {
         if (head > count || ext2_read_inode(fs, head, inode) != 0) {
             return;
         }
-        if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) == 0u && !ext2_inode_is_fast_symlink(fs, inode) &&
-            le32(inode + 0x1Cu) != 0u) {
-            return;
+        if (le16(inode + 0x1Au) != 0u && is_block_mapped(fs, inode)) {
+            return;   /* a block-mapped truncate: only e2fsck finishes that */
         }
         if (ext4_j_begin(fs) != 0) {
             return;
@@ -2372,10 +2475,6 @@ static int remove_name(vibeos_ext2_t *fs, const char *path, int want_dir) {
     if (want_dir && !dir_empty(fs, ino)) {
         return -VIBEOS_ENOTEMPTY;
     }
-    if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) == 0u && !ext2_inode_is_fast_symlink(fs, inode) &&
-        le32(inode + 0x1Cu) != 0u) {
-        return -VIBEOS_EOPNOTSUPP;   /* block-mapped: this writer frees extents */
-    }
     rc = dir_edit(fs, pino, name, nlen, 1, 0, 0, &links);
     if (rc != 0) {
         return rc;
@@ -2514,10 +2613,6 @@ static int x_rename(void *fsv, const char *from, const char *to, uint32_t flags)
         }
         if (src_dir && !dir_empty(fs, dino)) {
             return -VIBEOS_ENOTEMPTY;
-        }
-        if ((le32(dst + 0x20u) & INODE_FLAG_EXTENTS) == 0u && !ext2_inode_is_fast_symlink(fs, dst) &&
-            le32(dst + 0x1Cu) != 0u) {
-            return -VIBEOS_EOPNOTSUPP;
         }
         rc = dir_edit(fs, pino2, name2, nlen2, 2, sino, ftype_of(le16(src)), &scratch);
     } else {
