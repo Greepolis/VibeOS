@@ -1205,6 +1205,33 @@ static void test_anon_reclaim_spares_the_young(void) {
     CHECK(vibeos_rmap_stats()->unclaim_missing == 0u, "claims released once");
 }
 
+/* Swap full: the tier does not look for a page it could not write anywhere.
+ * It used to walk the frames - claiming each one's reverse map and clearing
+ * its young mark - and found out at the first candidate; under pressure every
+ * allocation asks, and svc-reclaim's read-back with swap full spent 44 s of a
+ * boot doing it. A page marked used must keep its mark: nothing looked. */
+static void test_anon_reclaim_swap_full_looks_at_nothing(void) {
+    uint64_t f = sw_setup(RW_USER, 0x37);
+    uint64_t *e, scanned;
+    uint32_t slot;
+
+    CHECK(f != 0, "setup");
+    vibeos_anon_set_map(cp_map);
+    while (vibeos_swap_alloc(&slot) == 0) {
+    }
+    CHECK(vibeos_swap_free_slots() == 0u, "swap is full");
+    e = vibeos_vmspace_entry(&g_sw_as, VA_A);
+    CHECK(e != 0, "the entry");
+    if (!e) {
+        return;
+    }
+    *e |= 0x20ull;   /* accessed */
+    scanned = vibeos_anon_stats()->scanned;
+    CHECK(vibeos_anon_reclaim(1u) == 0u, "nothing can be evicted");
+    CHECK(vibeos_anon_stats()->scanned == scanned, "and no frame was looked at");
+    CHECK((*e & 0x20ull) != 0u, "so a page's young mark is left as it was");
+}
+
 static void test_anon_reclaim_claims(void) {
     uint64_t f = sw_setup(RW_USER, 0x37);
 
@@ -1373,6 +1400,7 @@ int test_compact(void) {
     test_swapout_readonly_page();
     test_fork_while_readonly_page_goes_out();
     test_fork_while_readonly_page_goes_out_and_is_reused();
+    test_anon_reclaim_swap_full_looks_at_nothing();
     test_anon_reclaim_claims();
     test_anon_reclaim_spares_the_young();
     test_swapped_entries_are_mappings();

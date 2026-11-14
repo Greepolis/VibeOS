@@ -1,0 +1,13 @@
+# The anonymous tier with swap full (kernel/mm/anon.c), broken: it walks the
+# frames looking for a page to evict although none could be written anywhere,
+# claiming reverse maps and clearing young marks as it goes. Caught by
+# test_anon_reclaim_swap_full_looks_at_nothing in tests/kernel/compact_tests.c.
+#
+# Target source: kernel/mm/anon.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/mm/anon.c scripts/dev/cases/mm-anon-swapfull.txt
+
+### a full swap area is found out only at the first candidate
+--- old
+    if (vibeos_swap_free_slots() == 0u) {
++++ new
+    if (0) {

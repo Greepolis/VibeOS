@@ -72,6 +72,9 @@ void vibeos_swap_tag(uint32_t slot, uint64_t va, uint64_t root);
  * last. For the end-of-boot report. */
 int vibeos_swap_held(uint32_t n, uint32_t *slot, uint64_t *va, uint64_t *root);
 uint32_t vibeos_swap_slots(void);
+/* Slots not allocated: a sample, read without the map's lock, for a caller
+ * deciding whether a search for a page to evict could end anywhere. */
+uint32_t vibeos_swap_free_slots(void);
 
 typedef struct vibeos_swap_stats {
     uint64_t allocated;      /* slots currently held                          */

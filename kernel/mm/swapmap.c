@@ -89,6 +89,12 @@ uint32_t vibeos_swap_slots(void) {
     return g_ready ? g_slots : 0u;
 }
 
+uint32_t vibeos_swap_free_slots(void) {
+    uint64_t used = __atomic_load_n(&g_stats.allocated, __ATOMIC_RELAXED);
+
+    return g_ready && used < g_slots ? g_slots - (uint32_t)used : 0u;
+}
+
 int vibeos_swap_alloc(uint32_t *out_slot) {
     uint32_t i;
     int rc = -1;

@@ -129,9 +129,11 @@ static void test_full_is_reported(void) {
     }
     CHECK(vibeos_swap_alloc(&slot) != 0, "full refuses");
     CHECK(vibeos_swap_stats()->full == 1u, "and is counted");
+    CHECK(vibeos_swap_free_slots() == 0u, "and says none are free");
 
     /* Freeing one makes exactly one available again. */
     CHECK(vibeos_swap_free(3u) == 0, "free one");
+    CHECK(vibeos_swap_free_slots() == 1u, "one free");
     CHECK(vibeos_swap_alloc(&slot) == 0, "one is available");
     CHECK(slot == 3u, "and it is the one that was freed");
     CHECK(vibeos_swap_alloc(&slot) != 0, "and only one");

@@ -33,6 +33,15 @@ uint32_t vibeos_anon_reclaim(uint32_t want) {
     if (!g_map || want == 0u || total == 0ull || vibeos_swap_slots() == 0u) {
         return 0;
     }
+    /* Swap full: no page can go anywhere, so do not look for one. The search
+     * below found that out only at its first candidate, having claimed the
+     * reverse map and cleared the young mark of every frame before it - and
+     * under pressure every allocation asks. Reading back what svc-reclaim
+     * wrote, with swap full, cost 286,000 such looks and 44 s of a boot. */
+    if (vibeos_swap_free_slots() == 0u) {
+        __atomic_fetch_add(&g_stats.no_slot, 1u, __ATOMIC_RELAXED);
+        return 0;
+    }
 
     while (done < want && looked < total) {
         uint64_t phys;
