@@ -535,6 +535,27 @@ debugfs -R "ex /d/frag" "$W8/fs.img" 2>/dev/null | grep -q "^ 1/ 2" \
 debugfs -R "stat /d" "$W8/fs.img" 2>/dev/null | grep -q "Flags: 0x80000" \
     || fail "/d grew and is still block-mapped" blockmap_dir_not_migrated
 
+# ---- nodes that are not files (E4-011) --------------------------------------
+# A socket's name and a FIFO, made by the driver: debugfs must see them as what
+# they are, e2fsck must call them legal - Linux makes them without the extents
+# flag, and e2fsck calls one with it an illegal node - and they must go again.
+N11="$T/mknod"
+mkdir -p "$N11"
+truncate -s 16M "$N11/fs.img"
+mkfs.ext4 -q -F -N 64 "$N11/fs.img" > /dev/null 2>&1 || fail "mkfs (mknod)" mknod_setup_failed
+printf 'mknod\t/sock\t140755\nmknod\t/fifo\t10644\nmkdir\t/d\nmknod\t/d/s2\t140700\n' > "$N11/script.txt"
+(cd "$N11" && "$EX" apply) > "$N11/a.out" 2> "$N11/a.err" \
+    || fail "$(grep -m1 FAIL "$N11/a.err" || head -1 "$N11/a.err")" mknod_refused
+e2fsck -fn "$N11/fs.img" > "$N11/fsck.log" 2>&1 \
+    || fail "$(grep -v '^Pass\|^e2fsck' "$N11/fsck.log" | head -2 | tr '\n' ' ')" mknod_volume_not_clean
+debugfs -R "stat /sock" "$N11/fs.img" 2>/dev/null | grep -q "Type: socket" || fail "/sock is not a socket" mknod_wrong_type
+debugfs -R "stat /fifo" "$N11/fs.img" 2>/dev/null | grep -q "Type: FIFO" || fail "/fifo is not a FIFO" mknod_wrong_type
+printf 'unlink\t/sock\nunlink\t/fifo\nunlink\t/d/s2\nrmdir\t/d\n' > "$N11/script.txt"
+(cd "$N11" && "$EX" apply) > "$N11/a.out" 2> "$N11/a.err" \
+    || fail "$(grep -m1 FAIL "$N11/a.err" || head -1 "$N11/a.err")" mknod_remove_refused
+e2fsck -fn "$N11/fs.img" > "$N11/fsck.log" 2>&1 \
+    || fail "$(grep -v '^Pass\|^e2fsck' "$N11/fsck.log" | head -2 | tr '\n' ' ')" mknod_removed_not_clean
+
 # ---- ext3's own journal (E4-020) --------------------------------------------
 # An ext3 volume upgraded to ext4 keeps ext3's journal, which is block-mapped;
 # the writer used to find the journal only through extents and mounted such a

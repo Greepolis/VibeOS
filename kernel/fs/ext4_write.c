@@ -2666,7 +2666,15 @@ static int node_create(vibeos_ext2_t *fs, const char *path, uint32_t mode, const
     if (rc != 0) {
         return rc;
     }
-    inode_init(fs, ino, inode, mode, !fast);
+    /* A FIFO, a socket or a device has no data and no tree: Linux makes them
+     * without the extents flag, and e2fsck calls one that has it an illegal
+     * node (E4-011). */
+    {
+        uint32_t t = mode & VIBEOS_S_IFMT;
+        int special = t == VIBEOS_S_IFIFO || t == VIBEOS_S_IFSOCK || t == VIBEOS_S_IFCHR || t == VIBEOS_S_IFBLK;
+
+        inode_init(fs, ino, inode, mode, !fast && !special);
+    }
     if (is_dir || (!fast && (mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK)) {
         /* The one block it has: ". " and ".." and the checksum entry, or the
          * target's bytes. */
@@ -3106,6 +3114,29 @@ static int x_create(void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t
     return 0;
 }
 
+/* A node that is not a file, a directory or a link: a socket's name, a FIFO
+ * (E4-011). Devices too, by type - their number is left 0, as nothing in this
+ * kernel hands one through the VFS. */
+static int x_mknod(void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+    uint32_t ino = 0, t = mode & VIBEOS_S_IFMT;
+    int rc;
+
+    if (t != VIBEOS_S_IFIFO && t != VIBEOS_S_IFSOCK && t != VIBEOS_S_IFCHR && t != VIBEOS_S_IFBLK) {
+        return -VIBEOS_EINVAL;
+    }
+    rc = node_create(fs, path, mode, 0, 0, &ino);
+    if (rc != 0) {
+        return rc;
+    }
+    if (inode_get(fs, ino, inode) != 0) {
+        return -VIBEOS_EIO;
+    }
+    node_fill(ino, inode, out);
+    return 0;
+}
+
 static int x_mkdir(void *fsv, const char *path) {
     uint32_t ino;
 
@@ -3418,6 +3449,7 @@ J_OP_LONG(write_at, (void *fsv, const vibeos_fs_node_t *node, uint64_t off, cons
 J_OP_INT(truncate, (void *fsv, const vibeos_fs_node_t *node, uint64_t new_size), (fsv, node, new_size))
 J_OP_INT(create, (void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out), (fsv, path, mode, out))
 J_OP_INT(mkdir, (void *fsv, const char *path), (fsv, path))
+J_OP_INT(mknod, (void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out), (fsv, path, mode, out))
 J_OP_INT(symlink, (void *fsv, const char *target, const char *path), (fsv, target, path))
 J_OP_INT(unlink, (void *fsv, const char *path), (fsv, path))
 J_OP_INT(rmdir, (void *fsv, const char *path), (fsv, path))
@@ -3481,6 +3513,7 @@ static const vibeos_fs_ops_t g_ext4_rw = {
     .write_at = w_write_at,
     .truncate = w_truncate,
     .create = w_create,
+    .mknod = w_mknod,
     .rmdir = w_rmdir,
     .rename = w_rename,
     .link = w_link,

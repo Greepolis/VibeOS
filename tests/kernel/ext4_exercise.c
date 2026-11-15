@@ -577,6 +577,10 @@ static int run(char **a, int n) {
         }
         return vibeos_fs_truncate(&g_mnt, &node, strtoull(a[2], NULL, 10));
     }
+    if (strcmp(c, "mknod") == 0 && n == 3) {
+        /* A node by its whole mode, type included, in octal (E4-011). */
+        return vibeos_fs_mknod(&g_mnt, a[1], (uint32_t)strtoul(a[2], NULL, 8), &node);
+    }
     if (strcmp(c, "mkdir") == 0 && n == 2) {
         return vibeos_fs_mkdir(&g_mnt, a[1]);
     }
