@@ -842,36 +842,32 @@ static long linux_sys_fstatfs(uint64_t fd, uint64_t ubuf) {
     return r;
 }
 
-/* ---- extended attributes --------------------------------------------------------------
+/* ---- extended attributes ---------------------------------------------------------------
  *
- * No filesystem here stores them, and the twelve calls say what Linux says of
- * a filesystem that does not: EOPNOTSUPP to setting, getting and removing one,
- * and an empty list - which is how `ls -l`, `cp -a` and `tar` find out and
- * carry on. What Linux refuses before it asks the filesystem is refused first,
- * in its order: a flag setxattr does not have, a name that is empty or too
- * long (ERANGE), a value too large (E2BIG), and then the file itself - ENOENT
- * or EBADF beats "not supported", so a program that mistyped a path is told
- * that. `how` is the walk's flags for a path, or -1 when `where` is a
- * descriptor. */
-static long linux_xattr_file(uint64_t where, int how) {
-    vibeos_path_t w;
-    vibeos_file_t *f;
+ * Linux's twelve calls over the VFS's four (E4-011). A name is split into its
+ * namespace and the rest, as ext4 stores it: user., trusted. and security.;
+ * the ACL names (system.posix_acl_*) and anything else are EOPNOTSUPP until
+ * ACLs exist, because storing an ACL nobody enforces would be a permission
+ * that lies. What Linux refuses before it asks the filesystem is refused first,
+ * in its order: a flag setxattr does not have, a name empty or too long
+ * (ERANGE), a value too large (E2BIG), the file itself (ENOENT, EBADF), then
+ * the namespace's rule, then the filesystem. A filesystem with no attributes
+ * answers EOPNOTSUPP and lists none, which is how `ls -l`, `cp -a` and `tar`
+ * find out and carry on. Values go through one page: past it is ENOSPC, which
+ * is what ext4 says of a value its block cannot hold. */
 
-    if (how >= 0) {
-        return linux_walk_at(LINUX_CWD, where, (uint32_t)how, &w);
-    }
-    if (!(f = linux_file_get(where))) {
-        return -VIBEOS_EBADF;
-    }
-    vibeos_file_put(f);
-    return 0;
-}
+#define LINUX_XATTR_VALUE_CAP 4096u
 
-static long linux_xattr_name(uint64_t name_uptr) {
-    char name[LINUX_XATTR_NAME_MAX + 2];
+typedef struct {
+    vibeos_fsmount_t *mnt;
+    vibeos_fs_node_t node;
+    vibeos_file_t *f;   /* held while the call runs, for a descriptor */
+} linux_xattr_target_t;
+
+static long linux_xattr_name(uint64_t name_uptr, char *name) {
     uint32_t n = 0;
 
-    if (ks_copy_user_string(name_uptr, name, (int)sizeof(name)) != 0) {
+    if (ks_copy_user_string(name_uptr, name, LINUX_XATTR_NAME_MAX + 2) != 0) {
         return -VIBEOS_EFAULT;
     }
     while (name[n]) {
@@ -880,36 +876,252 @@ static long linux_xattr_name(uint64_t name_uptr) {
     return (n == 0u || n > LINUX_XATTR_NAME_MAX) ? -VIBEOS_ERANGE : 0;
 }
 
-static long linux_xattr_set(uint64_t where, int how, uint64_t name_uptr, uint64_t size,
+/* The namespace of a full name, and where the rest starts. */
+static long linux_xattr_split(const char *name, uint32_t *index, const char **rest, uint32_t *rlen) {
+    static const struct {
+        const char *prefix;
+        uint32_t len, index;
+    } ns[] = {
+        {"user.", 5u, VIBEOS_XATTR_USER},
+        {"trusted.", 8u, VIBEOS_XATTR_TRUSTED},
+        {"security.", 9u, VIBEOS_XATTR_SECURITY},
+    };
+    uint32_t k, i, n = 0;
+
+    while (name[n]) {
+        n++;
+    }
+    for (k = 0; k < sizeof(ns) / sizeof(ns[0]); k++) {
+        for (i = 0; i < ns[k].len && name[i] == ns[k].prefix[i]; i++) {
+        }
+        if (i == ns[k].len) {
+            if (n == ns[k].len) {
+                return -VIBEOS_EINVAL;   /* a prefix with nothing after it */
+            }
+            *index = ns[k].index;
+            *rest = name + ns[k].len;
+            *rlen = n - ns[k].len;
+            return 0;
+        }
+    }
+    return -VIBEOS_EOPNOTSUPP;
+}
+
+static long linux_xattr_target(uint64_t where, int how, linux_xattr_target_t *t) {
+    t->f = 0;
+    t->mnt = 0;
+    if (how >= 0) {
+        vibeos_path_t w;
+        long r = linux_walk_at(LINUX_CWD, where, (uint32_t)how, &w);
+
+        if (r != 0) {
+            return r;
+        }
+        if (!w.exists) {
+            return -VIBEOS_ENOENT;
+        }
+        t->mnt = w.mnt;
+        t->node = w.node;
+        return 0;
+    }
+    if (!(t->f = linux_file_get(where))) {
+        return -VIBEOS_EBADF;
+    }
+    if (!t->f->mnt || vibeos_file_node(t->f, &t->node) != 0) {
+        vibeos_file_put(t->f);
+        t->f = 0;
+        return -VIBEOS_EOPNOTSUPP;   /* a pipe, a socket: nothing to attach a name to */
+    }
+    t->mnt = t->f->mnt;
+    return 0;
+}
+
+static void linux_xattr_done(linux_xattr_target_t *t) {
+    if (t->f) {
+        vibeos_file_put(t->f);
+    }
+}
+
+/* Linux's xattr_permission: user.* lives only on files and directories, and a
+ * sticky directory's only for its owner to change; trusted.* is the
+ * superuser's, and to anybody else it does not exist; security.* is the
+ * security module's to judge, and there is none. */
+static long linux_xattr_may(const vibeos_fs_node_t *node, uint32_t index, int write) {
+    vibeos_cred_t c;
+
+    linux_cred(&c);
+    if (index == VIBEOS_XATTR_TRUSTED) {
+        return c.euid == 0u ? 0 : (write ? -VIBEOS_EPERM : -VIBEOS_ENODATA);
+    }
+    if (index == VIBEOS_XATTR_USER) {
+        uint32_t t = node->mode & VIBEOS_S_IFMT;
+
+        if (t != VIBEOS_S_IFREG && t != VIBEOS_S_IFDIR) {
+            return write ? -VIBEOS_EPERM : -VIBEOS_ENODATA;
+        }
+        if (write && t == VIBEOS_S_IFDIR && (node->mode & VIBEOS_S_ISVTX) != 0u && c.euid != 0u &&
+            c.euid != node->uid) {
+            return -VIBEOS_EPERM;
+        }
+        return linux_may(node, write ? VIBEOS_MAY_WRITE : VIBEOS_MAY_READ);
+    }
+    return 0;
+}
+
+static long linux_xattr_set(uint64_t where, int how, uint64_t name_uptr, uint64_t value_uptr, uint64_t size,
                             uint64_t flags) {
+    char name[LINUX_XATTR_NAME_MAX + 2];
+    linux_xattr_target_t t;
+    const char *rest;
+    uint32_t index, rlen, vflags = 0;
+    uint8_t *kv = 0;
     long r;
 
     if (flags & ~(uint64_t)(LINUX_XATTR_CREATE | LINUX_XATTR_REPLACE)) {
         return -VIBEOS_EINVAL;
     }
-    if ((r = linux_xattr_name(name_uptr)) != 0) {
+    if ((r = linux_xattr_name(name_uptr, name)) != 0) {
         return r;
     }
     if (size > LINUX_XATTR_SIZE_MAX) {
         return -VIBEOS_E2BIG;
     }
-    r = linux_xattr_file(where, how);
-    return r != 0 ? r : -VIBEOS_EOPNOTSUPP;
-}
-
-/* getxattr and removexattr: a name, then the file, then the refusal. */
-static long linux_xattr_named(uint64_t where, int how, uint64_t name_uptr) {
-    long r = linux_xattr_name(name_uptr);
-
-    if (r == 0) {
-        r = linux_xattr_file(where, how);
+    if ((r = linux_xattr_target(where, how, &t)) != 0) {
+        return r;
     }
-    return r != 0 ? r : -VIBEOS_EOPNOTSUPP;
+    if ((r = linux_xattr_split(name, &index, &rest, &rlen)) == 0 && (r = linux_xattr_may(&t.node, index, 1)) == 0) {
+        if (size > LINUX_XATTR_VALUE_CAP) {
+            r = t.mnt->ops->setxattr ? -VIBEOS_ENOSPC : -VIBEOS_EOPNOTSUPP;
+        } else if (size > 0u && (!linux_user_ok(value_uptr, size, 0) || !(kv = (uint8_t *)ks_page_alloc()))) {
+            r = kv ? -VIBEOS_EFAULT : -VIBEOS_ENOMEM;
+        } else if (size > 0u && vibeos_uaccess_copy(kv, (const void *)(uintptr_t)value_uptr, size) != 0) {
+            r = -VIBEOS_EFAULT;
+        } else {
+            vflags = (flags & LINUX_XATTR_CREATE ? VIBEOS_XATTR_CREATE : 0u) |
+                     (flags & LINUX_XATTR_REPLACE ? VIBEOS_XATTR_REPLACE : 0u);
+            r = vibeos_fs_setxattr(t.mnt, &t.node, index, rest, rlen, kv, (uint32_t)size, vflags);
+        }
+    }
+    if (kv) {
+        ks_page_free(kv, "setxattr value");
+    }
+    linux_xattr_done(&t);
+    return r;
 }
 
-/* listxattr: no names, in no bytes. */
-static long linux_xattr_list(uint64_t where, int how) {
-    return linux_xattr_file(where, how);
+static long linux_xattr_get(uint64_t where, int how, uint64_t name_uptr, uint64_t value_uptr, uint64_t size) {
+    char name[LINUX_XATTR_NAME_MAX + 2];
+    linux_xattr_target_t t;
+    const char *rest;
+    uint32_t index, rlen, cap;
+    uint8_t *kv = 0;
+    long r;
+
+    if ((r = linux_xattr_name(name_uptr, name)) != 0) {
+        return r;
+    }
+    if ((r = linux_xattr_target(where, how, &t)) != 0) {
+        return r;
+    }
+    if ((r = linux_xattr_split(name, &index, &rest, &rlen)) == 0 && (r = linux_xattr_may(&t.node, index, 0)) == 0) {
+        cap = size > LINUX_XATTR_VALUE_CAP ? LINUX_XATTR_VALUE_CAP : (uint32_t)size;
+        if (cap > 0u && !(kv = (uint8_t *)ks_page_alloc())) {
+            r = -VIBEOS_ENOMEM;
+        } else {
+            r = vibeos_fs_getxattr(t.mnt, &t.node, index, rest, rlen, kv, cap);
+            if (r > 0 && cap > 0u &&
+                (!linux_user_ok(value_uptr, (uint64_t)r, 1) ||
+                 vibeos_uaccess_copy((void *)(uintptr_t)value_uptr, kv, (uint64_t)r) != 0)) {
+                r = -VIBEOS_EFAULT;
+            }
+        }
+    }
+    if (kv) {
+        ks_page_free(kv, "getxattr value");
+    }
+    linux_xattr_done(&t);
+    return r;
+}
+
+static long linux_xattr_remove(uint64_t where, int how, uint64_t name_uptr) {
+    char name[LINUX_XATTR_NAME_MAX + 2];
+    linux_xattr_target_t t;
+    const char *rest;
+    uint32_t index, rlen;
+    long r;
+
+    if ((r = linux_xattr_name(name_uptr, name)) != 0) {
+        return r;
+    }
+    if ((r = linux_xattr_target(where, how, &t)) != 0) {
+        return r;
+    }
+    if ((r = linux_xattr_split(name, &index, &rest, &rlen)) == 0 && (r = linux_xattr_may(&t.node, index, 1)) == 0) {
+        r = vibeos_fs_removexattr(t.mnt, &t.node, index, rest, rlen);
+    }
+    linux_xattr_done(&t);
+    return r;
+}
+
+/* listxattr: every name the caller may see, each with its prefix and a NUL. */
+static long linux_xattr_list(uint64_t where, int how, uint64_t list_uptr, uint64_t size) {
+    static const char *const prefix[8] = {0, "user.", 0, 0, "trusted.", 0, "security.", 0};
+    linux_xattr_target_t t;
+    char nm[LINUX_XATTR_NAME_MAX + 1];
+    uint8_t *out = 0;
+    uint32_t k, index, nlen, total = 0;
+    vibeos_cred_t c;
+    long r;
+    int rc;
+
+    if ((r = linux_xattr_target(where, how, &t)) != 0) {
+        return r;
+    }
+    linux_cred(&c);
+    if (size > 0u && !(out = (uint8_t *)ks_page_alloc())) {
+        linux_xattr_done(&t);
+        return -VIBEOS_ENOMEM;
+    }
+    for (k = 0; (rc = vibeos_fs_listxattr(t.mnt, &t.node, k, &index, nm, sizeof(nm), &nlen)) == 0; k++) {
+        const char *pf = index < 8u ? prefix[index] : 0;
+        uint32_t pl = 0, i;
+
+        if (!pf || (index == VIBEOS_XATTR_TRUSTED && c.euid != 0u)) {
+            continue;   /* a namespace this kernel does not name, or the caller may not see */
+        }
+        while (pf[pl]) {
+            pl++;
+        }
+        if (out) {
+            if (total + pl + nlen + 1u > size || total + pl + nlen + 1u > LINUX_XATTR_VALUE_CAP) {
+                r = -VIBEOS_ERANGE;
+                break;
+            }
+            for (i = 0; i < pl; i++) {
+                out[total + i] = (uint8_t)pf[i];
+            }
+            for (i = 0; i < nlen; i++) {
+                out[total + pl + i] = (uint8_t)nm[i];
+            }
+            out[total + pl + nlen] = 0;
+        }
+        total += pl + nlen + 1u;
+    }
+    if (r == 0 && rc < 0) {
+        r = rc;
+    }
+    if (r == 0) {
+        r = (long)total;
+        if (out && total > 0u &&
+            (!linux_user_ok(list_uptr, total, 1) || vibeos_uaccess_copy((void *)(uintptr_t)list_uptr, out, total) != 0)) {
+            r = -VIBEOS_EFAULT;
+        }
+    }
+    if (out) {
+        ks_page_free(out, "listxattr names");
+    }
+    linux_xattr_done(&t);
+    return r;
 }
 
 /* ---- the syscalls this file implements ---------------------------------------
@@ -935,18 +1147,18 @@ static long linux_xattr_list(uint64_t where, int how) {
     X(133, mknod,       MKNOD,       NOPTR, linux_mknod_at(LINUX_CWD, ARG(0), ARG(1))) \
     X(137, statfs,      STATFS,      PTRS(OUT(1, sizeof(linux_statfs_t))), linux_sys_statfs(ARG(0), ARG(1))) \
     X(138, fstatfs,     FSTATFS,     PTRS(OUT(1, sizeof(linux_statfs_t))), linux_sys_fstatfs(ARG(0), ARG(1))) \
-    X(188, setxattr,    XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), 0, ARG(1), ARG(3), ARG(4))) \
-    X(189, lsetxattr,   XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1), ARG(3), ARG(4))) \
-    X(190, fsetxattr,   XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), -1, ARG(1), ARG(3), ARG(4))) \
-    X(191, getxattr,    XATTR_GET,   NOPTR, linux_xattr_named(ARG(0), 0, ARG(1))) \
-    X(192, lgetxattr,   XATTR_GET,   NOPTR, linux_xattr_named(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1))) \
-    X(193, fgetxattr,   XATTR_GET,   NOPTR, linux_xattr_named(ARG(0), -1, ARG(1))) \
-    X(194, listxattr,   XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), 0)) \
-    X(195, llistxattr,  XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), VIBEOS_PATH_NOFOLLOW)) \
-    X(196, flistxattr,  XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), -1)) \
-    X(197, removexattr, XATTR_REMOVE, NOPTR, linux_xattr_named(ARG(0), 0, ARG(1))) \
-    X(198, lremovexattr, XATTR_REMOVE, NOPTR, linux_xattr_named(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1))) \
-    X(199, fremovexattr, XATTR_REMOVE, NOPTR, linux_xattr_named(ARG(0), -1, ARG(1))) \
+    X(188, setxattr,    XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), 0, ARG(1), ARG(2), ARG(3), ARG(4))) \
+    X(189, lsetxattr,   XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1), ARG(2), ARG(3), ARG(4))) \
+    X(190, fsetxattr,   XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), -1, ARG(1), ARG(2), ARG(3), ARG(4))) \
+    X(191, getxattr,    XATTR_GET,   NOPTR, linux_xattr_get(ARG(0), 0, ARG(1), ARG(2), ARG(3))) \
+    X(192, lgetxattr,   XATTR_GET,   NOPTR, linux_xattr_get(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1), ARG(2), ARG(3))) \
+    X(193, fgetxattr,   XATTR_GET,   NOPTR, linux_xattr_get(ARG(0), -1, ARG(1), ARG(2), ARG(3))) \
+    X(194, listxattr,   XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), 0, ARG(1), ARG(2))) \
+    X(195, llistxattr,  XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1), ARG(2))) \
+    X(196, flistxattr,  XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), -1, ARG(1), ARG(2))) \
+    X(197, removexattr, XATTR_REMOVE, NOPTR, linux_xattr_remove(ARG(0), 0, ARG(1))) \
+    X(198, lremovexattr, XATTR_REMOVE, NOPTR, linux_xattr_remove(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1))) \
+    X(199, fremovexattr, XATTR_REMOVE, NOPTR, linux_xattr_remove(ARG(0), -1, ARG(1))) \
     X(235, utimes,      UTIME,       PTRS(IN_OPT(1, 2 * sizeof(linux_timeval_t))), linux_utimes_at(LINUX_CWD, ARG(0), ARG(1))) \
     X(259, mknodat,     MKNOD,       NOPTR, linux_mknod_at(ARG(0), ARG(1), ARG(2))) \
     X(260, fchownat,    CHOWN,       NOPTR, linux_chown_at(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \

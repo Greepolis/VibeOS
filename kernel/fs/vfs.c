@@ -255,6 +255,70 @@ int vibeos_fs_fallocate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uin
     return r;
 }
 
+long vibeos_fs_getxattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t index, const char *name,
+                        uint32_t nlen, void *buf, uint32_t cap) {
+    long r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node || !name) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->getxattr) {
+        return -VIBEOS_EOPNOTSUPP;
+    }
+    fs_enter(mnt);
+    r = mnt->ops->getxattr(mnt->fs, node, index, name, nlen, buf, cap);
+    fs_leave(mnt);
+    return r;
+}
+
+int vibeos_fs_setxattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t index, const char *name,
+                       uint32_t nlen, const void *value, uint32_t len, uint32_t flags) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node || !name) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->setxattr) {
+        return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
+    }
+    fs_enter(mnt);
+    r = mnt->ops->setxattr(mnt->fs, node, index, name, nlen, value, len, flags);
+    fs_leave(mnt);
+    return r;
+}
+
+int vibeos_fs_removexattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t index, const char *name,
+                          uint32_t nlen) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node || !name) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->removexattr) {
+        return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
+    }
+    fs_enter(mnt);
+    r = mnt->ops->removexattr(mnt->fs, node, index, name, nlen);
+    fs_leave(mnt);
+    return r;
+}
+
+int vibeos_fs_listxattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t k, uint32_t *index,
+                        char *name, uint32_t cap, uint32_t *nlen) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node || !index || !name || !nlen) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->listxattr) {
+        return 1;   /* nothing to list: no attributes */
+    }
+    fs_enter(mnt);
+    r = mnt->ops->listxattr(mnt->fs, node, k, index, name, cap, nlen);
+    fs_leave(mnt);
+    return r;
+}
+
 int vibeos_fs_release_node(vibeos_fsmount_t *mnt, uint64_t id) {
     int r;
 

@@ -1719,7 +1719,8 @@ static void t_xattr_and_unshare(void) {
            "a value over 64 KiB is E2BIG");
     expect(SYS4(191, ustr("/tmp/x"), 0x1000, buf, 64) == -VIBEOS_EFAULT, "a name outside user memory is EFAULT");
     (void)SYS2(88, ustr("nowhere"), ustr("/tmp/dangling"));
-    expect(SYS4(192, ustr("/tmp/dangling"), ustr("user.k"), buf, 64) == -VIBEOS_EOPNOTSUPP &&
+    /* Linux asks the namespace first: user.* on a link does not exist (ENODATA). */
+    expect(SYS4(192, ustr("/tmp/dangling"), ustr("user.k"), buf, 64) == -VIBEOS_ENODATA &&
            SYS4(191, ustr("/tmp/dangling"), ustr("user.k"), buf, 64) == -VIBEOS_ENOENT,
            "the l forms ask about the link, the others about what it points at");
 

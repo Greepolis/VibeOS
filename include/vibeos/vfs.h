@@ -204,6 +204,21 @@ typedef struct {
      * the file is done as a truncate, and a punch is EOPNOTSUPP. */
     int (*fallocate)(void *fs, const vibeos_fs_node_t *node, uint32_t mode, uint64_t offset, uint64_t len);
 
+    /* Extended attributes (E4-011): a name is a namespace index - ext4's
+     * numbering, VIBEOS_XATTR_* - and the part after its prefix. get copies
+     * at most `cap` bytes and answers the value's size (cap 0 asks only the
+     * size), -ENODATA when there is none, -ERANGE when cap is too small. set
+     * takes VIBEOS_XATTR_CREATE / _REPLACE (-EEXIST / -ENODATA). list answers
+     * the k-th name: 0 and its index and name, 1 past the last. All optional:
+     * a filesystem without them has no extended attributes (EOPNOTSUPP). */
+    long (*getxattr)(void *fs, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
+                     void *buf, uint32_t cap);
+    int (*setxattr)(void *fs, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
+                    const void *value, uint32_t len, uint32_t flags);
+    int (*removexattr)(void *fs, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen);
+    int (*listxattr)(void *fs, const vibeos_fs_node_t *node, uint32_t k, uint32_t *index, char *name,
+                     uint32_t cap, uint32_t *nlen);
+
     /* Set by a driver that wants the VFS to serialise it: every call into it
      * is made holding its mount's lock, so a driver with shared state needs
      * no lock of its own. Not for a driver whose calls can wait - a device's
@@ -377,6 +392,24 @@ typedef int (*vibeos_fs_open_query_t)(const void *fs, uint64_t id);
 /* Returns the query it replaces, for a test that stands in for a while. */
 vibeos_fs_open_query_t vibeos_fs_set_open_query(vibeos_fs_open_query_t query);
 int vibeos_fs_node_is_open(const void *fs, uint64_t id);
+/* Extended attribute namespaces, numbered as ext4 numbers them on disk. */
+#define VIBEOS_XATTR_USER 1u
+#define VIBEOS_XATTR_ACL_ACCESS 2u
+#define VIBEOS_XATTR_ACL_DEFAULT 3u
+#define VIBEOS_XATTR_TRUSTED 4u
+#define VIBEOS_XATTR_SECURITY 6u
+#define VIBEOS_XATTR_SYSTEM 7u
+#define VIBEOS_XATTR_CREATE 1u
+#define VIBEOS_XATTR_REPLACE 2u
+long vibeos_fs_getxattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t index, const char *name,
+                        uint32_t nlen, void *buf, uint32_t cap);
+int vibeos_fs_setxattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t index, const char *name,
+                       uint32_t nlen, const void *value, uint32_t len, uint32_t flags);
+int vibeos_fs_removexattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t index, const char *name,
+                          uint32_t nlen);
+int vibeos_fs_listxattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t k, uint32_t *index,
+                        char *name, uint32_t cap, uint32_t *nlen);
+
 #define VIBEOS_FALLOC_KEEP_SIZE 0x1u
 #define VIBEOS_FALLOC_PUNCH 0x2u
 /* -EOPNOTSUPP when the mount's driver has no fallocate. */
