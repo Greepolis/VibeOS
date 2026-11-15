@@ -535,6 +535,57 @@ debugfs -R "ex /d/frag" "$W8/fs.img" 2>/dev/null | grep -q "^ 1/ 2" \
 debugfs -R "stat /d" "$W8/fs.img" 2>/dev/null | grep -q "Flags: 0x80000" \
     || fail "/d grew and is still block-mapped" blockmap_dir_not_migrated
 
+# ---- ext3's own journal (E4-020) --------------------------------------------
+# An ext3 volume upgraded to ext4 keeps ext3's journal, which is block-mapped;
+# the writer used to find the journal only through extents and mounted such a
+# volume read-only. Now: it is written, its log upgraded to v3 checksums as
+# Linux does, and the power is cut at a stride of points through a script -
+# the driver's replay and e2fsck's must each leave a clean volume and the same
+# tree, and some cut must have needed a replay, or the sweep proved nothing.
+J3="$T/ext3journal"
+mkdir -p "$J3/tree"
+head -c 200000 /dev/urandom > "$J3/tree/a"
+truncate -s 64M "$J3/base.img"
+mkfs.ext3 -q -F -b 1024 -I 256 -N 64 -d "$J3/tree" "$J3/base.img" > /dev/null 2>&1 &&
+tune2fs -O extent,metadata_csum,huge_file,dir_nlink,extra_isize "$J3/base.img" > /dev/null 2>&1 &&
+e2fsck -fy "$J3/base.img" > /dev/null 2>&1
+debugfs -R "stat <8>" "$J3/base.img" 2>/dev/null | grep -q "Flags: 0x0" \
+    || fail "the journal of the upgraded volume is not block-mapped" ext3_journal_setup_failed
+printf 'create\t/n\t644\nwrite\t/n\t0\t300000\t3\nwrite\t/a\t1000\t5000\t4\nunlink\t/a\nmkdir\t/dd\ncreate\t/dd/m\t644\nwrite\t/dd/m\t0\t40000\t5\nrename\t/n\t/dd/n\n' > "$J3/script.txt"
+mkdir -p "$J3/full"
+cp "$J3/base.img" "$J3/full/fs.img"
+cp "$J3/script.txt" "$J3/full/"
+(cd "$J3/full" && "$EX" apply) > "$J3/a.out" 2> "$J3/a.err" \
+    || fail "$(grep -m1 FAIL "$J3/a.err" || head -1 "$J3/a.err")" ext3_journal_not_written
+e2fsck -fn "$J3/full/fs.img" > "$J3/fsck.log" 2>&1 \
+    || fail "$(head -3 "$J3/fsck.log" | tr '\n' ' ')" ext3_journal_volume_not_clean
+mkdir -p "$J3/pc"
+cp "$J3/base.img" "$J3/pc/fs.img"
+cp "$J3/script.txt" "$J3/pc/"
+j3total=$(cd "$J3/pc" && "$EX" powercut 0 2>/dev/null | sed -n 's/^writes=\([0-9]*\).*/\1/p')
+[ -n "$j3total" ] || fail "cannot count the script's writes" ext3_journal_setup_failed
+j3replays=0
+for n in $(seq 7 13 "$j3total"); do
+    c="$J3/c"
+    rm -rf "$c" && mkdir -p "$c"
+    cp "$J3/base.img" "$c/fs.img"
+    cp "$J3/script.txt" "$c/"
+    (cd "$c" && "$EX" powercut "$n") > /dev/null 2>&1
+    cp "$c/fs.img" "$J3/theirs.img"
+    rep=$(cd "$c" && "$EX" recover 2>&1 | sed -n 's/^replayed=\([0-9]*\).*/\1/p')
+    [ -n "$rep" ] || fail "cut at $n: the driver's replay failed" ext3_journal_replay_failed
+    [ "$rep" -gt 0 ] && j3replays=$((j3replays + 1))
+    e2fsck -fn "$c/fs.img" > "$J3/fc.log" 2>&1 \
+        || fail "cut at $n: $(head -3 "$J3/fc.log" | tr '\n' ' ')" ext3_journal_cut_not_clean
+    mine=$(cd "$c" && "$EX" walk 2>/dev/null | sort)
+    e2fsck -fy "$J3/theirs.img" > /dev/null 2>&1
+    e2fsck -fn "$J3/theirs.img" > /dev/null 2>&1 || fail "cut at $n: e2fsck's replay is not clean" ext3_journal_cut_not_clean
+    cp "$J3/theirs.img" "$c/fs.img"
+    other=$(cd "$c" && "$EX" walk 2>/dev/null | sort)
+    [ "$mine" = "$other" ] || fail "cut at $n: the driver's replay and e2fsck's disagree" ext3_journal_replays_disagree
+done
+[ "$j3replays" -gt 0 ] || fail "no cut of $j3total writes needed a replay" ext3_journal_never_replayed
+
 # ---- trees with index levels (E4-008) ---------------------------------------
 # On 1 KiB blocks a leaf holds 84 extents and an index block 84 leaves, so a
 # file of 3,000 one-block extents with a hole after each is two index levels

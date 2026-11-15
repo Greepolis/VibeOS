@@ -133,6 +133,17 @@ static uint32_t spb(const vibeos_ext2_t *fs) {
 static uint64_t j_phys(const vibeos_ext2_t *fs, uint32_t jblk) {
     uint32_t i;
 
+    if (fs->j.bmap) {
+        uint64_t out = 0;
+
+        /* The reader's own map walk; it keeps one indirect block cached, and
+         * a log is read and written in order, so the walk is mostly that. */
+        if (ext2_map_block((vibeos_ext2_t *)fs, fs->j.ino, fs->j.jinode, jblk, &out) != 0) {
+            return 0;
+        }
+        return out < fs->blocks_count ? out : 0u;
+    }
+
     for (i = 0; i < fs->j.nx; i++) {
         if (jblk >= fs->j.x[i].lblk && jblk - fs->j.x[i].lblk < fs->j.x[i].len) {
             return fs->j.x[i].phys + (jblk - fs->j.x[i].lblk);
@@ -342,8 +353,18 @@ static int j_geometry(vibeos_ext2_t *fs) {
     }
     ino = le32(fs->sb + 0xE0u);
     if (ino == 0u /* an external journal, which this does not write */ ||
-        ext2_read_inode(fs, ino, inode) != 0 || (le32(inode + 0x20u) & INODE_FLAG_EXTENTS) == 0u ||
-        load_extents(fs, inode + 40u, 1) != 0 || fs->block_size < 1024u || j_read_block(fs, 0u, b) != 0) {
+        ext2_read_inode(fs, ino, inode) != 0 || fs->block_size < 1024u) {
+        return -1;
+    }
+    if ((le32(inode + 0x20u) & INODE_FLAG_EXTENTS) == 0u) {
+        /* ext3's: block-mapped, and found through its block map (E4-020). */
+        fs->j.bmap = 1;
+        fs->j.ino = ino;
+        memcpy(fs->j.jinode, inode, sizeof(fs->j.jinode));
+    } else if (load_extents(fs, inode + 40u, 1) != 0) {
+        return -1;
+    }
+    if (j_read_block(fs, 0u, b) != 0) {
         return -1;
     }
     bt = be32(b + 4u);

@@ -144,6 +144,12 @@ typedef struct {
         uint32_t cap;             /* blocks one transaction may log */
         uint32_t n;               /* blocks this one has logged */
         uint32_t nx;              /* the journal inode's extents */
+        /* An ext3 journal is block-mapped (E4-020): its blocks are found
+         * through the inode's block map, kept here, rather than through x[],
+         * which a journal broken up by its own indirect blocks outgrows. */
+        int bmap;
+        uint32_t ino;
+        uint8_t jinode[256];
         struct {
             uint32_t lblk, len;
             uint64_t phys;

@@ -1,0 +1,19 @@
+# ext3's block-mapped journal (E4-020), broken. Caught by scripts/dev/verify-ext4.sh:
+# an upgraded ext3 volume is written through its own journal and its power cut at
+# a stride of points; both replays must agree on a clean volume.
+#
+# Target source: kernel/fs/ext4_journal.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4.sh build-gcc-Release'" python3 scripts/dev/sabotage.py kernel/fs/ext4_journal.c scripts/dev/cases/ext4-ext3-journal.txt build-gcc-Release
+
+### a block-mapped journal is refused, as before
+--- old
+        fs->j.bmap = 1;
+        fs->j.ino = ino;
++++ new
+        return -1;
+
+### a block-mapped journal's blocks are found one block off
+--- old
+        if (ext2_map_block((vibeos_ext2_t *)fs, fs->j.ino, fs->j.jinode, jblk, &out) != 0) {
++++ new
+        if (ext2_map_block((vibeos_ext2_t *)fs, fs->j.ino, fs->j.jinode, jblk + 1u, &out) != 0) {
