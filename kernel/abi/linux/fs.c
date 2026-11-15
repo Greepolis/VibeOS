@@ -1129,6 +1129,34 @@ static long linux_sys_syncfs(uint64_t fd) {
  * promise - so what this guarantees is the size, which is what programs that
  * call it to extend a file use it for. KEEP_SIZE then has nothing to do. Hole
  * punching and the rest are refused. */
+/* The filesystem's own fallocate for a regular file's description (E4-011):
+ * 1 and *r when it had one, 0 when the caller is to emulate. The description
+ * keeps its idea of the size, so a mode that grows the file says so to it. */
+static int linux_file_fallocate(vibeos_file_t *f, uint32_t mode, uint64_t off, uint64_t len, long *r) {
+    vibeos_fs_node_t node;
+    uint32_t m = 0;
+    int rc;
+
+    if (!f->mnt || f->isdir || vibeos_file_node(f, &node) != 0) {
+        return 0;
+    }
+    if (mode & LINUX_FALLOC_FL_KEEP_SIZE) {
+        m |= VIBEOS_FALLOC_KEEP_SIZE;
+    }
+    if (mode & LINUX_FALLOC_FL_PUNCH_HOLE) {
+        m |= VIBEOS_FALLOC_PUNCH;
+    }
+    rc = vibeos_fs_fallocate(f->mnt, &node, m, off, len);
+    if (rc == -VIBEOS_EOPNOTSUPP) {
+        return 0;
+    }
+    *r = rc;
+    if (rc == 0 && !(m & VIBEOS_FALLOC_KEEP_SIZE) && f->size < off + len) {
+        f->size = off + len;
+    }
+    return 1;
+}
+
 static long linux_sys_fallocate(uint64_t fd, uint64_t mode, uint64_t off, uint64_t len) {
     vibeos_file_t *f;
     vibeos_file_stat_t st;
@@ -1137,8 +1165,11 @@ static long linux_sys_fallocate(uint64_t fd, uint64_t mode, uint64_t off, uint64
     if ((int64_t)off < 0 || (int64_t)len <= 0) {
         return -VIBEOS_EINVAL;
     }
-    if (mode & ~(uint64_t)LINUX_FALLOC_FL_KEEP_SIZE) {
+    if (mode & ~(uint64_t)(LINUX_FALLOC_FL_KEEP_SIZE | LINUX_FALLOC_FL_PUNCH_HOLE)) {
         return -VIBEOS_EOPNOTSUPP;
+    }
+    if ((mode & LINUX_FALLOC_FL_PUNCH_HOLE) && !(mode & LINUX_FALLOC_FL_KEEP_SIZE)) {
+        return -VIBEOS_EINVAL;   /* Linux's rule: a punch never changes the size */
     }
     if ((int64_t)(off + len) < 0) {
         /* Past the largest offset a file can have. With FALLOC_FL_KEEP_SIZE
@@ -1153,6 +1184,10 @@ static long linux_sys_fallocate(uint64_t fd, uint64_t mode, uint64_t off, uint64
         r = f->ops->pread ? -VIBEOS_EINVAL : -VIBEOS_ESPIPE;
     } else if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
         r = -VIBEOS_EBADF;
+    } else if (linux_file_fallocate(f, (uint32_t)mode, off, len, &r)) {
+        /* the filesystem allocated, or punched, itself (E4-011) */
+    } else if (mode & LINUX_FALLOC_FL_PUNCH_HOLE) {
+        r = -VIBEOS_EOPNOTSUPP;
     } else if (!(mode & LINUX_FALLOC_FL_KEEP_SIZE)) {
         vibeos_file_stat_clear(&st);
         (void)f->ops->stat(f, &st);

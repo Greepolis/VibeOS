@@ -35,6 +35,7 @@ ext4_torture=FAILED seed=<s> reason=<why>.
 """
 
 import argparse
+import ctypes
 import errno
 import os
 import random
@@ -47,6 +48,21 @@ import zlib
 from concurrent.futures import ProcessPoolExecutor
 
 RAMP = bytes(range(256)) * 2
+
+# fallocate(2) with its flags, which os.posix_fallocate does not take (E4-011).
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_LIBC.fallocate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_long, ctypes.c_long]
+FALLOC_KEEP_SIZE, FALLOC_PUNCH_HOLE = 0x01, 0x02
+
+
+def host_fallocate(path, mode, off, n):
+    fd = os.open(path, os.O_WRONLY)
+    try:
+        if _LIBC.fallocate(fd, mode, off, n) != 0:
+            e = ctypes.get_errno()
+            raise OSError(e, os.strerror(e))
+    finally:
+        os.close(fd)
 
 # The errnos the exerciser's `fail` line knows (errno_of in ext4_exercise.c).
 # A refusal Linux gives with any other errno is left out of the script: a
@@ -260,8 +276,8 @@ class Gen:
         r = self.rng
         op = r.choices(
             ["create", "write", "truncate", "mkdir", "rmdir", "unlink", "rename", "link",
-             "symlink", "chmod", "writefile", "stride", "fill", "chown", "utimes", "bigwrite"],
-            weights=[14, 22, 8, 10, 6, 8, 10, 5, 5, 4, 8, 3, 2, 4, 4, 1])[0]
+             "symlink", "chmod", "writefile", "stride", "fill", "chown", "utimes", "bigwrite", "fallocate"],
+            weights=[14, 22, 8, 10, 6, 8, 10, 5, 5, 4, 8, 3, 2, 4, 4, 1, 4])[0]
         room = self.budget - self.used()
         if op in ("create", "mkdir", "symlink", "fill", "writefile") and len(self.entries()) >= self.inodes - 130:
             op = "unlink"
@@ -402,6 +418,21 @@ class Gen:
             n = r.randrange((2 << 20) + 1, min(4 << 20, room - (512 << 10)))
             off = r.choice([0, os.lstat(self.host(p)).st_size, r.randrange(0, 70000)])
             self.write(p, off, n, r.randrange(1, 250), word="bigwrite")
+        elif op == "fallocate":
+            # Linux's own call on the host (E4-011): allocation that grows the
+            # file, allocation that does not, and a punch. The exerciser's mode
+            # is VIBEOS_FALLOC_*: KEEP_SIZE 1, PUNCH 2, as Linux numbers them.
+            p = self.pick("f")
+            if p is None:
+                return
+            size = os.lstat(self.host(p)).st_size
+            mode = r.choice([0, FALLOC_KEEP_SIZE, FALLOC_KEEP_SIZE | FALLOC_PUNCH_HOLE])
+            off = r.choice([0, r.randrange(0, 70000), size, max(0, size - r.randrange(0, 5000))])
+            n = r.choice([1, r.randrange(1, 5000), r.randrange(1, 300000)])
+            if mode == 0 and off + n > size and room < off + n - size + 8192:
+                return
+            hp = self.host(p)
+            self.emit(["fallocate", p, mode, off, n], lambda: host_fallocate(hp, mode, off, n))
         elif op == "writefile":
             p = self.pick("f") if r.random() < 0.6 else self.fresh()
             if p is None:

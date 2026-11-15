@@ -239,6 +239,22 @@ int vibeos_fs_node_is_open(const void *fs, uint64_t id) {
     return g_open_query ? g_open_query(fs, id) : 0;
 }
 
+int vibeos_fs_fallocate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t mode, uint64_t offset,
+                        uint64_t len) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->fallocate) {
+        return -VIBEOS_EOPNOTSUPP;
+    }
+    fs_enter(mnt);
+    r = mnt->ops->fallocate(mnt->fs, node, mode, offset, len);
+    fs_leave(mnt);
+    return r;
+}
+
 int vibeos_fs_release_node(vibeos_fsmount_t *mnt, uint64_t id) {
     int r;
 

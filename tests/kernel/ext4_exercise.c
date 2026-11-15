@@ -127,6 +127,9 @@ static uint32_t crc32_of(const uint8_t *p, uint64_t n, uint32_t crc) {
  * the file as they are made, so save_image has nothing to do - and a power cut
  * cannot be told from no cut, so such a volume is for apply and walk only. */
 static int g_mapped;
+/* Set by a line that by its own rule changes nothing - a punch that starts at
+ * or past the end of the file - so the script does not expect it to commit. */
+static int g_line_unchanged;
 static int save_image(void);
 
 static int load(const char *path) {
@@ -577,6 +580,19 @@ static int run(char **a, int n) {
         }
         return vibeos_fs_truncate(&g_mnt, &node, strtoull(a[2], NULL, 10));
     }
+    if (strcmp(c, "fallocate") == 0 && n == 5) {
+        /* VIBEOS_FALLOC_* mode, offset, length (E4-011). */
+        uint32_t m = (uint32_t)strtoul(a[2], NULL, 10);
+        uint64_t off = strtoull(a[3], NULL, 10);
+
+        if (vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
+            return -VIBEOS_ENOENT;
+        }
+        if ((m & VIBEOS_FALLOC_PUNCH) != 0u && off >= node.size) {
+            g_line_unchanged = 1;   /* Linux's punch changes nothing there, times included */
+        }
+        return vibeos_fs_fallocate(&g_mnt, &node, m, off, strtoull(a[4], NULL, 10));
+    }
     if (strcmp(c, "mknod") == 0 && n == 3) {
         /* A node by its whole mode, type included, in octal (E4-011). */
         return vibeos_fs_mknod(&g_mnt, a[1], (uint32_t)strtoul(a[2], NULL, 8), &node);
@@ -838,11 +854,14 @@ static int script(int states) {
         lines++;
         /* A refusal changes nothing and so commits nothing (step 5's random
          * scripts are full of them); every other line must commit. */
-        changing += strncmp(line, "fail\t", 5) != 0 && strncmp(line, "refuse\t", 7) != 0;
+        g_line_unchanged = 0;
         {
             int was_dead = g_dead;
+            /* Read before run_line, which cuts the line at its tabs. */
+            int may_change = strncmp(line, "fail\t", 5) != 0 && strncmp(line, "refuse\t", 7) != 0;
 
             r = run_line(line);
+            changing += may_change && !g_line_unchanged;
             /* Which line the power went in: what a cut's tree is judged
              * against, said outright rather than worked out from the counts. */
             if (!was_dead && g_dead) {

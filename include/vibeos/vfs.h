@@ -196,6 +196,14 @@ typedef struct {
      * frees only what it kept. Optional. */
     int (*release_node)(void *fs, uint64_t id);
 
+    /* Space for [offset, offset + len) of a node (E4-011): mode 0 allocates
+     * it - blocks taken, reading as zeros until written - and grows the file
+     * to its end; VIBEOS_FALLOC_KEEP_SIZE allocates without growing;
+     * VIBEOS_FALLOC_PUNCH (with KEEP_SIZE) gives the range's blocks back and
+     * leaves it reading as zeros. Optional: without it a call that only grows
+     * the file is done as a truncate, and a punch is EOPNOTSUPP. */
+    int (*fallocate)(void *fs, const vibeos_fs_node_t *node, uint32_t mode, uint64_t offset, uint64_t len);
+
     /* Set by a driver that wants the VFS to serialise it: every call into it
      * is made holding its mount's lock, so a driver with shared state needs
      * no lock of its own. Not for a driver whose calls can wait - a device's
@@ -369,6 +377,12 @@ typedef int (*vibeos_fs_open_query_t)(const void *fs, uint64_t id);
 /* Returns the query it replaces, for a test that stands in for a while. */
 vibeos_fs_open_query_t vibeos_fs_set_open_query(vibeos_fs_open_query_t query);
 int vibeos_fs_node_is_open(const void *fs, uint64_t id);
+#define VIBEOS_FALLOC_KEEP_SIZE 0x1u
+#define VIBEOS_FALLOC_PUNCH 0x2u
+/* -EOPNOTSUPP when the mount's driver has no fallocate. */
+int vibeos_fs_fallocate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t mode, uint64_t offset,
+                        uint64_t len);
+
 /* Tell the mount's driver that the last description of `id` has gone. */
 int vibeos_fs_release_node(vibeos_fsmount_t *mnt, uint64_t id);
 

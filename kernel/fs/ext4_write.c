@@ -1363,16 +1363,17 @@ static void ext_merge_at(vibeos_ext2_t *fs, uint32_t i) {
     }
 }
 
-/* A new written run into a hole. */
-static int ext_add(vibeos_ext2_t *fs, uint32_t lblk, uint32_t count, uint64_t phys) {
-    uint32_t i = ext_search(fs, lblk), k;
+/* A new run into a hole: written, or unwritten (fallocate's, E4-011: blocks
+ * taken that read as zeros until something is written there). */
+static int ext_add_kind(vibeos_ext2_t *fs, uint32_t lblk, uint32_t count, uint64_t phys, int uninit) {
+    uint32_t i = ext_search(fs, lblk), k, max = uninit ? 32767u : 32768u;
 
     if (fs->ext_n >= ext_cap(fs)) {
-        /* Full: it still fits if it runs onto a neighbour. */
-        int joins = (i > 0u && !e_uninit(fs, i - 1u) && fs->ext[i - 1u].lblk + e_len(fs, i - 1u) == lblk &&
-                     e_start(fs, i - 1u) + e_len(fs, i - 1u) == phys && e_len(fs, i - 1u) + count <= 32768u) ||
-                    (i < fs->ext_n && !e_uninit(fs, i) && lblk + count == fs->ext[i].lblk &&
-                     phys + count == e_start(fs, i) && count + e_len(fs, i) <= 32768u);
+        /* Full: it still fits if it runs onto a neighbour of its kind. */
+        int joins = (i > 0u && !e_uninit(fs, i - 1u) == !uninit && fs->ext[i - 1u].lblk + e_len(fs, i - 1u) == lblk &&
+                     e_start(fs, i - 1u) + e_len(fs, i - 1u) == phys && e_len(fs, i - 1u) + count <= max) ||
+                    (i < fs->ext_n && !e_uninit(fs, i) == !uninit && lblk + count == fs->ext[i].lblk &&
+                     phys + count == e_start(fs, i) && count + e_len(fs, i) <= max);
 
         if (!joins) {
             return -VIBEOS_EFBIG;
@@ -1382,9 +1383,13 @@ static int ext_add(vibeos_ext2_t *fs, uint32_t lblk, uint32_t count, uint64_t ph
         fs->ext[k] = fs->ext[k - 1u];
     }
     fs->ext_n++;
-    e_put(fs, i, lblk, count, 0, phys);
+    e_put(fs, i, lblk, count, uninit, phys);
     ext_merge_at(fs, i);
     return 0;
+}
+
+static int ext_add(vibeos_ext2_t *fs, uint32_t lblk, uint32_t count, uint64_t phys) {
+    return ext_add_kind(fs, lblk, count, phys, 0);
 }
 
 /* Make the one block `lblk` of an unwritten extent a written one: the extent
@@ -3098,6 +3103,171 @@ static int x_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
     return inode_put(fs, ino, inode);
 }
 
+/* fallocate (E4-011). Allocation walks [first, last] a window at a time and
+ * gives every hole an unwritten extent; a punch zeroes the partial blocks at
+ * its ends - those that hold written bytes - and takes the whole blocks out,
+ * a window at a time, with ext_punch. One transaction, as every operation. */
+static int fa_zero_part(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, uint64_t pos, uint32_t from, uint32_t to) {
+    uint32_t bs = fs->block_size;
+    uint64_t phys;
+    int uninit, rc;
+
+    rc = ext_load(fs, ino, inode, (uint32_t)(pos / bs));
+    if (rc != 0) {
+        return rc;
+    }
+    phys = ext_map(fs, (uint32_t)(pos / bs), &uninit);
+    if (phys == 0u || uninit) {
+        return 0;   /* a hole, or not written: it reads as zeros already */
+    }
+    if (ext2_read_block(fs, phys, fs->wbuf) != 0) {
+        return -VIBEOS_EIO;
+    }
+    memset(fs->wbuf + from, 0, to - from);
+    return blk_data(fs, phys, fs->wbuf);
+}
+
+static int x_fallocate(void *fsv, const vibeos_fs_node_t *node, uint32_t mode, uint64_t off, uint64_t len) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+    uint32_t bs = fs->block_size, ino = (uint32_t)node->id;
+    uint64_t end = off + len, size, b, last;
+    int rc;
+
+    if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, ino, inode) != 0 ||
+        ext2_node_stale(fs, node, inode)) {
+        return -VIBEOS_ENOENT;
+    }
+    rc = file_migrate(fs, ino, inode);
+    if (rc == 0) {
+        rc = file_check(inode);
+    }
+    if (rc != 0) {
+        return rc;
+    }
+    if (len == 0u || end < off || end > 0xFFFFFFFFull * bs ||
+        (end > 0x7FFFFFFFull && (fs->ro_compat & RO_COMPAT_LARGE_FILE) == 0u)) {
+        return -VIBEOS_EFBIG;
+    }
+    size = ext2_inode_size(inode);
+    if ((mode & VIBEOS_FALLOC_PUNCH) != 0u) {
+        uint64_t whole_from, whole_to;
+
+        /* As Linux's: nothing past the end of the file is punched, and a punch
+         * that starts there changes nothing, its times included. */
+        if (off >= size) {
+            return 0;
+        }
+        if (end > size) {
+            end = size;
+        }
+        {
+            /* The blocks the punch covers whole are freed; the bytes of a block
+             * it covers in part are zeroed. A block it reaches to the end of
+             * the file is whole, the bytes past the end being nobody's. */
+            uint64_t hb = off / bs, tb = (end - 1u) / bs, head_end = (hb + 1u) * bs;
+            int head_part = off % bs != 0u || (end < head_end && end != size);
+
+            whole_from = head_part ? hb + 1u : hb;
+            if (head_part) {
+                rc = fa_zero_part(fs, ino, inode, off, (uint32_t)(off % bs),
+                                  (uint32_t)((end < head_end ? end : head_end) - hb * bs));
+            }
+            if (end == size) {
+                whole_to = (end + bs - 1u) / bs;
+            } else if (end % bs != 0u && tb != hb) {
+                whole_to = tb;
+                if (rc == 0) {
+                    rc = fa_zero_part(fs, ino, inode, end, 0, (uint32_t)(end % bs));
+                }
+            } else {
+                whole_to = end / bs;
+            }
+        }
+        for (b = whole_from; rc == 0 && b < whole_to;) {
+            uint64_t stop = whole_to;
+
+            rc = ext_load(fs, ino, inode, (uint32_t)b);
+            if (rc != 0) {
+                break;
+            }
+            if (fs->win.on && stop > fs->win.hi) {
+                stop = fs->win.hi;
+            }
+            rc = ext_punch(fs, (uint32_t)b, (uint32_t)(stop - b));
+            if (rc == 0) {
+                rc = ext_store(fs, ino, inode);
+            }
+            b = stop;
+        }
+        if (rc != 0) {
+            return rc;
+        }
+        touch_mc(inode);
+        return inode_put(fs, ino, inode);
+    }
+    last = (end - 1u) / bs;
+    for (b = off / bs; b <= last;) {
+        uint64_t lim = last;
+        int dirty = 0;
+
+        rc = ext_load(fs, ino, inode, (uint32_t)b);
+        if (rc != 0) {
+            return rc;
+        }
+        if (fs->win.on && fs->win.hi - 1u < lim) {
+            lim = fs->win.hi - 1u;
+        }
+        while (b <= lim && fs->ext_n + 2u < ext_cap(fs)) {
+            uint32_t i = ext_search(fs, (uint32_t)b), want, got;
+            uint64_t hole_end = lim, start, goal;
+
+            if (i < fs->ext_n && fs->ext[i].lblk <= b) {
+                b = (uint64_t)fs->ext[i].lblk + e_len(fs, i);   /* there already */
+                continue;
+            }
+            if (i < fs->ext_n && fs->ext[i].lblk - 1u < hole_end) {
+                hole_end = fs->ext[i].lblk - 1u;
+            }
+            want = hole_end - b + 1u > 32767u ? 32767u : (uint32_t)(hole_end - b + 1u);
+            goal = i > 0u ? e_start(fs, i - 1u) + e_len(fs, i - 1u) : g_start(fs, (ino - 1u) / fs->inodes_per_group);
+            rc = balloc(fs, goal, want, &start, &got);
+            if (rc == 0) {
+                rc = ext_add_kind(fs, (uint32_t)b, got, start, 1);
+                if (rc != 0) {
+                    (void)bfree(fs, start, got);
+                }
+            }
+            if (rc != 0) {
+                if (dirty) {
+                    (void)ext_store(fs, ino, inode);
+                    (void)inode_put(fs, ino, inode);
+                }
+                return rc;
+            }
+            dirty = 1;
+            b += got;
+        }
+        if (dirty) {
+            rc = ext_store(fs, ino, inode);
+            if (rc != 0) {
+                return rc;
+            }
+        }
+        if (b <= lim) {
+            continue;   /* the window's list filled: store, load again from here */
+        }
+        b = lim + 1u;
+    }
+    if ((mode & VIBEOS_FALLOC_KEEP_SIZE) == 0u && end > size) {
+        set_size(inode, end);
+        touch_mc(inode);
+    } else {
+        touch_c(inode);
+    }
+    return inode_put(fs, ino, inode);
+}
+
 static int x_create(void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
@@ -3450,6 +3620,8 @@ J_OP_INT(truncate, (void *fsv, const vibeos_fs_node_t *node, uint64_t new_size),
 J_OP_INT(create, (void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out), (fsv, path, mode, out))
 J_OP_INT(mkdir, (void *fsv, const char *path), (fsv, path))
 J_OP_INT(mknod, (void *fsv, const char *path, uint32_t mode, vibeos_fs_node_t *out), (fsv, path, mode, out))
+J_OP_INT(fallocate, (void *fsv, const vibeos_fs_node_t *node, uint32_t mode, uint64_t off, uint64_t len),
+         (fsv, node, mode, off, len))
 J_OP_INT(symlink, (void *fsv, const char *target, const char *path), (fsv, target, path))
 J_OP_INT(unlink, (void *fsv, const char *path), (fsv, path))
 J_OP_INT(rmdir, (void *fsv, const char *path), (fsv, path))
@@ -3514,6 +3686,7 @@ static const vibeos_fs_ops_t g_ext4_rw = {
     .truncate = w_truncate,
     .create = w_create,
     .mknod = w_mknod,
+    .fallocate = w_fallocate,
     .rmdir = w_rmdir,
     .rename = w_rename,
     .link = w_link,

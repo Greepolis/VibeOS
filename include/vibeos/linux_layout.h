@@ -509,8 +509,9 @@ typedef struct {
 #define LINUX_XATTR_SIZE_MAX 65536
 
 /* fallocate modes (linux/falloc.h) and posix_fadvise advice (linux/fadvise.h):
- * the one mode honoured, and the largest advice there is. */
+ * the modes honoured, and the largest advice there is. */
 #define LINUX_FALLOC_FL_KEEP_SIZE 0x01
+#define LINUX_FALLOC_FL_PUNCH_HOLE 0x02
 #define LINUX_POSIX_FADV_NOREUSE  5
 
 /* ioctl requests (asm-generic/ioctls.h): the terminal's, and the four any
