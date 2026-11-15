@@ -835,7 +835,16 @@ static int script(int states) {
         /* A refusal changes nothing and so commits nothing (step 5's random
          * scripts are full of them); every other line must commit. */
         changing += strncmp(line, "fail\t", 5) != 0 && strncmp(line, "refuse\t", 7) != 0;
-        r = run_line(line);
+        {
+            int was_dead = g_dead;
+
+            r = run_line(line);
+            /* Which line the power went in: what a cut's tree is judged
+             * against, said outright rather than worked out from the counts. */
+            if (!was_dead && g_dead) {
+                printf("cut_at_line=%u %s\n", lines, line);
+            }
+        }
         if (r != 0 && g_cut == 0u) {
             fprintf(stderr, "FAIL:ext4_exercise line %u (%s) returned %d\n", lines, line, r);
             fclose(f);

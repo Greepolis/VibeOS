@@ -158,6 +158,12 @@ class Gen:
                 st = os.lstat(self.host(q))
                 self.owners[st.st_ino] = (st.st_uid, st.st_gid)
         self.states = [listing(root, self.owners)]
+        # Trees a cut may also leave that are no line's: a writefile over a
+        # file truncates it and then writes, two calls on Linux as here, and
+        # a truncate of a big file commits in pieces (E4-018) - so a cut
+        # between finds the file empty. Kept apart from states, whose index is
+        # the line's.
+        self.extra_states = []
         # For a write over bytes the file already had: line index -> (every name
         # of the file, its bytes before, its bytes after). See torn_write().
         self.mix = {}
@@ -411,6 +417,8 @@ class Gen:
             def wf():
                 # A new file is 0644, as the driver's write_file makes it.
                 with os.fdopen(os.open(hp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644), "wb") as f:
+                    if self.keep_states:
+                        self.extra_states.append(listing(self.root, self.owners))
                     f.write(pat(seed, 0, n))
             self.emit(["writefile", p, n, seed], wf)
 
@@ -607,7 +615,7 @@ def one_seed(args):
                     total = int(l.split()[0].split("=")[1])
             if r.returncode != 0 or total == 0:
                 return failed("uncut_run_failed", r.stdout)
-            states = set(gen.states)
+            states = set(gen.states) | set(gen.extra_states)
             for n in sorted(rng.sample(range(1, total + 1), min(cuts, total))):
                 c = os.path.join(work, "cut")
                 if os.path.exists(c):
