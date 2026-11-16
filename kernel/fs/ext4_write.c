@@ -44,6 +44,7 @@
 #include "vibeos/mbz.h"
 #include "vibeos/abi_linux.h"
 #include "ext2_internal.h"
+#include "vibeos/acl.h"
 
 #define BG_INODE_UNINIT 0x0001u
 #define BG_BLOCK_UNINIT 0x0002u
@@ -2647,7 +2648,10 @@ static int xa_next(const xa_area_t *a, uint32_t *off, xa_ent_t *e) {
     if (le32(p) == 0u) {
         return 0;
     }
-    if (*off + 16u > a->end || p[0] == 0u || *off + XA_ENTRY(p[0]) + 4u > a->end || le32(p + 4u) != 0u) {
+    /* A name may be empty only for the ACLs, which Linux stores as index 2
+     * and 3 with no name. */
+    if (*off + 16u > a->end || (p[0] == 0u && p[1] != 2u && p[1] != 3u) || *off + XA_ENTRY(p[0]) + 4u > a->end ||
+        le32(p + 4u) != 0u) {
         return -VIBEOS_EIO;
     }
     e->nlen = p[0];
@@ -2813,8 +2817,95 @@ static int xa_node(vibeos_ext2_t *fs, const vibeos_fs_node_t *node, uint8_t *ino
     return 0;
 }
 
+/* ext4 keeps an ACL in a format of its own, version 1: the four entries that
+ * name nobody are four bytes (tag, permissions), a named user or group eight.
+ * The VFS's is version 2 with every entry eight (vibeos/acl.h). Each answers
+ * the length written, or -EIO for a list that does not convert. */
+#define EXT4_ACL_VERSION 1u
+
+static long acl_to_disk(const uint8_t *v, uint32_t len, uint8_t *out, uint32_t cap) {
+    uint32_t i, o = 4, n;
+
+    if (len < VIBEOS_ACL_HDR || (len - VIBEOS_ACL_HDR) % VIBEOS_ACL_ENTRY != 0u || cap < 4u) {
+        return -VIBEOS_EINVAL;
+    }
+    n = (len - VIBEOS_ACL_HDR) / VIBEOS_ACL_ENTRY;
+    st32(out, EXT4_ACL_VERSION);
+    for (i = 0; i < n; i++) {
+        const uint8_t *e = v + VIBEOS_ACL_HDR + i * VIBEOS_ACL_ENTRY;
+        uint32_t tag = le16(e), full = tag == VIBEOS_ACL_USER || tag == VIBEOS_ACL_GROUP;
+
+        if (o + (full ? 8u : 4u) > cap) {
+            return -VIBEOS_ENOSPC;
+        }
+        st16(out + o, tag);
+        st16(out + o + 2u, le16(e + 2u));
+        if (full) {
+            st32(out + o + 4u, le32(e + 4u));
+        }
+        o += full ? 8u : 4u;
+    }
+    return (long)o;
+}
+
+static long acl_from_disk(const uint8_t *d, uint32_t len, uint8_t *out, uint32_t cap) {
+    uint32_t o = 0, w = VIBEOS_ACL_HDR;
+
+    if (len < 4u || le32(d) != EXT4_ACL_VERSION) {
+        return -VIBEOS_EIO;
+    }
+    o = 4;
+    while (o < len) {
+        uint32_t tag, full;
+
+        if (o + 4u > len) {
+            return -VIBEOS_EIO;
+        }
+        tag = le16(d + o);
+        full = tag == VIBEOS_ACL_USER || tag == VIBEOS_ACL_GROUP;
+        if (full && o + 8u > len) {
+            return -VIBEOS_EIO;
+        }
+        if (out) {
+            if (w + VIBEOS_ACL_ENTRY > cap) {
+                return -VIBEOS_ERANGE;
+            }
+            st16(out + w, tag);
+            st16(out + w + 2u, le16(d + o + 2u));
+            st32(out + w + 4u, full ? le32(d + o + 4u) : VIBEOS_ACL_UNDEFINED_ID);
+        }
+        w += VIBEOS_ACL_ENTRY;
+        o += full ? 8u : 4u;
+    }
+    if (out) {
+        st32(out, VIBEOS_ACL_VERSION);
+    }
+    return (long)w;
+}
+
+static long x_getxattr_raw(void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
+                           void *buf, uint32_t cap);
+
 static long x_getxattr(void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
                        void *buf, uint32_t cap) {
+    uint8_t disk[VIBEOS_ACL_HDR + 64u * VIBEOS_ACL_ENTRY];
+    long r;
+
+    if (index != VIBEOS_XATTR_ACL_ACCESS && index != VIBEOS_XATTR_ACL_DEFAULT) {
+        return x_getxattr_raw(fsv, node, index, name, nlen, buf, cap);
+    }
+    if (nlen != 0u) {
+        return -VIBEOS_ENODATA;
+    }
+    r = x_getxattr_raw(fsv, node, index, "", 0, disk, sizeof(disk));
+    if (r < 0) {
+        return r == -VIBEOS_ERANGE ? -VIBEOS_EIO : r;
+    }
+    return acl_from_disk(disk, (uint32_t)r, cap ? (uint8_t *)buf : 0, cap);
+}
+
+static long x_getxattr_raw(void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
+                           void *buf, uint32_t cap) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
     xa_area_t a;
@@ -2897,7 +2988,7 @@ static int x_listxattr(void *fsv, const vibeos_fs_node_t *node, uint32_t k, uint
 
 /* Set (value != 0 or len 0 with set) or remove (remove 1) one attribute. */
 static int xa_change(vibeos_ext2_t *fs, const vibeos_fs_node_t *node, uint32_t index, const char *name,
-                     uint32_t nlen, const void *value, uint32_t len, uint32_t flags, int remove) {
+                     uint32_t nlen, const void *value, uint32_t len, uint32_t flags, int remove, int32_t perm) {
     uint8_t old[EXT2_MAX_INODE_SIZE], inode[EXT2_MAX_INODE_SIZE];
     xa_area_t oi = {0}, ni = {0}, ob = {0}, nb = {0};
     xa_ent_t e, want;
@@ -2905,7 +2996,8 @@ static int xa_change(vibeos_ext2_t *fs, const vibeos_fs_node_t *node, uint32_t i
     uint32_t off, nb_count = 0, got, ino = (uint32_t)node->id;
     int has_i, has_b, in_i = 0, in_b = 0, placed = remove, block_changed, r;
 
-    if (nlen == 0u || nlen > 255u || index == 0u || index > 255u) {
+    if ((nlen == 0u && index != VIBEOS_XATTR_ACL_ACCESS && index != VIBEOS_XATTR_ACL_DEFAULT) || nlen > 255u ||
+        index == 0u || index > 255u) {
         return -VIBEOS_EINVAL;
     }
     r = xa_node(fs, node, old);
@@ -2935,6 +3027,13 @@ static int xa_change(vibeos_ext2_t *fs, const vibeos_fs_node_t *node, uint32_t i
         in_b = 1;
     }
     if (remove || (flags & VIBEOS_XATTR_REPLACE) != 0u) {
+        if (!in_i && !in_b && perm >= 0) {
+            /* Nothing to remove, and the mode to set all the same: an access
+             * list the mode says all of, set on a file that had none. */
+            st16(inode, (le16(inode) & ~0777u) | (uint32_t)perm);
+            touch_c(inode);
+            return inode_put(fs, ino, inode);
+        }
         if (!in_i && !in_b) {
             return -VIBEOS_ENODATA;
         }
@@ -3053,20 +3152,50 @@ static int xa_change(vibeos_ext2_t *fs, const vibeos_fs_node_t *node, uint32_t i
             return r;
         }
     }
+    if (perm >= 0) {
+        st16(inode, (le16(inode) & ~0777u) | (uint32_t)perm);
+    }
     touch_c(inode);
     return inode_put(fs, ino, inode);
 }
 
 static int x_setxattr(void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
                       const void *value, uint32_t len, uint32_t flags) {
+    uint8_t disk[VIBEOS_ACL_HDR + 64u * VIBEOS_ACL_ENTRY];
+    int32_t perm = -1;
+
+    if (index == VIBEOS_XATTR_ACL_ACCESS || index == VIBEOS_XATTR_ACL_DEFAULT) {
+        uint32_t p;
+        long d;
+
+        if (nlen != 0u || vibeos_acl_valid((const uint8_t *)value, len) != 0) {
+            return -VIBEOS_EINVAL;
+        }
+        /* An access list sets the mode, in this transaction; one the mode
+         * says all of is not kept (Linux's posix_acl_update_mode). */
+        if (index == VIBEOS_XATTR_ACL_ACCESS) {
+            int equiv = vibeos_acl_mode((const uint8_t *)value, len, &p);
+
+            perm = (int32_t)p;
+            if (equiv) {
+                return xa_change((vibeos_ext2_t *)fsv, node, index, "", 0, 0, 0, 0, 1, perm);
+            }
+        }
+        d = acl_to_disk((const uint8_t *)value, len, disk, sizeof(disk));
+        if (d < 0) {
+            return (int)d;
+        }
+        value = disk;
+        len = (uint32_t)d;
+    }
     if (len > ((vibeos_ext2_t *)fsv)->block_size - XA_HDR - 4u - XA_ENTRY(nlen)) {
         return -VIBEOS_ENOSPC;
     }
-    return xa_change((vibeos_ext2_t *)fsv, node, index, name, nlen, value, len, flags, 0);
+    return xa_change((vibeos_ext2_t *)fsv, node, index, name, nlen, value, len, flags, 0, perm);
 }
 
 static int x_removexattr(void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen) {
-    return xa_change((vibeos_ext2_t *)fsv, node, index, name, nlen, 0, 0, 0, 1);
+    return xa_change((vibeos_ext2_t *)fsv, node, index, name, nlen, 0, 0, 0, 1, -1);
 }
 
 static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, int listed) {
@@ -4201,7 +4330,30 @@ static int x_rename(void *fsv, const char *from, const char *to, uint32_t flags)
     return inode_put(fs, sino, src);
 }
 
+/* A chmod of a file with an access list changes the list too, in the same
+ * transaction (Linux's posix_acl_chmod). */
+static int acl_follow_mode(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint32_t mode) {
+    uint8_t disk[VIBEOS_ACL_HDR + 64u * VIBEOS_ACL_ENTRY], v[VIBEOS_ACL_HDR + 64u * VIBEOS_ACL_ENTRY];
+    vibeos_fs_node_t node = {0};
+    long n, w;
+
+    node.id = ino;
+    node.gen = ext2_inode_gen(inode);
+    n = x_getxattr_raw(fs, &node, VIBEOS_XATTR_ACL_ACCESS, "", 0, disk, sizeof(disk));
+    if (n == -VIBEOS_ENODATA) {
+        return 0;
+    }
+    if (n < 0 || (w = acl_from_disk(disk, (uint32_t)n, v, sizeof(v))) < 0 || vibeos_acl_valid(v, (uint32_t)w) != 0) {
+        return -VIBEOS_EIO;
+    }
+    vibeos_acl_chmod(v, (uint32_t)w, mode);
+    n = acl_to_disk(v, (uint32_t)w, disk, sizeof(disk));
+    return n < 0 ? (int)n : xa_change(fs, &node, VIBEOS_XATTR_ACL_ACCESS, "", 0, disk, (uint32_t)n, 0, 0, -1);
+}
+
 static int attr_apply(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, const vibeos_fs_attr_t *a) {
+    int rc;
+
     if ((a->valid & VIBEOS_ATTR_MODE) != 0u) {
         st16(inode, (le16(inode) & VIBEOS_S_IFMT) | (a->mode & 07777u));
     }
@@ -4220,7 +4372,11 @@ static int attr_apply(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, const vib
         time_set(inode, T_MTIME, a->mtime_ns);
     }
     touch_c(inode);
-    return inode_put(fs, ino, inode);
+    rc = inode_put(fs, ino, inode);
+    if (rc == 0 && (a->valid & VIBEOS_ATTR_MODE) != 0u) {
+        rc = acl_follow_mode(fs, ino, inode, a->mode);
+    }
+    return rc;
 }
 
 static int x_setattr(void *fsv, const char *path, const vibeos_fs_attr_t *attr) {

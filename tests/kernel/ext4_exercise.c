@@ -48,6 +48,7 @@
 #endif
 
 #include "vibeos/abi_linux.h"
+#include "vibeos/acl.h"
 #include "vibeos/ext2.h"
 #include "vibeos/ext4_journal.h"
 #include "vibeos/storage.h"
@@ -236,7 +237,8 @@ static int name_cmp(const void *x, const void *y) {
 static void xattrs(const vibeos_fs_node_t *node) {
     static char names[64][300];
     static uint8_t val[4096];
-    static const char *const pfx[8] = {0, "user.", 0, 0, "trusted.", 0, "security.", 0};
+    static const char *const pfx[8] = {0, "user.", "system.posix_acl_access", "system.posix_acl_default",
+                                       "trusted.", 0, "security.", 0};
     uint32_t k, n = 0, index, nlen;
     char nm[256];
 
@@ -331,6 +333,7 @@ static int errno_of(const char *name) {
         { "ENOTDIR", VIBEOS_ENOTDIR }, { "EISDIR", VIBEOS_EISDIR }, { "EINVAL", VIBEOS_EINVAL },
         { "ENOTEMPTY", VIBEOS_ENOTEMPTY }, { "ENAMETOOLONG", VIBEOS_ENAMETOOLONG }, { "ENOSPC", VIBEOS_ENOSPC },
         { "EFBIG", VIBEOS_EFBIG }, { "ENODATA", VIBEOS_ENODATA },
+        { "EACCES", VIBEOS_EACCES },
     };
 
     for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
@@ -622,6 +625,26 @@ static int run(char **a, int n) {
             g_line_unchanged = 1;   /* Linux's punch changes nothing there, times included */
         }
         return vibeos_fs_fallocate(&g_mnt, &node, m, off, strtoull(a[4], NULL, 10));
+    }
+    if (strcmp(c, "setacl") == 0 && n == 4) {
+        /* A POSIX ACL, access (a) or default (d), as Linux's attribute value
+         * in hex - what the Linux handler hands vibeos_acl_set (E4-011). */
+        static uint8_t v[4096];
+        uint32_t len = 0;
+        const char *h = a[3];
+
+        if (vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
+            return -VIBEOS_ENOENT;
+        }
+        while (h[0] && h[1] && len < sizeof(v)) {
+            unsigned b;
+
+            sscanf(h, "%2x", &b);
+            v[len++] = (uint8_t)b;
+            h += 2;
+        }
+        return vibeos_acl_set(&g_mnt, &node, a[2][0] == 'a' ? VIBEOS_XATTR_ACL_ACCESS : VIBEOS_XATTR_ACL_DEFAULT,
+                              v, len);
     }
     if ((strcmp(c, "setxattr") == 0 && n == 6) || (strcmp(c, "removexattr") == 0 && n == 3)) {
         /* A user.* name; a value of `len` bytes of pat(seed) from 0, and

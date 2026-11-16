@@ -43,6 +43,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import struct
 import tempfile
 import zlib
 from concurrent.futures import ProcessPoolExecutor
@@ -71,7 +72,7 @@ KNOWN = {
     errno.EPERM: "EPERM", errno.ENOENT: "ENOENT", errno.EEXIST: "EEXIST",
     errno.ENOTDIR: "ENOTDIR", errno.EISDIR: "EISDIR", errno.EINVAL: "EINVAL",
     errno.ENOTEMPTY: "ENOTEMPTY", errno.ENAMETOOLONG: "ENAMETOOLONG",
-    errno.ENODATA: "ENODATA",
+    errno.ENODATA: "ENODATA", errno.EACCES: "EACCES",
 }
 
 # Extended attribute names a file may carry (E4-011): few and short, so that
@@ -292,8 +293,8 @@ class Gen:
         op = r.choices(
             ["create", "write", "truncate", "mkdir", "rmdir", "unlink", "rename", "link",
              "symlink", "chmod", "writefile", "stride", "fill", "chown", "utimes", "bigwrite", "fallocate",
-             "setxattr", "removexattr"],
-            weights=[14, 22, 8, 10, 6, 8, 10, 5, 5, 4, 8, 3, 2, 4, 4, 1, 4, 5, 2])[0]
+             "setxattr", "removexattr", "setacl"],
+            weights=[14, 22, 8, 10, 6, 8, 10, 5, 5, 4, 8, 3, 2, 4, 4, 1, 4, 5, 2, 4])[0]
         room = self.budget - self.used()
         if op in ("create", "mkdir", "symlink", "fill", "writefile") and len(self.entries()) >= self.inodes - 130:
             op = "unlink"
@@ -468,6 +469,33 @@ class Gen:
             n, seed = r.choice([0, r.randrange(1, 16), r.randrange(1, 120), r.randrange(60, 120)]), r.randrange(1, 250)
             flags = r.choice([0, 0, os.XATTR_CREATE, os.XATTR_REPLACE])
             self.emit(["setxattr", p, name, n, seed, flags], lambda: os.setxattr(hp, name, pat(seed, 0, n), flags))
+        elif op == "setacl":
+            # A POSIX ACL through Linux's own attribute (E4-011): the mode
+            # follows an access list, a list the mode says all of is not
+            # kept, a default one is a directory's only (EACCES), a malformed
+            # one is EINVAL - and a chmod later changes the list. The owner's
+            # entry keeps read and write: the host's run is not root.
+            p = self.pick("fd")
+            if p is None:
+                return
+            hp = self.host(p)
+            which = "d" if r.random() < 0.3 else "a"
+            ents = [(1, r.choice([6, 7] if not os.path.isdir(hp) else [7]), 0xFFFFFFFF)]
+            users = sorted(r.sample(range(1000, 1010), r.choice([0, 0, 1, 2])))
+            ents += [(2, r.randrange(8), u) for u in users]
+            ents.append((4, r.randrange(8), 0xFFFFFFFF))
+            groups = sorted(r.sample(range(2000, 2010), r.choice([0, 0, 1, 2])))
+            ents += [(8, r.randrange(8), g) for g in groups]
+            if users or groups or r.random() < 0.3:
+                ents.append((0x10, r.randrange(8), 0xFFFFFFFF))
+            ents.append((0x20, r.randrange(8), 0xFFFFFFFF))
+            if r.random() < 0.1:
+                ents = [e for e in ents if e[0] != 0x10] if users or groups else ents[1:]   # malformed
+            if r.random() < 0.08:
+                ents = []   # the header alone: no list
+            val = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in ents)
+            name = "system.posix_acl_" + ("access" if which == "a" else "default")
+            self.emit(["setacl", p, which, val.hex()], lambda: os.setxattr(hp, name, val))
         elif op == "writefile":
             p = self.pick("f") if r.random() < 0.6 else self.fresh()
             if p is None:

@@ -1,0 +1,40 @@
+# The form of a POSIX ACL (kernel/fs/acl.c, E4-011), broken. Caught by the
+# ext4 torture, which sets well-formed and malformed lists on the host
+# through Linux's own system.posix_acl_* attributes and holds the driver to
+# Linux's answer - EINVAL, EACCES or the list kept, and the mode that follows.
+#
+# Target source: kernel/fs/acl.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4-torture.sh build-gcc-Release 20 4'" python3 scripts/dev/sabotage.py kernel/fs/acl.c scripts/dev/cases/fs-acl.txt build-gcc-Release
+
+### named entries without a mask are accepted
+--- old
+    if (state != 4u || (named != 0u && !have_mask)) {
++++ new
+    if (state != 4u) {
+
+### a list without its owner entry is accepted
+--- old
+        case VIBEOS_ACL_GROUP_OBJ:
+            if (state != 1u) {
++++ new
+        case VIBEOS_ACL_GROUP_OBJ:
+            if (state > 1u) {
+
+### a default list is set on a file
+--- old
+        return len == VIBEOS_ACL_HDR ? 0 : -VIBEOS_EACCES;
++++ new
+        return vibeos_fs_setxattr(mnt, node, index, "", 0, val, len, 0);
+
+### a mask with nobody named is a list the mode says all of
+--- old
+            has_m = 1;
+            equiv = 0;
++++ new
+            has_m = 1;
+
+### the group bits are the owning group's even with a mask
+--- old
+    *perm = (u << 6) | ((has_m ? m : g) << 3) | o;
++++ new
+    *perm = (u << 6) | (g << 3) | o;

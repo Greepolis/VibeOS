@@ -86,7 +86,7 @@ BASELINE = {
     # Modules exempted by reason (EXEMPT below). It may only go down: an
     # exemption is a claim that the module has no failure mode a counter could
     # see, and every one is a place a defect could hide without a detector.
-    "mustbezero_exempt": 26,   # 25 -> 26: sched/cred (docs/abi/ L2 step 1), the credential rules, with no state. Before: 24 -> 25: fs/procfs (docs/abi/ L3 step 3), generated read-only text and no state. Before:   # 23 -> 24: fs/path (docs/abi/ A4), pure functions whose every refusal is an errno to the caller. Was 24 before that: fs/vfs counts mount_unlocked (2026-09-28). Was 21; +1 sched/task_ident, +1 fs/fdtable (C5): pure functions over a caller-owned struct, decided not reflexed; +1 diag/crash (C6), see its entry
+    "mustbezero_exempt": 27,   # 26 -> 27: fs/acl (E4-011), the form of a POSIX ACL and its relation to the mode, with no state. Before: 25 -> 26: sched/cred (docs/abi/ L2 step 1), the credential rules, with no state. Before: 24 -> 25: fs/procfs (docs/abi/ L3 step 3), generated read-only text and no state. Before:   # 23 -> 24: fs/path (docs/abi/ A4), pure functions whose every refusal is an errno to the caller. Was 24 before that: fs/vfs counts mount_unlocked (2026-09-28). Was 21; +1 sched/task_ident, +1 fs/fdtable (C5): pure functions over a caller-owned struct, decided not reflexed; +1 diag/crash (C6), see its entry
 }
 
 # A module counts as having a must-be-zero when one of these holds. Three routes,
@@ -123,6 +123,7 @@ EXEMPT = {
     "ipc/waitset": "timeouts and wakes are outcomes, not faults; ownership refusals are policy",
     "core/log": "the ring overwrites by design and counts what it dropped",
     "core/policy": "a pure decision over its arguments; a denial is the behaviour",
+    "fs/acl": "a pure check of a list's form and the mode it stands for; a malformed list is EINVAL to the caller",
     "core/security": "a pure decision over its arguments; a denial is the behaviour",
     "net/net_policy": "a pure decision over its arguments; a denial is the behaviour",
     "sched/sched_policy": "a pure decision over its arguments; no state",

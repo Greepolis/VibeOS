@@ -1,0 +1,39 @@
+# POSIX ACLs (E4-011), broken: their form (kernel/fs/acl.c) and what ext4
+# does with them (kernel/fs/ext4_write.c). Caught by the torture
+# (scripts/dev/verify-ext4-torture.sh), which sets access and default lists
+# on the host through Linux's own system.posix_acl_* attributes, chmods the
+# files afterwards, and holds the driver's listing - modes and lists - to
+# Linux's, power cuts included; e2fsck judges every volume.
+#
+# Enforcement is not here: nothing decides a permission by a list yet.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4-torture.sh build-gcc-Release 20 4'" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-acl.txt build-gcc-Release
+
+### an access list does not set the mode
+--- old
+            perm = (int32_t)p;
++++ new
+            perm = -1;
+
+### a chmod leaves the list as it was
+--- old
+    if (rc == 0 && (a->valid & VIBEOS_ATTR_MODE) != 0u) {
+        rc = acl_follow_mode(fs, ino, inode, a->mode);
++++ new
+    if (0) {
+        rc = acl_follow_mode(fs, ino, inode, a->mode);
+
+### a list the mode says all of is kept anyway
+--- old
+            if (equiv) {
+                return xa_change((vibeos_ext2_t *)fsv, node, index, "", 0, 0, 0, 0, 1, perm);
++++ new
+            if (0) {
+                return xa_change((vibeos_ext2_t *)fsv, node, index, "", 0, 0, 0, 0, 1, perm);
+
+### ext4's short entries are written eight bytes long
+--- old
+        uint32_t tag = le16(e), full = tag == VIBEOS_ACL_USER || tag == VIBEOS_ACL_GROUP;
++++ new
+        uint32_t tag = le16(e), full = 1;
