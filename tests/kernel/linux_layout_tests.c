@@ -39,6 +39,8 @@ int test_linux_layout(void) {
 #include <asm/sigcontext.h>
 #include <asm/ucontext.h>
 #include <asm/siginfo.h>
+#include <linux/posix_acl.h>
+#include <linux/posix_acl_xattr.h>
 #include <linux/signal.h>
 #include <linux/times.h>
 #include <linux/pidfd.h>
@@ -418,6 +420,14 @@ int test_linux_layout(void) {
     CONST(LINUX_XATTR_REPLACE, XATTR_REPLACE);
     CONST(LINUX_XATTR_NAME_MAX, XATTR_NAME_MAX);
     CONST(LINUX_XATTR_SIZE_MAX, XATTR_SIZE_MAX);
+    CONST(LINUX_POSIX_ACL_XATTR_VERSION, POSIX_ACL_XATTR_VERSION);
+    CONST(LINUX_ACL_USER_OBJ, ACL_USER_OBJ);
+    CONST(LINUX_ACL_USER, ACL_USER);
+    CONST(LINUX_ACL_GROUP_OBJ, ACL_GROUP_OBJ);
+    CONST(LINUX_ACL_GROUP, ACL_GROUP);
+    CONST(LINUX_ACL_MASK, ACL_MASK);
+    CONST(LINUX_ACL_OTHER, ACL_OTHER);
+    CONST(LINUX_ACL_ENTRY_SIZE, sizeof(struct posix_acl_xattr_entry));
     LIBC_CONST(LINUX_DT_LNK, "DT_LNK");
     CONST(VIBEOS_EDEADLK, EDEADLK);
     CONST(VIBEOS_EOVERFLOW, EOVERFLOW);

@@ -508,6 +508,19 @@ typedef struct {
 #define LINUX_XATTR_NAME_MAX 255
 #define LINUX_XATTR_SIZE_MAX 65536
 
+/* A POSIX ACL as the system.posix_acl_* attributes carry it
+ * (<linux/posix_acl_xattr.h>, <linux/posix_acl.h>): a version word, then
+ * entries of tag, permissions and id - the VFS's own format (vibeos/acl.h),
+ * which names.c asserts. */
+#define LINUX_POSIX_ACL_XATTR_VERSION 0x0002
+#define LINUX_ACL_USER_OBJ  0x01
+#define LINUX_ACL_USER      0x02
+#define LINUX_ACL_GROUP_OBJ 0x04
+#define LINUX_ACL_GROUP     0x08
+#define LINUX_ACL_MASK      0x10
+#define LINUX_ACL_OTHER     0x20
+#define LINUX_ACL_ENTRY_SIZE 8
+
 /* fallocate modes (linux/falloc.h) and posix_fadvise advice (linux/fadvise.h):
  * the modes honoured, and the largest advice there is. */
 #define LINUX_FALLOC_FL_KEEP_SIZE 0x01

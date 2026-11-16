@@ -17,6 +17,7 @@
  * root on Linux: everything but writing on a read-only filesystem and running
  * a file nobody may run. */
 
+#include "vibeos/acl.h"
 #include "linux_internal.h"
 
 #define LINUX_CWD ((uint64_t)(uint32_t)LINUX_AT_FDCWD)
@@ -545,7 +546,8 @@ static long linux_sys_openat2(uint64_t dirfd, uint64_t path_uptr, uint64_t how_u
 
 /* The chmod family: the permission bits, and the three above them. A symbolic
  * link has none of its own to change - Linux answers EOPNOTSUPP when asked not
- * to follow one. */
+ * to follow one. An access ACL follows the mode: the filesystem's to do, in
+ * the same transaction (E4-011). */
 static long linux_chmod_walked(const vibeos_path_t *w, uint64_t mode) {
     vibeos_fs_attr_t attr;
 
@@ -845,10 +847,12 @@ static long linux_sys_fstatfs(uint64_t fd, uint64_t ubuf) {
 /* ---- extended attributes ---------------------------------------------------------------
  *
  * Linux's twelve calls over the VFS's four (E4-011). A name is split into its
- * namespace and the rest, as ext4 stores it: user., trusted. and security.;
- * the ACL names (system.posix_acl_*) and anything else are EOPNOTSUPP until
- * ACLs exist, because storing an ACL nobody enforces would be a permission
- * that lies. What Linux refuses before it asks the filesystem is refused first,
+ * namespace and the rest, as ext4 stores it: user., trusted. and security.,
+ * and the two ACL names (system.posix_acl_access, _default), whole names kept
+ * with no name of their own and handed to vibeos_acl_set; anything else is
+ * EOPNOTSUPP. An ACL is stored and not yet enforced - by decision, until the
+ * security milestone (fs_ext4.md E4-011) - so a list is changed only by the
+ * file's owner, as chmod. What Linux refuses before it asks the filesystem is refused first,
  * in its order: a flag setxattr does not have, a name empty or too long
  * (ERANGE), a value too large (E2BIG), the file itself (ENOENT, EBADF), then
  * the namespace's rule, then the filesystem. A filesystem with no attributes
@@ -857,6 +861,25 @@ static long linux_sys_fstatfs(uint64_t fd, uint64_t ubuf) {
  * is what ext4 says of a value its block cannot hold. */
 
 #define LINUX_XATTR_VALUE_CAP 4096u
+
+/* An ACL attribute's value is handed through as it came: Linux's format is the
+ * VFS's (vibeos/acl.h). */
+_Static_assert(LINUX_POSIX_ACL_XATTR_VERSION == VIBEOS_ACL_VERSION && LINUX_ACL_USER_OBJ == VIBEOS_ACL_USER_OBJ &&
+                   LINUX_ACL_USER == VIBEOS_ACL_USER && LINUX_ACL_GROUP_OBJ == VIBEOS_ACL_GROUP_OBJ &&
+                   LINUX_ACL_GROUP == VIBEOS_ACL_GROUP && LINUX_ACL_MASK == VIBEOS_ACL_MASK &&
+                   LINUX_ACL_OTHER == VIBEOS_ACL_OTHER && LINUX_ACL_ENTRY_SIZE == VIBEOS_ACL_ENTRY,
+               "Linux's ACL attribute is the VFS's ACL");
+
+static const char g_acl_access[] = "system.posix_acl_access";
+static const char g_acl_default[] = "system.posix_acl_default";
+
+static int linux_name_is(const char *a, const char *b) {
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
 
 typedef struct {
     vibeos_fsmount_t *mnt;
@@ -888,6 +911,13 @@ static long linux_xattr_split(const char *name, uint32_t *index, const char **re
     };
     uint32_t k, i, n = 0;
 
+    /* The ACLs: a whole name each, kept with no name of their own. */
+    if (linux_name_is(name, g_acl_access) || linux_name_is(name, g_acl_default)) {
+        *index = name[17] == 'a' ? VIBEOS_XATTR_ACL_ACCESS : VIBEOS_XATTR_ACL_DEFAULT;
+        *rest = "";
+        *rlen = 0;
+        return 0;
+    }
     while (name[n]) {
         n++;
     }
@@ -949,6 +979,13 @@ static void linux_xattr_done(linux_xattr_target_t *t) {
 static long linux_xattr_may(const vibeos_fs_node_t *node, uint32_t index, int write) {
     vibeos_cred_t c;
 
+    if (index == VIBEOS_XATTR_ACL_ACCESS || index == VIBEOS_XATTR_ACL_DEFAULT) {
+        /* Anybody may read a list; only the owner may change it, as chmod. */
+        if (write && linux_may_own(node) != 0) {
+            return -VIBEOS_EPERM;
+        }
+        return (node->mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK ? -VIBEOS_EOPNOTSUPP : 0;
+    }
     linux_cred(&c);
     if (index == VIBEOS_XATTR_TRUSTED) {
         return c.euid == 0u ? 0 : (write ? -VIBEOS_EPERM : -VIBEOS_ENODATA);
@@ -999,7 +1036,9 @@ static long linux_xattr_set(uint64_t where, int how, uint64_t name_uptr, uint64_
         } else {
             vflags = (flags & LINUX_XATTR_CREATE ? VIBEOS_XATTR_CREATE : 0u) |
                      (flags & LINUX_XATTR_REPLACE ? VIBEOS_XATTR_REPLACE : 0u);
-            r = vibeos_fs_setxattr(t.mnt, &t.node, index, rest, rlen, kv, (uint32_t)size, vflags);
+            r = index == VIBEOS_XATTR_ACL_ACCESS || index == VIBEOS_XATTR_ACL_DEFAULT
+                    ? vibeos_acl_set(t.mnt, &t.node, index, kv, (uint32_t)size)
+                    : vibeos_fs_setxattr(t.mnt, &t.node, index, rest, rlen, kv, (uint32_t)size, vflags);
         }
     }
     if (kv) {
@@ -1065,7 +1104,7 @@ static long linux_xattr_remove(uint64_t where, int how, uint64_t name_uptr) {
 
 /* listxattr: every name the caller may see, each with its prefix and a NUL. */
 static long linux_xattr_list(uint64_t where, int how, uint64_t list_uptr, uint64_t size) {
-    static const char *const prefix[8] = {0, "user.", 0, 0, "trusted.", 0, "security.", 0};
+    static const char *const prefix[8] = {0, "user.", g_acl_access, g_acl_default, "trusted.", 0, "security.", 0};
     linux_xattr_target_t t;
     char nm[LINUX_XATTR_NAME_MAX + 1];
     uint8_t *out = 0;
