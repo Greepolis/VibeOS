@@ -22,4 +22,8 @@ int32_t vibeos_utf8_fold(const char *in, uint32_t len, uint8_t *out, uint32_t ca
  * folded and compared when both fold, compared as bytes when either does not. */
 int vibeos_utf8_fold_eq(const char *a, uint32_t alen, const char *b, uint32_t blen);
 
+/* 1 when the name folds: valid UTF-8 of code points Unicode 12.1 assigns.
+ * What a strict casefold volume asks of every name it is given. */
+int vibeos_utf8_folds(const char *name, uint32_t len);
+
 #endif

@@ -333,7 +333,7 @@ static int errno_of(const char *name) {
         { "ENOTDIR", VIBEOS_ENOTDIR }, { "EISDIR", VIBEOS_EISDIR }, { "EINVAL", VIBEOS_EINVAL },
         { "ENOTEMPTY", VIBEOS_ENOTEMPTY }, { "ENAMETOOLONG", VIBEOS_ENAMETOOLONG }, { "ENOSPC", VIBEOS_ENOSPC },
         { "EFBIG", VIBEOS_EFBIG }, { "ENODATA", VIBEOS_ENODATA },
-        { "EACCES", VIBEOS_EACCES },
+        { "EACCES", VIBEOS_EACCES }, { "EOPNOTSUPP", VIBEOS_EOPNOTSUPP },
     };
 
     for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
@@ -625,6 +625,29 @@ static int run(char **a, int n) {
             g_line_unchanged = 1;   /* Linux's punch changes nothing there, times included */
         }
         return vibeos_fs_fallocate(&g_mnt, &node, m, off, strtoull(a[4], NULL, 10));
+    }
+    if (strcmp(c, "chattr") == 0 && n == 3) {
+        /* chattr +F / -F as chattr does it: read every flag, change one,
+         * hand them all back (E4-030); "+X" asks for a flag the driver does
+         * not change (immutable). */
+        uint32_t fl;
+        int r;
+
+        if (vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
+            return -VIBEOS_ENOENT;
+        }
+        r = vibeos_fs_getflags(&g_mnt, &node, &fl);
+        if (r != 0) {
+            return r;
+        }
+        if (strcmp(a[2], "+F") == 0) {
+            fl |= VIBEOS_FSFL_CASEFOLD;
+        } else if (strcmp(a[2], "-F") == 0) {
+            fl &= ~VIBEOS_FSFL_CASEFOLD;
+        } else {
+            fl |= 0x10u;   /* FS_IMMUTABLE_FL */
+        }
+        return vibeos_fs_setflags(&g_mnt, &node, fl);
     }
     if (strcmp(c, "setacl") == 0 && n == 4) {
         /* A POSIX ACL, access (a) or default (d), as Linux's attribute value

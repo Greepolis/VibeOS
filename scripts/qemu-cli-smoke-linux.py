@@ -1098,6 +1098,10 @@ def root_volume_problems(root_img):
                            capture_output=True, text=True)
         if "ROOT_WRITE_OK" not in r.stdout:
             out.append("root_volume_lost_the_guests_file")
+        # The name the guest wrote in /home, as it wrote it: case preserved.
+        r = subprocess.run([debugfs, "-R", "ls /home", root_img], capture_output=True, text=True)
+        if "MixedCase.txt" not in r.stdout:
+            out.append("home_lost_the_case_of_a_name")
         else:
             # The file's time is the guest's wall clock (E4-029): it was 1970,
             # the time since boot, until the kernel read the CMOS clock. QEMU's
@@ -3360,6 +3364,14 @@ def main():
                 # stand in for the file's contents.
                 if not re.search(r"write\(ring3\): TMPFS_RT_2\r?\n", text):
                     problems.append("tmpfs_round_trip_failed")
+                # Case where people live, and not where the system does
+                # (hierarchy.md, E4-030): written to /home as MixedCase.txt
+                # and read back as mIXEDcASE.TXT; /etc/vibeos/ROOT not found
+                # beside root. The answers are the shell's arithmetic.
+                if not re.search(r"write\(ring3\): CASEFOLD_7\r?\n", text):
+                    problems.append("home_is_not_casefolded")
+                if not re.search(r"write\(ring3\): CASE_SENSITIVE_11\r?\n", text):
+                    problems.append("etc_is_casefolded")
                 # Writing through a descriptor (docs/abi/ L1 step 3): 820
                 # bytes written in twenty writes, five appended, and wc's
                 # count of the file. Any other number is on the line instead:

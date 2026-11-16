@@ -15,8 +15,10 @@ was decided. What is still open in every register is gathered, generated, in
 2. **ext4 as the native root** (F3, decided 2026-11-03) - **done 2026-11-09**:
    read, write, the journal, the root at `/` with the programs in `/usr/bin`,
    and the intensive test against Linux in the nightly (steps 1 to 5,
-   [filesystem-design/ext4.md](filesystem-design/ext4.md)). What is left is the
-   open items in [fs_ext4.md](implementation_progress/fs_ext4.md).
+   [filesystem-design/ext4.md](filesystem-design/ext4.md)). Since then
+   (2026-11-16) its open items closed but two: E4-016's group commit, whose
+   contract is decided (Linux's: fsync is the promise), and E4-021, which waits
+   for the user's shell (item 3). See [fs_ext4.md](implementation_progress/fs_ext4.md).
 
 ## Next
 
@@ -51,7 +53,9 @@ was decided. What is still open in every register is gathered, generated, in
 ## Later
 
 6. Security, all of it (isolation, privilege, sandboxing; L9's capabilities,
-   seccomp and Landlock).
+   seccomp and Landlock), and POSIX ACLs acted on: ext4 stores them since
+   2026-11-16 (E4-011), and nothing yet decides a permission by one or gives
+   a new file its directory's default list.
 7. The applications that manage the system.
 8. The rest of networking.
 9. System administration (L8).

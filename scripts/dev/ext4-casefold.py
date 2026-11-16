@@ -85,19 +85,16 @@ def run(cmd, cwd=None, inp=None):
     return subprocess.run(cmd, cwd=cwd, input=inp, capture_output=True)
 
 
-def one_seed(ex, assigned, seed, work):
+def one_seed(ex, assigned, seed, work, strict=False):
     rng = random.Random(seed)
-    wd = os.path.join(work, "s%d" % seed)
+    wd = os.path.join(work, "s%d%s" % (seed, "s" if strict else ""))
     os.makedirs(wd)
     img = os.path.join(wd, "fs.img")
-    r = run(["mkfs.ext4", "-q", "-F", "-O", "casefold", "-b", "1024", "-N", "4096", img, "32M"])
+    r = run(["mkfs.ext4", "-q", "-F", "-O", "casefold"] +
+            (["-E", "encoding=utf8,encoding_flags=strict"] if strict else []) +
+            ["-b", "1024", "-N", "4096", img, "32M"])
     if r.returncode:
         return "mkfs_failed", 0, 0
-    run(["debugfs", "-w", "-R", "mkdir ci", img])
-    run(["debugfs", "-w", "-R", "mkdir cs", img])
-    st = run(["debugfs", "-R", "stat ci", img]).stdout.decode()
-    flags = int(st.split("Flags: ")[1].split()[0], 16)
-    run(["debugfs", "-w", "-R", "set_inode_field ci flags 0x%x" % (flags | 0x40000000), img])
     m = Model(assigned)
     pool = [w.encode() for w in WORDS] + RAW
     lines = []
@@ -106,6 +103,22 @@ def one_seed(ex, assigned, seed, work):
         if not ok:
             words = ([b"refuse"] if words[0] in (b"unlink", b"mkdir") else [b"fail", err.encode()]) + words
         lines.append(b"\t".join(words))
+
+    def refused(cf, name):
+        # A strict volume takes no name in a casefolded directory that does
+        # not fold (EINVAL), and finds none.
+        return strict and cf and m.key(cf, name)[0] == "raw"
+
+    # The directories, and +F as chattr sets it - through the driver, under
+    # Linux's rules: a directory, and an empty one; no other flag changes.
+    emit([b"mkdir", b"/ci"])
+    emit([b"mkdir", b"/cs"])
+    emit([b"create", b"/cs/plain", b"644"])
+    emit([b"chattr", b"/cs/plain", b"+F"], False, "ENOTDIR")
+    emit([b"chattr", b"/cs", b"+F"], False, "ENOTEMPTY")
+    emit([b"unlink", b"/cs/plain"])
+    emit([b"chattr", b"/ci", b"+F"])
+    emit([b"chattr", b"/ci", b"+X"], False, "EOPNOTSUPP")
 
     # A big directory each, so that e2fsck -D gives them an index.
     for i in range(160):
@@ -122,6 +135,14 @@ def one_seed(ex, assigned, seed, work):
         a = rng.choice(pool)
         op = rng.choice(["create", "create", "unlink", "rename", "read", "read", "mkdir"])
         hit = m.find(d, a)
+        if refused(cf, a) and op in ("create", "mkdir", "rename"):
+            if op == "mkdir":
+                emit([b"mkdir", d + b"/" + a], False)
+            elif op == "create":
+                emit([b"create", d + b"/" + a, b"644"], False, "EINVAL")
+            else:
+                emit([b"rename", d + b"/" + a, d + b"/Bulk-000"], False, "EINVAL")
+            continue
         if op == "create":
             if hit:
                 emit([b"create", d + b"/" + a, b"644"], False, "EEXIST")
@@ -150,6 +171,9 @@ def one_seed(ex, assigned, seed, work):
         elif op == "rename":
             b = rng.choice(pool)
             hb = m.find(d, b)
+            if hit and hit[1] == "f" and refused(cf, b):
+                emit([b"rename", d + b"/" + a, d + b"/" + b], False, "EINVAL")
+                continue
             if not hit or hit[1] != "f" or (hb and hb[1] != "f"):
                 continue
             emit([b"rename", d + b"/" + a, d + b"/" + b])
@@ -266,13 +290,24 @@ def main():
     assigned = load_assigned(ucd)
     total_ops = total_dx = 0
     with tempfile.TemporaryDirectory(prefix="ext4-casefold-") as work:
+        # A third of the seeds on a strict volume.
         for seed in range(1, seeds + 1):
-            why, ops, dx = one_seed(ex, assigned, seed, work)
+            strict = seed % 3 == 0
+            why, ops, dx = one_seed(ex, assigned, seed, work, strict)
             total_ops += ops
             total_dx += dx
             if why:
-                print("ext4_casefold=FAILED seed=%d reason=%s" % (seed, why))
+                print("ext4_casefold=FAILED seed=%d%s reason=%s" % (seed, " strict" if strict else "", why))
                 return 1
+        # +F on a volume without the feature.
+        wd = os.path.join(work, "nocf")
+        os.makedirs(wd)
+        run(["mkfs.ext4", "-q", "-F", "-b", "1024", os.path.join(wd, "fs.img"), "8M"])
+        open(os.path.join(wd, "script.txt"), "wb").write(b"mkdir\t/d\nfail\tEOPNOTSUPP\tchattr\t/d\t+F\n")
+        r = run([ex, "apply"], cwd=wd)
+        if r.returncode:
+            print("ext4_casefold=FAILED reason=casefold_set_without_the_feature")
+            return 1
     print("ext4_casefold=ok seeds=%d ops=%d dx=%d" % (seeds, total_ops, total_dx))
     return 0
 

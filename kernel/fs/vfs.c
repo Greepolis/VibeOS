@@ -255,6 +255,36 @@ int vibeos_fs_fallocate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uin
     return r;
 }
 
+int vibeos_fs_getflags(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t *flags) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node || !flags) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->getflags) {
+        return -VIBEOS_ENOTTY;
+    }
+    fs_enter(mnt);
+    r = mnt->ops->getflags(mnt->fs, node, flags);
+    fs_leave(mnt);
+    return r;
+}
+
+int vibeos_fs_setflags(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t flags) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->setflags) {
+        return mnt->ops->getflags && !vibeos_fs_writable(mnt) ? -VIBEOS_EROFS : -VIBEOS_ENOTTY;
+    }
+    fs_enter(mnt);
+    r = mnt->ops->setflags(mnt->fs, node, flags);
+    fs_leave(mnt);
+    return r;
+}
+
 long vibeos_fs_getxattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t index, const char *name,
                         uint32_t nlen, void *buf, uint32_t cap) {
     long r;

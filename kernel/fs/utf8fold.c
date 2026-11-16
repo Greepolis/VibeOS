@@ -268,6 +268,17 @@ int32_t vibeos_utf8_fold(const char *in, uint32_t len, uint8_t *out, uint32_t ca
     return r < 0 ? -1 : (int32_t)o;
 }
 
+int vibeos_utf8_folds(const char *name, uint32_t len) {
+    fold_it_t t;
+    uint32_t cp;
+    int r;
+
+    fold_start(&t, name, len);
+    while ((r = fold_next(&t, &cp)) > 0) {
+    }
+    return r == 0;
+}
+
 int vibeos_utf8_fold_eq(const char *a, uint32_t alen, const char *b, uint32_t blen) {
     fold_it_t x, y;
     uint32_t i, ca, cb;

@@ -1723,6 +1723,12 @@ static void t_xattr_and_unshare(void) {
     expect(SYS4(192, ustr("/tmp/dangling"), ustr("user.k"), buf, 64) == -VIBEOS_ENODATA &&
            SYS4(191, ustr("/tmp/dangling"), ustr("user.k"), buf, 64) == -VIBEOS_ENOENT,
            "the l forms ask about the link, the others about what it points at");
+    /* chattr's ioctls (E4-030): a filesystem with no flags says ENOTTY, as
+     * Linux does, and a bad pointer is EFAULT before the filesystem is asked. */
+    expect(SYS3(16, (uint64_t)fd, LINUX_FS_IOC_GETFLAGS, buf) == -VIBEOS_ENOTTY &&
+           SYS3(16, (uint64_t)fd, LINUX_FS_IOC32_SETFLAGS, buf) == -VIBEOS_ENOTTY &&
+           SYS3(16, (uint64_t)fd, LINUX_FS_IOC_GETFLAGS, 0x1000) == -VIBEOS_EFAULT,
+           "FS_IOC_GETFLAGS and SETFLAGS on a filesystem without flags");
 
     /* close_range's UNSHARE: nothing to do for a process of one thread. */
     expect(SYS1(32, (uint64_t)fd) > fd &&

@@ -540,6 +540,13 @@ typedef struct {
 #define LINUX_FIONBIO    0x5421u
 #define LINUX_FIONCLEX   0x5450u
 #define LINUX_FIOCLEX    0x5451u
+/* chattr and lsattr (<linux/fs.h>): the flags as an int, whatever the
+ * request's size field says; and the 32-bit spelling of the same two. */
+#define LINUX_FS_IOC_GETFLAGS   0x80086601u
+#define LINUX_FS_IOC_SETFLAGS   0x40086602u
+#define LINUX_FS_IOC32_GETFLAGS 0x80046601u
+#define LINUX_FS_IOC32_SETFLAGS 0x40046602u
+#define LINUX_FS_CASEFOLD_FL    0x40000000u
 
 /* poll's events (asm-generic/poll.h). */
 #define LINUX_POLLIN   0x0001

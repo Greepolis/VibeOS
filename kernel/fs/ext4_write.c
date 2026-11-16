@@ -45,6 +45,7 @@
 #include "vibeos/abi_linux.h"
 #include "ext2_internal.h"
 #include "vibeos/acl.h"
+#include "vibeos/utf8fold.h"
 
 #define BG_INODE_UNINIT 0x0001u
 #define BG_BLOCK_UNINIT 0x0002u
@@ -131,11 +132,6 @@ void ext4_w_mount(vibeos_ext2_t *fs) {
     /* With a journal, every change goes through it (ext4_journal.c); one
      * this driver will not write leaves the volume read-only. */
     if (ext4_j_load(fs) != 0) {
-        return;
-    }
-    /* A strict casefold volume refuses a name that does not fold; the writer
-     * does not refuse it yet, so it does not write such a volume (E4-030). */
-    if (fs->casefold_strict) {
         return;
     }
     fs->writable = 1;
@@ -1990,6 +1986,16 @@ static int dir_edit(vibeos_ext2_t *fs, uint32_t dir_ino, const char *name, uint3
 }
 
 /* 1 when a directory holds nothing but "." and "..". */
+/* A strict casefold volume takes no name in a casefolded directory that does
+ * not fold - invalid UTF-8, or a code point Unicode 12.1 does not assign - as
+ * Linux refuses it, with EINVAL (E4-030). Asked before anything is allocated.
+ * A lookup of such a name is ENOENT here where Linux says EINVAL: the reader
+ * answers "absent", and nothing can be found under a name nothing could have
+ * been made with. */
+static int name_refused(const vibeos_ext2_t *fs, const uint8_t *dir, const char *name, uint32_t nlen) {
+    return fs->casefold_strict && (le32(dir + 0x20u) & INODE_FLAG_CASEFOLD) != 0u && !vibeos_utf8_folds(name, nlen);
+}
+
 static int dir_empty(vibeos_ext2_t *fs, uint32_t dir_ino) {
     uint8_t dir[EXT2_MAX_INODE_SIZE];
     uint8_t *b = fs->wbuf;
@@ -3208,6 +3214,53 @@ static int x_removexattr(void *fsv, const vibeos_fs_node_t *node, uint32_t index
     return xa_change((vibeos_ext2_t *)fsv, node, index, name, nlen, 0, 0, 0, 1, -1);
 }
 
+/* ---- flags, for chattr (E4-030) -------------------------------------------
+ * ext4's i_flags are Linux's FS_*_FL. What lsattr may see is ext4's
+ * EXT4_FL_USER_VISIBLE; what this changes is casefold alone, under Linux's
+ * rules (ext4_ioctl_check_casefold): a volume with the feature, a directory,
+ * and an empty one. Any other flag changed is EOPNOTSUPP: immutable or
+ * append-only stored and not enforced would be a promise nobody keeps. */
+#define EXT4_FL_USER_VISIBLE 0x705BDFFFu
+
+static int x_getflags(void *fsv, const vibeos_fs_node_t *node, uint32_t *flags) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+
+    if (xa_node(fs, node, inode) != 0) {
+        return -VIBEOS_ENOENT;
+    }
+    *flags = le32(inode + 0x20u) & EXT4_FL_USER_VISIBLE;
+    return 0;
+}
+
+static int x_setflags(void *fsv, const vibeos_fs_node_t *node, uint32_t flags) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+    uint32_t old, diff;
+
+    if (xa_node(fs, node, inode) != 0) {
+        return -VIBEOS_ENOENT;
+    }
+    old = le32(inode + 0x20u);
+    diff = (flags ^ old) & EXT4_FL_USER_VISIBLE;
+    if (diff == 0u) {
+        touch_c(inode);
+        return inode_put(fs, (uint32_t)node->id, inode);
+    }
+    if ((diff & ~INODE_FLAG_CASEFOLD) != 0u || !fs->casefold) {
+        return -VIBEOS_EOPNOTSUPP;
+    }
+    if (!ext2_inode_is_dir(inode)) {
+        return -VIBEOS_ENOTDIR;
+    }
+    if (!dir_empty(fs, (uint32_t)node->id)) {
+        return -VIBEOS_ENOTEMPTY;
+    }
+    st32(inode + 0x20u, old ^ INODE_FLAG_CASEFOLD);
+    touch_c(inode);
+    return inode_put(fs, (uint32_t)node->id, inode);
+}
+
 static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, int listed) {
     int is_dir = ext2_inode_is_dir(inode), rc;
     uint32_t dtime;
@@ -3436,6 +3489,9 @@ static int node_create(vibeos_ext2_t *fs, const char *path, uint32_t mode, const
     }
     if (!ext2_inode_is_dir(parent)) {
         return -VIBEOS_ENOTDIR;
+    }
+    if (name_refused(fs, parent, name, nlen)) {
+        return -VIBEOS_EINVAL;
     }
     if (ext2_dir_find(fs, pino, parent, name, nlen) != 0u) {
         return -VIBEOS_EEXIST;
@@ -4207,6 +4263,9 @@ static int x_link(void *fsv, const char *existing, const char *path) {
     if (!ext2_inode_is_dir(parent)) {
         return -VIBEOS_ENOTDIR;
     }
+    if (name_refused(fs, parent, name, nlen)) {
+        return -VIBEOS_EINVAL;
+    }
     if (ext2_dir_find(fs, pino, parent, name, nlen) != 0u) {
         return -VIBEOS_EEXIST;
     }
@@ -4245,6 +4304,9 @@ static int x_rename(void *fsv, const char *from, const char *to, uint32_t flags)
     }
     if (!ext2_inode_is_dir(p1) || !ext2_inode_is_dir(p2)) {
         return -VIBEOS_ENOTDIR;
+    }
+    if (name_refused(fs, p1, name1, nlen1) || name_refused(fs, p2, name2, nlen2)) {
+        return -VIBEOS_EINVAL;
     }
     sino = ext2_dir_find(fs, pino1, p1, name1, nlen1);
     if (sino == 0u || ext2_read_inode(fs, sino, src) != 0) {
@@ -4459,6 +4521,7 @@ J_OP_INT(setxattr, (void *fsv, const vibeos_fs_node_t *node, uint32_t index, con
                     const void *value, uint32_t len, uint32_t flags), (fsv, node, index, name, nlen, value, len, flags))
 J_OP_INT(removexattr, (void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen),
          (fsv, node, index, name, nlen))
+J_OP_INT(setflags, (void *fsv, const vibeos_fs_node_t *node, uint32_t flags), (fsv, node, flags))
 J_OP_INT(setattr_node, (void *fsv, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *attr), (fsv, node, attr))
 /* A read, and atime as Linux's default (relatime) keeps it (E4-013): set when
  * it is not after the last change, or is a day old - so a file read again and
@@ -4522,6 +4585,8 @@ static const vibeos_fs_ops_t g_ext4_rw = {
     .setxattr = w_setxattr,
     .removexattr = w_removexattr,
     .listxattr = x_listxattr,
+    .getflags = x_getflags,
+    .setflags = w_setflags,
     .rmdir = w_rmdir,
     .rename = w_rename,
     .link = w_link,
@@ -4550,6 +4615,7 @@ static const vibeos_fs_ops_t g_ext4_ro = {
     .statfs = w_statfs,
     .getxattr = x_getxattr,
     .listxattr = x_listxattr,
+    .getflags = x_getflags,
     .serialize = 1,
 };
 

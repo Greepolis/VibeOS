@@ -1,0 +1,24 @@
+# Case on the machine (hierarchy.md "Case", E4-030), broken in the writer: a
+# name must be kept as it was typed, only compared folded. The gate reads
+# /home with debugfs once the machine has stopped and looks for MixedCase.txt.
+#
+#  1. A new entry's name in a casefolded directory is stored lower case. It
+#     is still found - the lookup folds - so only the name's case is lost.
+#     Expect home_lost_the_case_of_a_name alone. (Lower-casing every name
+#     was tried first: DOCS and the rest went red before this check could.)
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-casefold-boot-write.txt
+
+### a new entry's name is stored lower case (home_lost_the_case_of_a_name)
+--- old
+                b[at + 7u] = (uint8_t)ftype;
+                memcpy(b + at + 8u, name, nlen);
++++ new
+                b[at + 7u] = (uint8_t)ftype;
+                memcpy(b + at + 8u, name, nlen);
+                for (uint32_t lc = 0; (le32(dir + 0x20u) & INODE_FLAG_CASEFOLD) != 0u && lc < nlen; lc++) {
+                    if (b[at + 8u + lc] >= 'A' && b[at + 8u + lc] <= 'Z') {
+                        b[at + 8u + lc] = (uint8_t)(b[at + 8u + lc] + 32);
+                    }
+                }

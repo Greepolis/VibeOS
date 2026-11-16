@@ -219,6 +219,15 @@ typedef struct {
     int (*listxattr)(void *fs, const vibeos_fs_node_t *node, uint32_t k, uint32_t *index, char *name,
                      uint32_t cap, uint32_t *nlen);
 
+    /* A file's flags, as chattr and lsattr see them (E4-030): VIBEOS_FSFL_*,
+     * numbered as Linux's FS_*_FL, which are ext4's own. setflags is given
+     * every flag, changed or not, as chattr sends them; a filesystem refuses
+     * a change it does not make (EOPNOTSUPP) rather than store a flag that
+     * would mean nothing. Optional: without them a file has no flags
+     * (ENOTTY, as Linux answers for such a filesystem). */
+    int (*getflags)(void *fs, const vibeos_fs_node_t *node, uint32_t *flags);
+    int (*setflags)(void *fs, const vibeos_fs_node_t *node, uint32_t flags);
+
     /* Set by a driver that wants the VFS to serialise it: every call into it
      * is made holding its mount's lock, so a driver with shared state needs
      * no lock of its own. Not for a driver whose calls can wait - a device's
@@ -392,6 +401,11 @@ typedef int (*vibeos_fs_open_query_t)(const void *fs, uint64_t id);
 /* Returns the query it replaces, for a test that stands in for a while. */
 vibeos_fs_open_query_t vibeos_fs_set_open_query(vibeos_fs_open_query_t query);
 int vibeos_fs_node_is_open(const void *fs, uint64_t id);
+/* File flags (getflags/setflags). */
+#define VIBEOS_FSFL_CASEFOLD 0x40000000u   /* names in this directory compare without case */
+int vibeos_fs_getflags(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t *flags);
+int vibeos_fs_setflags(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint32_t flags);
+
 /* Extended attribute namespaces, numbered as ext4 numbers them on disk. */
 #define VIBEOS_XATTR_USER 1u
 #define VIBEOS_XATTR_ACL_ACCESS 2u

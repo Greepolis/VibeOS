@@ -174,7 +174,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); production root, no self-test input\n");
     } else {
     vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); seeding read() self-test input\n");
-    (void)vibeos_input_inject("vibeos\n"
+    if (vibeos_input_inject("vibeos\n"
                                   "mkdir DOCS\n"
                                   "write DOCS/NOTES.TXT persistent hello\n"
                                   "cat DOCS/NOTES.TXT\n"
@@ -231,6 +231,13 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * e2fsck has judged the volume. */
                                   "cat /etc/vibeos/root\n"
                                   "echo ROOT_WRITE_OK > /var/tmp/written-by-the-guest\n"
+                                  /* Case (hierarchy.md, E4-030): /home is
+                                   * casefolded, so a file written under one
+                                   * spelling reads back under another; /etc is
+                                   * not, so ROOT is not root. Both answers are
+                                   * the shell's arithmetic, not the typed text. */
+                                  "echo CASEFOLD_$((3+4)) > /home/MixedCase.txt && cat /home/mIXEDcASE.TXT\n"
+                                  "cat /etc/vibeos/ROOT 2>/dev/null || echo CASE_SENSITIVE_$((5+6))\n"
                                   "cat DOCS/NOTES.TXT\n"
                                   "ls /usr/bin\n"
                                   /* A working directory (docs/abi/ A4): cd,
@@ -329,7 +336,13 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "ls /usr/bin | wc -l\n"
                                   "echo PIPE_OK\n"
                                   "echo VIBEOS_SELFTEST_DONE\n"
-                                  "exit\n");
+                                  "exit\n") != 0) {
+        /* The script did not fit the keyboard's ring: everything after the
+         * cut is gone, and the shell would wait for the rest with every core
+         * idle - a wedge naming nothing, as the casefold step's two commands
+         * found (E4-030). Said here, where it is known. */
+        hw_panic("the boot self-test's input did not fit the keyboard ring (KBD_RING)");
+    }
     }
 
     hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);

@@ -2240,6 +2240,41 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
             r = !linux_ioctl_arg(arg, sizeof(v), 1) ||
                 vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0 ? -VIBEOS_EFAULT : 0;
             break;
+        case LINUX_FS_IOC_GETFLAGS:
+        case LINUX_FS_IOC32_GETFLAGS:
+        case LINUX_FS_IOC_SETFLAGS:
+        case LINUX_FS_IOC32_SETFLAGS: {
+            /* chattr and lsattr (E4-030). The flags are an int, whatever the
+             * size in the request's number says; changing them is the
+             * owner's, as chmod. */
+            vibeos_fs_node_t node;
+            uint32_t fl = 0;
+            int set = r32 == LINUX_FS_IOC_SETFLAGS || r32 == LINUX_FS_IOC32_SETFLAGS;
+
+            if (!f->mnt || vibeos_file_node(f, &node) != 0) {
+                r = -VIBEOS_ENOTTY;
+                break;
+            }
+            if (!linux_ioctl_arg(arg, sizeof(fl), !set)) {
+                r = -VIBEOS_EFAULT;
+                break;
+            }
+            if (set) {
+                if (vibeos_uaccess_copy(&fl, (const void *)(uintptr_t)arg, sizeof(fl)) != 0) {
+                    r = -VIBEOS_EFAULT;
+                } else if (linux_may_own(&node) != 0) {
+                    r = -VIBEOS_EPERM;
+                } else {
+                    r = vibeos_fs_setflags(f->mnt, &node, fl);
+                }
+                break;
+            }
+            r = vibeos_fs_getflags(f->mnt, &node, &fl);
+            if (r == 0 && vibeos_uaccess_copy((void *)(uintptr_t)arg, &fl, sizeof(fl)) != 0) {
+                r = -VIBEOS_EFAULT;
+            }
+            break;
+        }
         case LINUX_RNDGETENTCNT:
             /* The random devices' (L2 step 7, LTP's ioctl07): the same number
              * /proc/sys/kernel/random/entropy_avail prints. */

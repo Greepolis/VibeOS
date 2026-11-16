@@ -69,6 +69,41 @@ def owned_by_root(img, tree):
         raise SystemExit("make-boot-disk: debugfs could not set the owners: %s" % "; ".join(errors[:3]))
 
 
+# Names compare without case where people and Windows live (hierarchy.md,
+# "Case", decided 2026-11-11; E4-030): ext4's casefold, the +F attribute on
+# each of these, inherited by whatever is made in them.
+CASEFOLD_DIRS = ("/home", "/usr/lib/windows", "/var/lib/windows")
+
+
+def casefolded(img):
+    """Give CASEFOLD_DIRS the casefold flag. Linux sets +F only on an empty
+    directory; these may already hold files (C:/Windows's), so after the flag
+    e2fsck -D rebuilds every index with the hash of the folded names, and a
+    final e2fsck -n is the check that no two names collide by case."""
+    debugfs, e2fsck = shutil.which("debugfs"), shutil.which("e2fsck")
+    if not debugfs or not e2fsck:
+        raise SystemExit("make-boot-disk: debugfs and e2fsck are needed to casefold the root's directories")
+    cmds = []
+    for d in CASEFOLD_DIRS:
+        st = subprocess.run([debugfs, "-R", "stat %s" % d, img], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, universal_newlines=True).stdout
+        if "Flags: " not in st:
+            raise SystemExit("make-boot-disk: %s is not on the root" % d)
+        flags = int(st.split("Flags: ")[1].split()[0], 16)
+        cmds.append("sif %s flags 0x%x" % (d, flags | 0x40000000))
+    r = subprocess.run([debugfs, "-w", "-f", "-", img], input="\n".join(cmds) + "\n", stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, universal_newlines=True)
+    if r.returncode != 0 or [l for l in r.stderr.splitlines() if l.strip() and not l.startswith("debugfs ")]:
+        raise SystemExit("make-boot-disk: debugfs could not set +F: %s" % r.stderr.strip()[:200])
+    if subprocess.run([e2fsck, "-fyD", img], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode > 1:
+        raise SystemExit("make-boot-disk: e2fsck -D could not index the casefolded directories")
+    r = subprocess.run([e2fsck, "-fn", img], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True)
+    if r.returncode != 0:
+        raise SystemExit("make-boot-disk: the casefolded root is not clean (two names alike but for case?): " +
+                         " ".join(r.stdout.split())[:300])
+
+
 def make(esp, tree, disk, root_mb):
     mkfs = shutil.which("mkfs.ext4")
     if not mkfs:
@@ -77,9 +112,10 @@ def make(esp, tree, disk, root_mb):
     root = disk + ".root.tmp"
     with open(root, "wb") as f:
         f.truncate(root_mb * 1024 * 1024)
-    subprocess.run([mkfs, "-q", "-F", "-L", LABEL, "-b", "4096", "-d", tree, root],
+    subprocess.run([mkfs, "-q", "-F", "-L", LABEL, "-b", "4096", "-O", "casefold", "-d", tree, root],
                    check=True, stdout=subprocess.DEVNULL)
     owned_by_root(root, tree)
+    casefolded(root)
     esp_bytes = os.path.getsize(esp)
     esp_sectors = (esp_bytes + SECTOR - 1) // SECTOR
     root_start = (ALIGN + esp_sectors + ALIGN - 1) // ALIGN * ALIGN
