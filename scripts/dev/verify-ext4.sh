@@ -784,4 +784,15 @@ debugfs -w -R "feature inline_data" "$T/feat/fs.img" > /dev/null 2>&1
     || fail "$(cat "$T/feat.err" "$T/feat.out" | head -1)" unknown_feature_mounted
 grep -q "features=0x8000" "$T/feat.out" || fail "$(cat "$T/feat.out")" refusal_names_wrong_feature
 
-echo "ext4=ok entries=$entries written=$written"
+# ---- casefolded directories (E4-030) ------------------------------------------
+# The folding against Python's own Unicode on every code point 12.1 assigns,
+# then the driver in casefolded directories against a model and e2fsck
+# (scripts/dev/ext4-casefold.py). Both skip, and say so, without the Unicode
+# 12.1 files make-utf8-fold.py was generated from.
+cmake --build "$B" --target vibeos_utf8fold_cli > /dev/null 2>&1 || fail "utf8fold cli" utf8fold_cli_not_built
+uf="$(python3 scripts/dev/verify-utf8fold.py "$B" | tail -1)"
+case "$uf" in utf8fold=ok*|utf8fold=skip*) ;; *) fail "$uf" folding_differs ;; esac
+cf="$(python3 scripts/dev/ext4-casefold.py "$B" 6 | tail -1)"
+case "$cf" in ext4_casefold=ok*|ext4_casefold=skip*) ;; *) fail "$cf" casefold_failed ;; esac
+
+echo "ext4=ok entries=$entries written=$written $uf $cf"

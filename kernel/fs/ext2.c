@@ -11,6 +11,7 @@
 #include "vibeos/storage.h"
 #include "vibeos/ext2.h"
 #include "vibeos/mbz.h"
+#include "vibeos/utf8fold.h"
 #include "ext2_internal.h"
 
 static uint16_t rd16(const uint8_t *p) {
@@ -57,7 +58,7 @@ int ext2_read_block(vibeos_ext2_t *fs, uint64_t block, uint8_t *out) {
  * because reading past it reads the past. A ro_compat feature only matters
  * to a writer. */
 #define INCOMPAT_KNOWN (INCOMPAT_FILETYPE | INCOMPAT_EXTENTS | INCOMPAT_64BIT | INCOMPAT_FLEX_BG | \
-                        INCOMPAT_CSUM_SEED | INCOMPAT_LARGEDIR)
+                        INCOMPAT_CSUM_SEED | INCOMPAT_LARGEDIR | INCOMPAT_CASEFOLD)
 
 static uint64_t g_ext2_hits;
 static uint64_t g_ext2_csum_bad;
@@ -220,6 +221,16 @@ static int ext2_mount_once(vibeos_ext2_t *fs, vibeos_blockcache_t *cache, uint64
     fs->incompat = rd32(sb + 76) >= 1u ? rd32(sb + 0x60) : 0u;
     fs->ro_compat = rd32(sb + 76) >= 1u ? rd32(sb + 0x64) : 0u;
     *recover = (fs->incompat & INCOMPAT_RECOVER) != 0u;
+    /* casefold names its encoding: utf8-12.1 (1) is the only one Linux has,
+     * and folding by any other table would find the wrong files. */
+    fs->casefold = (fs->incompat & INCOMPAT_CASEFOLD) != 0u;
+    fs->casefold_strict = 0;
+    if (fs->casefold) {
+        if (rd16(sb + 0x27Cu) != 1u) {
+            return -1;
+        }
+        fs->casefold_strict = (rd16(sb + 0x27Eu) & 1u) != 0u;
+    }
     fs->incompat &= ~INCOMPAT_RECOVER;
     if ((fs->incompat & ~INCOMPAT_KNOWN) != 0u) {
         __atomic_store_n(&g_ext2_refused, fs->incompat & ~INCOMPAT_KNOWN, __ATOMIC_RELAXED);
@@ -807,6 +818,21 @@ uint64_t vibeos_ext2_dx_lookups(void) {
     return g_dx_lookups;
 }
 
+int ext2_name_match(const vibeos_ext2_t *fs, const uint8_t *dir, const uint8_t *stored, uint32_t slen,
+                    const char *name, uint32_t nlen) {
+    uint32_t i;
+
+    if (fs->casefold && (rd32(dir + 0x20u) & INODE_FLAG_CASEFOLD) != 0u) {
+        return vibeos_utf8_fold_eq((const char *)stored, slen, name, nlen);
+    }
+    if (slen != nlen) {
+        return 0;
+    }
+    for (i = 0; i < nlen && stored[i] == (uint8_t)name[i]; i++) {
+    }
+    return i == nlen;
+}
+
 uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
                               const char *name, uint32_t name_len) {
     uint8_t got[255];
@@ -834,15 +860,11 @@ uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
             return 0;
         }
         while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
-            if (ino != 0u && nlen == name_len) {
-                uint32_t i;
-
+            if (ino != 0u && (nlen == name_len || fs->casefold) && nlen <= sizeof(got)) {
                 if (ext2_read_part(fs, phys, off + 8u, got, nlen) != 0) {
                     return 0;
                 }
-                for (i = 0; i < nlen && got[i] == (uint8_t)name[i]; i++) {
-                }
-                if (i == nlen) {
+                if (ext2_name_match(fs, dir, got, nlen, name, name_len)) {
                     return ino;
                 }
             }
@@ -1018,15 +1040,11 @@ static int64_t dir_block_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t
         return -1;
     }
     while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
-        if (ino != 0u && nlen == name_len) {
-            uint32_t i;
-
+        if (ino != 0u && (nlen == name_len || fs->casefold) && nlen <= sizeof(got)) {
             if (ext2_read_part(fs, phys, off + 8u, got, nlen) != 0) {
                 return -1;
             }
-            for (i = 0; i < nlen && got[i] == (uint8_t)name[i]; i++) {
-            }
-            if (i == nlen) {
+            if (ext2_name_match(fs, dir, got, nlen, name, name_len)) {
                 return ino;
             }
         }
@@ -1053,7 +1071,17 @@ static int dx_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir, cons
     if (rd32(w) != 0u || w[5] != 8u || levels > 2u) {
         return 0;
     }
-    h = dx_hash(fs, version, name, len, &ok);
+    /* A casefolded directory is hashed by the folded name - or by the name
+     * itself when it does not fold, as Linux on a volume that is not strict.
+     * A name of 255 bytes folds to under three times that. */
+    {
+        char folded[1024];
+        int32_t fl = fs->casefold && (rd32(dir + 0x20u) & INODE_FLAG_CASEFOLD) != 0u
+                         ? vibeos_utf8_fold(name, len, (uint8_t *)folded, sizeof(folded))
+                         : -1;
+
+        h = fl >= 0 ? dx_hash(fs, version, folded, (uint32_t)fl, &ok) : dx_hash(fs, version, name, len, &ok);
+    }
     if (!ok) {
         return 0;
     }

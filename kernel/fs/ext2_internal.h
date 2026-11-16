@@ -31,6 +31,7 @@
 #define INCOMPAT_FLEX_BG   0x0200u
 #define INCOMPAT_CSUM_SEED 0x2000u
 #define INCOMPAT_LARGEDIR  0x4000u
+#define INCOMPAT_CASEFOLD  0x20000u
 #define RO_COMPAT_SPARSE_SUPER 0x0001u
 #define RO_COMPAT_LARGE_FILE   0x0002u
 #define RO_COMPAT_HUGE_FILE    0x0008u
@@ -40,6 +41,7 @@
 
 #define INODE_FLAG_INDEX   0x00001000u   /* a directory with an htree */
 #define INODE_FLAG_EXTENTS 0x00080000u
+#define INODE_FLAG_CASEFOLD 0x40000000u   /* a directory whose names are compared folded (E4-030) */
 #define EXTENT_MAGIC 0xF30Au
 #define EXTENT_MAX_DEPTH 5u   /* what ext4 itself allows; deeper is a loop or garbage */
 
@@ -57,6 +59,10 @@ int ext2_dir_block(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *dir, uint64_t
 uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir, const char *name,
                        uint32_t name_len);
 uint32_t ext2_resolve(vibeos_ext2_t *fs, const char *path, uint8_t *inode);
+/* Whether a stored name is `name` in the directory `dir`: byte for byte, or,
+ * in a casefolded directory of a casefold volume, folded (E4-030). */
+int ext2_name_match(const vibeos_ext2_t *fs, const uint8_t *dir, const uint8_t *stored, uint32_t slen,
+                    const char *name, uint32_t nlen);
 uint32_t ext2_le32_crc(uint32_t crc, uint32_t v);
 int ext2_csum_bad(uint64_t what);
 int ext2_op_lookup(void *fsv, const char *path, vibeos_fs_node_t *out);

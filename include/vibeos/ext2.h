@@ -127,6 +127,11 @@ typedef struct {
      * default version, and whether the volume hashes names as unsigned chars. */
     uint32_t hash_seed[4];
     uint8_t hash_unsigned;
+    /* casefold (E4-030): names in a directory with the casefold flag are
+     * compared and hashed folded, as Linux's utf8-12.1; strict volumes refuse
+     * a name that does not fold, which the writer does not do yet. */
+    uint8_t casefold;
+    uint8_t casefold_strict;
     uint32_t orphan_n;
     uint32_t orphan[32];
     /* Bytes this mount has written, not yet added to s_kbytes_written: the

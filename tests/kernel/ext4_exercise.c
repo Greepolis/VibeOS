@@ -868,6 +868,9 @@ static int apply(void) {
     (void)vibeos_fs_statfs(&g_mnt, &sf);
     printf("applied lines=%u blocks_free=%llu files_free=%llu\n", lines, (unsigned long long)sf.blocks_free,
            (unsigned long long)sf.files_free);
+    /* The lookups an htree answered, as walk says them: on stderr (E4-030). */
+    fflush(stdout);
+    fprintf(stderr, "dx_lookups=%llu\n", (unsigned long long)vibeos_ext2_dx_lookups());
     return 0;
 }
 

@@ -133,6 +133,11 @@ void ext4_w_mount(vibeos_ext2_t *fs) {
     if (ext4_j_load(fs) != 0) {
         return;
     }
+    /* A strict casefold volume refuses a name that does not fold; the writer
+     * does not refuse it yet, so it does not write such a volume (E4-030). */
+    if (fs->casefold_strict) {
+        return;
+    }
     fs->writable = 1;
     fs->written_pending = 0;
     mount_count(fs);
@@ -1952,7 +1957,7 @@ static int dir_edit(vibeos_ext2_t *fs, uint32_t dir_ino, const char *name, uint3
                 return -VIBEOS_EIO;
             }
             reclen = le16(b + off + 4u);
-            if (le32(b + off) != 0u && b[off + 6u] == nlen && memcmp(b + off + 8u, name, nlen) == 0) {
+            if (le32(b + off) != 0u && ext2_name_match(fs, dir, b + off + 8u, b[off + 6u], name, nlen)) {
                 *found = le32(b + off);
                 if (mode == 0) {
                     return 0;
@@ -3454,6 +3459,10 @@ static int node_create(vibeos_ext2_t *fs, const char *path, uint32_t mode, const
         int special = t == VIBEOS_S_IFIFO || t == VIBEOS_S_IFSOCK || t == VIBEOS_S_IFCHR || t == VIBEOS_S_IFBLK;
 
         inode_init(fs, ino, inode, mode, !fast && !special);
+    }
+    /* A directory made in a casefolded one is casefolded too (E4-030). */
+    if (is_dir && (le32(parent + 0x20u) & INODE_FLAG_CASEFOLD) != 0u) {
+        st32(inode + 0x20u, le32(inode + 0x20u) | INODE_FLAG_CASEFOLD);
     }
     if (is_dir || (!fast && (mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK)) {
         /* The one block it has: ". " and ".." and the checksum entry, or the

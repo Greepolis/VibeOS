@@ -1,0 +1,28 @@
+# ext4's casefolded directories (E4-030), broken in the reader (ext2.c). The
+# writer's half is ext4-casefold-write.txt. Caught by
+# scripts/dev/ext4-casefold.py: names in a casefolded directory held to a model
+# that folds with Python's Unicode, e2fsck's casefold rules, and lookups by
+# another spelling through the index e2fsck -D builds with its own hash.
+#
+# Target source: kernel/fs/ext2.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && python3 scripts/dev/ext4-casefold.py build-gcc-Release 6'" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/ext4-casefold.txt build-gcc-Release
+
+### a casefolded directory compares names as bytes
+--- old
+    if (fs->casefold && (rd32(dir + 0x20u) & INODE_FLAG_CASEFOLD) != 0u) {
+        return vibeos_utf8_fold_eq((const char *)stored, slen, name, nlen);
++++ new
+    if (0) {
+        return vibeos_utf8_fold_eq((const char *)stored, slen, name, nlen);
+
+### a casefolded directory's index is hashed by the name as given
+--- old
+        h = fl >= 0 ? dx_hash(fs, version, folded, (uint32_t)fl, &ok) : dx_hash(fs, version, name, len, &ok);
++++ new
+        h = dx_hash(fs, version, name, len, &ok);
+
+### a casefold volume is not mounted
+--- old
+                        INCOMPAT_CSUM_SEED | INCOMPAT_LARGEDIR | INCOMPAT_CASEFOLD)
++++ new
+                        INCOMPAT_CSUM_SEED | INCOMPAT_LARGEDIR)

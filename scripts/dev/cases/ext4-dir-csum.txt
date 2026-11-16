@@ -12,10 +12,10 @@
             return 0;
         }
         while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
-            if (ino != 0u && nlen == name_len) {
+            if (ino != 0u && (nlen == name_len || fs->casefold) && nlen <= sizeof(got)) {
 +++ new
         if (0) {
             return 0;
         }
         while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
-            if (ino != 0u && nlen == name_len) {
+            if (ino != 0u && (nlen == name_len || fs->casefold) && nlen <= sizeof(got)) {
