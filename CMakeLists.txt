@@ -177,6 +177,7 @@ if(VIBEOS_BUILD_FUZZERS)
         kernel/fs/ext4_write.c
         kernel/fs/ext4_journal.c
         kernel/fs/utf8fold.c
+        kernel/fs/acl.c
         kernel/fs/blockcache.c
         kernel/fs/vfs.c
         kernel/core/mbz.c
