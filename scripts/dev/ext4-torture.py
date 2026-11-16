@@ -71,7 +71,22 @@ KNOWN = {
     errno.EPERM: "EPERM", errno.ENOENT: "ENOENT", errno.EEXIST: "EEXIST",
     errno.ENOTDIR: "ENOTDIR", errno.EISDIR: "EISDIR", errno.EINVAL: "EINVAL",
     errno.ENOTEMPTY: "ENOTEMPTY", errno.ENAMETOOLONG: "ENAMETOOLONG",
+    errno.ENODATA: "ENODATA",
 }
+
+# Extended attribute names a file may carry (E4-011): few and short, so that
+# what a file holds fits a 1 KiB block on the driver's side as it does on the
+# host's, and the two never disagree about ENOSPC.
+XNAMES = ["user.a", "user.b", "user.mime_type", "user." + "q" * 30]
+
+
+def xattrs(p):
+    """What the exerciser's walk prints for a file's attributes."""
+    out = []
+    for n in os.listxattr(p, follow_symlinks=False):
+        v = os.getxattr(p, n, follow_symlinks=False)
+        out.append("%s:%d:%08x" % (n, len(v), zlib.crc32(v) & 0xFFFFFFFF))
+    return ",".join(sorted(out)) or "-"
 
 NAMES = ["a", "b", "c", "dir", "x" * 40, "long-" + "n" * 200, "f1", "f2", "sub"]
 
@@ -109,7 +124,7 @@ def listing(root, owners, pinned=False):
                 continue
             u, g = owners.get(st.st_ino, (0, 0))
             mt = str(st.st_mtime_ns // 10**9) if pinned and is_pinned(st) else "-"
-            tail = "\t%o\t%d\t%d\t%s" % (st.st_mode & 0o7777, u, g, mt)
+            tail = "\t%o\t%d\t%d\t%s\t%s" % (st.st_mode & 0o7777, u, g, xattrs(p), mt)
             if os.path.isdir(p):
                 rows.append("%s/%s\tD%s" % (base, name, tail))
             else:
@@ -276,8 +291,9 @@ class Gen:
         r = self.rng
         op = r.choices(
             ["create", "write", "truncate", "mkdir", "rmdir", "unlink", "rename", "link",
-             "symlink", "chmod", "writefile", "stride", "fill", "chown", "utimes", "bigwrite", "fallocate"],
-            weights=[14, 22, 8, 10, 6, 8, 10, 5, 5, 4, 8, 3, 2, 4, 4, 1, 4])[0]
+             "symlink", "chmod", "writefile", "stride", "fill", "chown", "utimes", "bigwrite", "fallocate",
+             "setxattr", "removexattr"],
+            weights=[14, 22, 8, 10, 6, 8, 10, 5, 5, 4, 8, 3, 2, 4, 4, 1, 4, 5, 2])[0]
         room = self.budget - self.used()
         if op in ("create", "mkdir", "symlink", "fill", "writefile") and len(self.entries()) >= self.inodes - 130:
             op = "unlink"
@@ -433,6 +449,25 @@ class Gen:
                 return
             hp = self.host(p)
             self.emit(["fallocate", p, mode, off, n], lambda: host_fallocate(hp, mode, off, n))
+        elif op in ("setxattr", "removexattr"):
+            # Linux's own call on the host (E4-011). The host's run is not
+            # root, so Linux asks it for write permission and the driver,
+            # called below the handlers, does not: only files and directories
+            # their owner may write are picked.
+            # Half the time a file that has some already, so that a file
+            # carries several and they overflow the inode into the block,
+            # where they must be kept in order.
+            held = [q for q, k in self.entries() if k in "fd" and os.listxattr(self.host(q), follow_symlinks=False)]
+            p = r.choice(held) if held and r.random() < 0.5 else self.pick("fd")
+            if p is None or not os.lstat(self.host(p)).st_mode & 0o200:
+                return
+            hp, name = self.host(p), r.choice(XNAMES)
+            if op == "removexattr":
+                self.emit(["removexattr", p, name], lambda: os.removexattr(hp, name))
+                return
+            n, seed = r.choice([0, r.randrange(1, 16), r.randrange(1, 120), r.randrange(60, 120)]), r.randrange(1, 250)
+            flags = r.choice([0, 0, os.XATTR_CREATE, os.XATTR_REPLACE])
+            self.emit(["setxattr", p, name, n, seed, flags], lambda: os.setxattr(hp, name, pat(seed, 0, n), flags))
         elif op == "writefile":
             p = self.pick("f") if r.random() < 0.6 else self.fresh()
             if p is None:

@@ -77,6 +77,7 @@ typedef struct {
     uint8_t sb[1024];             /* the superblock as on the volume: counts and checksum kept in it */
     uint8_t wbuf[4096];           /* one block, for whatever the operation is changing */
     uint8_t wbuf2[4096];          /* the allocator's, for a bitmap: never held across a call */
+    uint8_t xbuf[4096];           /* an attribute block being rebuilt while wbuf holds the old one */
 #ifdef VIBEOS_EXT2_FUZZ_CANARY
     /* Test-only red zone immediately follows the production bitmap scratch
      * buffer, so an overrun in the real writer is observable by the harness. */

@@ -227,10 +227,40 @@ static long long file_crc(const char *path, uint64_t size) {
  * plain walk is held to a tree mkfs.ext4 -d made, whose owners are the host's. */
 static int g_walk_attrs;
 
+static int name_cmp(const void *x, const void *y) {
+    return strcmp((const char *)x, (const char *)y);
+}
+
+/* Its extended attributes (E4-011), as the torture's listing has them: each
+ * "user.name:length:crc32", sorted, joined by commas; "-" for none. */
+static void xattrs(const vibeos_fs_node_t *node) {
+    static char names[64][300];
+    static uint8_t val[4096];
+    static const char *const pfx[8] = {0, "user.", 0, 0, "trusted.", 0, "security.", 0};
+    uint32_t k, n = 0, index, nlen;
+    char nm[256];
+
+    for (k = 0; n < 64u && vibeos_fs_listxattr(&g_mnt, node, k, &index, nm, sizeof(nm) - 1u, &nlen) == 0; k++) {
+        long got;
+
+        nm[nlen] = 0;
+        got = vibeos_fs_getxattr(&g_mnt, node, index, nm, nlen, val, sizeof(val));
+        snprintf(names[n++], sizeof(names[0]), "%s%s:%ld:%08x", index < 8u && pfx[index] ? pfx[index] : "?.", nm,
+                 got, got >= 0 ? (unsigned)crc32_of(val, (uint64_t)got, 0) : 0u);
+    }
+    qsort(names, n, sizeof(names[0]), name_cmp);
+    printf("\t");
+    for (k = 0; k < n; k++) {
+        printf("%s%s", k ? "," : "", names[k]);
+    }
+    printf("%s", n ? "" : "-");
+}
+
 static void attrs(const vibeos_fs_node_t *node) {
     if (g_walk_attrs) {
-        printf("\t%o\t%u\t%u\t%llu", (unsigned)(node->mode & 07777u), (unsigned)node->uid, (unsigned)node->gid,
-               (unsigned long long)(node->mtime_ns / 1000000000ull));
+        printf("\t%o\t%u\t%u", (unsigned)(node->mode & 07777u), (unsigned)node->uid, (unsigned)node->gid);
+        xattrs(node);
+        printf("\t%llu", (unsigned long long)(node->mtime_ns / 1000000000ull));
     }
 }
 
@@ -300,7 +330,7 @@ static int errno_of(const char *name) {
         { "EPERM", VIBEOS_EPERM }, { "ENOENT", VIBEOS_ENOENT }, { "EEXIST", VIBEOS_EEXIST },
         { "ENOTDIR", VIBEOS_ENOTDIR }, { "EISDIR", VIBEOS_EISDIR }, { "EINVAL", VIBEOS_EINVAL },
         { "ENOTEMPTY", VIBEOS_ENOTEMPTY }, { "ENAMETOOLONG", VIBEOS_ENAMETOOLONG }, { "ENOSPC", VIBEOS_ENOSPC },
-        { "EFBIG", VIBEOS_EFBIG },
+        { "EFBIG", VIBEOS_EFBIG }, { "ENODATA", VIBEOS_ENODATA },
     };
 
     for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
@@ -592,6 +622,30 @@ static int run(char **a, int n) {
             g_line_unchanged = 1;   /* Linux's punch changes nothing there, times included */
         }
         return vibeos_fs_fallocate(&g_mnt, &node, m, off, strtoull(a[4], NULL, 10));
+    }
+    if ((strcmp(c, "setxattr") == 0 && n == 6) || (strcmp(c, "removexattr") == 0 && n == 3)) {
+        /* A user.* name; a value of `len` bytes of pat(seed) from 0, and
+         * Linux's XATTR_CREATE 1 / REPLACE 2, which are VIBEOS_XATTR_*'s. */
+        static uint8_t v[4096];
+        const char *nm = a[2];
+        uint32_t len, i;
+
+        if (strncmp(nm, "user.", 5) != 0 || vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
+            return -VIBEOS_ENOENT;
+        }
+        nm += 5;
+        if (c[0] == 'r') {
+            return vibeos_fs_removexattr(&g_mnt, &node, VIBEOS_XATTR_USER, nm, (uint32_t)strlen(nm));
+        }
+        len = (uint32_t)strtoul(a[3], NULL, 10);
+        if (len > sizeof(v)) {
+            return -VIBEOS_EINVAL;
+        }
+        for (i = 0; i < len; i++) {
+            v[i] = pat((uint32_t)strtoul(a[4], NULL, 10), i);
+        }
+        return vibeos_fs_setxattr(&g_mnt, &node, VIBEOS_XATTR_USER, nm, (uint32_t)strlen(nm), v, len,
+                                  (uint32_t)strtoul(a[5], NULL, 10));
     }
     if (strcmp(c, "mknod") == 0 && n == 3) {
         /* A node by its whole mode, type included, in octal (E4-011). */

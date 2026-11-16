@@ -2429,6 +2429,512 @@ static int bm_migrate(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode) {
 
 /* inode_release for a file that is on the orphan list already (`listed`): it
  * leaves the list in the transaction that frees it. */
+/* ---- extended attributes (E4-011) -------------------------------------------
+ *
+ * In Linux's format, so a volume written here is Linux's to read and e2fsck's
+ * to pass. An inode's attributes live in two places: the space after
+ * i_extra_isize - a magic word, then entries, values packed down from the end
+ * of the inode - and one external block named by i_file_acl, with a 32-byte
+ * header, entries sorted by (index, name length, name), and values from the
+ * block's end. An entry is 16 bytes and its name, padded to four; a zero word
+ * ends the list. The block may be shared - Linux deduplicates identical ones
+ * and counts holders in h_refcount - so a shared block is never changed: the
+ * file gets a copy, and the old one loses a holder.
+ *
+ * A change rebuilds both places from what they held: the inode's entries stay
+ * in the inode and the block's in the block, and the one being set goes where
+ * Linux would put it - the inode if it fits, else the block - or ENOSPC.
+ * Values in another inode (ea_inode) are a feature this driver refuses at
+ * mount, so an entry naming one is corruption. */
+#define XA_MAGIC 0xEA020000u
+#define XA_HDR 32u
+#define XA_ENTRY(nlen) ((16u + (nlen) + 3u) & ~3u)
+#define XA_VSIZE(len) (((len) + 3u) & ~3u)
+
+/* An area of entries: inode body or block. Value offsets are relative to `rel`. */
+typedef struct {
+    uint8_t *b;
+    uint32_t first, end, rel;
+    uint32_t eoff, voff;   /* the next entry; the lowest value so far */
+} xa_area_t;
+
+typedef struct {
+    uint32_t index, nlen, vlen;
+    const uint8_t *name, *val;
+} xa_ent_t;
+
+static uint32_t xa_hash(const xa_ent_t *e) {
+    uint32_t h = 0, i;
+
+    for (i = 0; i < e->nlen; i++) {
+        h = (h << 5) ^ (h >> 27) ^ e->name[i];
+    }
+    for (i = 0; i < e->vlen; i += 4u) {
+        uint32_t w = 0, k;
+
+        for (k = 0; k < 4u && i + k < e->vlen; k++) {
+            w |= (uint32_t)e->val[i + k] << (8u * k);
+        }
+        h = (h << 16) ^ (h >> 16) ^ w;
+    }
+    return h;
+}
+
+/* The inode's area, when it has one: 0 if it does not. */
+static int xa_ibody(const vibeos_ext2_t *fs, uint8_t *inode, xa_area_t *a) {
+    uint32_t extra = le16(inode + 0x80u);
+
+    if (fs->inode_size <= 128u || 128u + extra + 4u + 4u > fs->inode_size || (extra & 3u) != 0u) {
+        return 0;
+    }
+    a->b = inode;
+    a->first = 128u + extra + 4u;
+    a->end = fs->inode_size;
+    a->rel = a->first;
+    return 1;
+}
+
+static void xa_block_area(const vibeos_ext2_t *fs, uint8_t *blk, xa_area_t *a) {
+    a->b = blk;
+    a->first = XA_HDR;
+    a->end = fs->block_size;
+    a->rel = 0;
+}
+
+/* The entry at *off, and *off moved past it: 1, 0 at the end, -EIO for one
+ * that does not fit its area. */
+static int xa_next(const xa_area_t *a, uint32_t *off, xa_ent_t *e) {
+    const uint8_t *p = a->b + *off;
+    uint32_t vo;
+
+    if (*off + 4u > a->end) {
+        return -VIBEOS_EIO;
+    }
+    if (le32(p) == 0u) {
+        return 0;
+    }
+    if (*off + 16u > a->end || p[0] == 0u || *off + XA_ENTRY(p[0]) + 4u > a->end || le32(p + 4u) != 0u) {
+        return -VIBEOS_EIO;
+    }
+    e->nlen = p[0];
+    e->index = p[1];
+    vo = le16(p + 2u);
+    e->vlen = le32(p + 8u);
+    e->name = p + 16u;
+    if (e->vlen > a->end || (e->vlen != 0u && (a->rel + vo < *off + XA_ENTRY(p[0]) ||
+                                               a->rel + vo + e->vlen > a->end))) {
+        return -VIBEOS_EIO;
+    }
+    e->val = a->b + a->rel + vo;
+    *off += XA_ENTRY(p[0]);
+    return 1;
+}
+
+static int xa_cmp(const xa_ent_t *x, uint32_t index, const char *name, uint32_t nlen) {
+    uint32_t i;
+
+    if (x->index != index) {
+        return x->index < index ? -1 : 1;
+    }
+    if (x->nlen != nlen) {
+        return x->nlen < nlen ? -1 : 1;
+    }
+    for (i = 0; i < nlen; i++) {
+        if (x->name[i] != (uint8_t)name[i]) {
+            return x->name[i] < (uint8_t)name[i] ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+static void xa_begin(xa_area_t *a) {
+    memset(a->b + a->first, 0, a->end - a->first);
+    a->eoff = a->first;
+    a->voff = a->end;
+}
+
+static int xa_put(xa_area_t *a, const xa_ent_t *e) {
+    uint32_t need = XA_ENTRY(e->nlen), vs = XA_VSIZE(e->vlen);
+    uint8_t *p;
+
+    if (a->eoff + need + 4u > a->voff - (vs > a->voff ? a->voff : vs) || vs > a->voff) {
+        return -VIBEOS_ENOSPC;
+    }
+    a->voff -= vs;
+    memcpy(a->b + a->voff, e->val, e->vlen);
+    p = a->b + a->eoff;
+    p[0] = (uint8_t)e->nlen;
+    p[1] = (uint8_t)e->index;
+    st16(p + 2u, e->vlen != 0u ? a->voff - a->rel : 0u);
+    st32(p + 8u, e->vlen);
+    st32(p + 12u, xa_hash(e));
+    memcpy(p + 16u, e->name, e->nlen);
+    a->eoff += need;
+    return 0;
+}
+
+static uint64_t xa_block_no(const uint8_t *inode) {
+    return (uint64_t)le32(inode + 0x68u) | ((uint64_t)le16(inode + 0x76u) << 32);
+}
+
+static void xa_block_set(uint8_t *inode, uint64_t blk) {
+    st32(inode + 0x68u, (uint32_t)blk);
+    st16(inode + 0x76u, (uint32_t)(blk >> 32));
+}
+
+static uint32_t xa_block_csum(const vibeos_ext2_t *fs, uint64_t blk, uint8_t *b) {
+    uint8_t nr[8];
+    uint32_t c, saved = le32(b + 0x10u), i;
+
+    for (i = 0; i < 8u; i++) {
+        nr[i] = (uint8_t)(blk >> (8u * i));
+    }
+    st32(b + 0x10u, 0);
+    c = crc32c(crc32c(fs->csum_seed, nr, 8u), b, fs->block_size);
+    st32(b + 0x10u, saved);
+    return c;
+}
+
+static int xa_block_sorted(const vibeos_ext2_t *fs, uint8_t *b);
+
+/* The inode's block into `buf`: 0, 1 when it has none, -EIO. */
+static int xa_block_read(vibeos_ext2_t *fs, const uint8_t *inode, uint8_t *buf, uint64_t *blk) {
+    *blk = xa_block_no(inode);
+    if (*blk == 0u) {
+        return 1;
+    }
+    if (*blk >= fs->blocks_count || *blk < fs->first_data_block || ext2_read_block(fs, *blk, buf) != 0 ||
+        le32(buf) != XA_MAGIC || le32(buf + 8u) != 1u || le32(buf + 4u) == 0u ||
+        (fs->csum && xa_block_csum(fs, *blk, buf) != le32(buf + 0x10u)) || !xa_block_sorted(fs, buf)) {
+        return -VIBEOS_EIO;
+    }
+    return 0;
+}
+
+/* A block's entries must be in order: Linux stops its search of a block at the
+ * first entry past the name, so an entry out of place is one Linux cannot
+ * find. Refused here as corruption, which is what makes the order a property
+ * a test can see - e2fsck does not check it. */
+static int xa_block_sorted(const vibeos_ext2_t *fs, uint8_t *b) {
+    xa_area_t a;
+    xa_ent_t e, prev;
+    uint32_t off;
+    int r, have = 0;
+
+    xa_block_area(fs, b, &a);
+    off = a.first;
+    while ((r = xa_next(&a, &off, &e)) > 0) {
+        if (have && xa_cmp(&prev, e.index, (const char *)e.name, e.nlen) >= 0) {
+            return 0;
+        }
+        prev = e;
+        have = 1;
+    }
+    return r == 0;
+}
+
+static int xa_block_store(vibeos_ext2_t *fs, uint64_t blk, uint8_t *b) {
+    st32(b + 0x10u, xa_block_csum(fs, blk, b));
+    return blk_write(fs, blk, b);
+}
+
+/* One holder fewer for the inode's block, which the inode no longer names
+ * afterwards: freed with its last. Uses wbuf. */
+static int xa_drop(vibeos_ext2_t *fs, uint8_t *inode) {
+    uint64_t blk;
+    uint32_t ref;
+    int rc = xa_block_read(fs, inode, fs->wbuf, &blk);
+
+    if (rc != 0) {
+        return rc > 0 ? 0 : rc;
+    }
+    xa_block_set(inode, 0);
+    add_blocks(fs, inode, -1);
+    ref = le32(fs->wbuf + 4u);
+    if (ref > 1u) {
+        st32(fs->wbuf + 4u, ref - 1u);
+        return xa_block_store(fs, blk, fs->wbuf);
+    }
+    return bfree(fs, blk, 1);
+}
+
+/* Find (index, name) in an area: 1 and the entry, 0, -EIO. */
+static int xa_find(const xa_area_t *a, uint32_t index, const char *name, uint32_t nlen, xa_ent_t *out) {
+    uint32_t off = a->first;
+    int r;
+
+    while ((r = xa_next(a, &off, out)) > 0) {
+        if (xa_cmp(out, index, name, nlen) == 0) {
+            return 1;
+        }
+    }
+    return r;
+}
+
+static int xa_node(vibeos_ext2_t *fs, const vibeos_fs_node_t *node, uint8_t *inode) {
+    if (node->id == 0u || node->id > 0xFFFFFFFFull || inode_get(fs, (uint32_t)node->id, inode) != 0 ||
+        ext2_node_stale(fs, node, inode)) {
+        return -VIBEOS_ENOENT;
+    }
+    return 0;
+}
+
+static long x_getxattr(void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
+                       void *buf, uint32_t cap) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+    xa_area_t a;
+    xa_ent_t e;
+    uint64_t blk;
+    int r = xa_node(fs, node, inode);
+
+    if (r != 0) {
+        return r;
+    }
+    r = 0;
+    if (xa_ibody(fs, inode, &a) && le32(inode + a.first - 4u) == XA_MAGIC) {
+        r = xa_find(&a, index, name, nlen, &e);
+    }
+    if (r == 0) {
+        r = xa_block_read(fs, inode, fs->wbuf, &blk);
+        if (r == 0) {
+            xa_block_area(fs, fs->wbuf, &a);
+            r = xa_find(&a, index, name, nlen, &e);
+        } else if (r > 0) {
+            r = 0;
+        }
+    }
+    if (r <= 0) {
+        return r < 0 ? r : -VIBEOS_ENODATA;
+    }
+    if (cap == 0u) {
+        return (long)e.vlen;
+    }
+    if (cap < e.vlen) {
+        return -VIBEOS_ERANGE;
+    }
+    memcpy(buf, e.val, e.vlen);
+    return (long)e.vlen;
+}
+
+static int x_listxattr(void *fsv, const vibeos_fs_node_t *node, uint32_t k, uint32_t *index, char *name,
+                       uint32_t cap, uint32_t *nlen) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+    uint8_t inode[EXT2_MAX_INODE_SIZE];
+    xa_area_t a;
+    xa_ent_t e;
+    uint64_t blk;
+    uint32_t off, seen = 0;
+    int r = xa_node(fs, node, inode), pass;
+
+    if (r != 0) {
+        return r;
+    }
+    for (pass = 0; pass < 2; pass++) {
+        if (pass == 0) {
+            if (!xa_ibody(fs, inode, &a) || le32(inode + a.first - 4u) != XA_MAGIC) {
+                continue;
+            }
+        } else {
+            r = xa_block_read(fs, inode, fs->wbuf, &blk);
+            if (r != 0) {
+                return r > 0 ? 1 : r;
+            }
+            xa_block_area(fs, fs->wbuf, &a);
+        }
+        off = a.first;
+        while ((r = xa_next(&a, &off, &e)) > 0) {
+            if (seen++ == k) {
+                if (e.nlen > cap) {
+                    return -VIBEOS_ERANGE;
+                }
+                *index = e.index;
+                *nlen = e.nlen;
+                memcpy(name, e.name, e.nlen);
+                return 0;
+            }
+        }
+        if (r < 0) {
+            return r;
+        }
+    }
+    return 1;
+}
+
+/* Set (value != 0 or len 0 with set) or remove (remove 1) one attribute. */
+static int xa_change(vibeos_ext2_t *fs, const vibeos_fs_node_t *node, uint32_t index, const char *name,
+                     uint32_t nlen, const void *value, uint32_t len, uint32_t flags, int remove) {
+    uint8_t old[EXT2_MAX_INODE_SIZE], inode[EXT2_MAX_INODE_SIZE];
+    xa_area_t oi = {0}, ni = {0}, ob = {0}, nb = {0};
+    xa_ent_t e, want;
+    uint64_t blk = 0, nblk;
+    uint32_t off, nb_count = 0, got, ino = (uint32_t)node->id;
+    int has_i, has_b, in_i = 0, in_b = 0, placed = remove, block_changed, r;
+
+    if (nlen == 0u || nlen > 255u || index == 0u || index > 255u) {
+        return -VIBEOS_EINVAL;
+    }
+    r = xa_node(fs, node, old);
+    if (r != 0) {
+        return r;
+    }
+    memcpy(inode, old, fs->inode_size);
+    has_i = xa_ibody(fs, old, &oi) && le32(old + oi.first - 4u) == XA_MAGIC;
+    r = xa_block_read(fs, old, fs->wbuf, &blk);
+    if (r < 0) {
+        return r;
+    }
+    has_b = r == 0;
+    if (has_b) {
+        xa_block_area(fs, fs->wbuf, &ob);
+    }
+    if (has_i && (r = xa_find(&oi, index, name, nlen, &e)) != 0) {
+        if (r < 0) {
+            return r;
+        }
+        in_i = 1;
+    }
+    if (!in_i && has_b && (r = xa_find(&ob, index, name, nlen, &e)) != 0) {
+        if (r < 0) {
+            return r;
+        }
+        in_b = 1;
+    }
+    if (remove || (flags & VIBEOS_XATTR_REPLACE) != 0u) {
+        if (!in_i && !in_b) {
+            return -VIBEOS_ENODATA;
+        }
+    } else if ((flags & VIBEOS_XATTR_CREATE) != 0u && (in_i || in_b)) {
+        return -VIBEOS_EEXIST;
+    }
+    want.index = index;
+    want.nlen = nlen;
+    want.name = (const uint8_t *)name;
+    want.val = (const uint8_t *)value;
+    want.vlen = len;
+
+    /* The inode's area: its own entries but the one changing, and the new one
+     * if it fits. */
+    if (xa_ibody(fs, inode, &ni)) {
+        int pass;
+
+        for (pass = placed ? 1 : 0; pass < 2; pass++) {
+            int bad = 0;
+
+            xa_begin(&ni);
+            if (has_i) {
+                off = oi.first;
+                while ((r = xa_next(&oi, &off, &e)) > 0) {
+                    if (xa_cmp(&e, index, name, nlen) != 0 && xa_put(&ni, &e) != 0) {
+                        return -VIBEOS_EIO;   /* it fitted before */
+                    }
+                }
+                if (r < 0) {
+                    return r;
+                }
+            }
+            if (pass == 0) {
+                bad = xa_put(&ni, &want) != 0;
+                if (!bad) {
+                    placed = 1;
+                    break;
+                }
+            }
+        }
+        st32(inode + ni.first - 4u, ni.eoff != ni.first ? XA_MAGIC : 0u);
+    }
+
+    /* The block: its entries but the one changing, and the new one in order
+     * if the inode had no room. */
+    block_changed = in_b || !placed;
+    if (block_changed) {
+        xa_block_area(fs, fs->xbuf, &nb);
+        xa_begin(&nb);
+        memset(fs->xbuf, 0, XA_HDR);
+        if (has_b) {
+            off = ob.first;
+            while ((r = xa_next(&ob, &off, &e)) > 0) {
+                if (xa_cmp(&e, index, name, nlen) == 0) {
+                    continue;
+                }
+                if (!placed && xa_cmp(&e, index, name, nlen) > 0) {
+                    if (xa_put(&nb, &want) != 0) {
+                        return -VIBEOS_ENOSPC;
+                    }
+                    placed = 1;
+                    nb_count++;
+                }
+                if (xa_put(&nb, &e) != 0) {
+                    return -VIBEOS_EIO;
+                }
+                nb_count++;
+            }
+            if (r < 0) {
+                return r;
+            }
+        }
+        if (!placed) {
+            if (xa_put(&nb, &want) != 0) {
+                return -VIBEOS_ENOSPC;
+            }
+            nb_count++;
+        }
+        if (nb_count == 0u) {
+            r = xa_drop(fs, inode);   /* nothing left in it */
+        } else {
+            uint32_t h = 0;
+
+            st32(fs->xbuf, XA_MAGIC);
+            st32(fs->xbuf + 4u, 1u);
+            st32(fs->xbuf + 8u, 1u);
+            off = nb.first;
+            while (xa_next(&nb, &off, &e) > 0) {
+                h = (h << 16) ^ (h >> 16) ^ le32(fs->xbuf + off - XA_ENTRY(e.nlen) + 12u);
+            }
+            st32(fs->xbuf + 0xCu, h);
+            if (has_b && le32(fs->wbuf + 4u) == 1u) {
+                r = xa_block_store(fs, blk, fs->xbuf);
+            } else {
+                r = balloc(fs, g_start(fs, (ino - 1u) / fs->inodes_per_group), 1, &nblk, &got);
+                if (r == 0) {
+                    r = xa_block_store(fs, nblk, fs->xbuf);
+                }
+                if (r == 0 && has_b) {
+                    r = xa_drop(fs, inode);   /* the shared one: a holder fewer */
+                }
+                if (r == 0) {
+                    xa_block_set(inode, nblk);
+                    add_blocks(fs, inode, 1);
+                }
+            }
+        }
+        if (r != 0) {
+            return r;
+        }
+    }
+    if ((le32(fs->sb + 0x5Cu) & COMPAT_EXT_ATTR) == 0u) {
+        st32(fs->sb + 0x5Cu, le32(fs->sb + 0x5Cu) | COMPAT_EXT_ATTR);
+        r = sb_store(fs);
+        if (r != 0) {
+            return r;
+        }
+    }
+    touch_c(inode);
+    return inode_put(fs, ino, inode);
+}
+
+static int x_setxattr(void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
+                      const void *value, uint32_t len, uint32_t flags) {
+    if (len > ((vibeos_ext2_t *)fsv)->block_size - XA_HDR - 4u - XA_ENTRY(nlen)) {
+        return -VIBEOS_ENOSPC;
+    }
+    return xa_change((vibeos_ext2_t *)fsv, node, index, name, nlen, value, len, flags, 0);
+}
+
+static int x_removexattr(void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen) {
+    return xa_change((vibeos_ext2_t *)fsv, node, index, name, nlen, 0, 0, 0, 1);
+}
+
 static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, int listed) {
     int is_dir = ext2_inode_is_dir(inode), rc;
     uint32_t dtime;
@@ -2456,6 +2962,11 @@ static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode,
         }
     }
     st16(inode + 0x1Au, 0);
+    /* Its attribute block, which may be shared: a holder fewer. */
+    rc = xa_drop(fs, inode);
+    if (rc != 0) {
+        return rc;
+    }
     set_size(inode, 0);
     set_blocks(inode, 0);
     /* A deleted inode's dtime is a time, and e2fsck says what is not: 0 is
@@ -3628,6 +4139,10 @@ J_OP_INT(rmdir, (void *fsv, const char *path), (fsv, path))
 J_OP_INT(link, (void *fsv, const char *existing, const char *path), (fsv, existing, path))
 J_OP_INT(rename, (void *fsv, const char *from, const char *to, uint32_t flags), (fsv, from, to, flags))
 J_OP_INT(setattr, (void *fsv, const char *path, const vibeos_fs_attr_t *attr), (fsv, path, attr))
+J_OP_INT(setxattr, (void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen,
+                    const void *value, uint32_t len, uint32_t flags), (fsv, node, index, name, nlen, value, len, flags))
+J_OP_INT(removexattr, (void *fsv, const vibeos_fs_node_t *node, uint32_t index, const char *name, uint32_t nlen),
+         (fsv, node, index, name, nlen))
 J_OP_INT(setattr_node, (void *fsv, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *attr), (fsv, node, attr))
 /* A read, and atime as Linux's default (relatime) keeps it (E4-013): set when
  * it is not after the last change, or is a day old - so a file read again and
@@ -3687,6 +4202,10 @@ static const vibeos_fs_ops_t g_ext4_rw = {
     .create = w_create,
     .mknod = w_mknod,
     .fallocate = w_fallocate,
+    .getxattr = x_getxattr,
+    .setxattr = w_setxattr,
+    .removexattr = w_removexattr,
+    .listxattr = x_listxattr,
     .rmdir = w_rmdir,
     .rename = w_rename,
     .link = w_link,
@@ -3702,7 +4221,10 @@ static const vibeos_fs_ops_t g_ext4_rw = {
 };
 
 /* A volume the writer does not keep (a device that takes no writes, a feature
- * it would leave stale) is read through the same node description. */
+ * it would leave stale) is read through the same node description. Its
+ * attributes are read through wbuf, as on a written volume, so its calls are
+ * serialised too: two cores reading attributes at once would share the one
+ * buffer (E4-011). */
 static const vibeos_fs_ops_t g_ext4_ro = {
     .lookup = w_lookup,
     .read_at = ext2_op_read_at,
@@ -3710,6 +4232,9 @@ static const vibeos_fs_ops_t g_ext4_ro = {
     .readlink = w_readlink,
     .getattr = w_getattr,
     .statfs = w_statfs,
+    .getxattr = x_getxattr,
+    .listxattr = x_listxattr,
+    .serialize = 1,
 };
 
 const vibeos_fs_ops_t *ext4_ops(const vibeos_ext2_t *fs) {

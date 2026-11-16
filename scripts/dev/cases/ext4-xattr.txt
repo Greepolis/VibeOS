@@ -1,0 +1,44 @@
+# Extended attributes on ext4 (E4-011), broken. Caught by the torture
+# (scripts/dev/verify-ext4-torture.sh), which sets and removes user.*
+# attributes on the host with Linux's own calls, holds the driver's listing to
+# what Linux left, and runs e2fsck -fn on every volume the driver wrote.
+#
+# Not here: a block shared by several inodes (h_refcount above one). Only
+# Linux's deduplication makes one, and no volume the torture builds has it, so
+# "a shared block is changed in place" cannot go red here; that is recorded in
+# fs_ext4.md rather than given a case this environment cannot judge.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && bash scripts/dev/verify-ext4-torture.sh build-gcc-Release 20 4'" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/ext4-xattr.txt build-gcc-Release
+
+### the block is written without its checksum
+--- old
+    st32(b + 0x10u, xa_block_csum(fs, blk, b));
++++ new
+    st32(b + 0x10u, 0);
+
+### an inode's attribute block outlives the inode
+--- old
+    /* Its attribute block, which may be shared: a holder fewer. */
+    rc = xa_drop(fs, inode);
++++ new
+    /* Its attribute block, which may be shared: a holder fewer. */
+    rc = 0;
+
+### the block's entries are not kept in order
+--- old
+                if (!placed && xa_cmp(&e, index, name, nlen) > 0) {
++++ new
+                if (!placed && xa_cmp(&e, index, name, nlen) > 0 && 0) {
+
+### an entry's hash is not set
+--- old
+    st32(p + 12u, xa_hash(e));
++++ new
+    st32(p + 12u, 0x1234u);
+
+### REPLACE of an absent name succeeds
+--- old
+    if (remove || (flags & VIBEOS_XATTR_REPLACE) != 0u) {
++++ new
+    if (remove) {
