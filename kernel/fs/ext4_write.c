@@ -590,6 +590,69 @@ static int bfree(vibeos_ext2_t *fs, uint64_t start, uint64_t count) {
 
 /* ---- inodes: allocating, reading, writing --------------------------------- */
 
+/* Where a new directory starts looking (E4-011), after Linux's Orlov
+ * allocator: a directory under the root is a new tree of its own and goes to
+ * the group with the fewest directories among those with at least the
+ * average of free inodes and free blocks - the count of directories is what
+ * spreads them, so the search needs no random start as Linux's has; a deeper
+ * directory stays in its
+ * parent's group while that group is not crowded - fewer directories than the
+ * average plus a sixteenth of a group's inodes, and no less than the average
+ * of free inodes and blocks less a quarter of a group - else the next group
+ * from there that is not. Files stay with their directory, which is what puts
+ * a tree's files near each other and different trees apart. -1: no group is
+ * better than first-fit from the parent's. */
+static int64_t orlov_group(vibeos_ext2_t *fs, uint32_t parent, uint32_t pg) {
+    uint8_t d[GD_MAX];
+    uint32_t n = fs->group_count, k, best_dirs = 0xFFFFFFFFu;
+    uint64_t free_i = le32(fs->sb + 0x10u), free_b = sb_free_blocks(fs), dirs = 0;
+    uint64_t avg_i = free_i / n, avg_b = free_b / n;
+    int64_t best = -1;
+
+    if (n < 2u) {
+        return -1;
+    }
+    for (k = 0; k < n; k++) {
+        if (gd_read(fs, k, d) != 0) {
+            return -1;
+        }
+        dirs += GD_USED_DIRS(fs, d);
+    }
+    if (parent == 2u) {
+        for (k = 0; k < n; k++) {
+            uint32_t g = k;
+
+            if (gd_read(fs, g, d) != 0) {
+                return -1;
+            }
+            if (GD_FREE_INODES(fs, d) >= avg_i && GD_FREE_INODES(fs, d) > 0u && GD_FREE_BLOCKS(fs, d) >= avg_b &&
+                GD_USED_DIRS(fs, d) < best_dirs) {
+                best_dirs = GD_USED_DIRS(fs, d);
+                best = g;
+            }
+        }
+        return best;
+    }
+    {
+        uint64_t max_dirs = dirs / n + fs->inodes_per_group / 16u;
+        uint64_t min_i = avg_i > fs->inodes_per_group / 4u ? avg_i - fs->inodes_per_group / 4u : 1u;
+        uint64_t min_b = avg_b > fs->blocks_per_group / 4u ? avg_b - fs->blocks_per_group / 4u : 1u;
+
+        for (k = 0; k < n; k++) {
+            uint32_t g = (pg + k) % n;
+
+            if (gd_read(fs, g, d) != 0) {
+                return -1;
+            }
+            if (GD_USED_DIRS(fs, d) < max_dirs && GD_FREE_INODES(fs, d) >= min_i &&
+                GD_FREE_BLOCKS(fs, d) >= min_b) {
+                return g;
+            }
+        }
+    }
+    return -1;
+}
+
 static int ialloc(vibeos_ext2_t *fs, uint32_t parent, int is_dir, uint32_t *out) {
     uint8_t d[GD_MAX];
     uint8_t *bm = fs->wbuf2;
@@ -601,6 +664,13 @@ static int ialloc(vibeos_ext2_t *fs, uint32_t parent, int is_dir, uint32_t *out)
     g0 = parent > 0u ? (parent - 1u) / fs->inodes_per_group : 0u;
     if (g0 >= fs->group_count) {
         g0 = 0u;
+    }
+    if (is_dir) {
+        int64_t og = orlov_group(fs, parent, g0);
+
+        if (og >= 0) {
+            g0 = (uint32_t)og;
+        }
     }
     for (k = 0; k < fs->group_count; k++) {
         uint32_t g = (g0 + k) % fs->group_count, i, used_to;

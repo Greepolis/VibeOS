@@ -205,6 +205,25 @@ python3 scripts/dev/ext4-tree.py patcheck "$T/fdump/fill.bin" 51 > "$T/pc1.out" 
 python3 scripts/dev/ext4-tree.py patcheck "$T/fdump/after" 52 > "$T/pc2.out" || fail "$(cat "$T/pc2.out")" reused_file_differs
 [ "$(stat -c %s "$T/fdump/fill.bin")" = 1000000 ] || fail "fill.bin is not 1000000 bytes" truncated_size_wrong
 
+# ---- where directories go (E4-011) ------------------------------------------
+# Top-level directories spread over the groups, as Linux's Orlov allocator
+# spreads them; a directory under one stays in its parent's group, and so does
+# a file. Placement is invisible in a listing, so it is read off the inode
+# numbers: a group is (inode - 1) / inodes per group.
+mkdir -p "$T/o"
+mkfs.ext4 -q -F -b 1024 -N 2048 "$T/o/fs.img" 64M > /dev/null 2>&1 || fail "mkfs (orlov)" orlov_setup_failed
+printf 'mkdir\t/o1\nmkdir\t/o2\nmkdir\t/o3\nmkdir\t/o4\nmkdir\t/o1/sub\ncreate\t/o2/f\t644\ncreate\t/top\t644\n' > "$T/o/script.txt"
+(cd "$T/o" && "$EX" apply) > /dev/null 2> "$T/o/apply.err" || fail "$(tail -1 "$T/o/apply.err")" orlov_apply_failed
+e2fsck -fn "$T/o/fs.img" > /dev/null 2>&1 || fail "the orlov volume is not clean" orlov_volume_not_clean
+ipg=$(dumpe2fs -h "$T/o/fs.img" 2> /dev/null | awk -F: '/^Inodes per group/ {print $2+0}')
+grp() { echo $(( ($(debugfs -R "stat $1" "$T/o/fs.img" 2> /dev/null | awk '/^Inode:/ {print $2; exit}') - 1) / ipg )); }
+g1=$(grp /o1); g2=$(grp /o2); g3=$(grp /o3); g4=$(grp /o4)
+spread=$(printf '%s\n' "$g1" "$g2" "$g3" "$g4" | sort -u | wc -l)
+[ "$spread" -ge 3 ] || fail "top-level directories in groups $g1 $g2 $g3 $g4" directories_not_spread
+[ "$(grp /o1/sub)" = "$g1" ] || fail "/o1/sub is in group $(grp /o1/sub), its parent in $g1" subdirectory_left_parent
+[ "$(grp /o2/f)" = "$g2" ] || fail "/o2/f is in group $(grp /o2/f), its directory in $g2" file_left_directory
+[ "$(grp /top)" = "$(grp /lost+found)" ] || fail "/top is in group $(grp /top), the root's files in $(grp /lost+found)" file_left_directory
+
 # ---- a fresh volume: inodes in a group nobody has used ----------------------
 mkdir -p "$T/n" "$T/ntree"
 truncate -s 320M "$T/n/fs.img"
