@@ -171,7 +171,7 @@ static int fill(fold_it_t *t) {
         return 0;
     }
     m = map_of((uint32_t)cp, &mn);
-    if (m) {
+    if (m && mn > 0u) {   /* no expansion is empty; were one, the point would stand for itself */
         for (k = 0; k < mn; k++) {
             t->q[t->qn++] = m[k];
         }

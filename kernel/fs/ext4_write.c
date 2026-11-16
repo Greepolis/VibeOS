@@ -536,17 +536,20 @@ static int balloc_group(vibeos_ext2_t *fs, uint32_t g, uint32_t start_bit, uint3
     if (bb_load(fs, g, d, bm) != 0) {
         return -VIBEOS_EIO;
     }
-    for (b = start_bit; b < nb; b++) {
+    b = start_bit;
+    while (b < nb) {
         uint64_t skip;
 
         if (bit_get(bm, b)) {
+            b++;
             continue;
         }
         skip = pa_other(fs, g_start(fs, g) + b);
         if (skip == 0u) {
-            break;
+            break;   /* free and nobody's reservation */
         }
-        b = (uint32_t)(skip - g_start(fs, g) - 1u < nb ? skip - g_start(fs, g) - 1u : nb);
+        /* Past the reservation, which ends after this block. */
+        b = skip - g_start(fs, g) < nb ? (uint32_t)(skip - g_start(fs, g)) : nb;
     }
     if (b >= nb) {
         return 1;
@@ -2916,10 +2919,12 @@ static long x_getxattr_raw(void *fsv, const vibeos_fs_node_t *node, uint32_t ind
     xa_area_t a;
     xa_ent_t e;
     uint64_t blk;
-    int r = xa_node(fs, node, inode);
+    int r;
 
-    if (r != 0) {
-        return r;
+    /* xa_node answers 0 or ENOENT; said so, since a positive answer here
+     * would read as a value's length that nothing has copied. */
+    if (xa_node(fs, node, inode) != 0) {
+        return -VIBEOS_ENOENT;
     }
     r = 0;
     if (xa_ibody(fs, inode, &a) && le32(inode + a.first - 4u) == XA_MAGIC) {

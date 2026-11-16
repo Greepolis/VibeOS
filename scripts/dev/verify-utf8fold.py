@@ -67,7 +67,7 @@ def main():
     raw = [b"\xff", b"a\xc0\xafb", b"\xed\xa0\x80"] + [chr(0x1FAD0).encode()]
 
     lines = [s.encode("utf-8", "surrogatepass").hex() for s in names] + [b.hex() for b in raw]
-    r = subprocess.run([cli], input="\n".join(lines) + "\n", capture_output=True, text=True)
+    r = subprocess.run([cli], input="\n".join(lines) + "\n", capture_output=True, text=True)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
     got = r.stdout.split("\n")
     bad = []
     for s, g in zip(names, got):

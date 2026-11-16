@@ -21,7 +21,9 @@ int main(void) {
         for (i = 0; line[i] && line[i + 1] && line[i] != '\n' && n < sizeof(name); i += 2) {
             unsigned b;
 
-            sscanf(line + i, "%2x", &b);
+            if (sscanf(line + i, "%2x", &b) != 1) {
+                break;   /* not hex: the name ends here */
+            }
             name[n++] = (char)b;
         }
         r = vibeos_utf8_fold(name, (uint32_t)n, out, sizeof(out));

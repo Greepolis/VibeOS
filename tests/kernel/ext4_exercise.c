@@ -639,7 +639,9 @@ static int run(char **a, int n) {
         while (h[0] && h[1] && len < sizeof(v)) {
             unsigned b;
 
-            sscanf(h, "%2x", &b);
+            if (sscanf(h, "%2x", &b) != 1) {
+                return -VIBEOS_EINVAL;
+            }
             v[len++] = (uint8_t)b;
             h += 2;
         }
