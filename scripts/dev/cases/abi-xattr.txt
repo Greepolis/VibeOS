@@ -1,35 +1,31 @@
 # Extended attributes (kernel/abi/linux/names.c, docs/abi/ L1 step 6), proved by
-# the handlers' host tests in tests/kernel/linux_abi_tests.c. No filesystem
-# stores them; what is tested is that the refusal is Linux's, in Linux's order.
+# the handlers' host tests in tests/kernel/linux_abi_tests.c, on tmpfs, which
+# stores none: what is tested is that the refusal is Linux's, in Linux's order.
+# ext4's storage has its own cases (ext4-xattr.txt).
 #
 # Target source: kernel/abi/linux/names.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/names.c scripts/dev/cases/abi-xattr.txt
 
 ### the list of attributes is refused instead of empty
 --- old
-    return linux_xattr_file(where, how);
-}
-
-/* ---- the syscalls this file implements
+    if (r == 0 && rc < 0) {
+        r = rc;
+    }
 +++ new
-    long r = linux_xattr_file(where, how);
-    return r != 0 ? r : -VIBEOS_EOPNOTSUPP;
-}
+    if (r == 0 && rc < 0) {
+        r = rc;
+    }
+    if (r == 0 && total == 0u) {
+        r = -VIBEOS_EOPNOTSUPP;
+    }
 
-/* ---- the syscalls this file implements
-
-### a file that is not there is "not supported"
+### a descriptor that is not open is "not supported"
 --- old
-    r = linux_xattr_file(where, how);
-    return r != 0 ? r : -VIBEOS_EOPNOTSUPP;
-}
-
-/* getxattr and removexattr
+    if (!(t->f = linux_file_get(where))) {
+        return -VIBEOS_EBADF;
 +++ new
-    return -VIBEOS_EOPNOTSUPP;
-}
-
-/* getxattr and removexattr
+    if (!(t->f = linux_file_get(where))) {
+        return -VIBEOS_EOPNOTSUPP;
 
 ### an attribute name of any length is accepted
 --- old
@@ -53,6 +49,6 @@
 
 ### the l forms follow the link
 --- old
-        return linux_walk_at(LINUX_CWD, where, (uint32_t)how, &w);
+        long r = linux_walk_at(LINUX_CWD, where, (uint32_t)how, &w);
 +++ new
-        return linux_walk_at(LINUX_CWD, where, 0u, &w);
+        long r = linux_walk_at(LINUX_CWD, where, 0u, &w);
