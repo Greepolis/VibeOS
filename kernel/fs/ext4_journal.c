@@ -11,24 +11,31 @@
  * straight away, which is what "ordered" means: by the time the commit names
  * it, it is on the disk.
  *
- * At the end of the operation (ext4_j_end), in five flushes:
- *   1. the superblock says RECOVER, the descriptors are written, and the data
- *      and the logged copies with them: flush;
- *   2. the commit block, and the journal superblock pointing at the log: flush
- *      - from here the operation is on the volume whatever happens next;
- *   3. every logged block copied home: flush;
- *   4. the journal superblock says empty: flush;
- *   5. RECOVER cleared: flush.
+ * At the end of the operation (ext4_j_end), in two flushes:
+ *   1. the descriptors are written, and the data and the logged copies with
+ *      them - and, for the first transaction since the log was empty, the
+ *      superblock says RECOVER: flush;
+ *   2. the commit block - and for that first transaction the journal
+ *      superblock pointing at it: flush. From here the operation is on the
+ *      volume whatever happens next.
+ * Then every logged block is written home, not flushed: until the log is
+ * emptied, a cut replays it. The next transaction is appended after this one
+ * (E4-016). When the next might not fit before the end of the log, the log is
+ * emptied - flush, journal superblock empty, flush, RECOVER clear, flush -
+ * which is also what a sync does, so a volume synced is a volume clean.
  * A power cut before 2 leaves the volume as it was before the operation, and
  * after it as it is after - replayed by ext4_j_recover at the next mount, or
  * by e2fsck, which reads the same format. The commit and the journal
  * superblock go in one flush on purpose: whichever of the two reaches the
  * disk alone, the scan finds no committed transaction or no log to scan.
  *
- * Emptying the log after every commit costs flushes and buys simplicity: no
- * transaction ever depends on another, so a block freed and reused is never
- * replayed over by an older transaction, and nothing here writes revoke
- * records. Replay still honours the ones a journal Linux wrote carries.
+ * Several committed transactions in the log means a block an older one logged
+ * can be freed and then written by a newer one as a file's data, in place -
+ * and a replay would write the older copy over the data. Linux writes revoke
+ * records for that. Here such a data write is logged instead (fs->j.logged,
+ * a filter of what the live log holds): the newer copy is then in the log
+ * too, and a replay applies it last. Replay still honours the revoke records
+ * a journal Linux wrote carries.
  *
  * What one transaction may log is fs->j.cap blocks; an operation that needs
  * more is refused with ENOSPC part-way, and what it had done is committed as
@@ -82,13 +89,15 @@
 #define J_HOME_MAX 384u
 #define J_REVOKE_MAX 1000u
 
-static uint64_t g_commits, g_replayed, g_log_full, g_bad_tags;
+static uint64_t g_commits, g_replayed, g_log_full, g_bad_tags, g_flushes, g_checkpoints;
 
 void vibeos_ext4_journal_stats(vibeos_ext4_journal_stats_t *out) {
     out->commits = __atomic_load_n(&g_commits, __ATOMIC_RELAXED);
     out->replayed = __atomic_load_n(&g_replayed, __ATOMIC_RELAXED);
     out->log_full = __atomic_load_n(&g_log_full, __ATOMIC_RELAXED);
     out->bad_tags = __atomic_load_n(&g_bad_tags, __ATOMIC_RELAXED);
+    out->flushes = __atomic_load_n(&g_flushes, __ATOMIC_RELAXED);
+    out->checkpoints = __atomic_load_n(&g_checkpoints, __ATOMIC_RELAXED);
 }
 
 static void count(uint64_t *c) {
@@ -161,11 +170,11 @@ static uint64_t j_lba(const vibeos_ext2_t *fs, uint32_t jblk, uint32_t sector) {
 static uint32_t slot_jblk(const vibeos_ext2_t *fs, uint32_t k) {
     uint32_t t = fs->j.tags_per_desc;
 
-    return fs->j.first + (k / t) * (t + 1u) + 1u + k % t;
+    return fs->j.base + (k / t) * (t + 1u) + 1u + k % t;
 }
 
 static uint32_t desc_jblk(const vibeos_ext2_t *fs, uint32_t chunk) {
-    return fs->j.first + chunk * (fs->j.tags_per_desc + 1u);
+    return fs->j.base + chunk * (fs->j.tags_per_desc + 1u);
 }
 
 /* The next block of the log after `b`, which wraps to s_first. */
@@ -245,7 +254,25 @@ static uint32_t mem_crc(const vibeos_ext2_t *fs, const uint8_t *b, uint32_t zero
 }
 
 static int flush(vibeos_ext2_t *fs) {
+    count(&g_flushes);
     return vibeos_blockcache_flush(fs->cache);
+}
+
+/* The filter of blocks the live log holds. */
+static uint32_t logged_bit(uint64_t block) {
+    return (uint32_t)((block * 0x9E3779B97F4A7C15ull) >> 52);   /* 12 bits */
+}
+
+static int logged_maybe(const vibeos_ext2_t *fs, uint64_t block) {
+    uint32_t b = logged_bit(block);
+
+    return fs->j.live && (fs->j.logged[b >> 3] & (1u << (b & 7u))) != 0u;
+}
+
+/* The most a transaction can take of the log: every block it may log, its
+ * descriptors and its commit block. */
+static uint32_t tx_room(const vibeos_ext2_t *fs) {
+    return fs->j.cap + (fs->j.cap + fs->j.tags_per_desc - 1u) / fs->j.tags_per_desc + 1u;
 }
 
 /* ---- the journal superblock ----------------------------------------------- */
@@ -408,6 +435,7 @@ static int j_geometry(vibeos_ext2_t *fs) {
     if (fs->j.cap > J_HOME_MAX) {
         fs->j.cap = J_HOME_MAX;
     }
+    fs->j.base = fs->j.first;
     if (fs->j.cap < 16u) {
         return -1;
     }
@@ -538,7 +566,7 @@ static int freed_here(const vibeos_ext2_t *fs, uint64_t block) {
 
 int ext4_j_data_write(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf) {
     uint32_t i;
-    int logged = fs->j.open && (freed_here(fs, block) || j_slot_of(fs, block) >= 0);
+    int logged = fs->j.open && (freed_here(fs, block) || j_slot_of(fs, block) >= 0 || logged_maybe(fs, block));
 
     for (i = 0; i < spb(fs); i++) {
         uint64_t lba = fs->part_lba + block * spb(fs) + i;
@@ -669,7 +697,7 @@ static int write_descriptors(vibeos_ext2_t *fs, uint32_t tid) {
 static int write_commit(vibeos_ext2_t *fs, uint32_t tid) {
     uint8_t *b = fs->wbuf2;
     uint32_t chunks = (fs->j.n + fs->j.tags_per_desc - 1u) / fs->j.tags_per_desc;
-    uint32_t jb = fs->j.first + fs->j.n + chunks;
+    uint32_t jb = fs->j.base + fs->j.n + chunks;
 
     memset(b, 0, fs->block_size);
     put_be32(b, JBD2_MAGIC);
@@ -749,9 +777,38 @@ static int sb_log_recover(vibeos_ext2_t *fs) {
     return 0;
 }
 
+/* Empty the log: everything it holds is at home already (written after each
+ * commit), so make that durable, then say the log is empty, then clear
+ * RECOVER - each step on the disk before the next. */
+static int empty_log(vibeos_ext2_t *fs) {
+    if (!fs->j.live) {
+        return 0;
+    }
+    if (flush(fs) != 0 || jsb_store(fs, 0u, fs->j.seq, 0u) != 0 || flush(fs) != 0 || sb_recover_flag(fs, 0) != 0 ||
+        flush(fs) != 0) {
+        return -1;
+    }
+    count(&g_checkpoints);
+    fs->j.live = 0;
+    fs->j.base = fs->j.first;
+    memset(fs->j.logged, 0, sizeof(fs->j.logged));
+    return 0;
+}
+
+int ext4_j_sync(vibeos_ext2_t *fs) {
+    if (!fs->j.on || fs->j.dead) {
+        return 0;
+    }
+    if (empty_log(fs) != 0) {
+        fs->j.dead = 1;
+        return -VIBEOS_EIO;
+    }
+    return 0;
+}
+
 int ext4_j_end(vibeos_ext2_t *fs) {
-    uint32_t tid = fs->j.seq;
-    int bad;
+    uint32_t tid = fs->j.seq, chunks, k;
+    int bad, first = !fs->j.live;
 
     if (!fs->j.open) {
         return 0;
@@ -760,15 +817,29 @@ int ext4_j_end(vibeos_ext2_t *fs) {
     if (fs->j.n == 0u) {
         return 0;
     }
-    bad = sb_log_recover(fs) != 0 || write_descriptors(fs, tid) != 0 || sb_recover_flag(fs, 1) != 0 || flush(fs) != 0 ||
-          write_commit(fs, tid) != 0 || jsb_store(fs, fs->j.first, tid, 0u) != 0 || flush(fs) != 0;
+    bad = sb_log_recover(fs) != 0 || write_descriptors(fs, tid) != 0 || (first && sb_recover_flag(fs, 1) != 0) ||
+          flush(fs) != 0 || write_commit(fs, tid) != 0 || (first && jsb_store(fs, fs->j.base, tid, 0u) != 0) ||
+          flush(fs) != 0;
     if (!bad) {
         count(&g_commits);
-        bad = checkpoint(fs) != 0 || flush(fs) != 0 || jsb_store(fs, 0u, tid + 1u, 0u) != 0 || flush(fs) != 0 ||
-              sb_recover_flag(fs, 0) != 0 || flush(fs) != 0;
+        fs->j.live = 1;
+        for (k = 0; k < fs->j.n; k++) {
+            uint32_t b = logged_bit(fs->j.home[k]);
+
+            fs->j.logged[b >> 3] = (uint8_t)(fs->j.logged[b >> 3] | (1u << (b & 7u)));
+        }
+        /* Home from where this transaction is in the log - before base
+         * moves past it. */
+        bad = checkpoint(fs) != 0;
+        chunks = (fs->j.n + fs->j.tags_per_desc - 1u) / fs->j.tags_per_desc;
+        fs->j.base += fs->j.n + chunks + 1u;
     }
     fs->j.seq = tid + 1u;
     fs->j.n = 0;
+    /* The next transaction must fit before the end of the log. */
+    if (!bad && fs->j.base + tx_room(fs) > fs->j.maxlen) {
+        bad = empty_log(fs) != 0;
+    }
     if (bad) {
         /* The volume is what the disk says, and what the writer holds of it
          * may not be: no more writes until it is mounted again, which

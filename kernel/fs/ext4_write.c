@@ -3587,6 +3587,9 @@ static int w_statfs(void *fsv, vibeos_fs_statfs_t *out) {
 static int w_sync(void *fsv) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
 
+    if (ext4_j_sync(fs) != 0) {
+        return -VIBEOS_EIO;
+    }
     return vibeos_blockcache_flush(fs->cache) == 0 ? 0 : -VIBEOS_EIO;
 }
 

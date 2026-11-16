@@ -873,6 +873,14 @@ static int apply(void) {
     /* The lookups an htree answered, as walk says them: on stderr (E4-030). */
     fflush(stdout);
     fprintf(stderr, "dx_lookups=%llu\n", (unsigned long long)vibeos_ext2_dx_lookups());
+    {
+        /* What the journal cost (E4-016): flushes per commit is the number. */
+        vibeos_ext4_journal_stats_t js;
+
+        vibeos_ext4_journal_stats(&js);
+        fprintf(stderr, "journal commits=%llu flushes=%llu checkpoints=%llu\n", (unsigned long long)js.commits,
+                (unsigned long long)js.flushes, (unsigned long long)js.checkpoints);
+    }
     return 0;
 }
 
@@ -1018,6 +1026,12 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "powercut") == 0 && argc == 3) {
         int r = script(0);
 
+        /* A sync last, as a shutdown does: the log is emptied only then
+         * (E4-016), so the cuts fall inside that too, and the uncut volume
+         * is a clean one. On a device already dead it changes nothing. */
+        if (r == 0) {
+            (void)vibeos_fs_sync(&g_mnt);
+        }
         return r != 0 ? r : save_image();
     }
     if (strcmp(argv[1], "recover") == 0 && argc == 2) {

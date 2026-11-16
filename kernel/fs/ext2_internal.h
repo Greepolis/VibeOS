@@ -98,6 +98,9 @@ int ext4_j_recover(vibeos_ext2_t *fs);
  * operation logged, whether it succeeded or not, and returns 0 or -EIO. */
 int ext4_j_begin(vibeos_ext2_t *fs);
 int ext4_j_end(vibeos_ext2_t *fs);
+/* Empty the log, so that the volume is clean as it stands (E4-016): a sync,
+ * and before the volume is handed to anything else. */
+int ext4_j_sync(vibeos_ext2_t *fs);
 
 /* A node found before its inode was freed, or before the inode went to
  * another file (E4-012): the inode has no links or no type, or its

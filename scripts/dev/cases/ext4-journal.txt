@@ -10,9 +10,9 @@
 
 ### data over a block this transaction freed is written in place
 --- old
-    int logged = fs->j.open && (freed_here(fs, block) || j_slot_of(fs, block) >= 0);
+    int logged = fs->j.open && (freed_here(fs, block) || j_slot_of(fs, block) >= 0 || logged_maybe(fs, block));
 +++ new
-    int logged = fs->j.open && j_slot_of(fs, block) >= 0;
+    int logged = fs->j.open && (j_slot_of(fs, block) >= 0 || logged_maybe(fs, block));
 
 ### a read during a transaction is not answered from the log
 --- old
@@ -48,17 +48,14 @@
 +++ new
     bad = write_descriptors(fs, tid) != 0
 
-### the journal is emptied before the checkpoint is on the disk
---- old
-        bad = checkpoint(fs) != 0 || flush(fs) != 0 || jsb_store(fs, 0u, tid + 1u, 0u) != 0
-+++ new
-        bad = checkpoint(fs) != 0 || jsb_store(fs, 0u, tid + 1u, 0u) != 0
+# "the journal is emptied before the checkpoint is on the disk" moved to
+# ext4-journal-lazy.txt with E4-016, where the log is emptied (empty_log).
 
 ### the commit is written before the log is on the disk
 --- old
-    bad = sb_log_recover(fs) != 0 || write_descriptors(fs, tid) != 0 || sb_recover_flag(fs, 1) != 0 || flush(fs) != 0 ||
+          flush(fs) != 0 || write_commit(fs, tid) != 0 || (first && jsb_store(fs, fs->j.base, tid, 0u) != 0) ||
 +++ new
-    bad = sb_log_recover(fs) != 0 || write_descriptors(fs, tid) != 0 || sb_recover_flag(fs, 1) != 0 ||
+          write_commit(fs, tid) != 0 || (first && jsb_store(fs, fs->j.base, tid, 0u) != 0) ||
 
 # Kept as a comment, not a case: "the superblock is put home among the other
 # blocks, not last" (checkpoint's two passes made one) went NOT RED on

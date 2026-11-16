@@ -173,6 +173,18 @@ typedef struct {
         } x[16];
         uint64_t home[384];       /* where each logged block belongs */
         uint8_t escaped[48];      /* which logged blocks began with the journal's magic */
+        /* The log is not emptied after every commit (E4-016): transactions
+         * are appended from s_first until the next one might not fit, and
+         * then every logged block is made durable at home and the log is
+         * emptied at once. `base` is where the next transaction starts;
+         * `live` says the log holds committed transactions; `logged` is a
+         * filter of the blocks they hold - a data write to one of them is
+         * logged too, or a replay of the older copy would write over it. A
+         * false hit costs one logged block, a miss would cost the data, so it
+         * only ever answers "maybe". */
+        uint32_t base;
+        int live;
+        uint8_t logged[512];
         uint32_t nfreed;          /* blocks freed by this transaction, as runs */
         int freed_overflow;       /* more runs than the table: every data write is logged */
         struct {

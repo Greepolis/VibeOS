@@ -14,6 +14,8 @@
  * not match (must be zero on a healthy volume). */
 typedef struct {
     uint64_t commits;
+    uint64_t flushes;       /* cache flushes the journal asked for (E4-016) */
+    uint64_t checkpoints;   /* times the log was emptied */
     uint64_t replayed;
     uint64_t log_full;
     uint64_t bad_tags;
