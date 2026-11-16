@@ -1,0 +1,54 @@
+# Name folding (kernel/fs/utf8fold.c, E4-030), broken. Caught by
+# scripts/dev/verify-ext4.sh, which holds the folding against Python's NFD of
+# the full case folding on every code point Unicode 12.1 assigns and on random
+# names (verify-utf8fold.py), and the driver's casefolded directories against
+# a model and e2fsck (ext4-casefold.py).
+#
+# Target source: kernel/fs/utf8fold.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-ext4.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/utf8fold.c scripts/dev/cases/fs-utf8fold.txt build-gcc-Release
+
+### marks are not put in canonical order
+--- old
+        for (j = i; j > 0u && c != 0u; j--) {
++++ new
+        for (j = i; j > 0u && c != 0u && 0; j--) {
+
+### a Hangul syllable is not decomposed
+--- old
+    if ((uint32_t)cp >= SBASE && (uint32_t)cp < SBASE + SCOUNT) {
+        uint32_t si = (uint32_t)cp - SBASE;
+
+        t->q[t->qn++] = LBASE + si / NCOUNT;
++++ new
+    if (0) {
+        uint32_t si = (uint32_t)cp - SBASE;
+
+        t->q[t->qn++] = LBASE + si / NCOUNT;
+
+### a code point 12.1 does not assign folds anyway
+--- old
+    if (cp < 0 || !assigned((uint32_t)cp)) {
+        return -1;
+    }
+    t->qh = 0;
++++ new
+    if (cp < 0) {
+        return -1;
+    }
+    t->qh = 0;
+
+### an overlong sequence is read as the character it spells
+--- old
+    if ((need == 1u && cp < 0x80u) || (need == 2u && cp < 0x800u) || (need == 3u && cp < 0x10000u) ||
++++ new
+    if ((need == 2u && cp < 0x800u) || (need == 3u && cp < 0x10000u) ||
+
+### names that do not fold are equal when folding stopped early
+--- old
+        if (ra < 0 || rb < 0) {
+            break;   /* one does not fold: the bytes decide */
+        }
++++ new
+        if (ra < 0 || rb < 0) {
+            return 1;
+        }
