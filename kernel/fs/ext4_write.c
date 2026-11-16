@@ -102,12 +102,16 @@ static uint32_t crc32c(uint32_t seed, const void *p, uint32_t n) {
  * a writer; the incompat ones are already the reader's. */
 static void orphans_at_mount(vibeos_ext2_t *fs);
 static void mount_count(vibeos_ext2_t *fs);
+static void pa_drop(vibeos_ext2_t *fs, uint32_t ino);
 
 void ext4_w_mount(vibeos_ext2_t *fs) {
     uint32_t compat, known_ro;
 
     fs->writable = 0;
     fs->orphan_n = 0;
+    pa_drop(fs, 0);
+    fs->pa_next = 0;
+    fs->alloc_ino = 0;
     if (vibeos_blockcache_read(fs->cache, fs->part_lba + 2u, fs->sb) != 0 ||
         vibeos_blockcache_read(fs->cache, fs->part_lba + 3u, fs->sb + VIBEOS_BLOCK_SIZE) != 0) {
         return;
@@ -468,6 +472,49 @@ static int ib_store(vibeos_ext2_t *fs, uint8_t *d, const uint8_t *buf) {
 
 /* A run of free blocks in group `g` at or after `start_bit`, up to `want`.
  * 0 with the run; 1 when the group has none there; negative on a failure. */
+/* The end of the reservation of another file that holds `blk`, or 0. */
+static uint64_t pa_other(const vibeos_ext2_t *fs, uint64_t blk) {
+    uint32_t i;
+
+    for (i = 0; i < sizeof(fs->pa) / sizeof(fs->pa[0]); i++) {
+        if (fs->pa[i].ino != 0u && fs->pa[i].ino != fs->alloc_ino && blk >= fs->pa[i].start &&
+            blk - fs->pa[i].start < fs->pa[i].len) {
+            return fs->pa[i].start + fs->pa[i].len;
+        }
+    }
+    return 0;
+}
+
+static void pa_drop(vibeos_ext2_t *fs, uint32_t ino) {
+    uint32_t i;
+
+    for (i = 0; i < sizeof(fs->pa) / sizeof(fs->pa[0]); i++) {
+        if (ino == 0u || fs->pa[i].ino == ino) {
+            fs->pa[i].ino = 0;
+        }
+    }
+}
+
+/* `ino` has just been given blocks up to `end` at the end of a file of
+ * `blocks`: keep what follows for it, as many as the file has - so a file that
+ * keeps growing keeps a window in proportion, as Linux's normalised request -
+ * from 16 to 2048. */
+static void pa_set(vibeos_ext2_t *fs, uint32_t ino, uint64_t end, uint64_t blocks) {
+    uint32_t i, len = 16;
+
+    while (len < blocks && len < 2048u) {
+        len <<= 1;
+    }
+    for (i = 0; i < sizeof(fs->pa) / sizeof(fs->pa[0]) && fs->pa[i].ino != ino; i++) {
+    }
+    if (i == sizeof(fs->pa) / sizeof(fs->pa[0])) {
+        i = fs->pa_next++ % (uint32_t)(sizeof(fs->pa) / sizeof(fs->pa[0]));
+    }
+    fs->pa[i].ino = ino;
+    fs->pa[i].start = end;
+    fs->pa[i].len = len;
+}
+
 static int balloc_group(vibeos_ext2_t *fs, uint32_t g, uint32_t start_bit, uint32_t want, uint64_t *first,
                         uint32_t *got) {
     uint8_t d[GD_MAX];
@@ -483,12 +530,22 @@ static int balloc_group(vibeos_ext2_t *fs, uint32_t g, uint32_t start_bit, uint3
     if (bb_load(fs, g, d, bm) != 0) {
         return -VIBEOS_EIO;
     }
-    for (b = start_bit; b < nb && bit_get(bm, b); b++) {
+    for (b = start_bit; b < nb; b++) {
+        uint64_t skip;
+
+        if (bit_get(bm, b)) {
+            continue;
+        }
+        skip = pa_other(fs, g_start(fs, g) + b);
+        if (skip == 0u) {
+            break;
+        }
+        b = (uint32_t)(skip - g_start(fs, g) - 1u < nb ? skip - g_start(fs, g) - 1u : nb);
     }
     if (b >= nb) {
         return 1;
     }
-    for (n = 0; n < want && b + n < nb && !bit_get(bm, b + n); n++) {
+    for (n = 0; n < want && b + n < nb && !bit_get(bm, b + n) && pa_other(fs, g_start(fs, g) + b + n) == 0u; n++) {
         bit_set(bm, b + n);
     }
     if (bb_store(fs, d, bm) != 0) {
@@ -535,6 +592,13 @@ static int balloc(vibeos_ext2_t *fs, uint64_t goal, uint32_t want, uint64_t *sta
         if (r <= 0) {
             return r;
         }
+    }
+    /* What is left is reserved: the reservations go, and the blocks with them. */
+    for (k = 0; k < sizeof(fs->pa) / sizeof(fs->pa[0]) && fs->pa[k].ino == 0u; k++) {
+    }
+    if (k < sizeof(fs->pa) / sizeof(fs->pa[0])) {
+        pa_drop(fs, 0);
+        return balloc(fs, goal, want, start, got);
     }
     return -VIBEOS_ENOSPC;
 }
@@ -3032,6 +3096,7 @@ static int inode_release_listed(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode,
         }
     }
     st16(inode + 0x1Au, 0);
+    pa_drop(fs, ino);
     /* Its attribute block, which may be shared: a holder fewer. */
     rc = xa_drop(fs, inode);
     if (rc != 0) {
@@ -3510,6 +3575,7 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
              * before the next extent, so a big write is a few extents. */
             uint32_t last = (uint32_t)((end - 1u) / bs), want, got, nexti = ext_search(fs, bi);
             uint64_t goal, start;
+            int at_end;
 
             want = last - bi + 1u;
             if (nexti < fs->ext_n && fs->ext[nexti].lblk - bi < want) {
@@ -3525,11 +3591,17 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
             if (nruns == WRITE_RUNS_MAX) {
                 break;   /* a short write: every run this call took can still be given back */
             }
+            at_end = nexti >= fs->ext_n;
+            fs->alloc_ino = ino;
             rc = balloc(fs, goal, want, &start, &got);
+            fs->alloc_ino = 0;
             if (rc == 0) {
                 rc = ext_add(fs, bi, got, start);
                 if (rc != 0) {
                     (void)bfree(fs, start, got);
+                } else if (at_end) {
+                    /* At the end of the file: what follows is kept for it. */
+                    pa_set(fs, ino, start + got, (uint64_t)bi + got);
                 }
             }
             if (rc != 0) {
@@ -3626,6 +3698,7 @@ static int x_truncate(void *fsv, const vibeos_fs_node_t *node, uint64_t new_size
         ext2_node_stale(fs, node, inode)) {
         return -VIBEOS_ENOENT;   /* E4-012 */
     }
+    pa_drop(fs, ino);   /* its end moves: what was kept after the old one is not after the new */
     rc = file_migrate(fs, ino, inode);
     if (rc == 0) {
         rc = file_check(inode);

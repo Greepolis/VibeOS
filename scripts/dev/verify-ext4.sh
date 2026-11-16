@@ -224,6 +224,22 @@ spread=$(printf '%s\n' "$g1" "$g2" "$g3" "$g4" | sort -u | wc -l)
 [ "$(grp /o2/f)" = "$g2" ] || fail "/o2/f is in group $(grp /o2/f), its directory in $g2" file_left_directory
 [ "$(grp /top)" = "$(grp /lost+found)" ] || fail "/top is in group $(grp /top), the root's files in $(grp /lost+found)" file_left_directory
 
+# ---- preallocation (E4-011) -------------------------------------------------
+# Two files appended to in turn, a block at a time: without the blocks after a
+# growing file kept for it, each takes the other's next block and both end as
+# sixty-four extents of one block.
+mkdir -p "$T/pa"
+mkfs.ext4 -q -F -b 1024 -N 256 "$T/pa/fs.img" 16M > /dev/null 2>&1 || fail "mkfs (prealloc)" prealloc_setup_failed
+{ printf 'create\t/p1\t644\ncreate\t/p2\t644\n'
+  for i in $(seq 0 63); do printf 'write\t/p1\t%d\t1024\t7\nwrite\t/p2\t%d\t1024\t9\n' $((i * 1024)) $((i * 1024)); done
+} > "$T/pa/script.txt"
+(cd "$T/pa" && "$EX" apply) > /dev/null 2> "$T/pa/apply.err" || fail "$(tail -1 "$T/pa/apply.err")" prealloc_apply_failed
+e2fsck -fn "$T/pa/fs.img" > /dev/null 2>&1 || fail "the prealloc volume is not clean" prealloc_volume_not_clean
+for f in p1 p2; do
+    n=$(debugfs -R "ex /$f" "$T/pa/fs.img" 2> /dev/null | grep -c '^ *[0-9]/ *[0-9]')
+    [ "$n" -le 8 ] || fail "/$f appended in turn is $n extents" appends_interleaved
+done
+
 # ---- a fresh volume: inodes in a group nobody has used ----------------------
 mkdir -p "$T/n" "$T/ntree"
 truncate -s 320M "$T/n/fs.img"

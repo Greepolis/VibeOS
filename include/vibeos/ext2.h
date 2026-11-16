@@ -83,6 +83,17 @@ typedef struct {
     uint8_t fuzz_wbuf2_guard[16];
 #endif
     uint8_t xbuf[4096];           /* an attribute block being rebuilt while wbuf holds the old one */
+    /* Preallocation (E4-011): the blocks after a growing file's end, kept for
+     * it in memory - every other allocation steps over them - so files
+     * appended to in turn do not take each other's next block. Nothing of it
+     * is on the volume; a full volume forgets them all. */
+    struct {
+        uint32_t ino;             /* 0: a free slot */
+        uint32_t len;
+        uint64_t start;
+    } pa[16];
+    uint32_t pa_next;             /* the slot the next new reservation takes */
+    uint32_t alloc_ino;           /* whose data is being allocated: its own reservation is open to it */
     uint32_t ext_n;               /* the file being changed: its extents, in order */
     /* When the file's tree has an index level, ext[] holds a window of it and
      * not the whole file (E4-008): up to three neighbouring leaves under one
