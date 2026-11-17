@@ -493,6 +493,14 @@ class Gen:
                 ents = [e for e in ents if e[0] != 0x10] if users or groups else ents[1:]   # malformed
             if r.random() < 0.08:
                 ents = []   # the header alone: no list
+            # A default list on a directory is set empty only: Linux gives a
+            # new file inside it the directory's default list, and that
+            # inheritance belongs to the security milestone (decided
+            # 2026-11-16, E4-011) - the nightly's seeds made such files and
+            # held the driver to Linux's inherited lists. On a file a default
+            # list is still EACCES, malformed or not.
+            if which == "d" and os.path.isdir(hp):
+                ents = []
             val = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in ents)
             name = "system.posix_acl_" + ("access" if which == "a" else "default")
             self.emit(["setacl", p, which, val.hex()], lambda: os.setxattr(hp, name, val))
