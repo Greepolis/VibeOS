@@ -1102,6 +1102,18 @@ def root_volume_problems(root_img):
         r = subprocess.run([debugfs, "-R", "ls /home", root_img], capture_output=True, text=True)
         if "MixedCase.txt" not in r.stdout:
             out.append("home_lost_the_case_of_a_name")
+        # /run is tmpfs (hierarchy F1): what the guest wrote there is not on
+        # the disk. When it was a directory on the root, it would have been.
+        r = subprocess.run([debugfs, "-R", "ls /run", root_img], capture_output=True, text=True)
+        if "guest.txt" in r.stdout:
+            out.append("run_is_not_volatile")
+        # The directory contract's modes (hierarchy.md section 2), as the
+        # build sets them.
+        for path, want in (("/root", "0700"), ("/tmp", "1777"), ("/var/tmp", "1777"), ("/run", "0755")):
+            r = subprocess.run([debugfs, "-R", "stat %s" % path, root_img], capture_output=True, text=True)
+            m = re.search(r"Mode:\s+0?(\d+)", r.stdout)
+            if m is None or m.group(1).lstrip("0").rjust(4, "0")[-4:] != want:
+                out.append("root_tree_mode_wrong:%s" % path.strip("/").replace("/", "_"))
         else:
             # The file's time is the guest's wall clock (E4-029): it was 1970,
             # the time since boot, until the kernel read the CMOS clock. QEMU's
@@ -3372,6 +3384,12 @@ def main():
                     problems.append("home_is_not_casefolded")
                 if not re.search(r"write\(ring3\): CASE_SENSITIVE_11\r?\n", text):
                     problems.append("etc_is_casefolded")
+                # /run and /dev/shm, tmpfs since hierarchy F1: a file written
+                # to each and read back, the contents the shell's arithmetic.
+                if not re.search(r"write\(ring3\): RUNFS_4\r?\n", text):
+                    problems.append("run_round_trip_failed")
+                if not re.search(r"write\(ring3\): SHM_8\r?\n", text):
+                    problems.append("dev_shm_round_trip_failed")
                 # Writing through a descriptor (docs/abi/ L1 step 3): 820
                 # bytes written in twenty writes, five appended, and wc's
                 # count of the file. Any other number is on the line instead:

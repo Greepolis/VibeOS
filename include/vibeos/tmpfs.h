@@ -84,6 +84,10 @@ int vibeos_tmpfs_init(vibeos_tmpfs_t *t, uint64_t pages_max,
  * unset, and a shared mapping of a file here is refused (ENODEV). */
 void vibeos_tmpfs_set_page_hold(vibeos_tmpfs_t *t, void (*hold)(void *page));
 
+/* The root directory's permission bits, for an instance that is not /tmp:
+ * /run is 0755 and root's, /dev/shm is 1777 as /tmp is (hierarchy F1). */
+void vibeos_tmpfs_set_root_mode(vibeos_tmpfs_t *t, uint32_t mode);
+
 /* Everything freed; the filesystem is empty again. For tests. */
 void vibeos_tmpfs_destroy(vibeos_tmpfs_t *t);
 

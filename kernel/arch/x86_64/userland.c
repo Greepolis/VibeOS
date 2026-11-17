@@ -238,6 +238,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * the shell's arithmetic, not the typed text. */
                                   "echo CASEFOLD_$((3+4)) > /home/MixedCase.txt && cat /home/mIXEDcASE.TXT\n"
                                   "cat /etc/vibeos/ROOT 2>/dev/null || echo CASE_SENSITIVE_$((5+6))\n"
+                                  /* /run and /dev/shm are tmpfs (hierarchy
+                                   * F1): a file written to each and read
+                                   * back, and the gate checks afterwards
+                                   * that /run left nothing on the disk. */
+                                  "echo RUNFS_$((2+2)) > /run/guest.txt && cat /run/guest.txt\n"
+                                  "echo SHM_$((4+4)) > /dev/shm/guest && cat /dev/shm/guest\n"
                                   "cat DOCS/NOTES.TXT\n"
                                   "ls /usr/bin\n"
                                   /* A working directory (docs/abi/ A4): cd,

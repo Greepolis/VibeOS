@@ -1,0 +1,25 @@
+# The directory contract's modes (hierarchy.md section 2), set where the
+# root's tree is made (make-root-tree.py, since E4-028) and read back by the
+# gate with debugfs off the image the machine ran from (hierarchy F1).
+#
+#  1. /root gets the default 0755. Expect root_tree_mode_wrong:root.
+#  2. /var/tmp is not sticky. Expect root_tree_mode_wrong:var_tmp.
+#
+# The first version of this file broke a second copy of these modes added to
+# make-boot-disk.py, and went NOT RED for /root: the tree already carried them.
+# The copy went, and the cases aim at the one place that sets them.
+#
+# Target source: scripts/make-root-tree.py
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py scripts/make-root-tree.py scripts/dev/cases/hier-f1-modes.txt
+
+### /root gets the default mode (root_tree_mode_wrong)
+--- old
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700}
++++ new
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777}
+
+### /var/tmp is not sticky (root_tree_mode_wrong)
+--- old
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700}
++++ new
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o777, "root": 0o700}

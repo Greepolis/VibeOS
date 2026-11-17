@@ -476,21 +476,24 @@ static int hw_fsimage_read(void *ctx, uint64_t lba, void *buf) {
  * (C7). This used to name each driver - its state, a mount wrapper and its ops
  * - which made this file one of the four a new filesystem had to edit. */
 static hw_fsimage_t g_fsimages[] = {
-    { "ext2",    "EFI/BOOT/EXT2.IMG",  "/ext2",  "HELLO.TXT", 0ull, {0},
+    /* Mounted under /run/test, not at the top of the tree (hierarchy F1): a
+     * test fixture is not a place in the system's namespace, and /run is
+     * gone at the next boot. Only the gate's media carry these images. */
+    { "ext2",    "EFI/BOOT/EXT2.IMG",  "/run/test/ext2",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
     /* mkfs.ext4's defaults: extents, 64bit, flex_bg, metadata_csum (docs/
      * filesystems/ext4/design.md step 1). */
-    { "ext4",    "EFI/BOOT/EXT4.IMG",  "/ext4",  "HELLO.TXT", 0ull, {0},
+    { "ext4",    "EFI/BOOT/EXT4.IMG",  "/run/test/ext4",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "iso9660", "EFI/BOOT/ISO.IMG",   "/iso",   "HELLO.TXT", 0ull, {0},
+    { "iso9660", "EFI/BOOT/ISO.IMG",   "/run/test/iso",   "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "ntfs",    "EFI/BOOT/NTFS.IMG",  "/ntfs",  "HELLO.TXT", 0ull, {0},
+    { "ntfs",    "EFI/BOOT/NTFS.IMG",  "/run/test/ntfs",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/exfat", 0,           0ull, {0},
+    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/run/test/exfat", 0,           0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
     /* VFAT long names as mtools writes them (docs/abi/ A4): the marker is reached
      * through a long-named directory, so the lookup walks two long names. */
-    { "fat",     "EFI/BOOT/FATLONG.IMG", "/fatlong",
+    { "fat",     "EFI/BOOT/FATLONG.IMG", "/run/test/fatlong",
       "long directory name/a_long_marker_name.txt", 2048ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
 };
@@ -1167,6 +1170,39 @@ static void hw_procfs_cpu(vibeos_procfs_cpu_t *c) {
     c->flags = g_cpu_flags;
 }
 
+/* /run and /dev/shm (hierarchy F1): two more tmpfs instances. /run is
+ * volatile service and session state - it was a directory on the root, so it
+ * survived a reboot, which is the one thing it must not do; /dev/shm is where
+ * a C library's shm_open puts POSIX shared memory, and it did not exist. They
+ * share /tmp's lock and page allocator; each has its own ceiling. */
+static vibeos_tmpfs_t g_runfs, g_shmfs;
+static vibeos_fsmount_t g_runfs_mnt, g_shmfs_mnt;
+
+static void hw_tmpfs_instance(vibeos_tmpfs_t *t, vibeos_fsmount_t *mnt, const char *at, uint64_t pages,
+                              uint32_t mode) {
+    const char *verdict = "OK";
+
+    if (vibeos_tmpfs_init(t, pages, hw_tmpfs_page, hw_tmpfs_page_free, hw_tmpfs_lock, hw_tmpfs_unlock) != 0 ||
+        vibeos_fs_mount(mnt, vibeos_tmpfs_ops(), t, "tmpfs") != 0) {
+        verdict = "FAILED: mount";
+    } else {
+        vibeos_tmpfs_set_root_mode(t, mode);
+        vibeos_tmpfs_set_page_hold(t, hw_tmpfs_page_hold);
+        if (vibeos_fs_attach(at, mnt) != 0) {
+            verdict = "FAILED: attach";
+        }
+    }
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[IO] TMPFS at=");
+    vibeos_x86_64_serial_puts(at);
+    vibeos_x86_64_serial_puts(" pages=0x");
+    vibeos_x86_64_serial_print_hex(pages);
+    vibeos_x86_64_serial_puts(" result=");
+    vibeos_x86_64_serial_puts(verdict);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 /* /dev (L2 step 6): the names programs open without asking. Its own mount,
  * with no state - the devices behind its names are the file types'. */
 static vibeos_fsmount_t g_devfs_mnt;
@@ -1358,6 +1394,8 @@ void hw_volumes_bringup(void) {
     hw_tmpfs_bringup();
     hw_procfs_bringup();
     hw_devfs_bringup();
+    hw_tmpfs_instance(&g_runfs, &g_runfs_mnt, "/run", 1024u, 0755u);
+    hw_tmpfs_instance(&g_shmfs, &g_shmfs_mnt, "/dev/shm", HW_TMPFS_PAGES, 01777u);
 
     {
         uint32_t k;

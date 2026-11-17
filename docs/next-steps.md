@@ -11,7 +11,9 @@ was decided. What is still open in every register is gathered, generated, in
 
 1. **The filesystem's hierarchy** - [filesystems/hierarchy/](filesystems/hierarchy/README.md),
    phases F0-F2 first: what lives where, the current root's tree laid out on it,
-   and a mount manifest. F0-F2 need no choice of on-disk format.
+   and a mount manifest. F0 and F1 are done (2026-11-17,
+   [inventory.md](filesystems/hierarchy/inventory.md)); F2, the mount
+   manifest, is next.
 
 ## Next
 

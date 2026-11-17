@@ -1268,6 +1268,10 @@ void vibeos_tmpfs_set_page_hold(vibeos_tmpfs_t *t, void (*hold)(void *page)) {
     }
 }
 
+void vibeos_tmpfs_set_root_mode(vibeos_tmpfs_t *t, uint32_t mode) {
+    t->inode[0].mode = VIBEOS_S_IFDIR | (mode & 07777u);
+}
+
 void vibeos_tmpfs_destroy(vibeos_tmpfs_t *t) {
     uint32_t i;
 

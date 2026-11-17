@@ -23,19 +23,19 @@
 
 ### the NTFS row is gone
 --- old
-    { "ntfs",    "EFI/BOOT/NTFS.IMG",  "/ntfs",  "HELLO.TXT", 0ull, {0},
+    { "ntfs",    "EFI/BOOT/NTFS.IMG",  "/run/test/ntfs",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
 +++ new
 
 ### the exFAT row is gone
 --- old
-    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/exfat", 0,           0ull, {0},
+    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/run/test/exfat", 0,           0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
 +++ new
 
 ### the long-name FAT row is gone
 --- old
-    { "fat",     "EFI/BOOT/FATLONG.IMG", "/fatlong",
+    { "fat",     "EFI/BOOT/FATLONG.IMG", "/run/test/fatlong",
       "long directory name/a_long_marker_name.txt", 2048ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
 +++ new
