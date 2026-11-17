@@ -319,11 +319,15 @@ static uint8_t pat(uint32_t seed, uint64_t p) {
     return (uint8_t)(seed * 31u + (uint32_t)(p >> 8) * ((seed << 1) | 1u) + (uint32_t)(p & 255u));
 }
 
-/* The clock timestamps come from: a second per call, from a fixed day. */
+/* The clock timestamps come from: a second per call, from a fixed day. A
+ * second per call also ages a transaction past group commit's five seconds
+ * within a few operations (E4-016), so a measurement of commits sets
+ * VIBEOS_EX_CLOCK_STEP_NS to something nearer a real machine's pace. */
 static uint64_t g_now = 1700000000ull * 1000000000ull;
+static uint64_t g_step = 1000000000ull;
 
 static uint64_t clock_fn(void) {
-    g_now += 1000000000ull;
+    g_now += g_step;
     return g_now;
 }
 
@@ -626,6 +630,22 @@ static int run(char **a, int n) {
         }
         return vibeos_fs_fallocate(&g_mnt, &node, m, off, strtoull(a[4], NULL, 10));
     }
+    if (strcmp(c, "idle") == 0 && n == 1) {
+        /* The machine idle past the commit interval: the clock moves six
+         * seconds and the idle loop's tick runs (E4-016). What the running
+         * transaction held is then committed, as fsync would have. */
+        g_line_unchanged = 1;
+        g_now += 6000000000ull;
+        /* This mount, which the exerciser holds and never registered at a
+         * path: tick_all walks the table of mounts and would not see it -
+         * the first version did exactly that, and the sweep went red on a
+         * floor the tick had never raised. */
+        return vibeos_fs_tick(&g_mnt);
+    }
+    if (strcmp(c, "fsync") == 0 && n == 1) {
+        g_line_unchanged = 1;   /* it commits what others did, and changes nothing itself */
+        return vibeos_fs_sync(&g_mnt);
+    }
     if (strcmp(c, "chattr") == 0 && n == 3) {
         /* chattr +F / -F as chattr does it: read every flag, change one,
          * hand them all back (E4-030); "+X" asks for a flag the driver does
@@ -874,7 +894,7 @@ static int apply(void) {
         }
     }
     fclose(f);
-    if (vibeos_fs_sync(&g_mnt) != 0) {
+    if (vibeos_fs_settle(&g_mnt) != 0) {
         fprintf(stderr, "FAIL:ext4_exercise sync failed\n");
         return 1;
     }
@@ -980,6 +1000,12 @@ static int script(int states) {
             if (!was_dead && g_dead) {
                 printf("cut_at_line=%u %s\n", lines, line);
             }
+            /* A sync that returned with the device still alive: everything
+             * before it is on the disk, so no cut after it may undo it
+             * (E4-016). */
+            if (r == 0 && !g_dead && (strcmp(line, "fsync") == 0 || strcmp(line, "idle") == 0)) {
+                printf("synced_at_line=%u\n", lines);
+            }
         }
         if (r != 0 && g_cut == 0u) {
             fprintf(stderr, "FAIL:ext4_exercise line %u (%s) returned %d\n", lines, line, r);
@@ -995,12 +1021,20 @@ static int script(int states) {
     if (!states) {
         vibeos_ext4_journal_stats_t js;
 
+        /* A settle last, as a shutdown does, counted with the rest: with
+         * group commit (E4-016) the last operations are still in the running
+         * transaction, so the cuts must fall inside it too, and the uncut
+         * volume is a clean one. On a device already dead it changes nothing. */
+        (void)vibeos_fs_settle(&g_mnt);
+
         vibeos_ext4_journal_stats(&js);
         printf("writes=%llu lines=%u commits=%llu\n", (unsigned long long)g_writes, lines,
                (unsigned long long)js.commits);
-        if (g_cut == 0u && js.commits < changing) {
-            fprintf(stderr, "FAIL:ext4_exercise %u operations made %llu commits: the journal is not in the path\n",
-                    changing, (unsigned long long)js.commits);
+        /* Every changing line through the journal - several to a commit
+         * since group commit (E4-016), so counted as operations. */
+        if (g_cut == 0u && js.ops < changing) {
+            fprintf(stderr, "FAIL:ext4_exercise %u operations went %llu times through the journal: it is not in the path\n",
+                    changing, (unsigned long long)js.ops);
             return 1;
         }
     }
@@ -1030,6 +1064,9 @@ int main(int argc, char **argv) {
     }
     /* Before the mount, as on the machine (hw_rtc_bringup): a mount dates
      * itself (E4-013). */
+    if (getenv("VIBEOS_EX_CLOCK_STEP_NS")) {
+        g_step = strtoull(getenv("VIBEOS_EX_CLOCK_STEP_NS"), NULL, 10);
+    }
     vibeos_fs_set_clock(clock_fn);
     if (mount_volume() != 0) {
         fprintf(stderr, "FAIL:ext4_exercise cannot mount what mkfs.ext4 made (refused=0x%x)\n",
@@ -1047,20 +1084,13 @@ int main(int argc, char **argv) {
         return script(1);
     }
     if (strcmp(argv[1], "powercut") == 0 && argc == 3) {
-        int r = script(0);
-
-        /* A sync last, as a shutdown does: the log is emptied only then
-         * (E4-016), so the cuts fall inside that too, and the uncut volume
-         * is a clean one. On a device already dead it changes nothing. */
-        if (r == 0) {
-            (void)vibeos_fs_sync(&g_mnt);
-        }
+        int r = script(0);   /* which settles the volume last, counted */
         return r != 0 ? r : save_image();
     }
     if (strcmp(argv[1], "recover") == 0 && argc == 2) {
         vibeos_ext4_journal_stats_t js;
 
-        if (vibeos_fs_sync(&g_mnt) != 0 || save_image() != 0) {
+        if (vibeos_fs_settle(&g_mnt) != 0 || save_image() != 0) {
             return 1;
         }
         vibeos_ext4_journal_stats(&js);

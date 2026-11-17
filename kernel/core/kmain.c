@@ -14,6 +14,7 @@
 #include "vibeos/swaparea.h"
 #include "vibeos/anon.h"
 #include "vibeos/reclaim.h"
+#include "vibeos/vfs.h"
 #include <stddef.h>
 
 static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
@@ -709,6 +710,9 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     }
 
     vibeos_x86_64_hw_start_userland();
+    /* Every volume clean as it stands (E4-016): with group commit, what the
+     * last programs wrote may still be in a transaction nobody committed. */
+    vibeos_fs_settle_all();
 
     kernel_boot_log(kernel, VIBEOS_LOG_INFO, 106, kernel->boot_health_flags, 0,
                     "userland_finished");

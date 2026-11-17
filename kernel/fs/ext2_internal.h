@@ -98,9 +98,14 @@ int ext4_j_recover(vibeos_ext2_t *fs);
  * operation logged, whether it succeeded or not, and returns 0 or -EIO. */
 int ext4_j_begin(vibeos_ext2_t *fs);
 int ext4_j_end(vibeos_ext2_t *fs);
-/* Empty the log, so that the volume is clean as it stands (E4-016): a sync,
- * and before the volume is handed to anything else. */
+/* Group commit (E4-016): commit the running transaction now - mid-operation,
+ * for a release cut in pieces; for fsync (ext4_j_sync); when it is older than
+ * the commit interval and nothing else did (ext4_j_tick, from the idle loop).
+ * ext4_j_settle commits and empties the log: the volume clean as it stands. */
+int ext4_j_commit(vibeos_ext2_t *fs);
 int ext4_j_sync(vibeos_ext2_t *fs);
+int ext4_j_tick(vibeos_ext2_t *fs);
+int ext4_j_settle(vibeos_ext2_t *fs);
 
 /* A node found before its inode was freed, or before the inode went to
  * another file (E4-012): the inode has no links or no type, or its

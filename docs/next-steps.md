@@ -16,9 +16,8 @@ was decided. What is still open in every register is gathered, generated, in
    read, write, the journal, the root at `/` with the programs in `/usr/bin`,
    and the intensive test against Linux in the nightly (steps 1 to 5,
    [filesystem-design/ext4.md](filesystem-design/ext4.md)). Since then
-   (2026-11-16) its open items closed but two: E4-016's group commit, whose
-   contract is decided (Linux's: fsync is the promise), and E4-021, which waits
-   for the user's shell (item 3). See [fs_ext4.md](implementation_progress/fs_ext4.md).
+   (2026-11-17) its open items are closed but E4-021, which waits for the
+   user's shell (item 3). See [fs_ext4.md](implementation_progress/fs_ext4.md).
 
 ## Next
 

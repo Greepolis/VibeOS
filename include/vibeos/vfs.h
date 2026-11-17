@@ -226,6 +226,12 @@ typedef struct {
      * would mean nothing. Optional: without them a file has no flags
      * (ENOTTY, as Linux answers for such a filesystem). */
     int (*getflags)(void *fs, const vibeos_fs_node_t *node, uint32_t *flags);
+    /* A filesystem that holds changes back (ext4's group commit, E4-016):
+     * settle makes the volume clean as it stands - more than sync, which
+     * only makes what was done durable - and tick is called every second or
+     * so from an idle core to commit what has waited long enough. Optional. */
+    int (*settle)(void *fs);
+    int (*tick)(void *fs);
     int (*setflags)(void *fs, const vibeos_fs_node_t *node, uint32_t flags);
 
     /* Set by a driver that wants the VFS to serialise it: every call into it
@@ -306,6 +312,12 @@ int vibeos_fs_setattr_node(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, 
 int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out);
 /* 0 from a driver without sync: it has nothing held back. */
 int vibeos_fs_sync(vibeos_fsmount_t *mnt);
+/* Clean as it stands (or sync, for a driver without settle). */
+int vibeos_fs_settle(vibeos_fsmount_t *mnt);
+/* Every mount: settle, at the end of userland; tick, from an idle core. */
+void vibeos_fs_settle_all(void);
+void vibeos_fs_tick_all(void);
+int vibeos_fs_tick(vibeos_fsmount_t *mnt);
 
 /* The clock timestamps are read from, supplied by the architecture - a
  * registration, not a weak symbol (CLAUDE.md). Uptime until the kernel has a

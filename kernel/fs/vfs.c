@@ -677,6 +677,53 @@ int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out) {
     }
 }
 
+int vibeos_fs_settle(vibeos_fsmount_t *mnt) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->settle) {
+        return vibeos_fs_sync(mnt);
+    }
+    fs_enter(mnt);
+    r = mnt->ops->settle(mnt->fs);
+    fs_leave(mnt);
+    return r;
+}
+
+void vibeos_fs_settle_all(void) {
+    uint32_t i;
+
+    for (i = 0; i < vibeos_fs_mount_count(); i++) {
+        vibeos_fsmount_t *m = vibeos_fs_mount_at(i);
+
+        if (vibeos_fs_is_mounted(m)) {
+            (void)vibeos_fs_settle(m);
+        }
+    }
+}
+
+int vibeos_fs_tick(vibeos_fsmount_t *mnt) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !mnt->ops->tick) {
+        return 0;
+    }
+    fs_enter(mnt);
+    r = mnt->ops->tick(mnt->fs);
+    fs_leave(mnt);
+    return r;
+}
+
+void vibeos_fs_tick_all(void) {
+    uint32_t i;
+
+    for (i = 0; i < vibeos_fs_mount_count(); i++) {
+        (void)vibeos_fs_tick(vibeos_fs_mount_at(i));
+    }
+}
+
 int vibeos_fs_sync(vibeos_fsmount_t *mnt) {
     if (!vibeos_fs_is_mounted(mnt)) {
         return -VIBEOS_EINVAL;

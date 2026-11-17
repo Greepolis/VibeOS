@@ -64,6 +64,7 @@ symlink	/d/a	/ln
 link	/d/a	/hard
 rename	/d/sub/b	/b2
 write	/d/a	70000	300000	5
+fsync
 truncate	/d/a	4097
 chmod	/b2	640
 unlink	/hard
@@ -77,9 +78,11 @@ write	/sp	32768	4096	9
 write	/sp	49152	4096	9
 write	/sp	65536	4096	9
 writefile	/sp	30000	10
+fsync
 rmdir	/d/sub
 mkdir	/e
 rename	/d	/e/d
+idle
 create	/e/c	644
 write	/e/c	0	200000	8
 unlink	/e/c
@@ -143,9 +146,16 @@ for ((n = 1; n <= total; n = (n + STRIDE <= total || n == total) ? n + STRIDE : 
     cmp -s "$T/c/mine.txt" "$T/c/theirs.txt" \
         || fail "n=$n $(diff "$T/c/mine.txt" "$T/c/theirs.txt" | head -3 | tr '\n' ' ')" replays_disagree
     from=$((last < 0 ? 0 : last))
+    # fsync's promise (E4-016): a sync that returned before the cut holds
+    # everything before it, so the state is at least the one after it.
+    synced="$(sed -n 's/^synced_at_line=\([0-9]*\)$/\1/p' "$T/c/cut.out" | tail -1)"
+    if [ -n "$synced" ] && [ "$synced" -gt "$from" ]; then
+        from="$synced"
+    fi
     s="$(state_of "$T/c/mine.txt" "$from")"
     # The cuts are in order, so the state reached can only stay or move on:
-    # one not found from the last one on is a mixture, or a state undone.
+    # one not found from the last one on is a mixture, or a state undone -
+    # or, with group commit, a state older than the last fsync.
     [ "$s" -ge 0 ] || fail "n=$n $(diff "$T/state.$from" "$T/c/mine.txt" | head -4 | tr '\n' ' ')" not_a_state
     last="$s"
 done

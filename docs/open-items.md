@@ -6,16 +6,13 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-70 open in 3 registers.
+67 open in 3 registers.
 
-## [ext4](implementation_progress/fs_ext4.md) - 4
+## [ext4](implementation_progress/fs_ext4.md) - 1
 
 | ID | What | Status |
 |---|---|---|
-| E4-030 | Casefolded directories (hierarchy.md section 3, decided 2026-11-11): the root is made with the `casefold` feature and `/home`, `/usr/lib/windows` and ... | open: the driver half is done (2026-11-16) - a casefold volume (utf8-12.1) ... |
 | E4-021 | The programs keep their ESP names (`BUSYBOX.ELF`, `SVC_OK.ELF`): the gate recognises many of them by those names. Lower-case command names without the ... | open - deferred 2026-11-11 to the shell's design (next-steps item 3): which ... |
-| E4-016 | One operation is one transaction with five flushes, emptied at once: no group commit, no asynchronous checkpoint, no reuse of the log across transactions. ... | open: the log is kept across transactions (2026-11-16) - each is appended after ... |
-| E4-011 | Allocation is first-fit from the parent's group: directories are not spread (Orlov), no preallocation, no delayed allocation; no `fallocate`, hole punching, ... | open: `mknod` is done (2026-11-14) - sockets' names and FIFOs (and devices by ... |
 
 ## [Review findings tracker](implementation_progress/review_findings_tracker.md) - 6
 

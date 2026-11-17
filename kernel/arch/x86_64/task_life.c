@@ -9,6 +9,7 @@
 #include "arch_hw_internal.h"
 #include "vibeos/crash.h"
 #include "vibeos/path.h"
+#include "vibeos/vfs.h"
 
 #define VIBEOS_HW_KERNEL_DS 0x10u
 
@@ -1277,6 +1278,19 @@ int hw_task_adopt_kernel(void) {
  * rather than burning the core in a spin. */
 static void hw_idle_loop(void) {
     for (;;) {
+        /* The filesystems' background work (E4-016): a transaction that has
+         * waited past its commit interval is committed by core 0 when it has
+         * nothing else to do - there is no kernel thread for it. At most once
+         * a second, and only when the clock is set. */
+        if (hw_this_cpu()->index == 0) {
+            static uint64_t last;
+            uint64_t now = vibeos_fs_now_ns();
+
+            if (now != 0u && now - last >= 1000000000ull) {
+                last = now;
+                vibeos_fs_tick_all();
+            }
+        }
         hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }

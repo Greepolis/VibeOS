@@ -2161,7 +2161,7 @@ static int free_tail(vibeos_ext2_t *fs, uint32_t ino, uint8_t *inode, uint32_t k
                 }
                 *listed = 1;
             }
-            rc = ext4_j_end(fs);
+            rc = ext4_j_commit(fs);
             if (rc == 0) {
                 rc = ext4_j_begin(fs);
             }
@@ -3649,6 +3649,19 @@ static int w_sync(void *fsv) {
     return vibeos_blockcache_flush(fs->cache) == 0 ? 0 : -VIBEOS_EIO;
 }
 
+static int w_settle(void *fsv) {
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
+
+    if (ext4_j_settle(fs) != 0) {
+        return -VIBEOS_EIO;
+    }
+    return vibeos_blockcache_flush(fs->cache) == 0 ? 0 : -VIBEOS_EIO;
+}
+
+static int w_tick(void *fsv) {
+    return ext4_j_tick((vibeos_ext2_t *)fsv);
+}
+
 static long w_readlink(void *fsv, const char *path, char *buf, uint32_t cap) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t inode[EXT2_MAX_INODE_SIZE];
@@ -4597,6 +4610,8 @@ static const vibeos_fs_ops_t g_ext4_rw = {
     .setattr_node = w_setattr_node,
     .statfs = w_statfs,
     .sync = w_sync,
+    .settle = w_settle,
+    .tick = w_tick,
     .release_node = w_release_node,
     .serialize = 1,
 };

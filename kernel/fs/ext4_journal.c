@@ -89,7 +89,7 @@
 #define J_HOME_MAX 384u
 #define J_REVOKE_MAX 1000u
 
-static uint64_t g_commits, g_replayed, g_log_full, g_bad_tags, g_flushes, g_checkpoints;
+static uint64_t g_commits, g_replayed, g_log_full, g_bad_tags, g_flushes, g_checkpoints, g_ops;
 
 void vibeos_ext4_journal_stats(vibeos_ext4_journal_stats_t *out) {
     out->commits = __atomic_load_n(&g_commits, __ATOMIC_RELAXED);
@@ -98,6 +98,7 @@ void vibeos_ext4_journal_stats(vibeos_ext4_journal_stats_t *out) {
     out->bad_tags = __atomic_load_n(&g_bad_tags, __ATOMIC_RELAXED);
     out->flushes = __atomic_load_n(&g_flushes, __ATOMIC_RELAXED);
     out->checkpoints = __atomic_load_n(&g_checkpoints, __ATOMIC_RELAXED);
+    out->ops = __atomic_load_n(&g_ops, __ATOMIC_RELAXED);
 }
 
 static void count(uint64_t *c) {
@@ -603,6 +604,24 @@ void ext4_j_freed(vibeos_ext2_t *fs, uint64_t start, uint64_t count_) {
 
 /* ---- commit --------------------------------------------------------------- */
 
+/* Group commit (E4-016, the contract decided 2026-11-16: Linux's). A
+ * transaction is not one operation: it stays open across them and is
+ * committed when it is a quarter full - so the next operation still has
+ * three quarters of a transaction to itself - when it is older than the
+ * commit interval, on sync (fsync, sync, O_SYNC), and from the idle loop when
+ * nothing else commits it (ext4_j_tick). An operation can therefore return
+ * before it is on the disk; a cut takes back what the last commit did not
+ * hold, and never what a sync returned for. */
+#define J_COMMIT_NS (5ull * 1000000000ull)
+
+static int j_commit(vibeos_ext2_t *fs);
+
+static int j_due(const vibeos_ext2_t *fs) {
+    uint64_t now = vibeos_fs_now_ns();
+
+    return now != 0u && fs->j.started != 0u && now - fs->j.started >= J_COMMIT_NS;
+}
+
 int ext4_j_begin(vibeos_ext2_t *fs) {
     if (fs->j.dead) {
         return -VIBEOS_EROFS;
@@ -610,11 +629,47 @@ int ext4_j_begin(vibeos_ext2_t *fs) {
     if (!fs->j.on) {
         return 0;
     }
+    count(&g_ops);
+    if (fs->j.open) {
+        int rc;
+
+        if (fs->j.n <= fs->j.cap / 4u && !j_due(fs)) {
+            return 0;   /* the running transaction takes this operation too */
+        }
+        rc = j_commit(fs);
+        if (rc != 0) {
+            return rc;
+        }
+    }
     fs->j.open = 1;
     fs->j.n = 0;
     fs->j.nfreed = 0;
     fs->j.freed_overflow = 0;
+    fs->j.started = vibeos_fs_now_ns();
     return 0;
+}
+
+/* The end of an operation, which is not the end of its transaction. One that
+ * logged nothing closes it, so reads stop looking in the log. */
+int ext4_j_end(vibeos_ext2_t *fs) {
+    if (fs->j.dead) {
+        return -VIBEOS_EIO;
+    }
+    if (fs->j.open && fs->j.n == 0u) {
+        fs->j.open = 0;
+    }
+    return 0;
+}
+
+int ext4_j_commit(vibeos_ext2_t *fs) {
+    return fs->j.dead ? -VIBEOS_EIO : j_commit(fs);
+}
+
+int ext4_j_tick(vibeos_ext2_t *fs) {
+    if (fs->j.dead || !fs->j.open || fs->j.n == 0u || !j_due(fs)) {
+        return 0;
+    }
+    return j_commit(fs);
 }
 
 /* The descriptors: one per tags_per_desc logged blocks, each tag naming the
@@ -795,18 +850,32 @@ static int empty_log(vibeos_ext2_t *fs) {
     return 0;
 }
 
+/* fsync's promise: what the running transaction holds is on the disk when
+ * this returns. Two flushes; the log stays as it is. */
 int ext4_j_sync(vibeos_ext2_t *fs) {
-    if (!fs->j.on || fs->j.dead) {
+    if (!fs->j.on) {
         return 0;
     }
-    if (empty_log(fs) != 0) {
-        fs->j.dead = 1;
-        return -VIBEOS_EIO;
-    }
-    return 0;
+    return ext4_j_commit(fs);
 }
 
-int ext4_j_end(vibeos_ext2_t *fs) {
+/* The volume clean as it stands: committed, and the log emptied - for the
+ * end of userland and for an image about to be handed to anything else. */
+int ext4_j_settle(vibeos_ext2_t *fs) {
+    int rc;
+
+    if (!fs->j.on) {
+        return 0;
+    }
+    rc = ext4_j_commit(fs);
+    if (rc == 0 && empty_log(fs) != 0) {
+        fs->j.dead = 1;
+        rc = -VIBEOS_EIO;
+    }
+    return rc;
+}
+
+static int j_commit(vibeos_ext2_t *fs) {
     uint32_t tid = fs->j.seq, chunks, k;
     int bad, first = !fs->j.live;
 
