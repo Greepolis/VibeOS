@@ -1,7 +1,7 @@
 # ext4 as the Native Root
 
 **Decided 2026-11-03:** the writable root - `/`, `/var`, `/home` - is ext4.
-It is the format F3 of [implementation-phases.md](implementation-phases.md)
+It is the format F3 of [implementation-phases.md](../hierarchy/implementation-phases.md)
 asked to be chosen.
 
 Why ext4 rather than a format of our own or ext2 alone: it is what Linux
@@ -46,7 +46,7 @@ all`, six boots, and the open items written down.
    replay at mount. Proved by a power cut at every write: a host test that
    stops the device after write *n*, for every *n*, mounts what is left and
    asks `e2fsck` - the real driver against the real format, not a model.
-4. **ext4 as the root.** The hierarchy of [hierarchy.md](hierarchy.md) on an
+4. **ext4 as the root.** The hierarchy of [hierarchy.md](../hierarchy/hierarchy.md) on an
    ext4 volume the build makes, the ESP mounted at `/boot/efi`, the boot
    gate run from it; FAT stays the ESP and the bring-up root until this step
    is green.
@@ -63,7 +63,7 @@ separate volumes: one ext4 volume holds all three until F4 says otherwise.
 
 Step 1, reading ext4, done 2026-11-03; what it does, how it is proved and what
 is left open (E4-001 onward) are in
-[implementation_progress/fs_ext4.md](../implementation_progress/fs_ext4.md).
+[filesystems/ext4/progress.md](progress.md).
 
 Step 2, writing ext4 without the journal, done 2026-11-05
 (`kernel/fs/ext4_write.c`): every operation of the interface, the free counts,

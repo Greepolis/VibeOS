@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The ext4 driver against volumes mkfs.ext4 made (docs/filesystem-design/ext4.md
+# The ext4 driver against volumes mkfs.ext4 made (docs/filesystems/ext4/design.md
 # steps 1 and 2).
 #
 #     scripts/dev/verify-ext4.sh [build-dir]

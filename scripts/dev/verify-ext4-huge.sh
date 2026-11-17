@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# ext4 past 2^32 blocks (docs/implementation_progress/fs_ext4.md, E4-004).
+# ext4 past 2^32 blocks (docs/filesystems/ext4/progress.md, E4-004).
 #
 #   scripts/dev/verify-ext4-huge.sh [build-dir] [scratch-dir]
 #

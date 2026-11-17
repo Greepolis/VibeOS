@@ -1,7 +1,7 @@
 # ext4
 
 The native root's format, decided 2026-11-03; the plan and its five steps are
-[filesystem-design/ext4.md](../filesystem-design/ext4.md). The driver is
+[filesystems/ext4/design.md](design.md). The driver is
 `kernel/fs/ext2.c`, which reads ext2 and ext4 through one set of operations and
 registers under both names: a volume with extents or 64-bit numbers is
 mounted as `ext4`, any other as `ext2`. Since step 2 `kernel/fs/ext4_write.c`

@@ -191,7 +191,7 @@ Core first-party apps for the first useful desktop:
 - **System monitor/log viewer:** read-only, permission-aware service/process
   status and diagnostics.
 
-Applications and user data follow [the filesystem hierarchy design](../filesystem-design/README.md).
+Applications and user data follow [the filesystem hierarchy design](../filesystems/hierarchy/README.md).
 Files and settings use stable per-user locations; executable discovery comes
 from signed/system manifests or managed package metadata, not desktop icon
 paths.

@@ -2,7 +2,7 @@
 #ifndef VIBEOS_EXT4_JOURNAL_H
 #define VIBEOS_EXT4_JOURNAL_H
 
-/* ext4's journal (kernel/fs/ext4_journal.c, docs/filesystem-design/ext4.md
+/* ext4's journal (kernel/fs/ext4_journal.c, docs/filesystems/ext4/design.md
  * step 3). Everything it does happens inside the ext4 driver's operations and
  * its mount; what the rest of the kernel and the tests see is what it did. */
 

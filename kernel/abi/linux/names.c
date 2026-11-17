@@ -851,7 +851,7 @@ static long linux_sys_fstatfs(uint64_t fd, uint64_t ubuf) {
  * and the two ACL names (system.posix_acl_access, _default), whole names kept
  * with no name of their own and handed to vibeos_acl_set; anything else is
  * EOPNOTSUPP. An ACL is stored and not yet enforced - by decision, until the
- * security milestone (fs_ext4.md E4-011) - so a list is changed only by the
+ * security milestone (filesystems/ext4/progress.md E4-011) - so a list is changed only by the
  * file's owner, as chmod. What Linux refuses before it asks the filesystem is refused first,
  * in its order: a flag setxattr does not have, a name empty or too long
  * (ERANGE), a value too large (E2BIG), the file itself (ENOENT, EBADF), then

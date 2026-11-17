@@ -31,7 +31,7 @@
  * time that its state fits, so growing one past this is a build error rather
  * than an overrun.
  *
- * 4608 -> 32768 for ext4's writer (docs/filesystem-design/ext4.md step 2): two
+ * 4608 -> 32768 for ext4's writer (docs/filesystems/ext4/design.md step 2): two
  * block buffers and a file's whole extent list - four leaves of 340 - live in
  * the volume's state, so two ext4 volumes are written at once and the driver
  * needs no allocator and no lock of its own beyond the mount's. 32768 -> 36864

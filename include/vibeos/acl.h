@@ -9,7 +9,7 @@
  * it through and a filesystem converts it to its own format on the disk (ext4's
  * is shorter). What a list *means* to a permission check is not here yet: it
  * is stored, read back and kept in step with the mode, and nothing is decided
- * by it (docs/implementation_progress/fs_ext4.md E4-011; enforcement belongs
+ * by it (docs/filesystems/ext4/progress.md E4-011; enforcement belongs
  * to the security milestone). */
 
 #include <stdint.h>

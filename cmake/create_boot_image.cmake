@@ -58,7 +58,7 @@ if(Python3_Interpreter_FOUND)
     if(NOT _ext2_rc EQUAL 0)
         message(WARNING "ext2 image not staged (rc=${_ext2_rc})")
     endif()
-    # ext4 as mkfs.ext4 makes it by default (docs/filesystem-design/ext4.md
+    # ext4 as mkfs.ext4 makes it by default (docs/filesystems/ext4/design.md
     # step 1): 8 MiB, the least that holds its journal.
     execute_process(
         COMMAND ${Python3_EXECUTABLE}
@@ -188,7 +188,7 @@ if(EXISTS "${PIE_ELF}")
 endif()
 
 # Windows' system files go to /usr/lib/windows/system32 - C:\Windows\System32,
-# as the kernel maps it (docs/filesystem-design/hierarchy.md, E4-023) - and the
+# as the kernel maps it (docs/filesystems/hierarchy/hierarchy.md, E4-023) - and the
 # Windows test programs to /win, which only the boot gate's media carries. The
 # same paths on the ESP as on the root, so a disk without a root (the .iso)
 # finds them too.

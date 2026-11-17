@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The boot disk as a machine has it: an MBR, the EFI system partition, and the
-native root on ext4 beside it (docs/filesystem-design/ext4.md step 4).
+native root on ext4 beside it (docs/filesystems/ext4/design.md step 4).
 
     make-boot-disk.py make <esp.img> <root-tree> <disk.img> [root_mb]
     make-boot-disk.py extract <disk.img> <esp.img> <root.img>

@@ -1,4 +1,4 @@
-# The merged /usr (docs/filesystem-design/hierarchy.md, E4-023): /lib and
+# The merged /usr (docs/filesystems/hierarchy/hierarchy.md, E4-023): /lib and
 # /lib64 are links to /usr/lib on the native root, and the kernel follows them
 # when it opens a program's interpreter. Broken, every dynamic program fails
 # at exec; caught by the boot gate (the dynamic musl program and the corpus).

@@ -8,7 +8,7 @@ is [next-steps.md](next-steps.md).
 
 67 open in 3 registers.
 
-## [ext4](implementation_progress/fs_ext4.md) - 1
+## [ext4](filesystems/ext4/progress.md) - 1
 
 | ID | What | Status |
 |---|---|---|

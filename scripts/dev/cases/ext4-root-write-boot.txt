@@ -1,4 +1,4 @@
-# The native root written by the guest (docs/filesystem-design/ext4.md step 4,
+# The native root written by the guest (docs/filesystems/ext4/design.md step 4,
 # E4-015), broken in the writer; caught after the boot, when the gate cuts the
 # root partition out of the disk and asks debugfs for the file the guest wrote.
 # The guest's file is thirteen bytes, so it is the partial-block path that

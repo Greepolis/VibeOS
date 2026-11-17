@@ -1,4 +1,4 @@
-# ext4's journal (kernel/fs/ext4_journal.c, docs/filesystem-design/ext4.md step 3),
+# ext4's journal (kernel/fs/ext4_journal.c, docs/filesystems/ext4/design.md step 3),
 # broken; caught by scripts/dev/verify-ext4.sh (which replays journals debugfs
 # wrote) and scripts/dev/verify-ext4-powercut.sh (which stops the device after
 # every n-th write and has the driver and e2fsck replay what is left, then asks

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* The ext4 driver, on a volume mkfs.ext4 made (docs/filesystem-design/ext4.md
+/* The ext4 driver, on a volume mkfs.ext4 made (docs/filesystems/ext4/design.md
  * steps 1 and 2).
  *
  *     vibeos_ext4_exercise walk                (in the directory that holds fs.img)

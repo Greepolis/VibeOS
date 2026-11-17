@@ -645,7 +645,7 @@ int hw_map_pe_image(int slot, const struct vibeos_file *f, uint64_t *base, uint6
 /* The PEB, the parameters and the TEB: five pages just below the mapping area. */
 #define VIBEOS_HW_NT_BLOCK (VIBEOS_HW_USER_MMAP_BASE - 0x00010000ull)
 /* Where the NT personality's DLL is: C:\Windows\System32, which is
- * /usr/lib/windows/system32 (docs/filesystem-design/hierarchy.md, E4-023). */
+ * /usr/lib/windows/system32 (docs/filesystems/hierarchy/hierarchy.md, E4-023). */
 #define VIBEOS_HW_NTDLL_PATH "/usr/lib/windows/system32/ntdll.dll"
 
 /* The wall clock (rtc.c, E4-029): the CMOS clock read once at boot, as the

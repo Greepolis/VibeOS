@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The native root's tree, from a build's EFI tree (docs/filesystem-design/
+"""The native root's tree, from a build's EFI tree (docs/filesystems/hierarchy/
 hierarchy.md, ext4.md step 4).
 
     make-root-tree.py <efi_root> <out_dir> [--marker] [--production]

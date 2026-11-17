@@ -174,7 +174,7 @@ static long nt_rw(int write, uint64_t file, uint64_t event, uint64_t apc, uint64
  * W2 knows one kind of NT path, the one a DOS path becomes: "\??\C:\dir\file".
  * Drive C: is the process's root. C:\Windows is /usr/lib/windows - one place
  * for Windows' system files, read-only and updated with the OS
- * (docs/filesystem-design/hierarchy.md; E4-023) - so a program that asks for
+ * (docs/filesystems/hierarchy/hierarchy.md; E4-023) - so a program that asks for
  * the system directory, or ntdll loading C:\Windows\System32\kernel32.dll,
  * finds them where the hierarchy puts them, and no /windows exists at the top.
  * Separators become '/', and a name beyond ASCII becomes UTF-8 (W4 step 6).

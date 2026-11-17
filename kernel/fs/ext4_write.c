@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* ext4, written (docs/filesystem-design/ext4.md step 2; no journal yet).
+/* ext4, written (docs/filesystems/ext4/design.md step 2; no journal yet).
  *
  * The reader in ext2.c knows the format; this file changes it, and the whole
  * of what it promises is that the volume it leaves is one `e2fsck -fn` calls

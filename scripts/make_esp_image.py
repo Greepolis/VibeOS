@@ -274,7 +274,7 @@ def main():
     total_sectors = (size_mb * 1024 * 1024) // SECTOR
     # The smallest cluster, from 2 KiB up, that keeps the volume FAT16. At a
     # fixed 2 KiB FAT16 ends near 128 MiB, and ext4's test image took the ESP
-    # to 129 (docs/filesystem-design/ext4.md step 1): a size this script
+    # to 129 (docs/filesystems/ext4/design.md step 1): a size this script
     # computes from the tree cannot be held under a limit the tree decides.
     global SECTORS_PER_CLUSTER
     root_dir_sectors, sectors_per_fat, cluster_count = compute_geometry(total_sectors)

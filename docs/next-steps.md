@@ -9,7 +9,7 @@ was decided. What is still open in every register is gathered, generated, in
 
 ## Now
 
-1. **The filesystem's hierarchy** - [filesystem-design/](filesystem-design/README.md),
+1. **The filesystem's hierarchy** - [filesystems/hierarchy/](filesystems/hierarchy/README.md),
    phases F0-F2 first: what lives where, the current root's tree laid out on it,
    and a mount manifest. F0-F2 need no choice of on-disk format.
 

@@ -479,7 +479,7 @@ static hw_fsimage_t g_fsimages[] = {
     { "ext2",    "EFI/BOOT/EXT2.IMG",  "/ext2",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
     /* mkfs.ext4's defaults: extents, 64bit, flex_bg, metadata_csum (docs/
-     * filesystem-design/ext4.md step 1). */
+     * filesystems/ext4/design.md step 1). */
     { "ext4",    "EFI/BOOT/EXT4.IMG",  "/ext4",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
     { "iso9660", "EFI/BOOT/ISO.IMG",   "/iso",   "HELLO.TXT", 0ull, {0},
@@ -819,7 +819,7 @@ void hw_scratch_bringup(void) {
          * Not by mounting it. This driver's state is a single global, so
          * mounting the scratch volume would unmount the one the machine is
          * running from - which is the structural limit already recorded in
-         * io_mounts.md, and a much larger change than a formatter. Probing
+         * filesystems/vfs/mounts.md, and a much larger change than a formatter. Probing
          * proves the bytes on the medium are a FAT16 volume that a reader will
          * recognise, which is what the format op is responsible for; mounting
          * and writing a file waits for the driver to stop being a singleton.
@@ -1289,7 +1289,7 @@ void hw_volumes_bringup(void) {
     vibeos_x86_64_serial_unlock();
 
     /* Every mounted volume goes in the table. The root is the native one when
-     * the disk has it (docs/filesystem-design/ext4.md step 4): the ext4
+     * the disk has it (docs/filesystems/ext4/design.md step 4): the ext4
      * partition labelled vibeos-root becomes "/", the ESP /boot/efi, and
      * g_rootfs - exec, the page cache, every relative path - follows it.
      * Without one the first mounted volume is the root, as before.

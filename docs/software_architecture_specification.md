@@ -19,7 +19,7 @@ Primary source documents already available in the repository:
 - `docs/kernel_design.md`
 - `docs/memory_management.md`
 - `docs/scheduler.md`
-- `docs/filesystem.md`
+- `docs/filesystems/overview.md`
 - `docs/security.md`
 - `docs/compatibility.md`
 - `docs/ipc.md`

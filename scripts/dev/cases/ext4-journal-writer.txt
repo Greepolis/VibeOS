@@ -1,5 +1,5 @@
 # What the ext4 writer (kernel/fs/ext4_write.c) owes its journal
-# (docs/filesystem-design/ext4.md step 3), broken; caught by
+# (docs/filesystems/ext4/design.md step 3), broken; caught by
 # scripts/dev/verify-ext4-powercut.sh, which stops the device after every n-th
 # write and asks whether what the replay leaves is a clean volume holding a
 # state the script passed through.

@@ -64,7 +64,7 @@ def build_ext2(path, size_bytes):
 
 def build_ext4(path, size_bytes):
     # ext4 as mkfs.ext4 makes it on this host, defaults untouched - the feature
-    # set docs/filesystem-design/ext4.md says the driver reads is exactly
+    # set docs/filesystems/ext4/design.md says the driver reads is exactly
     # those defaults, so a host whose e2fsprogs moves them is a host where this
     # image says so at boot rather than a test that quietly stops covering it.
     tool = shutil.which("mkfs.ext4")

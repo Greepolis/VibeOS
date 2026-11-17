@@ -1,11 +1,11 @@
 # Filesystem
 
 > Design intent, written before the code. What is actually built, and how,
-> is in [io/](io/README.md) and [implementation_progress/filesystem_layer.md](implementation_progress/filesystem_layer.md).
+> is in [io/](../io/README.md) and [filesystems/layer.md](layer.md).
 
 The production-oriented namespace, directory tree, mount policy, compatibility
 mapping and staged migration are specified in
-[filesystem-design/](filesystem-design/README.md). That design does not change
+[filesystems/hierarchy/](hierarchy/README.md). That design does not change
 the current boot layout or mark the storage layer complete; it deliberately
 separates the target hierarchy from the FAT-root bring-up environment.
 
@@ -96,4 +96,4 @@ turn a named test red.
   with the syscall layer naming none of the five drivers.
 - a write-ahead journal recovers at attach and is swept against power loss, but
   no driver stages its metadata through it yet: the mechanism is verified, the
-  volume is not. See `docs/implementation_progress/filesystem_layer.md`.
+  volume is not. See `docs/filesystems/layer.md`.

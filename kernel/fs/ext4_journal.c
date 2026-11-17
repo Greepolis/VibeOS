@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* ext4's journal, jbd2's format (docs/filesystem-design/ext4.md step 3).
+/* ext4's journal, jbd2's format (docs/filesystems/ext4/design.md step 3).
  *
  * Ordered mode, one operation to a transaction. While an operation runs, a
  * block of metadata it changes is not written where it lives: the first write
@@ -49,7 +49,7 @@
  * in its second sector, so its two sectors must reach the disk as one run: it
  * is written last before every flush (sb_block), and the cache flushes in
  * order of sector. What the device writes whole is a question for the block
- * layer, which writes a sector at a time (docs fs_ext4.md E4-017).
+ * layer, which writes a sector at a time (docs filesystems/ext4/progress.md E4-017).
  *
  * Ordered mode writes data in place and does not make an overwrite atomic:
  * a cut in the middle of one leaves a file with some of each - as on Linux -

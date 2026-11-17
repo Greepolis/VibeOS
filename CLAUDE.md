@@ -965,7 +965,9 @@ and the tell was the same - a timestamp that had not moved. Check that
 
 **Everything gets tracked in the docs.** Not "significant work" - anything.
 A macro-area row in `docs/implementation_progress.md`, a detail file under
-`docs/implementation_progress/`, and `scripts/dev/make-book-summary.py` re-run
+`docs/implementation_progress/` - or, for a filesystem, in its folder under
+`docs/filesystems/`, where its design and progress live together since
+2026-11-17 - and `scripts/dev/make-book-summary.py` re-run
 so the new file reaches `docs/SUMMARY.md` and the published book. A detail file
 that is not in SUMMARY.md exists for whoever finds it by accident.
 

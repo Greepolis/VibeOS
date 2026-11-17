@@ -19,7 +19,7 @@
 #define EXT2_MAX_BLOCK 4096u
 #define EXT2_MAX_INODE_SIZE 256u
 
-/* The superblock's feature words (docs/filesystem-design/ext4.md). */
+/* The superblock's feature words (docs/filesystems/ext4/design.md). */
 #define COMPAT_HAS_JOURNAL 0x0004u
 #define COMPAT_EXT_ATTR    0x0008u
 #define COMPAT_RESIZE_INODE 0x0010u
@@ -72,7 +72,7 @@ int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name, uint32
 /* `n` bytes at byte `off` inside a block, read through the sectors under them: a piece
  * of a block, for what needs a descriptor or an inode and not 4 KiB. */
 int ext2_read_part(vibeos_ext2_t *fs, uint64_t block, uint32_t off, uint8_t *out, uint32_t n);
-/* 1 for a symbolic link whose target is in i_block (docs fs_ext4.md E4-001). */
+/* 1 for a symbolic link whose target is in i_block (docs filesystems/ext4/progress.md E4-001). */
 int ext2_inode_is_fast_symlink(const vibeos_ext2_t *fs, const uint8_t *inode);
 
 /* ---- the journal (ext4_journal.c) ----

@@ -1,4 +1,4 @@
-# The native root beside the ESP (docs/filesystem-design/ext4.md step 4),
+# The native root beside the ESP (docs/filesystems/ext4/design.md step 4),
 # broken; caught by the boot gate, which asks that the root partition is
 # mounted at / with the ESP at /boot/efi, that the build's marker is read from it, and - after
 # the boot, on the disk the guest left - that e2fsck calls it clean and the

@@ -28,7 +28,6 @@ PREFERRED = [
     "scheduler.md",
     "syscalls.md",
     "ipc.md",
-    "filesystem.md",
     "networking.md",
     "drivers.md",
     "graphics.md",
@@ -112,6 +111,23 @@ def main():
             lines.append("")
             for f in present:
                 rel = f"{plan_dir}/{f}"
+                lines.append(f"- [{title_of(os.path.join(docs, rel))}]({rel})")
+
+    # Filesystems (gathered 2026-11-17): design and progress together, one
+    # folder per filesystem - so walked to any depth, each folder's README
+    # first. Its predecessor, docs/filesystem-design/, was never in the book.
+    fsdir = os.path.join(docs, "filesystems")
+    if os.path.isdir(fsdir):
+        lines.append("")
+        lines.append("# Filesystems")
+        lines.append("")
+        for d, dirs, files in os.walk(fsdir):
+            dirs.sort()
+            rel_dir = os.path.relpath(d, docs).replace(os.sep, "/")
+            names = sorted(f for f in files if f.endswith(".md"))
+            names = [f for f in ("README.md", "overview.md") if f in names] +                 [f for f in names if f not in ("README.md", "overview.md")]
+            for f in names:
+                rel = f"{rel_dir}/{f}"
                 lines.append(f"- [{title_of(os.path.join(docs, rel))}]({rel})")
 
     adrs = os.path.join(docs, "adrs")

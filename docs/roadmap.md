@@ -63,7 +63,7 @@ administration), in this order:
 Implementation sequencing is refined when a subsystem is next, for the reason
 the following section gives. By maintainer request on 2026-10-17, the filesystem
 namespace and desktop/UI architecture have been designed ahead of their
-implementation slot: see [filesystem-design/](filesystem-design/README.md) and
+implementation slot: see [filesystems/hierarchy/](filesystems/hierarchy/README.md) and
 [ui-design/](ui-design/README.md). This is planning-only work; it does not
 reorder the active runtime milestones or authorize a format/ABI freeze.
 

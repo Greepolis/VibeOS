@@ -1,4 +1,4 @@
-# The ext4 reader (kernel/fs/ext2.c, docs/filesystem-design/ext4.md step 1),
+# The ext4 reader (kernel/fs/ext2.c, docs/filesystems/ext4/design.md step 1),
 # broken; caught by scripts/dev/verify-ext4.sh, which reads volumes mkfs.ext4
 # made and holds them against the host's tree.
 #

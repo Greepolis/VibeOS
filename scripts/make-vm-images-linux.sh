@@ -48,7 +48,7 @@ echo "[VM-IMG] EFI root is $(du -sm --apparent-size "$EFI_ROOT" | cut -f1) MiB; 
 python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" "$ESP_MB" || exit 1
 
 # The disk a machine boots: an MBR, the ESP and the native root on ext4 beside
-# it, as the boot gate's disk is (docs/filesystem-design/ext4.md, E4-025). It
+# it, as the boot gate's disk is (docs/filesystems/ext4/design.md, E4-025). It
 # used to be the bare ESP, so an imported VM ran with no root at all. Without
 # mkfs.ext4 there is no root to make, and that is an error here: an image
 # without one is not the system.

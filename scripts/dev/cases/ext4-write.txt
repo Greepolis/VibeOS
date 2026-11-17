@@ -1,4 +1,4 @@
-# The ext4 writer (kernel/fs/ext4_write.c, docs/filesystem-design/ext4.md step 2),
+# The ext4 writer (kernel/fs/ext4_write.c, docs/filesystems/ext4/design.md step 2),
 # broken; caught by scripts/dev/verify-ext4.sh, which applies a script of changes
 # through the driver to volumes mkfs.ext4 made, asks e2fsck -fn whether the
 # result is clean, has debugfs read it back out and holds that against the

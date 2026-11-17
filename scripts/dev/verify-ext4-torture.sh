@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# ext4's intensive test, short (docs/filesystem-design/ext4.md step 5): the
+# ext4's intensive test, short (docs/filesystems/ext4/design.md step 5): the
 # exerciser rebuilt, then scripts/dev/ext4-torture.py on a fixed range of seeds,
 # a few of them with power cuts. check.sh runs this and the sabotage cases use it
 # as their verifier; the nightly runs the long version.

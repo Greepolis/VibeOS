@@ -1077,7 +1077,7 @@ def corpus_problems(serial_text):
 
 def root_volume_problems(root_img):
     """What is wrong with the native root the guest left behind
-    (docs/filesystem-design/ext4.md step 4, E4-015): e2fsck -fn must call it
+    (docs/filesystems/ext4/design.md step 4, E4-015): e2fsck -fn must call it
     clean - after replaying the journal if the guest stopped with one - and
     the file the guest wrote must read back through debugfs, an ext4 reader
     this project did not write."""
@@ -1213,7 +1213,7 @@ def main():
                         esp_tree, esp_img, str(esp_mb)],
                        check=True, stdout=subprocess.DEVNULL)
         shutil.rmtree(esp_tree, ignore_errors=True)
-        # The native root beside it (docs/filesystem-design/ext4.md step 4):
+        # The native root beside it (docs/filesystems/ext4/design.md step 4):
         # one disk, an MBR, the ESP and an ext4 partition mkfs.ext4 made from
         # the hierarchy's tree.
         root_tree = tempfile.mkdtemp(prefix="vibeos-root-")

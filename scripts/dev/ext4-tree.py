@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The host's side of scripts/dev/verify-ext4.sh (docs/filesystem-design/ext4.md).
+"""The host's side of scripts/dev/verify-ext4.sh (docs/filesystems/ext4/design.md).
 
     ext4-tree.py make <dir>                  build the tree mkfs.ext4 -d will put on a volume
     ext4-tree.py list <dir>                  list it as vibeos_ext4_exercise lists the volume

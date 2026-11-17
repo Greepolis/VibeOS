@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""ext4's intensive test (docs/filesystem-design/ext4.md step 5).
+"""ext4's intensive test (docs/filesystems/ext4/design.md step 5).
 
     ext4-torture.py <build-dir> <first-seed> <seeds> [--ops N] [--cuts K] [-j J] [--keep DIR]
 

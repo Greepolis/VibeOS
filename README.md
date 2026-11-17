@@ -196,7 +196,7 @@ and stay so for whoever took them. The vendored dependency under
 
 Implementation progress is tracked by macro area:
 
-- [docs/filesystem.md](docs/filesystem.md) - the storage stack and the five
+- [docs/filesystems/overview.md](docs/filesystems/overview.md) - the storage stack and the five
   filesystems behind it
 - [docs/graphics.md](docs/graphics.md) - the framebuffer path, and what no gate
   would catch if it broke
@@ -211,7 +211,7 @@ Implementation progress is tracked by macro area:
 - [docs/implementation_progress/system_call_interface.md](docs/implementation_progress/system_call_interface.md)
 - [docs/implementation_progress/ipc_subsystem.md](docs/implementation_progress/ipc_subsystem.md)
 - [docs/implementation_progress/driver_framework.md](docs/implementation_progress/driver_framework.md)
-- [docs/implementation_progress/filesystem_layer.md](docs/implementation_progress/filesystem_layer.md)
+- [docs/filesystems/layer.md](docs/filesystems/layer.md)
 - [docs/implementation_progress/networking_stack.md](docs/implementation_progress/networking_stack.md)
 - [docs/implementation_progress/user_space_interface.md](docs/implementation_progress/user_space_interface.md)
 - [docs/implementation_progress/init_system.md](docs/implementation_progress/init_system.md)

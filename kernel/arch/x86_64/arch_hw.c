@@ -521,7 +521,7 @@ _Static_assert(VIBEOS_DEVICE_VECTOR_BASE + VIBEOS_DEVICE_VECTORS <= VIBEOS_HW_WI
 
 /* The root: what "/" is, and what exec, the page cache and every relative
  * path read. The boot volume until the storage scan finds the native root
- * (docs/filesystem-design/ext4.md step 4), then that ext4 partition. */
+ * (docs/filesystems/ext4/design.md step 4), then that ext4 partition. */
 vibeos_fsmount_t g_rootfs;
 /* The boot volume, the ESP, always FAT: what the kernel itself reads from it
  * - INIT.ELF, the swap file, the loop images, the write proof - stays here

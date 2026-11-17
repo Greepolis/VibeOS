@@ -1,4 +1,4 @@
-# init from the native root (docs/filesystem-design/ext4.md, E4-024), broken;
+# init from the native root (docs/filesystems/ext4/design.md, E4-024), broken;
 # caught by the boot gate, which asks that the kernel says it read
 # /usr/bin/INIT.ELF from the root when the disk has one.
 # Reason: init_not_from_root.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# ext4's journal against a power cut at every write (docs/filesystem-design/ext4.md
+# ext4's journal against a power cut at every write (docs/filesystems/ext4/design.md
 # step 3).
 #
 #     scripts/dev/verify-ext4-powercut.sh [build-dir] [stride]

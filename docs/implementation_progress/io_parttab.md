@@ -104,7 +104,7 @@ bootloader on a partition nobody asked to boot from.
 ```
 
 **Checked by probing, not by mounting**, and the reason is the limit recorded
-in [io_mounts.md](io_mounts.md): this driver's state is a single global, so
+in [io_mounts.md](../filesystems/vfs/mounts.md): this driver's state is a single global, so
 mounting the scratch volume would unmount the one the machine is running from.
 Probing proves the bytes on the medium are a FAT16 volume a reader will
 recognise, which is what a format op is responsible for. The probe used is the

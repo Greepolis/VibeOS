@@ -148,7 +148,7 @@ static int io_held(void) {
 
 /* The machine's registry is state that survives an update of the OS, so it
  * lives in /var/lib/windows, not beside the DLLs in /usr/lib/windows
- * (docs/filesystem-design/hierarchy.md). It was /windows/system32/config, a
+ * (docs/filesystems/hierarchy/hierarchy.md). It was /windows/system32/config, a
  * third place for Windows' files. */
 static const char *const g_hive_dirs[] = { "/var", "/var/lib", "/var/lib/windows" };
 static const char *const g_hive_file[2] = { "/var/lib/windows/MACHINE.HIV",

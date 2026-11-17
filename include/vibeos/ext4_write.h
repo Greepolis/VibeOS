@@ -2,7 +2,7 @@
 #ifndef VIBEOS_EXT4_WRITE_H
 #define VIBEOS_EXT4_WRITE_H
 
-/* The ext4 writer (kernel/fs/ext4_write.c, docs/filesystem-design/ext4.md
+/* The ext4 writer (kernel/fs/ext4_write.c, docs/filesystems/ext4/design.md
  * step 2): what the reader's driver in ext2.c asks of it when it mounts a
  * volume as "ext4". Everything else the writer does is behind the operations
  * table it returns. */

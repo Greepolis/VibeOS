@@ -2,7 +2,7 @@
 #ifndef VIBEOS_EXT2_H
 #define VIBEOS_EXT2_H
 
-/* ext2 and ext4, read (ext4 since docs/filesystem-design/ext4.md step 1) and ext4
+/* ext2 and ext4, read (ext4 since docs/filesystems/ext4/design.md step 1) and ext4
  * written (step 2).
  *
  * ext4 is ext2 with extent trees for a file's blocks, 64-bit block numbers
@@ -27,7 +27,7 @@
  * ext2 is read-only on purpose. Writing means allocation bitmaps, link counts
  * and ordering, and roadmap M16 is where ordering gets built once, for
  * everyone; ext4 is written, without a journal, by kernel/fs/ext4_write.c
- * (docs/filesystem-design/ext4.md step 2).
+ * (docs/filesystems/ext4/design.md step 2).
  */
 
 #include <stdint.h>
@@ -69,7 +69,7 @@ typedef struct {
     uint32_t ptr_seq;
     uint8_t cached_inode[256];    /* a whole inode: ext4's are 256 bytes, its checksum in both halves */
 
-    /* ---- the writer's (docs/filesystem-design/ext4.md step 2) ----
+    /* ---- the writer's (docs/filesystems/ext4/design.md step 2) ----
      * Kept here, in the volume's state, so the driver needs no allocator and
      * two volumes are written at once; the VFS serialises calls into one
      * (vibeos_fs_ops_t.serialize), which is what makes one set enough. */
@@ -138,7 +138,7 @@ typedef struct {
      * superblock takes them whenever it is next written (E4-013). */
     uint64_t written_pending;
 
-    /* ---- the journal's (docs/filesystem-design/ext4.md step 3) ----
+    /* ---- the journal's (docs/filesystems/ext4/design.md step 3) ----
      * One operation is one transaction. What it changes of the metadata is
      * written into the journal's blocks, not over the metadata - the block
      * cache is write-back, so a block written in place reaches the disk
