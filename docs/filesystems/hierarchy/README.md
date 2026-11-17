@@ -37,6 +37,7 @@ change.
 | [integration.md](integration.md) | VFS, mounts, boot, security, Linux and Windows path integration |
 | [implementation-phases.md](implementation-phases.md) | Sequenced work, dependencies, tests and phase exit criteria |
 | [inventory.md](inventory.md) | F0: every path in use today against the hierarchy, with its rule and phase (2026-11-17) |
+| [f2.md](f2.md) | F2: the mount manifest and its policy - the plan, step by step, and its status |
 | [ext4.md](../ext4/design.md) | The native root format (decided 2026-11-03) and the steps to a writable, journalled ext4 |
 
 ## Normative language
