@@ -328,7 +328,7 @@ jobs:
   ext4-powercut:
     name: ext4 Journal Power-Cut Sweep (every write)
     # module: fs
-    # docs/filesystem-design/ext4.md step 3: the device stopped after every
+    # docs/filesystems/ext4/design.md step 3: the device stopped after every
     # one of the script's writes, and each cut judged by e2fsck - after the
     # driver's replay and after e2fsck's own - and by the tree it leaves.
     # check.sh runs every 23rd; this runs all of them.
@@ -366,7 +366,7 @@ jobs:
   ext4-torture:
     name: ext4 Torture (random operations against Linux, e2fsck, power cuts)
     # module: fs
-    # docs/filesystem-design/ext4.md step 5: random operations run by the
+    # docs/filesystems/ext4/design.md step 5: random operations run by the
     # host's kernel and by the driver, the trees compared, e2fsck after every
     # seed, and power cuts at random writes. The seed range moves with the run
     # number, so each night covers seeds no earlier night did (1000 and 150 a

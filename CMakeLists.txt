@@ -483,7 +483,7 @@ if(VIBEOS_BUILD_TESTS)
     target_include_directories(vibeos_fat_exercise PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     # The ext4 reader on volumes mkfs.ext4 made (scripts/dev/verify-ext4.sh,
-    # docs/filesystem-design/ext4.md step 1).
+    # docs/filesystems/ext4/design.md step 1).
     add_executable(vibeos_utf8fold_cli tests/kernel/utf8fold_cli.c)
     target_link_libraries(vibeos_utf8fold_cli PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_utf8fold_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
