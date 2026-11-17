@@ -12,16 +12,10 @@ was decided. What is still open in every register is gathered, generated, in
 1. **The filesystem's hierarchy** - [filesystem-design/](filesystem-design/README.md),
    phases F0-F2 first: what lives where, the current root's tree laid out on it,
    and a mount manifest. F0-F2 need no choice of on-disk format.
-2. **ext4 as the native root** (F3, decided 2026-11-03) - **done 2026-11-09**:
-   read, write, the journal, the root at `/` with the programs in `/usr/bin`,
-   and the intensive test against Linux in the nightly (steps 1 to 5,
-   [filesystem-design/ext4.md](filesystem-design/ext4.md)). Since then
-   (2026-11-17) its open items are closed but E4-021, which waits for the
-   user's shell (item 3). See [fs_ext4.md](implementation_progress/fs_ext4.md).
 
 ## Next
 
-3. **The user's shell** - designed before written: login, prompt, line
+2. **The user's shell** - designed before written: login, prompt, line
    editing and completion, job control, which commands are built in, how it
    finds programs in the new hierarchy. It is also the terminal inside the GUI.
    Decided 2026-11-11, before the design:
@@ -40,24 +34,24 @@ was decided. What is still open in every register is gathered, generated, in
    - The names in `/usr/bin` (E4-021) are decided with this design: the
      native programs `SH.ELF`, `CAT`, `LS`, `ECHO` and `WC` must not take the
      names Linux programs expect.
-4. **The GUI** - decided 2026-11-03: an existing Wayland compositor on a
+3. **The GUI** - decided 2026-11-03: an existing Wayland compositor on a
    minimal DRM/KMS (dumb buffers, one output) and evdev, as the README's "a
    desktop from Linux" said; extended later. The desktop and the shell stay
    ours. [ui-design/](ui-design/README.md)'s own `displayd` is set aside, its
    requirements (safe failure, observability) kept as the bar.
-5. **Windows' window system** - user32 as a client of that compositor, as
+4. **Windows' window system** - user32 as a client of that compositor, as
    Wine's Wayland driver is, and gdi32 drawing into shared buffers. Open items
    WO-101 to WO-105.
 
 ## Later
 
-6. Security, all of it (isolation, privilege, sandboxing; L9's capabilities,
+5. Security, all of it (isolation, privilege, sandboxing; L9's capabilities,
    seccomp and Landlock), and POSIX ACLs acted on: ext4 stores them since
    2026-11-16 (E4-011), and nothing yet decides a permission by one or gives
    a new file its directory's default list.
-7. The applications that manage the system.
-8. The rest of networking.
-9. System administration (L8).
+6. The applications that manage the system.
+7. The rest of networking.
+8. System administration (L8).
 
 ## Proposed by the community, to be placed
 
@@ -66,7 +60,7 @@ the order above when its prerequisites are close.
 
 - **Selectable desktop environments** (GNOME, KDE Plasma, Xfce) -
   [#153](https://github.com/Greepolis/VibeOS/discussions/153). Follows the GUI
-  (item 4): the same DRM/KMS and evdev, plus epoll, eventfd, timerfd, inotify,
+  (item 3): the same DRM/KMS and evdev, plus epoll, eventfd, timerfd, inotify,
   `SCM_RIGHTS` and memfd at the Linux ABI.
 - **ARM64 (AArch64)** - [#154](https://github.com/Greepolis/VibeOS/discussions/154).
   A second architecture, and the test of `kernel/arch`'s boundary.
@@ -80,4 +74,4 @@ the order above when its prerequisites are close.
 
 ## Decisions waiting
 
-- Which Wayland compositor (item 4), chosen when that step is planned.
+- Which Wayland compositor (item 3), chosen when that step is planned.
