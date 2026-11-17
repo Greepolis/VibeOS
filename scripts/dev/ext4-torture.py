@@ -518,36 +518,52 @@ class Gen:
 
 
 def torn_write(gen, mine, img):
-    """Whether a tree that is no state is a write cut half-way over old bytes.
+    """Whether a tree that is no state is writes over old bytes, cut.
 
     ext4's ordered mode logs metadata and writes data in place. A write over
     bytes a file already has therefore reaches the disk before the commit that
-    would make it part of a state, and a cut between the two leaves the old
-    tree - same names, same sizes - with some of those bytes new. Linux leaves
-    exactly that too; it is what ordered mode promises and no more.
+    would make it part of a state. Since group commit (E4-016) a commit holds
+    several operations, so a cut can leave the tree of any state the last
+    commit reached - same names, same sizes - with bytes from any write over
+    existing bytes made after it. Linux leaves exactly that too; it is what
+    ordered mode promises and no more.
 
-    So it is accepted only in that shape: the tree is the state before some
-    write over existing bytes, but for the crc of that file's names; the size
-    is the old one; and every byte, read back by debugfs rather than the
-    driver, is the old byte or the one the write put there."""
+    So it is accepted only in that shape: the tree is some state but for the
+    crc of files that writes over existing bytes touched after it; each such
+    file has that state's size; and every byte, read back by debugfs rather
+    than the driver, is the byte the earliest of those writes found there or
+    one some later write put there."""
     got = set(mine.splitlines())
-    for at, (names, old, new) in gen.mix.items():
-        want = set(gen.states[at].splitlines())
+    for k in range(len(gen.states)):
+        want = set(gen.states[k].splitlines())
         differ = got ^ want
         if not differ:
             continue
         rows = {l.split("\t")[0] for l in differ}
-        if not rows <= set(names):
+        later = [(at, m) for at, m in sorted(gen.mix.items()) if at >= k]
+        touched = set()
+        for _, (names, _, _) in later:
+            touched |= set(names)
+        if not rows <= touched:
             continue
-        if any(l.split("\t")[1:3] != ["F", str(len(old))] for l in differ):
+        sizes = {}
+        for l in want:
+            w = l.split("\t")
+            if w[0] in rows:
+                sizes[w[0]] = w[1:3]
+        if any(l.split("\t")[1:3] != sizes.get(l.split("\t")[0]) or sizes.get(l.split("\t")[0], [""])[0] != "F"
+               for l in differ):
             continue
         ok = True
         for name in rows:
+            mixes = [m for _, m in later if name in m[0]]
+            base = mixes[0][1]
             r = subprocess.run(["debugfs", "-R", "cat \"%s\"" % name, img], stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, timeout=120)
             data = r.stdout
-            if len(data) != len(old) or any(
-                    b != old[k] and (k >= len(new) or b != new[k]) for k, b in enumerate(data)):
+            if len(data) != len(base) or any(
+                    b != base[x] and all(x >= len(m[2]) or b != m[2][x] for m in mixes)
+                    for x, b in enumerate(data)):
                 ok = False
                 break
         if ok:
