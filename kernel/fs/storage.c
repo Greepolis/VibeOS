@@ -203,6 +203,79 @@ int vibeos_storage_scan(vibeos_storage_t *st, vibeos_blockcache_t *cache,
     return 0;
 }
 
+static char root_lower(char c)
+{
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+int vibeos_storage_pick_root(const vibeos_storage_t *st, const char *spec, long spec_len, int *why)
+{
+    char want[40];
+    uint32_t n = 0, i;
+    long k;
+    int found = -1;
+
+    if (spec_len < 0 || !spec) {
+        *why = VIBEOS_ROOT_NO_SPEC;
+        return -1;
+    }
+    /* "UUID=" then the value up to a line end; nothing but spaces may follow
+     * on that line, and nothing at all may be empty. */
+    if (spec_len < 6 || spec[0] != 'U' || spec[1] != 'U' || spec[2] != 'I' || spec[3] != 'D' || spec[4] != '=') {
+        *why = VIBEOS_ROOT_BAD_SPEC;
+        return -1;
+    }
+    for (k = 5; k < spec_len && spec[k] != '\n' && spec[k] != '\r'; k++) {
+        if (spec[k] == ' ' || spec[k] == '\t' || n + 1u >= sizeof(want)) {
+            *why = VIBEOS_ROOT_BAD_SPEC;
+            return -1;
+        }
+        want[n++] = root_lower(spec[k]);
+    }
+    want[n] = 0;
+    if (n == 0u) {
+        *why = VIBEOS_ROOT_BAD_SPEC;
+        return -1;
+    }
+    for (i = 0; i < st->volume_count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
+        const char *u = st->volume[i].id.uuid;
+        uint32_t j;
+
+        if (!st->volume[i].fs_name) {
+            continue;
+        }
+        for (j = 0; j < n && u[j] && root_lower(u[j]) == want[j]; j++) {
+        }
+        if (j == n && u[j] == 0) {
+            if (found >= 0) {
+                *why = VIBEOS_ROOT_AMBIGUOUS;
+                return -1;
+            }
+            found = (int)i;
+        }
+    }
+    *why = found >= 0 ? VIBEOS_ROOT_FOUND : VIBEOS_ROOT_NOT_FOUND;
+    return found;
+}
+
+const char *vibeos_storage_root_why(int why)
+{
+    switch (why) {
+    case VIBEOS_ROOT_FOUND:
+        return "found";
+    case VIBEOS_ROOT_NO_SPEC:
+        return "no_spec";
+    case VIBEOS_ROOT_BAD_SPEC:
+        return "bad_spec";
+    case VIBEOS_ROOT_NOT_FOUND:
+        return "not_found";
+    case VIBEOS_ROOT_AMBIGUOUS:
+        return "ambiguous";
+    default:
+        return "?";
+    }
+}
+
 vibeos_fsmount_t *vibeos_storage_first(vibeos_storage_t *st)
 {
     uint32_t i;

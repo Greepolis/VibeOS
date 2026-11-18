@@ -218,6 +218,20 @@ void vibeos_storage_reset_drivers(void);
 int vibeos_storage_scan(vibeos_storage_t *st, vibeos_blockcache_t *cache,
                         uint64_t disk_sectors);
 
+/* Which volume is the root (hierarchy F2 step 2): the one whose UUID the boot
+ * names - `spec` is the ESP's EFI/VIBEOS/ROOT, "UUID=<uuid>" and an optional
+ * newline, `spec_len` its length or negative when there is no such file. The
+ * volume's index, or -1 with `why` saying which refusal: there is no other
+ * answer than the named volume - not the first ext4, not a label - because a
+ * wrong root is a machine running somebody else's system. */
+#define VIBEOS_ROOT_FOUND 0
+#define VIBEOS_ROOT_NO_SPEC 1      /* no ROOT file: the bring-up layout, the ESP as root */
+#define VIBEOS_ROOT_BAD_SPEC 2     /* a ROOT file that says nothing usable */
+#define VIBEOS_ROOT_NOT_FOUND 3    /* no volume has that UUID */
+#define VIBEOS_ROOT_AMBIGUOUS 4    /* two do: a cloned disk; neither is taken */
+int vibeos_storage_pick_root(const vibeos_storage_t *st, const char *spec, long spec_len, int *why);
+const char *vibeos_storage_root_why(int why);
+
 /* The first mounted volume, or 0. What a kernel uses as its root when it has
  * no better opinion. */
 vibeos_fsmount_t *vibeos_storage_first(vibeos_storage_t *st);

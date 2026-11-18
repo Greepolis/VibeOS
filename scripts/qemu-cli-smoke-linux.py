@@ -1558,6 +1558,16 @@ def main():
                         # reported as a wedge, and wedge_report went looking
                         # for a hung core in a machine that had simply finished.
                         kind = "boot_volume_missing"
+                    elif disk_img and re.search(r"\[IO\] ROOT by=uuid result=(?!found)", serial_text):
+                        # The disk has a root and the kernel did not take it
+                        # (hierarchy F2 step 2): it carried on from the ESP as
+                        # a rescue root, as it should, and the self-test that
+                        # lives on the root never came. Not a wedge - the
+                        # machine said why, and this says it on.
+                        kind = "root_not_found_by_uuid"
+                    elif disk_img and "[IO] ROOT by=uuid result=found" in serial_text and \
+                            "[IO] MOUNT at=/ type=ext4" not in serial_text:
+                        kind = "native_root_not_mounted"   # found, and then not put at /
                     elif idle >= quiet_budget(serial_text):
                         kind = "guest_wedged"          # gave up early on purpose
                     elif idle > 20:
@@ -3352,7 +3362,11 @@ def main():
                 # the shell. The command that reads it does not contain the
                 # marker, so its echo cannot satisfy this.
                 if ESP == "image" and disk_img:
-                    if "[IO] MOUNT at=/ type=ext4" not in text:
+                    # Found by the UUID the ESP names (hierarchy F2 step 2),
+                    # not by a label or by being the first ext4.
+                    if "[IO] ROOT by=uuid result=found" not in text:
+                        problems.append("root_not_found_by_uuid")
+                    elif "[IO] MOUNT at=/ type=ext4" not in text:
                         problems.append("native_root_not_mounted")
                     elif "[IO] MOUNT at=/boot/efi type=fat" not in text:
                         problems.append("esp_not_at_boot_efi")

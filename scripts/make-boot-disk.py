@@ -104,6 +104,30 @@ def casefolded(img):
                          " ".join(r.stdout.split())[:300])
 
 
+def name_root(esp, root):
+    """Write the root's UUID to the ESP, EFI/VIBEOS/ROOT, one line
+    "UUID=<uuid>" (hierarchy F2 step 2): the kernel mounts as / the volume
+    with that UUID and no other. Read with blkid, the same reader a manifest
+    line is copied from."""
+    blkid, mmd, mcopy = shutil.which("blkid"), shutil.which("mmd"), shutil.which("mcopy")
+    if not blkid or not mmd or not mcopy:
+        raise SystemExit("make-boot-disk: blkid and mtools are needed to name the root on the ESP")
+    uuid = subprocess.run([blkid, "-p", "-o", "value", "-s", "UUID", root], stdout=subprocess.PIPE,
+                          universal_newlines=True).stdout.strip()
+    if not uuid:
+        raise SystemExit("make-boot-disk: blkid found no UUID on the root")
+    spec = esp + ".ROOT"
+    with open(spec, "w", newline="\n") as f:
+        f.write("UUID=%s\n" % uuid)
+    subprocess.run([mmd, "-D", "s", "-i", esp, "::/EFI/VIBEOS"], stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)   # already there: fine
+    r = subprocess.run([mcopy, "-o", "-i", esp, spec, "::/EFI/VIBEOS/ROOT"], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, universal_newlines=True)
+    os.unlink(spec)
+    if r.returncode != 0:
+        raise SystemExit("make-boot-disk: could not write EFI/VIBEOS/ROOT: %s" % r.stderr.strip()[:200])
+
+
 def make(esp, tree, disk, root_mb):
     mkfs = shutil.which("mkfs.ext4")
     if not mkfs:
@@ -116,6 +140,7 @@ def make(esp, tree, disk, root_mb):
                    check=True, stdout=subprocess.DEVNULL)
     owned_by_root(root, tree)
     casefolded(root)
+    name_root(esp, root)
     esp_bytes = os.path.getsize(esp)
     esp_sectors = (esp_bytes + SECTOR - 1) // SECTOR
     root_start = (ALIGN + esp_sectors + ALIGN - 1) // ALIGN * ALIGN

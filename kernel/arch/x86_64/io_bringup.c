@@ -1248,36 +1248,6 @@ static void hw_procfs_bringup(void) {
     vibeos_x86_64_serial_unlock();
 }
 
-/* Whether a scanned volume is the native root: ext4, and the volume label
- * (s_volume_name, at 0x78 of the superblock, which is sector 2 of the
- * partition) says vibeos-root - which is what the build's mkfs.ext4 -L wrote.
- * A label rather than "the first ext4": a disk can carry other ext4 volumes,
- * and mounting the wrong one as the root is the wrong-volume fallback the
- * hierarchy's design forbids. */
-static int hw_is_native_root(vibeos_blockcache_t *bc, const vibeos_volume_t *v) {
-    static const char want[] = "vibeos-root";
-    uint8_t sector[VIBEOS_BLOCK_SIZE];
-    uint32_t k;
-    const char *a = v->fs_name, *b = "ext4";
-
-    if (!a) {
-        return 0;
-    }
-    while (*a && *a == *b) {
-        a++;
-        b++;
-    }
-    if (*a != *b || vibeos_blockcache_read(bc, v->first_lba + 2u, sector) != 0) {
-        return 0;
-    }
-    for (k = 0; k < sizeof(want); k++) {   /* the terminator too: a longer label is not this one */
-        if (sector[0x78u + k] != (uint8_t)want[k]) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 void hw_volumes_bringup(void) {
     vibeos_blockcache_t *bc = vibeos_fat_cache();
     uint64_t sectors = 0;
@@ -1334,14 +1304,27 @@ void hw_volumes_bringup(void) {
      * first attach: the table resolves by longest prefix and refuses a path
      * twice, and the ESP comes first on the disk. */
     {
-        int root = -1;
+        /* The root is the volume whose UUID the ESP names (hierarchy F2 step
+         * 2), and nothing else: it used to be whichever ext4 carried the label
+         * vibeos-root, which a second disk could carry too. No ROOT file is
+         * the bring-up layout, a bare ESP; a ROOT file whose volume is not
+         * here leaves the ESP as a rescue root rather than taking another. */
+        static char spec[96];
+        long spec_len = vibeos_fs_read_file(&g_bootfs, "EFI/VIBEOS/ROOT", spec, sizeof(spec) - 1u);
+        int why = 0;
+        int root = vibeos_storage_pick_root(&g_storage, spec, spec_len, &why);
 
-        for (i = 0; i < g_storage.volume_count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
-            if (vibeos_fs_is_mounted(&g_storage.volume[i].mount) && hw_is_native_root(bc, &g_storage.volume[i])) {
-                root = (int)i;
-                break;
-            }
+        if (root >= 0 && !vibeos_fs_is_mounted(&g_storage.volume[root].mount)) {
+            root = -1;
         }
+        spec[spec_len > 0 ? spec_len : 0] = 0;
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[IO] ROOT by=uuid result=");
+        vibeos_x86_64_serial_puts(vibeos_storage_root_why(why));
+        vibeos_x86_64_serial_puts(" idx=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(root >= 0 ? root : 0xFF));
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
         if (root >= 0 && vibeos_fs_attach("/", &g_storage.volume[root].mount) == 0) {
             g_rootfs = g_storage.volume[root].mount;
         } else {

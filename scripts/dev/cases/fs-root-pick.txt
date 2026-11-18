@@ -1,0 +1,49 @@
+# The root by UUID and by nothing else (hierarchy F2 step 2), broken in the
+# decision. Caught by the host test test_storage_pick_root, which fills a
+# storage table by hand: a UUID nobody has, an unmounted volume that has it,
+# a malformed ROOT file and a cloned disk must each be no root at all.
+#
+# Target source: kernel/fs/storage.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/storage.c scripts/dev/cases/fs-root-pick.txt build-gcc-Release
+
+### a UUID nobody has falls back to the first ext4
+--- old
+    *why = found >= 0 ? VIBEOS_ROOT_FOUND : VIBEOS_ROOT_NOT_FOUND;
+    return found;
++++ new
+    for (i = 0; found < 0 && i < st->volume_count; i++) {
+        if (st->volume[i].fs_name && st->volume[i].fs_name[0] == 'e') {
+            found = (int)i;
+        }
+    }
+    *why = found >= 0 ? VIBEOS_ROOT_FOUND : VIBEOS_ROOT_NOT_FOUND;
+    return found;
+
+### a prefix of the UUID is enough
+--- old
+        if (j == n && u[j] == 0) {
++++ new
+        if (j == n) {
+
+### an unmounted volume can be the root
+--- old
+        if (!st->volume[i].fs_name) {
+            continue;
+        }
+        for (j = 0; j < n && u[j] && root_lower(u[j]) == want[j]; j++) {
++++ new
+        for (j = 0; j < n && u[j] && root_lower(u[j]) == want[j]; j++) {
+
+### a cloned disk's first copy is taken
+--- old
+            if (found >= 0) {
+                *why = VIBEOS_ROOT_AMBIGUOUS;
+                return -1;
+            }
++++ new
+
+### a LABEL= line is taken as a UUID
+--- old
+    if (spec_len < 6 || spec[0] != 'U' || spec[1] != 'U' || spec[2] != 'I' || spec[3] != 'D' || spec[4] != '=') {
++++ new
+    if (spec_len < 6) {

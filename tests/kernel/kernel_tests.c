@@ -10136,6 +10136,43 @@ static int test_storage_unpartitioned(void)
     return 0;
 }
 
+/* The root by UUID and by nothing else (hierarchy F2 step 2): every refusal,
+ * and above all that a UUID nobody has is no root at all rather than whichever
+ * ext4 the scan found first. Built on a storage table filled by hand: the
+ * decision is the function's, not the scan's. */
+static int test_storage_pick_root(void)
+{
+    static vibeos_storage_t st;
+    int ok = 1, why = -1;
+
+    memset(&st, 0, sizeof(st));
+    st.volume_count = 3;
+    st.volume[0].fs_name = "fat";
+    strcpy(st.volume[0].id.uuid, "ABCD-1234");
+    st.volume[1].fs_name = "ext4";
+    strcpy(st.volume[1].id.uuid, "0b3e9c4a-5d6f-4a1b-9c8d-7e6f5a4b3c2d");
+    st.volume[2].fs_name = 0;   /* unmounted: never a root, whatever it says */
+    strcpy(st.volume[2].id.uuid, "11111111-2222-3333-4444-555555555555");
+
+    ok &= vibeos_storage_pick_root(&st, "UUID=0b3e9c4a-5d6f-4a1b-9c8d-7e6f5a4b3c2d\n", 42, &why) == 1 &&
+          why == VIBEOS_ROOT_FOUND;
+    /* blkid prints ext's lower case; somebody typing the file may not */
+    ok &= vibeos_storage_pick_root(&st, "UUID=0B3E9C4A-5D6F-4A1B-9C8D-7E6F5A4B3C2D", 41, &why) == 1;
+    ok &= vibeos_storage_pick_root(&st, "UUID=ffffffff-5d6f-4a1b-9c8d-7e6f5a4b3c2d\n", 42, &why) == -1 &&
+          why == VIBEOS_ROOT_NOT_FOUND;
+    ok &= vibeos_storage_pick_root(&st, "UUID=0b3e9c4a-5d6f", 18, &why) == -1 && why == VIBEOS_ROOT_NOT_FOUND;
+    ok &= vibeos_storage_pick_root(&st, "UUID=11111111-2222-3333-4444-555555555555", 41, &why) == -1 &&
+          why == VIBEOS_ROOT_NOT_FOUND;
+    ok &= vibeos_storage_pick_root(&st, 0, -1, &why) == -1 && why == VIBEOS_ROOT_NO_SPEC;
+    ok &= vibeos_storage_pick_root(&st, "LABEL=vibeos-root\n", 18, &why) == -1 && why == VIBEOS_ROOT_BAD_SPEC;
+    ok &= vibeos_storage_pick_root(&st, "UUID=\n", 6, &why) == -1 && why == VIBEOS_ROOT_BAD_SPEC;
+    ok &= vibeos_storage_pick_root(&st, "UUID=0b3e 9c4a", 14, &why) == -1 && why == VIBEOS_ROOT_BAD_SPEC;
+    strcpy(st.volume[0].id.uuid, st.volume[1].id.uuid);   /* a cloned disk */
+    ok &= vibeos_storage_pick_root(&st, "UUID=0b3e9c4a-5d6f-4a1b-9c8d-7e6f5a4b3c2d\n", 42, &why) == -1 &&
+          why == VIBEOS_ROOT_AMBIGUOUS;
+    return ok ? 0 : -1;   /* this file's tests answer 0 for a pass */
+}
+
 static int test_storage_claims_nothing(void)
 {
     static vibeos_storage_t st;
@@ -10649,6 +10686,7 @@ int main(void) {
     RUN_TEST(test_storage_partitioned);
     RUN_TEST(test_storage_unpartitioned);
     RUN_TEST(test_storage_claims_nothing);
+    RUN_TEST(test_storage_pick_root);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);
