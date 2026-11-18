@@ -1,0 +1,15 @@
+# The filter of what the live log holds (E4-016), allowed to fill up. Every
+# bit it has set makes a data write over that block a logged one; on a volume
+# of 1 KiB blocks a filter never emptied logged most of a 1 MiB write, which
+# ran past what one transaction may log and failed with EIO - the nightly's
+# seed 118183, which this case's verifier runs.
+#
+# Target source: kernel/fs/ext4_journal.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_ext4_exercise > /dev/null && python3 scripts/dev/ext4-torture.py build-gcc-Release 118183 1'" python3 scripts/dev/sabotage.py kernel/fs/ext4_journal.c scripts/dev/cases/ext4-journal-filter.txt build-gcc-Release
+
+### the log is emptied only when it is full, whatever the filter says
+--- old
+    if (!bad && (fs->j.base + tx_room(fs) > fs->j.maxlen ||
+                 fs->j.logged_set > (uint32_t)sizeof(fs->j.logged) * 8u / 16u)) {
++++ new
+    if (!bad && (fs->j.base + tx_room(fs) > fs->j.maxlen)) {

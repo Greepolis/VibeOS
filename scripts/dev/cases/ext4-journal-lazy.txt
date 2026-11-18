@@ -20,9 +20,9 @@
 
 ### the log runs past its end
 --- old
-    if (!bad && fs->j.base + tx_room(fs) > fs->j.maxlen) {
+    if (!bad && (fs->j.base + tx_room(fs) > fs->j.maxlen ||
 +++ new
-    if (0) {
+    if (!bad && (0 ||
 
 ### the log is said empty before what it held is durable at home
 --- old

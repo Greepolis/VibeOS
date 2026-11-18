@@ -186,6 +186,7 @@ typedef struct {
         int live;
         uint64_t started;         /* when the running transaction was opened (group commit) */
         uint8_t logged[512];
+        uint32_t logged_set;      /* bits of `logged` set: past a sixteenth the log is emptied */
         uint32_t nfreed;          /* blocks freed by this transaction, as runs */
         int freed_overflow;       /* more runs than the table: every data write is logged */
         struct {

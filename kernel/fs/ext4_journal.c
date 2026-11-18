@@ -847,6 +847,7 @@ static int empty_log(vibeos_ext2_t *fs) {
     fs->j.live = 0;
     fs->j.base = fs->j.first;
     memset(fs->j.logged, 0, sizeof(fs->j.logged));
+    fs->j.logged_set = 0;
     return 0;
 }
 
@@ -895,7 +896,10 @@ static int j_commit(vibeos_ext2_t *fs) {
         for (k = 0; k < fs->j.n; k++) {
             uint32_t b = logged_bit(fs->j.home[k]);
 
-            fs->j.logged[b >> 3] = (uint8_t)(fs->j.logged[b >> 3] | (1u << (b & 7u)));
+            if ((fs->j.logged[b >> 3] & (1u << (b & 7u))) == 0u) {
+                fs->j.logged[b >> 3] = (uint8_t)(fs->j.logged[b >> 3] | (1u << (b & 7u)));
+                fs->j.logged_set++;
+            }
         }
         /* Home from where this transaction is in the log - before base
          * moves past it. */
@@ -905,8 +909,16 @@ static int j_commit(vibeos_ext2_t *fs) {
     }
     fs->j.seq = tid + 1u;
     fs->j.n = 0;
-    /* The next transaction must fit before the end of the log. */
-    if (!bad && fs->j.base + tx_room(fs) > fs->j.maxlen) {
+    /* The next transaction must fit before the end of the log - and the
+     * filter of what the log holds must still mean something. Every bit it
+     * has set makes a data write over that block a logged one, so a filter
+     * left to fill up logs nearly every data block: on a volume of 1 KiB
+     * blocks the log holds thousands of homes, and a 1 MiB write logged most
+     * of itself, ran past what one transaction may log and failed (the
+     * nightly, seed 118183). Past a sixteenth of its bits the log is emptied,
+     * which empties the filter: under one data write in sixteen is logged. */
+    if (!bad && (fs->j.base + tx_room(fs) > fs->j.maxlen ||
+                 fs->j.logged_set > (uint32_t)sizeof(fs->j.logged) * 8u / 16u)) {
         bad = empty_log(fs) != 0;
     }
     if (bad) {
