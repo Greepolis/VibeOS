@@ -377,12 +377,14 @@ typedef struct {
 /* `n` UTF-16 units from user memory at `u`, appended as UTF-8 with a NUL: its
  * offset in the block, or -1. */
 static long spawn_utf8(spawn_blk_t *k, uint64_t u, uint32_t n) {
-    uint32_t start = k->at, i;
+    uint32_t start = k->at, i, step;
 
-    for (i = 0; i < n; i++) {
+    /* `step` units a character: two for a surrogate pair, one otherwise. */
+    for (i = 0; i < n; i += step) {
         uint16_t c16;
         uint32_t c;
 
+        step = 1u;
         if (nt_copy_in(&c16, u + 2u * i, 2u) != 0) {
             return -1;
         }
@@ -400,7 +402,7 @@ static long spawn_utf8(spawn_blk_t *k, uint64_t u, uint32_t n) {
             }
             if (lo >= 0xDC00u && lo <= 0xDFFFu) {
                 c = 0x10000u + (((uint32_t)c16 - 0xD800u) << 10) + ((uint32_t)lo - 0xDC00u);
-                i++;
+                step = 2u;
             }
         }
         if (k->at + 5u >= k->cap) {   /* four bytes at most, and the terminator */

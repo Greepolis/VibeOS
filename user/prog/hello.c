@@ -256,7 +256,6 @@ static const char *check_linux_abi(void) {
      * its first letter and wrote the rest below the buffer (issue #183). */
     {
         int i;
-        long r;
 
         for (i = 0; i < 8; i++) {
             un[i] = 0;

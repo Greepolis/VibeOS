@@ -104,7 +104,9 @@ def main():
                 disk = p + ".disk"
                 in_partition(p, disk)
                 p = disk
-            r = run([cli, p])
+            # The CLI reads volid.img where it runs, a fixed name.
+            shutil.copy(p, os.path.join(d, "volid.img"))
+            r = run([cli], cwd=d)
             line = r.stdout.strip().split("\n")[0] if r.stdout.strip() else ""
             fields = dict(x.split("=", 1) for x in line.split(" ") if "=" in x) if line else {}
             # A label that holds a space reaches the CLI's line whole only as

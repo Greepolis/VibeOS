@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* The storage scan on an image file, saying what identifies each volume it
- * mounted (hierarchy F2 step 1): one line a volume,
+/* The storage scan on volid.img in the current directory, saying what
+ * identifies each volume it mounted (hierarchy F2 step 1): one line a volume,
  *     fs=<name> uuid=<uuid> label=<label>
  * which scripts/dev/verify-volid.py holds against blkid's answer for the same
  * image. */
@@ -43,9 +43,12 @@ int main(int argc, char **argv) {
     long n;
     uint32_t i;
 
-    if (argc != 2 || !(f = fopen(argv[1], "rb")) || fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) <= 0 ||
+    /* A fixed name where it runs, as the ext4 exerciser reads fs.img: no path
+     * from the command line reaches fopen. */
+    (void)argv;
+    if (argc != 1 || !(f = fopen("volid.img", "rb")) || fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) <= 0 ||
         fseek(f, 0, SEEK_SET) != 0) {
-        fprintf(stderr, "usage: vibeos_volid_cli <image>\n");
+        fprintf(stderr, "usage: vibeos_volid_cli, beside volid.img\n");
         return 2;
     }
     g_img = (uint8_t *)malloc((size_t)n);

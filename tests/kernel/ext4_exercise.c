@@ -599,15 +599,15 @@ static int run(char **a, int n) {
         /* The whole file, through the mount's read: what a read changes is
          * atime (E4-013). */
         static uint8_t rbuf[65536];
-        uint64_t at = 0;
+        uint64_t pos = 0;   /* not "at": that is the attributes, above */
         long got;
 
         if (vibeos_fs_lookup(&g_mnt, a[1], &node) != 0) {
             return -VIBEOS_ENOENT;
         }
         do {
-            got = vibeos_fs_read_at(&g_mnt, &node, at, rbuf, sizeof(rbuf));
-            at += got > 0 ? (uint64_t)got : 0u;
+            got = vibeos_fs_read_at(&g_mnt, &node, pos, rbuf, sizeof(rbuf));
+            pos += got > 0 ? (uint64_t)got : 0u;
         } while (got > 0);
         return got < 0 ? (int)got : 0;
     }

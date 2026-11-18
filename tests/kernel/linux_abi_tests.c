@@ -7303,6 +7303,12 @@ static void t_credentials(void) {
     expect(kf_lock_imbalance() == 0, "the credential calls released every lock they took");
 }
 
+/* Every group of the Linux personality's host tests, in order, on the fake
+ * kernel (tests/kernel/ksvc_fake.c): each t_* function runs one family of
+ * handlers through the syscall table, as a program would reach them, and
+ * records its failures in g_fail. The order matters only where a group leaves
+ * state a later one reads - a file in /tmp, a credential - and each such
+ * dependency is said in the group that has it. 0 when every group passed. */
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
