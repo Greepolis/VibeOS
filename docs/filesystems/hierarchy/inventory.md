@@ -20,7 +20,7 @@ path written there. There is no manifest: that is F2's.
 | `/proc` | procfs | procfs | keep |
 | `/run` | tmpfs, 0755 (since 2026-11-17) | tmpfs, cleared at boot | done in F1: the gate writes a file there and checks the disk has none |
 | `/sys` | a directory, nothing mounted | sysfs or a control service | reserved; no phase owns it yet |
-| `/vol1`, `/vol2`, ... | every other volume the scan mounts, by its index; `/vol1` also a scratch volume of the I/O self-test | `/mnt/<name>` for an administrator's volume, `/run/media/<user>/<label>` for removable media | **move - F2**: a volume gets its place from the manifest, not from the order the scan found it in |
+| `/vol1`, `/vol2`, ... | every other volume the scan mounts, by its index; `/vol1` also a scratch volume of the I/O self-test | `/mnt/<name>` for an administrator's volume, `/run/media/<user>/<label>` for removable media | **moved - F2 step 3**: a volume gets its place from the manifest, not from the order the scan found it in; one no line names is not mounted. `/vol1` remains only as the I/O self-test's scratch volume |
 | `/run/test/ext2`, `ext4`, `iso`, `ntfs`, `exfat`, `fatlong` | test images from `EFI/BOOT/*.IMG`, mounted under `/run/test` since F1 (they were at the top of the tree) | out of the production namespace | done in F1: volatile and under one test-only place; a production ESP carries no `.IMG` (`make-root-tree.py`), so nothing is mounted there |
 
 ## The root's tree

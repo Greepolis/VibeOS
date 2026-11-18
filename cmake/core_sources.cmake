@@ -58,6 +58,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/ipc/pipe.c
     kernel/fs/partition.c
     kernel/fs/storage.c
+    kernel/fs/mounttab.c
     kernel/mm/pmm.c
     kernel/net/inet.c
     kernel/net/net_policy.c

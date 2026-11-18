@@ -111,6 +111,7 @@ ELSEWHERE = {
     "abi/abi_linux": "abi_unimplemented_syscall_nr",
     "abi/abi_nt": "nt_unimplemented_service",       # an NT service asked for that no step wrote (W1)
     "mm/backing": "cache_audit_changed",          # a cached page that no longer matches its file
+    "fs/mounttab": "required_mount_failed",       # a manifest line marked required that did not mount
 }
 
 # The rest, each with the reason. Read these as a list of where a bug would have

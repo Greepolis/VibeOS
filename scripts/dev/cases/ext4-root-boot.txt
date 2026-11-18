@@ -21,6 +21,6 @@
 
 ### the ESP is not attached at /boot/efi
 --- old
-                const char *s = "/boot/efi";
+        return vibeos_fs_attach(e->at, mnt) == 0 ? 0 : "attach";
 +++ new
-                const char *s = "/esp";
+        return vibeos_fs_attach(e->at[1] == 'b' ? "/esp" : e->at, mnt) == 0 ? 0 : "attach";

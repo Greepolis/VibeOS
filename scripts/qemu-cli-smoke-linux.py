@@ -2196,6 +2196,10 @@ def main():
             m = re.search(r"\[IO\] TMPFS at=/tmp pages=0x[0-9a-f]+ result=([^\n]*)", text)
             if not m or m.group(1).strip() != "OK":
                 problems.append("tmpfs_not_mounted")
+            # A required manifest line that failed is a rescue boot (hierarchy
+            # F2 step 3): the machine carries on, the gate does not.
+            for m in re.finditer(r"\[IO\] MOUNT_REQUIRED_FAILED at=(\S+) why=(\S+)", text):
+                problems.append("required_mount_failed:%s:%s" % (m.group(1), m.group(2)))
 
             # fat since docs/abi/ A4: VFAT long names written by mtools.
             for want in ("ext2", "ext4", "iso9660", "ntfs", "exfat", "fat"):
@@ -3368,6 +3372,13 @@ def main():
                         problems.append("root_not_found_by_uuid")
                     elif "[IO] MOUNT at=/ type=ext4" not in text:
                         problems.append("native_root_not_mounted")
+                    elif not re.search(r"\[IO\] MOUNTS source=root why=ok ", text):
+                        # The mounts came from the root's manifest (hierarchy
+                        # F2 step 3), not from the built-in default the kernel
+                        # falls back to when the file is missing or refused.
+                        problems.append("manifest_not_from_root")
+                    elif "[IO] MOUNT_ENTRY at=/boot/efi what=UUID=" not in text:
+                        problems.append("esp_not_mounted_by_uuid")
                     elif "[IO] MOUNT at=/boot/efi type=fat" not in text:
                         problems.append("esp_not_at_boot_efi")
                     elif "VIBEOS_ROOT_MARKER" not in text:

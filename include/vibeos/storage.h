@@ -229,6 +229,7 @@ int vibeos_storage_scan(vibeos_storage_t *st, vibeos_blockcache_t *cache,
 #define VIBEOS_ROOT_BAD_SPEC 2     /* a ROOT file that says nothing usable */
 #define VIBEOS_ROOT_NOT_FOUND 3    /* no volume has that UUID */
 #define VIBEOS_ROOT_AMBIGUOUS 4    /* two do: a cloned disk; neither is taken */
+int vibeos_storage_find(const vibeos_storage_t *st, const char *spec, long spec_len, int allow_label, int *why);
 int vibeos_storage_pick_root(const vibeos_storage_t *st, const char *spec, long spec_len, int *why);
 const char *vibeos_storage_root_why(int why);
 

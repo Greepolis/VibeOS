@@ -1,0 +1,74 @@
+# The mount manifest's parser (hierarchy F2 step 3), broken. Caught by
+# test_mounttab_parse in the host tests: each refusal must be whole, and each
+# field must say what the line said.
+#
+# Target source: kernel/fs/mounttab.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/mounttab.c scripts/dev/cases/fs-mounttab.txt build-gcc-Release
+
+### a misspelt option is taken as no option
+--- old
+        } else if (!mt_is(s + a, b - a, "defaults") && mt_number_option(s + a, b - a, e) != 0) {
+            return -1;
++++ new
+        } else if (!mt_is(s + a, b - a, "defaults") && mt_number_option(s + a, b - a, e) != 0) {
+
+### a refused manifest keeps the lines before the bad one
+--- old
+        } else if ((why = mt_line(text + a, end - a, out)) != VIBEOS_MOUNTTAB_OK) {
+            *bad_line = line;
+            memset(out, 0, sizeof(*out));
++++ new
+        } else if ((why = mt_line(text + a, end - a, out)) != VIBEOS_MOUNTTAB_OK) {
+            *bad_line = line;
+
+### a mount point named twice is accepted
+--- old
+        if (mt_is(e->at, fl[1], out->entry[i].at)) {
++++ new
+        if (0) {
+
+### a manifest with no version line is read
+--- old
+            if (!mt_is(text + s, t - s, "vibeos-mounts 1")) {
++++ new
+            if (0) {
+
+### a misspelt policy is optional
+--- old
+    } else if (!mt_is(f[4], fl[4], "optional")) {
++++ new
+    } else if (0) {
+
+### a line with a sixth field is read as its first five
+--- old
+        if (nf == 6u) {
+            return VIBEOS_MOUNTTAB_FIELDS;
+        }
++++ new
+        if (nf == 5u) {
+            break;
+        }
+
+### a relative mount point is accepted
+--- old
+    if (e->at[0] != '/' || e->at[1] == 0 || e->at[fl[1] - 1] == '/') {
++++ new
+    if (e->at[1] == 0 || e->at[fl[1] - 1] == '/') {
+
+### ".." in a mount point is accepted
+--- old
+                                                         (e->at[k + 2] == '.' &&
++++ new
+                                                         (0 &&
+
+### size= in megabytes is taken as kilobytes
+--- old
+            v *= 1024u;
++++ new
+            v *= 1u;
+
+### mode= is read as decimal
+--- old
+            v = v * 8u + (uint64_t)(s[k] - '0');
++++ new
+            v = v * 10u + (uint64_t)(s[k] - '0');

@@ -10,5 +10,5 @@
 
 ### tmpfs is not told how to hold a page
 --- old
-    vibeos_tmpfs_set_page_hold(&g_tmpfs, hw_tmpfs_page_hold);
+            vibeos_tmpfs_set_page_hold(t, hw_tmpfs_page_hold);
 +++ new

@@ -30,9 +30,9 @@
         if (!st->volume[i].fs_name) {
             continue;
         }
-        for (j = 0; j < n && u[j] && root_lower(u[j]) == want[j]; j++) {
+        for (j = 0; j < n && u[j] && (by_label ? u[j] : root_lower(u[j])) == want[j]; j++) {
 +++ new
-        for (j = 0; j < n && u[j] && root_lower(u[j]) == want[j]; j++) {
+        for (j = 0; j < n && u[j] && (by_label ? u[j] : root_lower(u[j])) == want[j]; j++) {
 
 ### a cloned disk's first copy is taken
 --- old
@@ -44,6 +44,12 @@
 
 ### a LABEL= line is taken as a UUID
 --- old
-    if (spec_len < 6 || spec[0] != 'U' || spec[1] != 'U' || spec[2] != 'I' || spec[3] != 'D' || spec[4] != '=') {
+    } else if (allow_label && spec_len >= 6 && memcmp(spec, "LABEL=", 6) == 0) {
 +++ new
-    if (spec_len < 6) {
+    } else if (spec_len >= 6 && memcmp(spec, "LABEL=", 6) == 0) {
+
+### a label is matched without regard to case, like a UUID
+--- old
+        want[n++] = by_label ? spec[k] : root_lower(spec[k]);
++++ new
+        want[n++] = root_lower(spec[k]);

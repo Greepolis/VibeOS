@@ -15,11 +15,11 @@
 
 ### /tmp is never attached
 --- old
-    } else if (vibeos_fs_attach("/tmp", &g_tmpfs_mnt) != 0) {
-        verdict = "FAILED: attach";
+            if (vibeos_fs_attach(at, mnt) != 0) {
+                verdict = "FAILED: attach";
 +++ new
-    } else {
-        verdict = "FAILED: attach";
+            if (at[1] == 't' || vibeos_fs_attach(at, mnt) != 0) {
+                verdict = "FAILED: attach";
 
 ### the NTFS row is gone
 --- old

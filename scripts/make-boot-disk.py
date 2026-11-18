@@ -128,11 +128,36 @@ def name_root(esp, root):
         raise SystemExit("make-boot-disk: could not write EFI/VIBEOS/ROOT: %s" % r.stderr.strip()[:200])
 
 
+def write_manifest(esp, tree):
+    """The root's /etc/vibeos/mounts (hierarchy F2 step 3): what the kernel
+    mounts besides the root. The ESP is named by the UUID blkid reads off it,
+    as a line in a real fstab is copied, and is required: a root that ships
+    with an ESP and boots without it is a named failure, not a quiet one."""
+    blkid = shutil.which("blkid")
+    if not blkid:
+        raise SystemExit("make-boot-disk: blkid is needed to name the ESP in the manifest")
+    uuid = subprocess.run([blkid, "-p", "-o", "value", "-s", "UUID", esp], stdout=subprocess.PIPE,
+                          universal_newlines=True).stdout.strip()
+    if not uuid:
+        raise SystemExit("make-boot-disk: blkid found no UUID on the ESP")
+    os.makedirs(os.path.join(tree, "etc", "vibeos"), exist_ok=True)
+    with open(os.path.join(tree, "etc", "vibeos", "mounts"), "w", newline="\n") as f:
+        f.write("vibeos-mounts 1\n"
+                "# what          where      type      options                          policy\n"
+                "UUID=%-9s  /boot/efi  vfat      rw                               required\n"
+                "tmpfs           /tmp       tmpfs     nosuid,nodev,mode=1777           required\n"
+                "proc            /proc      proc      nosuid,nodev,noexec              required\n"
+                "devtmpfs        /dev       devtmpfs  nosuid                           required\n"
+                "tmpfs           /run       tmpfs     nosuid,nodev,mode=0755,size=4m   required\n"
+                "tmpfs           /dev/shm   tmpfs     nosuid,nodev,mode=1777           required\n" % uuid)
+
+
 def make(esp, tree, disk, root_mb):
     mkfs = shutil.which("mkfs.ext4")
     if not mkfs:
         print("boot-disk=absent reason=no_mkfs.ext4")
         return 3
+    write_manifest(esp, tree)
     root = disk + ".root.tmp"
     with open(root, "wb") as f:
         f.truncate(root_mb * 1024 * 1024)

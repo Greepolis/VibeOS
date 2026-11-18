@@ -1,0 +1,33 @@
+# The mount manifest on the machine (hierarchy F2 step 3): the boot disk's
+# root carries /etc/vibeos/mounts, the ESP named in it by UUID, and the kernel
+# mounts what it says.
+#
+#  1. The manifest is not found: the kernel falls back to its built-in
+#     default. Expect manifest_not_from_root - the default mounts the same
+#     places, so nothing else notices.
+#  2. The log names the ESP's line by something other than its UUID. Expect
+#     esp_not_mounted_by_uuid.
+#  3. A filesystem type check that refuses what it should accept: the ESP's
+#     line fails, and it is required. Expect required_mount_failed (and the
+#     ESP missing from /boot/efi).
+#
+# Target source: kernel/arch/x86_64/io_bringup.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/arch/x86_64/io_bringup.c scripts/dev/cases/fs-manifest-boot.txt build-gcc-Release
+
+### the manifest is not found on the root
+--- old
+        long len = root >= 0 ? vibeos_fs_read_file(&g_rootfs, "etc/vibeos/mounts", text, sizeof(text) - 1u) : -1;
++++ new
+        long len = root >= 0 ? vibeos_fs_read_file(&g_rootfs, "etc/vibeos/mount", text, sizeof(text) - 1u) : -1;
+
+### the ESP's line is logged without its UUID
+--- old
+            hw_mount_line(e->what, e->at, r ? r : "ok");
++++ new
+            hw_mount_line(e->is_volume ? "volume" : e->what, e->at, r ? r : "ok");
+
+### a required line fails on a type it should accept
+--- old
+        if (!hw_type_matches(e->type, g_storage.volume[idx].fs_name)) {
++++ new
+        if (hw_type_matches(e->type, g_storage.volume[idx].fs_name)) {

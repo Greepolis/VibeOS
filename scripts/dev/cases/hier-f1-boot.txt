@@ -16,16 +16,24 @@
 
 ### /run is not mounted (run_is_not_volatile)
 --- old
-    hw_tmpfs_instance(&g_runfs, &g_runfs_mnt, "/run", 1024u, 0755u);
+    if (hw_streq(e->type, "tmpfs")) {
 +++ new
+    if (hw_streq(e->at, "/run")) {
+        return 0;
+    }
+    if (hw_streq(e->type, "tmpfs")) {
 
 ### /run has no room (run_round_trip_failed)
 --- old
-    hw_tmpfs_instance(&g_runfs, &g_runfs_mnt, "/run", 1024u, 0755u);
+        uint64_t pages = e->size_kib ? (e->size_kib + 3u) / 4u : HW_TMPFS_PAGES;
 +++ new
-    hw_tmpfs_instance(&g_runfs, &g_runfs_mnt, "/run", 0u, 0755u);
+        uint64_t pages = e->size_kib ? 1u : HW_TMPFS_PAGES;
 
 ### /dev/shm is not mounted (dev_shm_round_trip_failed)
 --- old
-    hw_tmpfs_instance(&g_shmfs, &g_shmfs_mnt, "/dev/shm", HW_TMPFS_PAGES, 01777u);
+    if (hw_streq(e->type, "tmpfs")) {
 +++ new
+    if (hw_streq(e->at, "/dev/shm")) {
+        return 0;
+    }
+    if (hw_streq(e->type, "tmpfs")) {

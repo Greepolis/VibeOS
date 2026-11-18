@@ -31,6 +31,7 @@
 #include "vibeos/ntfs.h"
 #include "vibeos/journal.h"
 #include "vibeos/storage.h"
+#include "vibeos/mounttab.h"
 #include "vibeos/tls.h"
 #include "vibeos/net_policy.h"
 #include "vibeos/trap.h"
@@ -10173,6 +10174,88 @@ static int test_storage_pick_root(void)
     return ok ? 0 : -1;   /* this file's tests answer 0 for a pass */
 }
 
+/* A manifest line by line (hierarchy F2 step 3). Each refusal is a whole
+ * refusal: what parsed before the bad line is not kept. */
+static int mt_refuses(const char *text, int why, uint32_t line)
+{
+    static vibeos_mounttab_t t;
+    uint32_t bad = 0;
+    int got = vibeos_mounttab_parse(text, (long)strlen(text), &t, &bad);
+    return got == why && bad == line && t.count == 0u;
+}
+
+static int test_mounttab_parse(void)
+{
+    static vibeos_mounttab_t t;
+    uint32_t bad = 99;
+    int ok = 1;
+    const char *good = "# written by make-boot-disk\n"
+                       "vibeos-mounts 1\n"
+                       "UUID=1A2B-3C4D  /boot/efi vfat rw required   # the ESP\n"
+                       "\n"
+                       "LABEL=Old\t/data ext2 ro,noexec optional\n"
+                       "tmpfs /run tmpfs nosuid,nodev,mode=0755,size=4m required\r\n"
+                       "tmpfs /tmp tmpfs defaults,size=512k optional";
+
+    ok &= vibeos_mounttab_parse(good, (long)strlen(good), &t, &bad) == VIBEOS_MOUNTTAB_OK && t.count == 4u;
+    ok &= strcmp(t.entry[0].what, "UUID=1A2B-3C4D") == 0 && strcmp(t.entry[0].at, "/boot/efi") == 0 &&
+          strcmp(t.entry[0].type, "vfat") == 0 && t.entry[0].required == 1 && t.entry[0].is_volume == 1 &&
+          t.entry[0].options == 0u;
+    /* A label with a space cannot be written in a field: "LABEL=Old Data" is
+     * two fields, and the line is refused rather than read as label "Old". */
+    ok &= mt_refuses("vibeos-mounts 1\nLABEL=Old\tData /data ext2 ro optional\n", VIBEOS_MOUNTTAB_FIELDS, 2u);
+    ok &= vibeos_mounttab_parse(good, (long)strlen(good), &t, &bad) == VIBEOS_MOUNTTAB_OK;
+    ok &= t.entry[1].options == (VIBEOS_MNT_RO | VIBEOS_MNT_NOEXEC) && t.entry[1].required == 0;
+    ok &= t.entry[2].options == (VIBEOS_MNT_NOSUID | VIBEOS_MNT_NODEV) && t.entry[2].mode == 0755u &&
+          t.entry[2].size_kib == 4096u && t.entry[2].is_volume == 0;
+    ok &= t.entry[3].size_kib == 512u && t.entry[3].mode == 0u;
+    ok &= vibeos_mounttab_parse(vibeos_mounttab_default(), (long)strlen(vibeos_mounttab_default()), &t, &bad) ==
+              VIBEOS_MOUNTTAB_OK &&
+          t.count == 6u;
+
+    ok &= mt_refuses("", VIBEOS_MOUNTTAB_NO_VERSION, 0u);
+    ok &= mt_refuses("vibeos-mounts 2\n", VIBEOS_MOUNTTAB_NO_VERSION, 1u);
+    ok &= mt_refuses("tmpfs /tmp tmpfs rw required\n", VIBEOS_MOUNTTAB_NO_VERSION, 1u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /tmp tmpfs rw required\ntmpfs /tmp tmpfs rw required\n",
+                     VIBEOS_MOUNTTAB_DUPLICATE, 3u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /tmp tmpfs rw\n", VIBEOS_MOUNTTAB_FIELDS, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /tmp tmpfs noexce required\n", VIBEOS_MOUNTTAB_OPTION, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /tmp tmpfs rw, required\n", VIBEOS_MOUNTTAB_OPTION, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /tmp tmpfs mode=0789 required\n", VIBEOS_MOUNTTAB_OPTION, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /tmp tmpfs size=4g required\n", VIBEOS_MOUNTTAB_OPTION, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /tmp tmpfs rw requird\n", VIBEOS_MOUNTTAB_POLICY, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs tmp tmpfs rw required\n", VIBEOS_MOUNTTAB_PATH, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\nUUID=ab / ext4 rw required\n", VIBEOS_MOUNTTAB_PATH, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /tmp/ tmpfs rw required\n", VIBEOS_MOUNTTAB_PATH, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /a//b tmpfs rw required\n", VIBEOS_MOUNTTAB_PATH, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /a/../b tmpfs rw required\n", VIBEOS_MOUNTTAB_PATH, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\nUUID= /x vfat rw required\n", VIBEOS_MOUNTTAB_WHAT, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\ntmpfs /a-path-much-longer-than-thirty-one tmpfs rw required\n",
+                     VIBEOS_MOUNTTAB_TOO_LONG, 2u);
+    return ok ? 0 : -1;
+}
+
+static int test_storage_find_label(void)
+{
+    static vibeos_storage_t st;
+    int why = -1, ok = 1;
+
+    memset(&st, 0, sizeof(st));
+    st.volume_count = 2;
+    st.volume[0].fs_name = "fat";
+    strcpy(st.volume[0].id.label, "BOOT VOL");
+    strcpy(st.volume[0].id.uuid, "1A2B-3C4D");
+    st.volume[1].fs_name = "ext4";
+    strcpy(st.volume[1].id.label, "data");
+    ok &= vibeos_storage_find(&st, "LABEL=BOOT VOL", 14, 1, &why) == 0 && why == VIBEOS_ROOT_FOUND;
+    ok &= vibeos_storage_find(&st, "LABEL=DATA", 10, 1, &why) == -1 && why == VIBEOS_ROOT_NOT_FOUND;
+    ok &= vibeos_storage_find(&st, "UUID=1a2b-3c4d", 14, 1, &why) == 0;
+    ok &= vibeos_storage_find(&st, "LABEL=data", 10, 0, &why) == -1 && why == VIBEOS_ROOT_BAD_SPEC;
+    strcpy(st.volume[0].id.label, "data");
+    ok &= vibeos_storage_find(&st, "LABEL=data", 10, 1, &why) == -1 && why == VIBEOS_ROOT_AMBIGUOUS;
+    return ok ? 0 : -1;
+}
+
 static int test_storage_claims_nothing(void)
 {
     static vibeos_storage_t st;
@@ -10687,6 +10770,8 @@ int main(void) {
     RUN_TEST(test_storage_unpartitioned);
     RUN_TEST(test_storage_claims_nothing);
     RUN_TEST(test_storage_pick_root);
+    RUN_TEST(test_mounttab_parse);
+    RUN_TEST(test_storage_find_label);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);

@@ -35,6 +35,7 @@
 #include "vibeos/parttab.h"
 #include "vibeos/partition.h"
 #include "vibeos/reclaim.h"
+#include "vibeos/mounttab.h"
 #include "vibeos/storage.h"
 #include "vibeos/swaparea.h"
 #include "vibeos/swapmap.h"
@@ -967,8 +968,13 @@ static vibeos_storage_t g_storage;
  * tmpfs takes them before its lock, because that door may reclaim. */
 #define HW_TMPFS_PAGES 8192u   /* 32 MiB: a ceiling, not a reservation */
 
-static vibeos_tmpfs_t g_tmpfs;
-static vibeos_fsmount_t g_tmpfs_mnt;
+/* Since hierarchy F2 step 3 the manifest says how many tmpfs mounts there
+ * are and where; these are the instances it can have. Three is what the
+ * default names (/tmp, /run, /dev/shm) plus one for a manifest's own. */
+#define HW_TMPFS_INSTANCES 4u
+static vibeos_tmpfs_t g_tmpfs_pool[HW_TMPFS_INSTANCES];
+static vibeos_fsmount_t g_tmpfs_pool_mnt[HW_TMPFS_INSTANCES];
+static uint32_t g_tmpfs_used;
 static hw_lock_t g_tmpfs_lock;
 
 static void hw_tmpfs_lock(void) {
@@ -999,27 +1005,6 @@ static void hw_tmpfs_page_hold(void *p) {
  * read, which is what every file got before E4-029 - dated 1970. */
 static uint64_t hw_fs_clock_ns(void) {
     return (g_timer_ticks + g_wall_base_ticks) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
-}
-
-static void hw_tmpfs_bringup(void) {
-    const char *verdict = "OK";
-
-    vibeos_fs_set_clock(hw_fs_clock_ns);
-    if (vibeos_tmpfs_init(&g_tmpfs, HW_TMPFS_PAGES, hw_tmpfs_page, hw_tmpfs_page_free,
-                          hw_tmpfs_lock, hw_tmpfs_unlock) != 0 ||
-        vibeos_fs_mount(&g_tmpfs_mnt, vibeos_tmpfs_ops(), &g_tmpfs, "tmpfs") != 0) {
-        verdict = "FAILED: mount";
-    } else if (vibeos_fs_attach("/tmp", &g_tmpfs_mnt) != 0) {
-        verdict = "FAILED: attach";
-    }
-    vibeos_tmpfs_set_page_hold(&g_tmpfs, hw_tmpfs_page_hold);
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[IO] TMPFS at=/tmp pages=0x");
-    vibeos_x86_64_serial_print_hex(HW_TMPFS_PAGES);
-    vibeos_x86_64_serial_puts(" result=");
-    vibeos_x86_64_serial_puts(verdict);
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
 }
 
 /* /proc (docs/abi/ L3 step 3): what a program reads before it does anything
@@ -1170,26 +1155,34 @@ static void hw_procfs_cpu(vibeos_procfs_cpu_t *c) {
     c->flags = g_cpu_flags;
 }
 
-/* /run and /dev/shm (hierarchy F1): two more tmpfs instances. /run is
+/* The pseudo filesystems, each at wherever the manifest puts it (hierarchy F2
+ * step 3; /tmp since docs/abi/ L1, /run and /dev/shm since F1). /run is
  * volatile service and session state - it was a directory on the root, so it
  * survived a reboot, which is the one thing it must not do; /dev/shm is where
- * a C library's shm_open puts POSIX shared memory, and it did not exist. They
- * share /tmp's lock and page allocator; each has its own ceiling. */
-static vibeos_tmpfs_t g_runfs, g_shmfs;
-static vibeos_fsmount_t g_runfs_mnt, g_shmfs_mnt;
-
-static void hw_tmpfs_instance(vibeos_tmpfs_t *t, vibeos_fsmount_t *mnt, const char *at, uint64_t pages,
-                              uint32_t mode) {
+ * a C library's shm_open puts POSIX shared memory. Every tmpfs shares one
+ * lock and page allocator; each has its own ceiling, size= in the manifest.
+ * Each returns 0 when mounted and attached. */
+static int hw_tmpfs_instance(const char *at, uint64_t pages, uint32_t mode) {
     const char *verdict = "OK";
+    vibeos_tmpfs_t *t = 0;
+    vibeos_fsmount_t *mnt = 0;
 
-    if (vibeos_tmpfs_init(t, pages, hw_tmpfs_page, hw_tmpfs_page_free, hw_tmpfs_lock, hw_tmpfs_unlock) != 0 ||
-        vibeos_fs_mount(mnt, vibeos_tmpfs_ops(), t, "tmpfs") != 0) {
-        verdict = "FAILED: mount";
+    if (g_tmpfs_used >= HW_TMPFS_INSTANCES) {
+        verdict = "FAILED: no instance left";
     } else {
-        vibeos_tmpfs_set_root_mode(t, mode);
-        vibeos_tmpfs_set_page_hold(t, hw_tmpfs_page_hold);
-        if (vibeos_fs_attach(at, mnt) != 0) {
-            verdict = "FAILED: attach";
+        t = &g_tmpfs_pool[g_tmpfs_used];
+        mnt = &g_tmpfs_pool_mnt[g_tmpfs_used++];
+        if (vibeos_tmpfs_init(t, pages, hw_tmpfs_page, hw_tmpfs_page_free, hw_tmpfs_lock, hw_tmpfs_unlock) != 0 ||
+            vibeos_fs_mount(mnt, vibeos_tmpfs_ops(), t, "tmpfs") != 0) {
+            verdict = "FAILED: mount";
+        } else {
+            if (mode != 0u) {
+                vibeos_tmpfs_set_root_mode(t, mode);
+            }
+            vibeos_tmpfs_set_page_hold(t, hw_tmpfs_page_hold);
+            if (vibeos_fs_attach(at, mnt) != 0) {
+                verdict = "FAILED: attach";
+            }
         }
     }
     vibeos_x86_64_serial_lock();
@@ -1201,30 +1194,56 @@ static void hw_tmpfs_instance(vibeos_tmpfs_t *t, vibeos_fsmount_t *mnt, const ch
     vibeos_x86_64_serial_puts(verdict);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
+    return verdict[0] == 'O' ? 0 : -1;
 }
 
 /* /dev (L2 step 6): the names programs open without asking. Its own mount,
  * with no state - the devices behind its names are the file types'. */
 static vibeos_fsmount_t g_devfs_mnt;
 
-static void hw_devfs_bringup(void) {
+static int hw_devfs_bringup(const char *at) {
     const char *verdict = "OK";
 
-    if (vibeos_fs_mount(&g_devfs_mnt, vibeos_devfs_ops(), 0, "devtmpfs") != 0) {
+    if (vibeos_fs_is_mounted(&g_devfs_mnt)) {
+        verdict = "FAILED: already mounted";
+    } else if (vibeos_fs_mount(&g_devfs_mnt, vibeos_devfs_ops(), 0, "devtmpfs") != 0) {
         verdict = "FAILED: mount";
-    } else if (vibeos_fs_attach("/dev", &g_devfs_mnt) != 0) {
+    } else if (vibeos_fs_attach(at, &g_devfs_mnt) != 0) {
         verdict = "FAILED: attach";
     }
     vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[IO] DEVFS at=/dev result=");
+    vibeos_x86_64_serial_puts("[IO] DEVFS at=");
+    vibeos_x86_64_serial_puts(at);
+    vibeos_x86_64_serial_puts(" result=");
     vibeos_x86_64_serial_puts(verdict);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
+    return verdict[0] == 'O' ? 0 : -1;
 }
 
-static void hw_procfs_bringup(void) {
+static int hw_procfs_bringup(const char *at) {
     const char *verdict = "OK";
 
+    if (vibeos_fs_is_mounted(&g_procfs_mnt)) {
+        verdict = "FAILED: already mounted";
+    } else if (vibeos_fs_mount(&g_procfs_mnt, vibeos_procfs_ops(), &g_procfs, "proc") != 0) {
+        verdict = "FAILED: mount";
+    } else if (vibeos_fs_attach(at, &g_procfs_mnt) != 0) {
+        verdict = "FAILED: attach";
+    }
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[IO] PROCFS at=");
+    vibeos_x86_64_serial_puts(at);
+    vibeos_x86_64_serial_puts(" result=");
+    vibeos_x86_64_serial_puts(verdict);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+    return verdict[0] == 'O' ? 0 : -1;
+}
+
+/* What /proc reports, set up whether or not a manifest mounts it: the Linux
+ * layer reads it for more than the files. */
+static void hw_procfs_prepare(void) {
     g_procfs.mem = hw_procfs_mem;
     hw_procfs_cpu(&g_procfs.cpu);
     g_cpu_tsc0 = hw_rdtsc();
@@ -1236,22 +1255,99 @@ static void hw_procfs_bringup(void) {
      * does not wrap, so this is a number no boot has come near rather than one
      * the allocator enforces. */
     g_procfs.pid_max = 4194304u;
-    if (vibeos_fs_mount(&g_procfs_mnt, vibeos_procfs_ops(), &g_procfs, "proc") != 0) {
-        verdict = "FAILED: mount";
-    } else if (vibeos_fs_attach("/proc", &g_procfs_mnt) != 0) {
-        verdict = "FAILED: attach";
+}
+
+/* The filesystem a manifest line names against the one the driver found.
+ * "auto" takes whatever is there; vfat and msdos are what mount(8) calls FAT. */
+static int hw_type_matches(const char *want, const char *have) {
+    uint32_t k;
+
+    if (!have) {
+        return 0;
     }
+    if ((want[0] == 'a' && want[1] == 'u' && want[2] == 't' && want[3] == 'o' && want[4] == 0)) {
+        return 1;
+    }
+    if (have[0] == 'f' && have[1] == 'a' && have[2] == 't' && have[3] == 0) {
+        return (want[0] == 'v' && want[1] == 'f' && want[2] == 'a' && want[3] == 't' && want[4] == 0) ||
+               (want[0] == 'm' && want[1] == 's' && want[2] == 'd' && want[3] == 'o' && want[4] == 's' &&
+                want[5] == 0);
+    }
+    for (k = 0; want[k] && want[k] == have[k]; k++) {
+    }
+    return want[k] == 0 && have[k] == 0;
+}
+
+static int hw_streq(const char *a, const char *b) {
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static void hw_mount_line(const char *what, const char *at, const char *result) {
     vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[IO] PROCFS at=/proc result=");
-    vibeos_x86_64_serial_puts(verdict);
+    vibeos_x86_64_serial_puts("[IO] MOUNT_ENTRY at=");
+    vibeos_x86_64_serial_puts(at);
+    vibeos_x86_64_serial_puts(" what=");
+    vibeos_x86_64_serial_puts(what);
+    vibeos_x86_64_serial_puts(" result=");
+    vibeos_x86_64_serial_puts(result);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
+}
+
+/* One manifest line. Returns the reason it was not mounted, or 0. The volume
+ * that is already the root is not mounted a second time; a volume no line
+ * names is not mounted at all - there is no /vol<N> since F2 step 3. */
+static const char *hw_mount_entry(const vibeos_mounttab_entry_t *e, int root, int boot) {
+    if (e->is_volume || hw_streq(e->what, "boot")) {
+        int why = 0, idx;
+        vibeos_fsmount_t *mnt;
+
+        if (e->is_volume) {
+            uint32_t n = 0;
+            while (e->what[n]) {
+                n++;
+            }
+            idx = vibeos_storage_find(&g_storage, e->what, (long)n, 1, &why);
+            if (idx < 0) {
+                return vibeos_storage_root_why(why);
+            }
+        } else if ((idx = boot) < 0) {
+            return "not_found";
+        }
+        if (idx == root) {
+            return "is_the_root";
+        }
+        if (!hw_type_matches(e->type, g_storage.volume[idx].fs_name)) {
+            return "wrong_type";
+        }
+        /* The boot volume found again by the scan, on a partitioned disk: the
+         * table gets the mount the machine is running from, not a second FAT
+         * over the same sectors with a cache of its own. */
+        mnt = idx == boot ? &g_bootfs : &g_storage.volume[idx].mount;
+        return vibeos_fs_attach(e->at, mnt) == 0 ? 0 : "attach";
+    }
+    if (hw_streq(e->type, "tmpfs")) {
+        uint64_t pages = e->size_kib ? (e->size_kib + 3u) / 4u : HW_TMPFS_PAGES;
+        return hw_tmpfs_instance(e->at, pages, e->mode) == 0 ? 0 : "tmpfs";
+    }
+    if (hw_streq(e->type, "proc")) {
+        return hw_procfs_bringup(e->at) == 0 ? 0 : "proc";
+    }
+    if (hw_streq(e->type, "devtmpfs")) {
+        return hw_devfs_bringup(e->at) == 0 ? 0 : "devtmpfs";
+    }
+    return "unknown_type";
 }
 
 void hw_volumes_bringup(void) {
     vibeos_blockcache_t *bc = vibeos_fat_cache();
     uint64_t sectors = 0;
     uint32_t i;
+    int root = -1, boot = -1, rescue_from = -1;
 
     if (!bc) {
         return;
@@ -1294,15 +1390,8 @@ void hw_volumes_bringup(void) {
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 
-    /* Every mounted volume goes in the table. The root is the native one when
-     * the disk has it (docs/filesystems/ext4/design.md step 4): the ext4
-     * partition labelled vibeos-root becomes "/", the ESP /boot/efi, and
-     * g_rootfs - exec, the page cache, every relative path - follows it.
-     * Without one the first mounted volume is the root, as before.
-     *
-     * Two passes, because which volume is "/" has to be known before the
-     * first attach: the table resolves by longest prefix and refuses a path
-     * twice, and the ESP comes first on the disk. */
+    /* The root first, then what the manifest on it names. g_rootfs - exec,
+     * the page cache, every relative path - follows the root. */
     {
         /* The root is the volume whose UUID the ESP names (hierarchy F2 step
          * 2), and nothing else: it used to be whichever ext4 carried the label
@@ -1312,7 +1401,7 @@ void hw_volumes_bringup(void) {
         static char spec[96];
         long spec_len = vibeos_fs_read_file(&g_bootfs, "EFI/VIBEOS/ROOT", spec, sizeof(spec) - 1u);
         int why = 0;
-        int root = vibeos_storage_pick_root(&g_storage, spec, spec_len, &why);
+        root = vibeos_storage_pick_root(&g_storage, spec, spec_len, &why);
 
         if (root >= 0 && !vibeos_fs_is_mounted(&g_storage.volume[root].mount)) {
             root = -1;
@@ -1330,55 +1419,111 @@ void hw_volumes_bringup(void) {
         } else {
             root = -1;
         }
+        /* The boot volume found again by the scan, on a partitioned disk. On
+         * a bare ESP the scan's first_lba of zero already meant the boot
+         * mount; a partition's start did not, and the first boot with the
+         * native root beside the ESP lost every exec - so hw_mount_entry
+         * attaches g_bootfs for this one, never the scan's second FAT. */
         for (i = 0; i < g_storage.volume_count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
-            char at[VIBEOS_FS_MOUNT_PATH_MAX];
-            uint32_t w = 0;
-            /* The boot volume found again by the scan, on a partitioned
-             * disk: the table gets the mount the machine is running from,
-             * not a second FAT over the same sectors with a cache of its
-             * own. On a bare ESP the scan's first_lba of zero already meant
-             * the boot mount; a partition's start did not, and the first
-             * boot with the native root beside the ESP lost every exec. */
-            vibeos_fsmount_t *mnt = &g_storage.volume[i].mount;
-            int is_boot = g_storage.volume[i].first_lba != 0u && g_storage.volume[i].first_lba == g_boot_fat_lba &&
-                          g_storage.volume[i].fs_name && g_storage.volume[i].fs_name[0] == 'f';
-
-            if ((int)i == root || !vibeos_fs_is_mounted(mnt)) {
-                continue;
+            if (g_storage.volume[i].first_lba != 0u && g_storage.volume[i].first_lba == g_boot_fat_lba &&
+                g_storage.volume[i].fs_name && g_storage.volume[i].fs_name[0] == 'f' &&
+                vibeos_fs_is_mounted(&g_storage.volume[i].mount)) {
+                boot = (int)i;
             }
-            if (is_boot) {
-                mnt = &g_bootfs;
-            }
-            if (is_boot && root >= 0) {
-                const char *s = "/boot/efi";
-                while (*s) {
-                    at[w++] = *s++;
-                }
-            } else if (vibeos_fs_mount_count() == 0u) {
-                at[w++] = '/';
+        }
+        /* No root named, or not here: the machine runs from the volume it
+         * booted from, as a rescue root - the boot volume when the scan found
+         * it again, else the first mounted one (a bare ESP, whose scan mount
+         * is the boot mount). Never another volume because it is ext4. */
+        if (root < 0) {
+            vibeos_fsmount_t *r = 0;
+            if (boot >= 0) {
+                r = &g_bootfs;
+                rescue_from = boot;
             } else {
-                /* /vol1, /vol2, ... A name a person can type, and one this
-                 * build can generate without a formatter. */
-                at[w++] = '/'; at[w++] = 'v'; at[w++] = 'o'; at[w++] = 'l';
-                at[w++] = (char)('0' + (i % 10u));
+                for (i = 0; i < g_storage.volume_count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
+                    if (vibeos_fs_is_mounted(&g_storage.volume[i].mount)) {
+                        r = &g_storage.volume[i].mount;
+                        rescue_from = (int)i;
+                        break;
+                    }
+                }
             }
-            at[w] = 0;
-            if (vibeos_fs_attach(at, mnt) != 0) {
-                vibeos_x86_64_serial_lock();
-                vibeos_x86_64_serial_puts("[IO] MOUNT refused at ");
-                vibeos_x86_64_serial_puts(at);
-                vibeos_x86_64_serial_puts("\n");
-                vibeos_x86_64_serial_unlock();
+            if (r && vibeos_fs_attach("/", r) != 0) {
+                rescue_from = -1;
             }
         }
     }
 
-    /* After the volumes, so the first of them is still the root. */
-    hw_tmpfs_bringup();
-    hw_procfs_bringup();
-    hw_devfs_bringup();
-    hw_tmpfs_instance(&g_runfs, &g_runfs_mnt, "/run", 1024u, 0755u);
-    hw_tmpfs_instance(&g_shmfs, &g_shmfs_mnt, "/dev/shm", HW_TMPFS_PAGES, 01777u);
+    /* The manifest (hierarchy F2 step 3): what is mounted besides the root,
+     * read from the root. None, or one that does not parse, is the built-in
+     * default - today's mounts - said in the log; a manifest with a typo must
+     * not take the root's mounts away. */
+    {
+        static vibeos_mounttab_t tab;
+        static char text[2048];
+        const char *source = "default";
+        uint32_t bad_line = 0, k, failed = 0;
+        int why = VIBEOS_MOUNTTAB_OK;
+        long len = root >= 0 ? vibeos_fs_read_file(&g_rootfs, "etc/vibeos/mounts", text, sizeof(text) - 1u) : -1;
+
+        vibeos_fs_set_clock(hw_fs_clock_ns);
+        hw_procfs_prepare();
+        if (len >= (long)sizeof(text) - 1) {
+            source = "refused";
+            why = VIBEOS_MOUNTTAB_TOO_LONG;
+        } else if (len >= 0) {
+            text[len] = 0;
+            why = vibeos_mounttab_parse(text, len, &tab, &bad_line);
+            source = why == VIBEOS_MOUNTTAB_OK ? "root" : "refused";
+        }
+        if (len < 0 || why != VIBEOS_MOUNTTAB_OK) {
+            const char *d = vibeos_mounttab_default();
+            uint32_t ignored;
+            long n = 0;
+            while (d[n]) {
+                n++;
+            }
+            (void)vibeos_mounttab_parse(d, n, &tab, &ignored);
+        }
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[IO] MOUNTS source=");
+        vibeos_x86_64_serial_puts(source);
+        vibeos_x86_64_serial_puts(" why=");
+        vibeos_x86_64_serial_puts(vibeos_mounttab_why(why));
+        vibeos_x86_64_serial_puts(" line=0x");
+        vibeos_x86_64_serial_print_hex(bad_line);
+        vibeos_x86_64_serial_puts(" entries=0x");
+        vibeos_x86_64_serial_print_hex(tab.count);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+
+        for (k = 0; k < tab.count; k++) {
+            const vibeos_mounttab_entry_t *e = &tab.entry[k];
+            const char *r = hw_mount_entry(e, root >= 0 ? root : rescue_from, boot);
+
+            hw_mount_line(e->what, e->at, r ? r : "ok");
+            if (r && e->required) {
+                /* A required mount that failed is named, and the boot carries
+                 * on with what it has: a rescue state, not a halt. */
+                failed++;
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[IO] MOUNT_REQUIRED_FAILED at=");
+                vibeos_x86_64_serial_puts(e->at);
+                vibeos_x86_64_serial_puts(" why=");
+                vibeos_x86_64_serial_puts(r);
+                vibeos_x86_64_serial_puts("\n");
+                vibeos_x86_64_serial_unlock();
+            }
+        }
+        if (failed) {
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[IO] MOUNTS rescue=1 required_failed=0x");
+            vibeos_x86_64_serial_print_hex(failed);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+        }
+    }
 
     {
         uint32_t k;
