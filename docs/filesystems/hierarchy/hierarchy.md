@@ -77,6 +77,48 @@ for history or for a case VibeOS does not have:
   `~/.local/state` and `~/.cache`, decided now so the shell and the GUI do
   not each invent their own.
 
+### Proposed 2026-11-18, awaiting approval: users' folders and installed software
+
+Four gaps the hierarchy left open, each needed before there are users and
+installers. Nothing below is decided until approved; nothing implements it yet.
+
+1. **A user's folders.** Made when the user is made: `~/Desktop`,
+   `~/Documents`, `~/Downloads`, `~/Music`, `~/Pictures`, `~/Videos`,
+   `~/Templates`, `~/Public` - XDG's names, written to
+   `~/.config/user-dirs.dirs`, which is where Linux programs look for them.
+   The names on disk are English whatever the language: a GUI shows them
+   translated, as GNOME and Windows both do, so a path in a script means the
+   same on every machine. Windows' known folders are the same directories -
+   `C:\Users\<name>\Documents` is `/home/<name>/Documents` - and `/home` is
+   casefolded, so a Windows program's `DOCUMENTS` finds them.
+
+2. **Software the administrator installs for everyone** (outside the OS, which
+   is `/usr`): the program's files in `/opt/<vendor>/<app>`, read-only to
+   users; its configuration in `/etc/opt/<app>`; what it changes as it runs
+   in `/var/opt/<app>` - the three places the Filesystem Hierarchy Standard
+   gives an `/opt` package, so `/opt` stays a payload that an update can
+   replace. A Windows program: `C:\Program Files` is
+   `/opt/windows/program-files` and `C:\ProgramData` is
+   `/var/lib/windows/programdata`, as already decided.
+
+3. **Software a user installs for himself alone**, without the
+   administrator: the program's files in `~/.local/opt/<app>` - `/opt`'s
+   shape inside the home - and its commands as links in `~/.local/bin`,
+   which is on that user's `PATH`; its data and configuration in XDG's places
+   as any program's. A Windows program installed per user goes where Windows
+   puts it, `AppData\Local\Programs`, which is that same `~/.local/opt/windows`.
+
+4. **Windows' AppData.** `AppData\Roaming` (settings that follow the user) is
+   `~/.config/windows`; `AppData\Local` (this machine's data and caches) is
+   `~/.local/share/windows`; `AppData\LocalLow` is
+   `~/.local/share/windows/LocalLow`. One home, two personalities, and a
+   backup of `~/.config` takes a Windows program's settings with it.
+
+And who makes them: the user-management tool (next-steps.md item 6, the
+applications that manage the system), from a skeleton in `/etc/skel` that the
+OS ships and the administrator may change - Linux's convention, so the tools
+that already know it keep working.
+
 ## 2. Directory contract
 
 | Path | Backing / mutability | Owner and baseline access | Contract |
