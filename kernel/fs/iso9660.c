@@ -369,8 +369,37 @@ static int iso9660_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
     return vibeos_fs_mount(out, vibeos_iso9660_ops(), fs, "iso9660");
 }
 
+/* The primary volume descriptor, at 2048-byte sector 16: the volume
+ * identifier at 40 is the label, and blkid makes a UUID of the volume's
+ * creation date at 813 - YYYYMMDDHHMMSSCC - written YYYY-MM-DD-HH-MM-SS-CC. */
+static int iso9660_identify(vibeos_blockcache_t *bc, uint64_t first_lba, vibeos_volume_id_t *out)
+{
+    uint8_t s[VIBEOS_BLOCK_SIZE], t[VIBEOS_BLOCK_SIZE];
+    uint32_t i, o = 0;
+
+    if (vibeos_blockcache_read(bc, first_lba + 64u, s) != 0 ||
+        vibeos_blockcache_read(bc, first_lba + 65u, t) != 0 || s[0] != 1u) {
+        return -1;
+    }
+    vibeos_volid_text(out->label, sizeof(out->label), s + 40u, 32u);
+    for (i = 0; i < 16u; i++) {
+        uint8_t c = t[813u - 512u + i];
+
+        if (c < '0' || c > '9') {
+            out->uuid[0] = 0;
+            return 0;   /* no date: no uuid */
+        }
+        if (i == 4u || i == 6u || i == 8u || i == 10u || i == 12u || i == 14u) {
+            out->uuid[o++] = '-';
+        }
+        out->uuid[o++] = (char)c;
+    }
+    out->uuid[o] = 0;
+    return 0;
+}
+
 static const vibeos_fs_driver_t g_iso9660_driver = {
-    "iso9660", 0, iso9660_driver_mount, 0, 40u
+    "iso9660", 0, iso9660_driver_mount, 0, 40u, iso9660_identify
 };
 VIBEOS_FS_DRIVER(g_iso9660_driver);
 

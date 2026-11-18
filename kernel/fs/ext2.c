@@ -1413,8 +1413,20 @@ static int ext4_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
     return vibeos_fs_mount(out, ext4_ops(fs), fs, "ext4");
 }
 
+static int ext2_identify(vibeos_blockcache_t *bc, uint64_t first_lba, vibeos_volume_id_t *out) {
+    uint8_t s[VIBEOS_BLOCK_SIZE];
+
+    /* Byte 1024 of the volume, sector 2: the superblock's first half holds both. */
+    if (vibeos_blockcache_read(bc, first_lba + 2u, s) != 0) {
+        return -1;
+    }
+    vibeos_volid_uuid16(out, s + 0x68u);
+    vibeos_volid_text(out->label, sizeof(out->label), s + 0x78u, 16u);
+    return 0;
+}
+
 static const vibeos_fs_driver_t g_ext2_driver = {
-    "ext2", 0, ext2_driver_mount, 0, 30u
+    "ext2", 0, ext2_driver_mount, 0, 30u, ext2_identify
 };
 VIBEOS_FS_DRIVER(g_ext2_driver);
 
@@ -1422,7 +1434,7 @@ VIBEOS_FS_DRIVER(g_ext2_driver);
  * (ext4_write.c), tried after ext2 so that a plain ext2 volume keeps ext2's
  * name. */
 static const vibeos_fs_driver_t g_ext4_driver = {
-    "ext4", 0, ext4_driver_mount, 0, 31u
+    "ext4", 0, ext4_driver_mount, 0, 31u, ext2_identify
 };
 VIBEOS_FS_DRIVER(g_ext4_driver);
 

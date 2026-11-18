@@ -107,6 +107,12 @@ do_tests() {
     e4="$(bash scripts/dev/verify-ext4.sh "$d" | tail -1)"
     echo "$e4"
     case "$e4" in ext4=ok*|ext4=skip*) ;; *) t=1 ;; esac
+    # What identifies each volume, against blkid (hierarchy F2 step 1).
+    local vi
+    cmake --build "$d" --target vibeos_volid_cli > /dev/null 2>&1 || t=1
+    vi="$(python3 scripts/dev/verify-volid.py "$d" | tail -1)"
+    echo "$vi"
+    case "$vi" in volid=ok*|volid=skip*) ;; *) t=1 ;; esac
     # The journal against a power cut (ext4.md step 3): every 23rd write here,
     # every one of them in the nightly.
     local pc

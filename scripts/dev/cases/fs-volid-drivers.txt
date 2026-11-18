@@ -1,0 +1,21 @@
+# What identifies a volume (hierarchy F2 step 1), broken in the drivers that
+# read it. Caught by scripts/dev/verify-volid.py against blkid.
+#
+# Target source: kernel/fs/fat.c
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_volid_cli > /dev/null && python3 scripts/dev/verify-volid.py build-gcc-Release'" python3 scripts/dev/sabotage.py kernel/fs/fat.c scripts/dev/cases/fs-volid-drivers.txt build-gcc-Release
+
+### FAT32 is read where FAT16 keeps its serial
+--- old
+    at = (s[0x16] | (s[0x17] << 8)) == 0u ? 0x43u : 0x27u;
++++ new
+    at = 0x27u;
+
+### "NO NAME" is reported as a label
+--- old
+        out->label[0] = 0;
+    }
+    return 0;
++++ new
+        out->label[1] = out->label[1];
+    }
+    return 0;

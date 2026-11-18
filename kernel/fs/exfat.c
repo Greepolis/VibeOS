@@ -593,8 +593,22 @@ static int exfat_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
     return vibeos_fs_mount(out, vibeos_exfat_ops(), fs, "exfat");
 }
 
+/* exFAT's serial is at 0x64 of its boot sector; its label is a root
+ * directory entry, which is not read here. */
+static int exfat_identify(vibeos_blockcache_t *bc, uint64_t first_lba, vibeos_volume_id_t *out)
+{
+    uint8_t s[VIBEOS_BLOCK_SIZE];
+
+    if (vibeos_blockcache_read(bc, first_lba, s) != 0) {
+        return -1;
+    }
+    vibeos_volid_serial32(out, (uint32_t)s[0x64] | ((uint32_t)s[0x65] << 8) | ((uint32_t)s[0x66] << 16) |
+                                   ((uint32_t)s[0x67] << 24));
+    return 0;
+}
+
 static const vibeos_fs_driver_t g_exfat_driver = {
-    "exfat", 0, exfat_driver_mount, 0, 20u
+    "exfat", 0, exfat_driver_mount, 0, 20u, exfat_identify
 };
 VIBEOS_FS_DRIVER(g_exfat_driver);
 

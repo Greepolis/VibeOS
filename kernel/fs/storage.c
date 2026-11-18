@@ -87,6 +87,10 @@ static void storage_probe_volume(vibeos_volume_t *v, vibeos_blockcache_t *bc)
         if (d->mount(&v->mount, bc, v->first_lba, v->sector_count,
                      v->fs_state) == 0) {
             v->fs_name = d->name;
+            memset(&v->id, 0, sizeof(v->id));
+            if (d->identify) {
+                (void)d->identify(bc, v->first_lba, &v->id);
+            }
             return;
         }
         /* A driver with a probe that said yes and then would not mount is

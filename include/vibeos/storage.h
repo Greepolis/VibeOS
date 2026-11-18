@@ -41,9 +41,77 @@
  */
 #define VIBEOS_FS_STATE_BYTES 40960u
 
+/* What identifies a volume across boots and disks (hierarchy F2 step 1), as
+ * blkid says it, so a manifest line written from blkid's answer names the same
+ * volume: ext's UUID, FAT's and exFAT's serial as XXXX-XXXX, NTFS's as sixteen
+ * hex digits, ISO9660's from its creation date; and the label where the
+ * filesystem has one. Empty strings when it has neither. */
+typedef struct {
+    char uuid[40];
+    char label[40];
+} vibeos_volume_id_t;
+
+/* Formatting for the drivers' identify, here and inline because the drivers
+ * are linked without storage.c in the fuzzers. */
+static inline char vibeos_volid_hex(uint32_t v, int upper) {
+    v &= 15u;
+    return (char)(v < 10u ? '0' + v : (upper ? 'A' : 'a') + v - 10u);
+}
+
+static inline void vibeos_volid_uuid16(vibeos_volume_id_t *id, const uint8_t b[16]) {
+    uint32_t i, o = 0;
+
+    for (i = 0; i < 16u; i++) {
+        if (i == 4u || i == 6u || i == 8u || i == 10u) {
+            id->uuid[o++] = '-';
+        }
+        id->uuid[o++] = vibeos_volid_hex(b[i] >> 4, 0);
+        id->uuid[o++] = vibeos_volid_hex(b[i], 0);
+    }
+    id->uuid[o] = 0;
+}
+
+static inline void vibeos_volid_serial32(vibeos_volume_id_t *id, uint32_t serial) {
+    uint32_t i, o = 0;
+
+    for (i = 0; i < 8u; i++) {
+        if (i == 4u) {
+            id->uuid[o++] = '-';
+        }
+        id->uuid[o++] = vibeos_volid_hex(serial >> (28u - 4u * i), 1);
+    }
+    id->uuid[o] = 0;
+}
+
+static inline void vibeos_volid_serial64(vibeos_volume_id_t *id, uint64_t serial) {
+    uint32_t i;
+
+    for (i = 0; i < 16u; i++) {
+        id->uuid[i] = vibeos_volid_hex((uint32_t)(serial >> (60u - 4u * i)), 1);
+    }
+    id->uuid[16] = 0;
+}
+
+/* Bytes as a string, cut at the first NUL and with trailing spaces trimmed,
+ * as blkid reports a label. */
+static inline void vibeos_volid_text(char *out, uint32_t cap, const uint8_t *b, uint32_t n) {
+    uint32_t i, len = 0;
+
+    for (i = 0; i < n && b[i] != 0u && i + 1u < cap; i++) {
+        out[i] = (char)b[i];
+        len = i + 1u;
+    }
+    while (len > 0u && out[len - 1u] == ' ') {
+        len--;
+    }
+    out[len] = 0;
+}
+
+
 typedef struct {
     uint64_t first_lba;
     uint64_t sector_count;       /* the partition's length; bounds every read */
+    vibeos_volume_id_t id;       /* filled by the driver that mounted it */
     const char *fs_name;         /* 0 when nothing recognised the volume */
     vibeos_fsmount_t mount;
 
@@ -103,6 +171,9 @@ typedef struct {
      * sectors, so they must be asked before FAT is. Stated by each driver
      * because the linker section they arrive in has no order of its own. */
     uint32_t order;
+    /* What identifies the volume (hierarchy F2 step 1), read off the disk
+     * after a mount; 0 for a driver whose filesystem names nothing. */
+    int (*identify)(vibeos_blockcache_t *cache, uint64_t first_lba, vibeos_volume_id_t *out);
 } vibeos_fs_driver_t;
 
 /* Every driver the scan knows, in `order`. A small fixed table: this runs at

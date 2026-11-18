@@ -3341,9 +3341,35 @@ static int fat_format(vibeos_blockcache_t *cache, uint64_t first_lba,
  * boot volume, the I4c formatting exercise and the volume scan all reach it
  * through vibeos_storage_driver("fat") or the scan; there used to be a register
  * function, an ops accessor and two exported function pointers, one for each. */
+/* FAT's identity is in its boot sector: the serial and the label sit after
+ * the BPB, at 0x27 and 0x2B on FAT12/16 and 0x43 and 0x47 on FAT32, which is
+ * the one with no 16-bit sectors-per-FAT. "NO NAME" is no label, as blkid
+ * says. */
+static int fat_identify(vibeos_blockcache_t *bc, uint64_t first_lba, vibeos_volume_id_t *out) {
+    uint8_t s[VIBEOS_BLOCK_SIZE];
+    uint32_t at;
+
+    if (vibeos_blockcache_read(bc, first_lba, s) != 0) {
+        return -1;
+    }
+    at = (s[0x16] | (s[0x17] << 8)) == 0u ? 0x43u : 0x27u;
+    if (s[at - 1u] != 0x29u) {
+        return 0;   /* no extended boot signature: neither is there */
+    }
+    vibeos_volid_serial32(out, (uint32_t)s[at] | ((uint32_t)s[at + 1u] << 8) | ((uint32_t)s[at + 2u] << 16) |
+                                   ((uint32_t)s[at + 3u] << 24));
+    vibeos_volid_text(out->label, sizeof(out->label), s + at + 4u, 11u);
+    if (out->label[0] == 'N' && out->label[1] == 'O' && out->label[2] == ' ' && out->label[3] == 'N' &&
+        out->label[7] == 0) {
+        out->label[0] = 0;
+    }
+    return 0;
+}
+
 static const vibeos_fs_driver_t g_fat_driver = {
     "fat", fat_probe, fat_scan_mount, fat_format,
-    50u   /* after NTFS and exFAT, whose boot sectors look like FAT's */
+    50u,   /* after NTFS and exFAT, whose boot sectors look like FAT's */
+    fat_identify
 };
 VIBEOS_FS_DRIVER(g_fat_driver);
 

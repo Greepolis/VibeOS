@@ -1075,7 +1075,7 @@ def corpus_problems(serial_text):
     return problems, absent
 
 
-def root_volume_problems(root_img):
+def root_volume_problems(root_img, serial=""):
     """What is wrong with the native root the guest left behind
     (docs/filesystems/ext4/design.md step 4, E4-015): e2fsck -fn must call it
     clean - after replaying the journal if the guest stopped with one - and
@@ -1098,6 +1098,15 @@ def root_volume_problems(root_img):
                            capture_output=True, text=True)
         if "ROOT_WRITE_OK" not in r.stdout:
             out.append("root_volume_lost_the_guests_file")
+        # What the kernel read as the root's identity (hierarchy F2 step 1),
+        # against blkid's reading of the same volume - a reader this project
+        # did not write. The manifest names volumes by it.
+        blkid = shutil.which("blkid") or "/usr/sbin/blkid"
+        m = re.search(r"\[IO\] VOLUME [^\n]* fs=ext4 uuid=(\S+)", serial)
+        if os.path.exists(blkid) and serial:
+            r = subprocess.run([blkid, "-p", "-o", "value", "-s", "UUID", root_img], capture_output=True, text=True)
+            if m is None or m.group(1) != r.stdout.strip():
+                out.append("volume_uuid_wrong")
         # The name the guest wrote in /home, as it wrote it: case preserved.
         r = subprocess.run([debugfs, "-R", "ls /home", root_img], capture_output=True, text=True)
         if "MixedCase.txt" not in r.stdout:
@@ -3854,7 +3863,7 @@ def main():
                     if r.returncode != 0:
                         problems.append("boot_disk_unreadable")
                     else:
-                        problems += root_volume_problems(root_img)
+                        problems += root_volume_problems(root_img, text)
                 problems += boot_volume_problems(esp_img)
                 if problems:
                     reason = "invariant_failed:" + ",".join(problems)

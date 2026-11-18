@@ -1,0 +1,27 @@
+# What identifies a volume (hierarchy F2 step 1), broken in the formatting
+# every driver shares. Caught by scripts/dev/verify-volid.py, which makes an
+# image of each filesystem with the host's own tools and holds the driver's
+# answer to blkid's.
+#
+# Target source: include/vibeos/storage.h
+# Run: SABOTAGE_VERIFY="bash -c 'cmake --build build-gcc-Release --target vibeos_volid_cli > /dev/null && python3 scripts/dev/verify-volid.py build-gcc-Release'" python3 scripts/dev/sabotage.py include/vibeos/storage.h scripts/dev/cases/fs-volid.txt build-gcc-Release
+
+### a UUID's hyphens in the wrong places
+--- old
+        if (i == 4u || i == 6u || i == 8u || i == 10u) {
+            id->uuid[o++] = '-';
++++ new
+        if (i == 4u || i == 6u || i == 8u || i == 12u) {
+            id->uuid[o++] = '-';
+
+### a serial's halves swapped
+--- old
+        id->uuid[o++] = vibeos_volid_hex(serial >> (28u - 4u * i), 1);
++++ new
+        id->uuid[o++] = vibeos_volid_hex(serial >> ((28u - 4u * i + 16u) & 31u), 1);
+
+### a label keeps its trailing spaces
+--- old
+    while (len > 0u && out[len - 1u] == ' ') {
++++ new
+    while (0) {

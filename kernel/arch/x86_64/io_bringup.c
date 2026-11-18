@@ -1432,7 +1432,13 @@ void hw_volumes_bringup(void) {
         vibeos_x86_64_serial_puts(" fs=");
         vibeos_x86_64_serial_puts(g_storage.volume[i].fs_name
                                   ? g_storage.volume[i].fs_name : "none");
-        vibeos_x86_64_serial_puts("\n");
+        /* What identifies it (hierarchy F2 step 1), as blkid says it; the
+         * label quoted, since a label may hold a space. */
+        vibeos_x86_64_serial_puts(" uuid=");
+        vibeos_x86_64_serial_puts(g_storage.volume[i].id.uuid[0] ? g_storage.volume[i].id.uuid : "-");
+        vibeos_x86_64_serial_puts(" label=\"");
+        vibeos_x86_64_serial_puts(g_storage.volume[i].id.label);
+        vibeos_x86_64_serial_puts("\"\n");
         vibeos_x86_64_serial_unlock();
     }
 }

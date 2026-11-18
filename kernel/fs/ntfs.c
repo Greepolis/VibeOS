@@ -965,8 +965,26 @@ static int ntfs_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
     return vibeos_fs_mount(out, vibeos_ntfs_ops(), fs, "ntfs");
 }
 
+/* NTFS's serial is the eight bytes at 0x48 of its boot sector; its label is
+ * in $Volume, which is not read here. */
+static int ntfs_identify(vibeos_blockcache_t *bc, uint64_t first_lba, vibeos_volume_id_t *out)
+{
+    uint8_t s[VIBEOS_BLOCK_SIZE];
+    uint64_t v = 0;
+    uint32_t i;
+
+    if (vibeos_blockcache_read(bc, first_lba, s) != 0) {
+        return -1;
+    }
+    for (i = 0; i < 8u; i++) {
+        v |= (uint64_t)s[0x48 + i] << (8u * i);
+    }
+    vibeos_volid_serial64(out, v);
+    return 0;
+}
+
 static const vibeos_fs_driver_t g_ntfs_driver = {
-    "ntfs", 0, ntfs_driver_mount, 0, 10u
+    "ntfs", 0, ntfs_driver_mount, 0, 10u, ntfs_identify
 };
 VIBEOS_FS_DRIVER(g_ntfs_driver);
 

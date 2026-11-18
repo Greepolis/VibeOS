@@ -1,0 +1,14 @@
+# The root's identity on the machine (hierarchy F2 step 1): the kernel says
+# each volume's UUID in its [IO] VOLUME line, and the gate holds the root's to
+# blkid's reading of the image the guest left.
+#
+#  1. ext's UUID read one byte off. Expect volume_uuid_wrong.
+#
+# Target source: kernel/fs/ext2.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/fs-volid-boot.txt
+
+### ext's UUID read one byte off (volume_uuid_wrong)
+--- old
+    vibeos_volid_uuid16(out, s + 0x68u);
++++ new
+    vibeos_volid_uuid16(out, s + 0x69u);
