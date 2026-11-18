@@ -77,10 +77,11 @@ for history or for a case VibeOS does not have:
   `~/.local/state` and `~/.cache`, decided now so the shell and the GUI do
   not each invent their own.
 
-### Proposed 2026-11-18, awaiting approval: users' folders and installed software
+### Decided 2026-11-18: users' folders and installed software
 
 Four gaps the hierarchy left open, each needed before there are users and
-installers. Nothing below is decided until approved; nothing implements it yet.
+installers - proposed and approved the same day. Nothing implements it yet:
+there are no users and no installer.
 
 1. **A user's folders.** Made when the user is made: `~/Desktop`,
    `~/Documents`, `~/Downloads`, `~/Music`, `~/Pictures`, `~/Videos`,
