@@ -271,9 +271,12 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: Install guest and host dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools e2fsprogs gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools e2fsprogs gcc-mingw-w64-x86-64
       - name: Build guest and host test baseline
         run: |
           set -euo pipefail
@@ -352,9 +355,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
             mtools exfatprogs ntfs-3g xorriso fdisk gdisk
 
       - name: Configure host tests for production sabotage verification

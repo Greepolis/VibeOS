@@ -91,9 +91,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       - name: Build
         run: |
@@ -160,9 +163,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       # Two boots at two round counts, because one figure cannot tell a fixed
       # startup cost from a per-round leak - and those are the same number with
@@ -224,9 +230,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential
 
       # Sanitized, because the model catches wrong arithmetic and the sanitizer
       # catches walking off the slot table while doing it - the same division
@@ -278,9 +287,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential
 
       # Sanitized: the model catches a wrong answer, the sanitizer a page used
       # after tmpfs gave it back or a record written past its page.
@@ -341,9 +353,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential e2fsprogs
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential e2fsprogs
 
       - name: Build the exerciser
         run: |
@@ -381,9 +396,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential e2fsprogs
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential e2fsprogs
 
       - name: Build the exerciser
         run: |
@@ -434,9 +452,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential
 
       - name: Build (sanitized)
         run: |
@@ -475,9 +496,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential
 
       - name: Build (sanitized)
         run: |
@@ -528,9 +552,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential
 
       - name: Build (sanitized)
         run: |
@@ -581,9 +608,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential
 
       # Two builds, because the two sanitizers cannot share one: address and
       # undefined for the single-threaded model, where a write outside a
@@ -647,9 +677,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential
 
       # Two builds on purpose: the model catches wrong arithmetic, the
       # sanitizers catch walking off the descriptor table while doing it.
@@ -705,9 +738,12 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: Install guest dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
       - name: Build the guest
         run: |
           set -euo pipefail
@@ -928,9 +964,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build clang
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build clang
 
       - name: Build Fuzz Target
         run: |
@@ -974,9 +1013,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
             mtools exfatprogs ntfs-3g xorriso fdisk gdisk
 
       - name: Configure instrumented fuzzers
@@ -1042,9 +1084,12 @@ jobs:
           submodules: recursive
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential musl-tools strace busybox-static qemu-system-x86 qemu-utils e2fsprogs ovmf mtools
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential musl-tools strace busybox-static qemu-system-x86 qemu-utils e2fsprogs ovmf mtools
 
       # The musl test programs are part of the corpus; the full build is what
       # produces them, as it does for the boot image.

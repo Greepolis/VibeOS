@@ -53,9 +53,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build build-essential
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3

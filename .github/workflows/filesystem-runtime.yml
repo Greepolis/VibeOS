@@ -57,12 +57,15 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
-          sudo apt-get update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
           # ntfs-3g, exfatprogs and mtools build the NTFS, exFAT and long-name FAT images the boot
           # mounts and the gate asserts; without them both report "no image".
-          sudo apt-get install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       - name: Configure
         run: |

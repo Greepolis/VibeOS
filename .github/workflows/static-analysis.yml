@@ -56,9 +56,12 @@ jobs:
           persist-credentials: false
 
       - name: Install clang
+        # A stalled mirror held the filesystem gate's install for its whole
+        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y clang
 
       - name: Analyze
         id: analyze
