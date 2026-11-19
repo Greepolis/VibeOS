@@ -469,6 +469,22 @@ int vibeos_fs_attach(const char *path, vibeos_fsmount_t *mnt);
 /* Detach whatever is at `path`. Does not unmount: the caller owns the mount. */
 int vibeos_fs_detach(const char *path);
 
+/* Who answers "does an open description still stand on this mount"
+ * (hierarchy F2 step 5): the open-file layer, which registers itself
+ * (vibeos_file_reset), as it answers vibeos_fs_set_open_query. A mount is
+ * the same mount when it is the same entry or holds the same driver state,
+ * because the root is attached as a copy of the scan's mount. With nobody
+ * registered the answer is no. */
+typedef int (*vibeos_fs_busy_query_t)(const vibeos_fsmount_t *mnt);
+vibeos_fs_busy_query_t vibeos_fs_set_busy_query(vibeos_fs_busy_query_t query);
+
+/* Take the mount at `path` out of the table, as Linux's umount without
+ * MNT_DETACH: 0, -VIBEOS_EINVAL when nothing is mounted exactly there,
+ * -VIBEOS_EBUSY while a description stands on it or another mount lies
+ * beneath it. A refused unmount changes nothing, so a descriptor that kept
+ * it busy still reads. The mount itself stays the caller's. */
+int vibeos_fs_umount(const char *path);
+
 /* Which mount owns `path`, and what is left of the path inside it.
  *
  * `out_tail` points into `path`; it is never allocated and never modified. A

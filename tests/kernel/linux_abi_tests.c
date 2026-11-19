@@ -1119,6 +1119,27 @@ static void t_mount_options(void) {
     expect(SYS2(137, ustr("/tmp/keep"), ufs) == 0 && sf->f_flags == 0, "and nothing once they are gone");
 }
 
+/* Unmount with a descriptor open (hierarchy F2 step 5): EBUSY while it is,
+ * nothing changed by the refusal, and the unmount goes once it is closed. */
+static void t_umount_busy(void) {
+    uint64_t buf = kf_ualloc(512);
+    long fd;
+
+    fresh(100);
+    mount_ro();
+    fd = SYS2(2, ustr("/ro"), 0x10000 /* O_DIRECTORY */);
+    expect(fd >= 3, "a directory on /ro opens");
+    expect(vibeos_fs_umount("/ro") == -VIBEOS_EBUSY, "unmounting it while open is EBUSY");
+    expect(SYS3(217, (uint64_t)fd, buf, 512) >= 0, "and the descriptor that kept it still reads");
+    expect(vibeos_fs_umount("/") == -VIBEOS_EBUSY, "a mount with others beneath it is EBUSY");
+    expect(vibeos_fs_umount("/r") == -VIBEOS_EINVAL && vibeos_fs_umount("/ro/x") == -VIBEOS_EINVAL,
+           "a path that is not a mount point is EINVAL");
+    (void)SYS1(3, (uint64_t)fd);
+    expect(vibeos_fs_umount("/ro") == 0, "closed, it unmounts");
+    expect(vibeos_fs_umount("/ro") == -VIBEOS_EINVAL, "and is not there to unmount twice");
+    mount_ro();
+}
+
 static void t_rename(void) {
     long dfd;
 
@@ -7412,6 +7433,7 @@ int test_linux_handlers(void) {
     t_root_filesystem_writes();
     t_rename();
     t_mount_options();
+    t_umount_busy();
     t_rmdir_and_links();
     t_metadata();
     t_mknod_and_openat2();

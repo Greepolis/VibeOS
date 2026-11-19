@@ -1,0 +1,36 @@
+# Unmount with descriptors open (hierarchy F2 step 5), broken. Caught by
+# t_umount_busy in the host tests: /ro is held open by a directory
+# descriptor, and its unmount must be EBUSY until the descriptor is closed.
+#
+# Target source: kernel/fs/vfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/vfs.c scripts/dev/cases/fs-umount.txt build-gcc-Release
+
+### the open-file table is not asked
+--- old
+    if (g_busy_query && g_busy_query(g_mounts[at].mnt)) {
++++ new
+    if (0) {
+
+### a mount with others beneath it is taken out from under them
+--- old
+            (len == 1u || g_mounts[i].path[len] == '/')) {
+            mt_unlock();
+            return -VIBEOS_EBUSY;
++++ new
+            0) {
+            mt_unlock();
+            return -VIBEOS_EBUSY;
+
+### a refused unmount takes the entry out anyway
+--- old
+    if (g_busy_query && g_busy_query(g_mounts[at].mnt)) {
+        mt_unlock();
+        return -VIBEOS_EBUSY;
+    }
++++ new
+    if (g_busy_query && g_busy_query(g_mounts[at].mnt)) {
+        g_mounts[at] = g_mounts[g_mount_count - 1u];
+        g_mount_count--;
+        mt_unlock();
+        return -VIBEOS_EBUSY;
+    }

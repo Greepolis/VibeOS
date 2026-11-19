@@ -983,6 +983,56 @@ int vibeos_fs_detach(const char *path) {
     return -1;
 }
 
+static vibeos_fs_busy_query_t g_busy_query;
+
+vibeos_fs_busy_query_t vibeos_fs_set_busy_query(vibeos_fs_busy_query_t query) {
+    vibeos_fs_busy_query_t old = g_busy_query;
+
+    g_busy_query = query;
+    return old;
+}
+
+/* Asked of the open-file table, not of a count kept beside it: every
+ * description already says which mount it stands on, and a second record of
+ * that is one more thing that can disagree with the first. The table's lock
+ * is taken inside the mount table's, and nothing takes them the other way
+ * round: put releases the file lock before it calls anything here. */
+int vibeos_fs_umount(const char *path) {
+    uint32_t len, i;
+    int at = -1;
+
+    if (!path || path[0] != '/') {
+        return -VIBEOS_EINVAL;
+    }
+    len = fs_strlen(path);
+    mt_lock();
+    for (i = 0; i < g_mount_count; i++) {
+        if (g_mounts[i].path_len == len && fs_same(g_mounts[i].path, path, len)) {
+            at = (int)i;
+        }
+    }
+    if (at < 0) {
+        mt_unlock();
+        return -VIBEOS_EINVAL;
+    }
+    for (i = 0; i < g_mount_count; i++) {
+        /* A mount beneath this one: /dev/shm under /dev, anything under /. */
+        if ((int)i != at && g_mounts[i].path_len > len && fs_same(g_mounts[i].path, path, len) &&
+            (len == 1u || g_mounts[i].path[len] == '/')) {
+            mt_unlock();
+            return -VIBEOS_EBUSY;
+        }
+    }
+    if (g_busy_query && g_busy_query(g_mounts[at].mnt)) {
+        mt_unlock();
+        return -VIBEOS_EBUSY;
+    }
+    g_mounts[at] = g_mounts[g_mount_count - 1u];
+    g_mount_count--;
+    mt_unlock();
+    return 0;
+}
+
 int vibeos_fs_resolve(const char *path, vibeos_fsmount_t **out_mnt,
                       const char **out_tail) {
     uint32_t i;

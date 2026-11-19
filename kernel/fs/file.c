@@ -68,10 +68,30 @@ static int file_node_open(const void *fs, uint64_t id) {
     return found;
 }
 
+/* vibeos_fs_set_busy_query (hierarchy F2 step 5): is any live description
+ * on this mount - the same entry, or the same driver state, since the root is
+ * attached as a copy of the scan's mount. A mount with no state of its own
+ * (devfs) is matched by entry only. */
+static int file_mount_busy(const vibeos_fsmount_t *mnt) {
+    uint32_t i;
+    int found = 0;
+
+    lock();
+    for (i = 0; i < VIBEOS_FILE_MAX && !found; i++) {
+        const vibeos_file_t *f = &g_files[i];
+
+        found = f->ops != 0 && __atomic_load_n(&f->refs, __ATOMIC_ACQUIRE) != 0u && f->mnt != 0 &&
+                (f->mnt == mnt || (mnt->fs != 0 && f->mnt->fs == mnt->fs));
+    }
+    unlock();
+    return found;
+}
+
 void vibeos_file_reset(void) {
     uint32_t i;
 
     vibeos_fs_set_open_query(file_node_open);
+    (void)vibeos_fs_set_busy_query(file_mount_busy);
 
     lock();
     for (i = 0; i < VIBEOS_FILE_MAX; i++) {
