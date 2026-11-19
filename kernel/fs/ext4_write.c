@@ -2046,6 +2046,18 @@ static int dir_dotdot(vibeos_ext2_t *fs, uint32_t dir_ino, uint32_t set_to, uint
         *parent = le32(b + off);
         return 0;
     }
+    /* Pointing ".." elsewhere is a change to the directory, and the first
+     * change to an indexed one makes it linear (dir_dedex): block 0 of an
+     * htree is the index root, whose checksum lives in its dx tail, and
+     * dirblk_csum_set below would stamp a leaf's tail on it instead. The
+     * next change to the directory used to dedex it and hide that, so it
+     * showed only to a power cut in between (nightly seeds 1000017949 and
+     * others, 2026-11-19): e2fsck, "root node fails checksum". */
+    if (le32(dir + 0x20u) & INODE_FLAG_INDEX) {
+        if (dir_dedex(fs, dir_ino, dir) != 0 || ext2_dir_block(fs, dir_ino, dir, phys, b) != 0) {
+            return -VIBEOS_EIO;
+        }
+    }
     st32(b + off, set_to);
     dirblk_csum_set(fs, dir_ino, dir, b);
     return blk_write(fs, phys, b) == 0 ? 0 : -VIBEOS_EIO;
