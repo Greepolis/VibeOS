@@ -9,18 +9,9 @@ was decided. What is still open in every register is gathered, generated, in
 
 ## Now
 
-1. **The filesystem's hierarchy** - [filesystems/hierarchy/](filesystems/hierarchy/README.md),
-   phases F0-F2 first: what lives where, the current root's tree laid out on it,
-   and a mount manifest. F0 and F1 are done (2026-11-17,
-   [inventory.md](filesystems/hierarchy/inventory.md)); F2 is done
-   (2026-11-19, [f2.md](filesystems/hierarchy/f2.md)): volumes by UUID, the
-   root's `/etc/vibeos/mounts`, mount options, EBUSY, mount(2) and umount2(2).
-   What follows is the user's shell (item 2); F3, the production root's
-   format, waits for the installer.
+Order decided 2026-11-19, with the hierarchy's F0-F2 done ([filesystems/hierarchy/](filesystems/hierarchy/README.md); F2 on 2026-11-19, [f2.md](filesystems/hierarchy/f2.md): volumes by UUID, the root's `/etc/vibeos/mounts`, mount options, EBUSY, mount(2) and umount2(2)): the shell, then F3, then the installer.
 
-## Next
-
-2. **The user's shell** - designed before written: login, prompt, line
+1. **The user's shell** - designed before written: login, prompt, line
    editing and completion, job control, which commands are built in, how it
    finds programs in the new hierarchy. It is also the terminal inside the GUI.
    Decided 2026-11-11, before the design:
@@ -39,24 +30,29 @@ was decided. What is still open in every register is gathered, generated, in
    - The names in `/usr/bin` (E4-021) are decided with this design: the
      native programs `SH.ELF`, `CAT`, `LS`, `ECHO` and `WC` must not take the
      names Linux programs expect.
-3. **The GUI** - decided 2026-11-03: an existing Wayland compositor on a
+2. **F3, the production root** - the hierarchy's next phase ([implementation-phases.md](filesystems/hierarchy/implementation-phases.md)): the writable native root's format approved, host tools to make, inspect and repair it, persistent `/usr`, `/etc`, `/var` and `/home`, power cuts over its metadata. No installer in it.
+3. **The installer** - puts F3's root on a disk: partitions, the ESP, the root by UUID (F2 step 2), the manifest (F2 step 3) - with `/boot/efi` read-only on a production root, which F2 left to it.
+
+## Next
+
+4. **The GUI** - decided 2026-11-03: an existing Wayland compositor on a
    minimal DRM/KMS (dumb buffers, one output) and evdev, as the README's "a
    desktop from Linux" said; extended later. The desktop and the shell stay
    ours. [ui-design/](ui-design/README.md)'s own `displayd` is set aside, its
    requirements (safe failure, observability) kept as the bar.
-4. **Windows' window system** - user32 as a client of that compositor, as
+5. **Windows' window system** - user32 as a client of that compositor, as
    Wine's Wayland driver is, and gdi32 drawing into shared buffers. Open items
    WO-101 to WO-105.
 
 ## Later
 
-5. Security, all of it (isolation, privilege, sandboxing; L9's capabilities,
+6. Security, all of it (isolation, privilege, sandboxing; L9's capabilities,
    seccomp and Landlock), and POSIX ACLs acted on: ext4 stores them since
    2026-11-16 (E4-011), and nothing yet decides a permission by one or gives
    a new file its directory's default list.
-6. The applications that manage the system.
-7. The rest of networking.
-8. System administration (L8).
+7. The applications that manage the system.
+8. The rest of networking.
+9. System administration (L8).
 
 ## Proposed by the community, to be placed
 
@@ -65,7 +61,7 @@ the order above when its prerequisites are close.
 
 - **Selectable desktop environments** (GNOME, KDE Plasma, Xfce) -
   [#153](https://github.com/Greepolis/VibeOS/discussions/153). Follows the GUI
-  (item 3): the same DRM/KMS and evdev, plus epoll, eventfd, timerfd, inotify,
+  (item 4): the same DRM/KMS and evdev, plus epoll, eventfd, timerfd, inotify,
   `SCM_RIGHTS` and memfd at the Linux ABI.
 - **ARM64 (AArch64)** - [#154](https://github.com/Greepolis/VibeOS/discussions/154).
   A second architecture, and the test of `kernel/arch`'s boundary.
@@ -79,4 +75,4 @@ the order above when its prerequisites are close.
 
 ## Decisions waiting
 
-- Which Wayland compositor (item 3), chosen when that step is planned.
+- Which Wayland compositor (item 4), chosen when that step is planned.
