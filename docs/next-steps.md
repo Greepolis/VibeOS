@@ -27,6 +27,12 @@ Order decided 2026-11-19, with the hierarchy's F0-F2 done ([filesystems/hierarch
      an interpreter of our own or Wine's, to be decided with the design.
    - **A script runs by its type**, as on Windows: opening a `.bat` or `.cmd`
      runs cmd, a `.sh` runs bash, from the shell and from the desktop alike.
+   - **A first workload for it**: [FinalCommander](https://github.com/matteobaccan/FinalCommander),
+     an orthodox two-panel file manager for the terminal (Rust, MIT), whose
+     releases include a static Linux binary and a Windows one - the same
+     program through both personalities, and a full-screen terminal program
+     that exercises the console as `ls` and `cat` do not. Suggested
+     2026-11-19.
    - The names in `/usr/bin` (E4-021) are decided with this design: the
      native programs `SH.ELF`, `CAT`, `LS`, `ECHO` and `WC` must not take the
      names Linux programs expect.
