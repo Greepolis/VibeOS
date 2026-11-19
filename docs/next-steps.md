@@ -11,7 +11,7 @@ was decided. What is still open in every register is gathered, generated, in
 
 Order decided 2026-11-19, with the hierarchy's F0-F2 done ([filesystems/hierarchy/](filesystems/hierarchy/README.md); F2 on 2026-11-19, [f2.md](filesystems/hierarchy/f2.md): volumes by UUID, the root's `/etc/vibeos/mounts`, mount options, EBUSY, mount(2) and umount2(2)): the shell, then F3, then the installer.
 
-1. **The user's shell** - designed before written: login, prompt, line
+1. **The user's shell** - designed 2026-11-19: [shell/](shell/README.md) (design.md: login from the start, the native `vsh`, real bash, Wine's cmd, scripts run by type; S1 the kernel's job control and pseudo-terminals, in progress). The brief it was designed from: login, prompt, line
    editing and completion, job control, which commands are built in, how it
    finds programs in the new hierarchy. It is also the terminal inside the GUI.
    Decided 2026-11-11, before the design:

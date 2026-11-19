@@ -95,7 +95,8 @@ def main():
                                  ("abi", "Syscalls and Linux ABI plan"),
                                  ("io", "Storage and I/O plan"),
                                  ("core", "Kernel core plan"),
-                                 ("devices", "Devices and peripherals")):
+                                 ("devices", "Devices and peripherals"),
+                                 ("shell", "The user's shell")):
         plan = os.path.join(docs, plan_dir)
         if not os.path.isdir(plan):
             continue
