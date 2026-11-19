@@ -476,6 +476,9 @@ typedef struct {
 
 /* statfs's f_flags (the C library's sys/statvfs.h). */
 #define LINUX_ST_RDONLY 1
+#define LINUX_ST_NOSUID 2
+#define LINUX_ST_NODEV 4
+#define LINUX_ST_NOEXEC 8
 
 /* fcntl commands (asm-generic/fcntl.h, linux/fcntl.h). */
 #define LINUX_F_DUPFD          0

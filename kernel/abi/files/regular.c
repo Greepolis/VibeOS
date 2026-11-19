@@ -627,6 +627,12 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
             *err = -VIBEOS_ENOTDIR;
             return 0;
         }
+        if ((node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFCHR && (vibeos_fs_flags(mnt) & VIBEOS_MNT_NODEV)) {
+            /* A device node on a mount made nodev (hierarchy F2 step 4) is a
+             * name, not a door: Linux refuses the open with EACCES. */
+            *err = -VIBEOS_EACCES;
+            return 0;
+        }
         if ((node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFCHR) {
             /* A device (L2 step 6): what it opens as is the number's, not the
              * filesystem's, and O_TRUNC means nothing to it. The mount and the

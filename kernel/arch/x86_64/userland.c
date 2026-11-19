@@ -263,6 +263,11 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * cannot mistake the echoed command for
                                    * the file. */
                                   "echo TMPFS_RT_$((1+1)) > /tmp/rt.txt && cat /tmp/rt.txt\n"
+                                  /* Mount options (hierarchy F2 step 4), as
+                                   * /proc/mounts reports them: the manifest
+                                   * makes /dev/shm nosuid and nodev. The
+                                   * command names neither. */
+                                  "grep ' /dev/shm ' /proc/mounts\n"
                                   /* The write path (L1 step 3): twenty lines of
                                    * forty-one bytes - past the 512 a descriptor
                                    * used to hold - then five more appended with

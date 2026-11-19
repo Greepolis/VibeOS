@@ -267,7 +267,19 @@ static void pf_mounts(pf_out_t *o) {
         pf_str(o, path);
         pf_char(o, ' ');
         pf_str(o, type);
-        pf_str(o, vibeos_fs_writable(m) ? " rw 0 0\n" : " ro 0 0\n");
+        pf_str(o, vibeos_fs_writable(m) ? " rw" : " ro");
+        /* The options the mount was made with (hierarchy F2 step 4), in the
+         * order Linux prints them. */
+        if (vibeos_fs_flags(m) & VIBEOS_MNT_NOSUID) {
+            pf_str(o, ",nosuid");
+        }
+        if (vibeos_fs_flags(m) & VIBEOS_MNT_NODEV) {
+            pf_str(o, ",nodev");
+        }
+        if (vibeos_fs_flags(m) & VIBEOS_MNT_NOEXEC) {
+            pf_str(o, ",noexec");
+        }
+        pf_str(o, " 0 0\n");
     }
 }
 

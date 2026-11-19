@@ -813,7 +813,9 @@ static long linux_statfs_mnt(vibeos_fsmount_t *mnt, uint64_t ubuf) {
     k.f_ffree = (int64_t)s.files_free;
     k.f_fsid[0] = (int32_t)linux_dev_of(mnt);
     k.f_namelen = (int64_t)s.name_max;
-    k.f_flags = s.read_only ? LINUX_ST_RDONLY : 0;
+    k.f_flags = (s.read_only ? LINUX_ST_RDONLY : 0) | ((s.mnt_flags & VIBEOS_MNT_NOSUID) ? LINUX_ST_NOSUID : 0) |
+                ((s.mnt_flags & VIBEOS_MNT_NODEV) ? LINUX_ST_NODEV : 0) |
+                ((s.mnt_flags & VIBEOS_MNT_NOEXEC) ? LINUX_ST_NOEXEC : 0);
     if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, &k, sizeof(k)) != 0) {
         return -VIBEOS_EFAULT;
     }

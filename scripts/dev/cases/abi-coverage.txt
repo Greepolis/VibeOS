@@ -120,9 +120,9 @@
 
 ### unlinkat removes the named non-directory entry
 --- old
-    return (vibeos_fs_unlink(w.mnt, w.tail) == 0) ? 0 : -VIBEOS_EIO;
+    r = vibeos_fs_unlink(w.mnt, w.tail);
 +++ new
-    return -VIBEOS_EPERM;
+    r = -VIBEOS_EPERM;
 
 ### legacy mkdir dispatches to the dirfd implementation
 --- old

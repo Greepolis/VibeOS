@@ -1052,6 +1052,73 @@ static void mount_ro(void) {
     (void)vibeos_fs_attach("/ro", &g_ro);
 }
 
+/* Mount options (hierarchy F2 step 4), on /tmp - a filesystem that could do
+ * everything asked, so each refusal is the option's and not the driver's. */
+static void t_mount_options(void) {
+    vibeos_fsmount_t *m = 0, *d = 0;
+    const char *tail = 0;
+    uint64_t ufs = kf_ualloc(sizeof(linux_statfs_t));
+    linux_statfs_t *sf = (linux_statfs_t *)kf_uptr(ufs);
+    long fd, r;
+
+    fresh(100);
+    tmp_put("/tmp/keep", "kept");
+    (void)SYS2(83, ustr("/tmp/od"), 0755);
+    tmp_put("/tmp/prog", "not an ELF");
+    (void)SYS2(90, ustr("/tmp/prog"), 0755);
+    expect(vibeos_fs_resolve("/tmp/keep", &m, &tail) == 0 && m, "/tmp resolves to its mount");
+    if (!m) {
+        return;
+    }
+
+    vibeos_fs_set_flags(m, VIBEOS_MNT_RO);
+    expect(tmp_open("/tmp/new", 0x41, 0644) == -VIBEOS_EROFS, "ro: creating a file is EROFS");
+    expect(tmp_open("/tmp/keep", 1, 0) == -VIBEOS_EROFS, "ro: opening one to write is EROFS");
+    r = SYS2(83, ustr("/tmp/d2"), 0755);
+    expect(r == -VIBEOS_EROFS, "ro: mkdir is EROFS");
+    r = SYS1(87, ustr("/tmp/keep"));
+    expect(r == -VIBEOS_EROFS, "ro: unlink is EROFS");
+    r = SYS1(84, ustr("/tmp/od"));
+    expect(r == -VIBEOS_EROFS, "ro: rmdir is EROFS");
+    r = SYS2(82, ustr("/tmp/keep"), ustr("/tmp/k2"));
+    expect(r == -VIBEOS_EROFS, "ro: rename is EROFS");
+    expect(SYS2(90, ustr("/tmp/keep"), 0600) == -VIBEOS_EROFS && SYS2(76, ustr("/tmp/keep"), 0) == -VIBEOS_EROFS,
+           "ro: chmod and truncate are EROFS");
+    expect(SYS2(88, ustr("/tmp/keep"), ustr("/tmp/l")) == -VIBEOS_EROFS && SYS2(86, ustr("/tmp/keep"), ustr("/tmp/h")) == -VIBEOS_EROFS,
+           "ro: symlink and link are EROFS");
+    expect(tmp_is("/tmp/keep", "kept"), "ro: reading is not refused");
+    expect(SYS2(137, ustr("/tmp/keep"), ufs) == 0 && sf->f_flags == 1, "ro: statfs says ST_RDONLY and nothing else");
+    expect(SYS2(21, ustr("/tmp/keep"), 2) == -VIBEOS_EROFS, "ro: access(W_OK) is EROFS");
+
+    vibeos_fs_set_flags(m, 0);
+
+    /* nodev on /dev itself: no filesystem here can make a device node, so the
+     * one place a node exists is where the option is tried. */
+    expect(vibeos_fs_resolve("/dev/null", &d, &tail) == 0 && d, "/dev resolves to its mount");
+    if (d) {
+        vibeos_fs_set_flags(d, VIBEOS_MNT_NODEV);
+        expect(tmp_open("/dev/null", 2, 0) == -VIBEOS_EACCES, "nodev: a device node does not open");
+        vibeos_fs_set_flags(d, 0);
+        fd = tmp_open("/dev/null", 2, 0);
+        expect(fd >= 3, "without nodev the same node opens");
+        if (fd >= 3) {
+            (void)SYS1(3, (uint64_t)fd);
+        }
+    }
+    vibeos_fs_set_flags(m, VIBEOS_MNT_NODEV);
+    expect(tmp_is("/tmp/keep", "kept"), "nodev: a regular file still opens");
+
+    vibeos_fs_set_flags(m, VIBEOS_MNT_NOEXEC);
+    expect(SYS3(59, ustr("/tmp/prog"), 0, 0) == -VIBEOS_EACCES, "noexec: execve is EACCES, the superuser included");
+    vibeos_fs_set_flags(m, 0);
+    expect(SYS3(59, ustr("/tmp/prog"), 0, 0) != -VIBEOS_EACCES, "without noexec it is refused for what the file is");
+
+    vibeos_fs_set_flags(m, VIBEOS_MNT_NOSUID | VIBEOS_MNT_NODEV | VIBEOS_MNT_NOEXEC);
+    expect(SYS2(137, ustr("/tmp/keep"), ufs) == 0 && sf->f_flags == (2 | 4 | 8), "statfs says ST_NOSUID|ST_NODEV|ST_NOEXEC");
+    vibeos_fs_set_flags(m, 0);
+    expect(SYS2(137, ustr("/tmp/keep"), ufs) == 0 && sf->f_flags == 0, "and nothing once they are gone");
+}
+
 static void t_rename(void) {
     long dfd;
 
@@ -7344,6 +7411,7 @@ int test_linux_handlers(void) {
     t_kernel_copies();
     t_root_filesystem_writes();
     t_rename();
+    t_mount_options();
     t_rmdir_and_links();
     t_metadata();
     t_mknod_and_openat2();

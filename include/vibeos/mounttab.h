@@ -19,18 +19,16 @@
 
 #include <stdint.h>
 
+#include "vibeos/vfs.h"
+
 #define VIBEOS_MOUNTTAB_MAX 16u
 #define VIBEOS_MOUNTTAB_WHAT_MAX 48u
 #define VIBEOS_MOUNTTAB_AT_MAX 32u     /* VIBEOS_FS_MOUNT_PATH_MAX */
 #define VIBEOS_MOUNTTAB_TYPE_MAX 16u
 
-/* Options, as bits. Step 4 enforces them; this step only refuses a name it
- * does not know, so a misspelt "noexce" is a refused manifest rather than a
- * mount that silently allows exec. */
-#define VIBEOS_MNT_RO 0x1u
-#define VIBEOS_MNT_NOEXEC 0x2u
-#define VIBEOS_MNT_NODEV 0x4u
-#define VIBEOS_MNT_NOSUID 0x8u
+/* Options are VIBEOS_MNT_* (vfs.h). This parser refuses a name it does not
+ * know, so a misspelt "noexce" is a refused manifest rather than a mount
+ * that silently allows exec. */
 
 typedef struct {
     char what[VIBEOS_MOUNTTAB_WHAT_MAX];

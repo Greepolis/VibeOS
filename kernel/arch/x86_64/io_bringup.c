@@ -1162,7 +1162,7 @@ static void hw_procfs_cpu(vibeos_procfs_cpu_t *c) {
  * a C library's shm_open puts POSIX shared memory. Every tmpfs shares one
  * lock and page allocator; each has its own ceiling, size= in the manifest.
  * Each returns 0 when mounted and attached. */
-static int hw_tmpfs_instance(const char *at, uint64_t pages, uint32_t mode) {
+static int hw_tmpfs_instance(const char *at, uint64_t pages, uint32_t mode, uint32_t flags) {
     const char *verdict = "OK";
     vibeos_tmpfs_t *t = 0;
     vibeos_fsmount_t *mnt = 0;
@@ -1180,6 +1180,7 @@ static int hw_tmpfs_instance(const char *at, uint64_t pages, uint32_t mode) {
                 vibeos_tmpfs_set_root_mode(t, mode);
             }
             vibeos_tmpfs_set_page_hold(t, hw_tmpfs_page_hold);
+            vibeos_fs_set_flags(mnt, flags);
             if (vibeos_fs_attach(at, mnt) != 0) {
                 verdict = "FAILED: attach";
             }
@@ -1201,14 +1202,14 @@ static int hw_tmpfs_instance(const char *at, uint64_t pages, uint32_t mode) {
  * with no state - the devices behind its names are the file types'. */
 static vibeos_fsmount_t g_devfs_mnt;
 
-static int hw_devfs_bringup(const char *at) {
+static int hw_devfs_bringup(const char *at, uint32_t flags) {
     const char *verdict = "OK";
 
     if (vibeos_fs_is_mounted(&g_devfs_mnt)) {
         verdict = "FAILED: already mounted";
     } else if (vibeos_fs_mount(&g_devfs_mnt, vibeos_devfs_ops(), 0, "devtmpfs") != 0) {
         verdict = "FAILED: mount";
-    } else if (vibeos_fs_attach(at, &g_devfs_mnt) != 0) {
+    } else if ((vibeos_fs_set_flags(&g_devfs_mnt, flags), vibeos_fs_attach(at, &g_devfs_mnt)) != 0) {
         verdict = "FAILED: attach";
     }
     vibeos_x86_64_serial_lock();
@@ -1221,14 +1222,14 @@ static int hw_devfs_bringup(const char *at) {
     return verdict[0] == 'O' ? 0 : -1;
 }
 
-static int hw_procfs_bringup(const char *at) {
+static int hw_procfs_bringup(const char *at, uint32_t flags) {
     const char *verdict = "OK";
 
     if (vibeos_fs_is_mounted(&g_procfs_mnt)) {
         verdict = "FAILED: already mounted";
     } else if (vibeos_fs_mount(&g_procfs_mnt, vibeos_procfs_ops(), &g_procfs, "proc") != 0) {
         verdict = "FAILED: mount";
-    } else if (vibeos_fs_attach(at, &g_procfs_mnt) != 0) {
+    } else if ((vibeos_fs_set_flags(&g_procfs_mnt, flags), vibeos_fs_attach(at, &g_procfs_mnt)) != 0) {
         verdict = "FAILED: attach";
     }
     vibeos_x86_64_serial_lock();
@@ -1328,17 +1329,18 @@ static const char *hw_mount_entry(const vibeos_mounttab_entry_t *e, int root, in
          * table gets the mount the machine is running from, not a second FAT
          * over the same sectors with a cache of its own. */
         mnt = idx == boot ? &g_bootfs : &g_storage.volume[idx].mount;
+        vibeos_fs_set_flags(mnt, e->options);
         return vibeos_fs_attach(e->at, mnt) == 0 ? 0 : "attach";
     }
     if (hw_streq(e->type, "tmpfs")) {
         uint64_t pages = e->size_kib ? (e->size_kib + 3u) / 4u : HW_TMPFS_PAGES;
-        return hw_tmpfs_instance(e->at, pages, e->mode) == 0 ? 0 : "tmpfs";
+        return hw_tmpfs_instance(e->at, pages, e->mode, e->options) == 0 ? 0 : "tmpfs";
     }
     if (hw_streq(e->type, "proc")) {
-        return hw_procfs_bringup(e->at) == 0 ? 0 : "proc";
+        return hw_procfs_bringup(e->at, e->options) == 0 ? 0 : "proc";
     }
     if (hw_streq(e->type, "devtmpfs")) {
-        return hw_devfs_bringup(e->at) == 0 ? 0 : "devtmpfs";
+        return hw_devfs_bringup(e->at, e->options) == 0 ? 0 : "devtmpfs";
     }
     return "unknown_type";
 }

@@ -2339,7 +2339,10 @@ static long linux_sys_unlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t flag
     if ((r = linux_may_remove(&w)) != 0) {
         return r;
     }
-    return (vibeos_fs_unlink(w.mnt, w.tail) == 0) ? 0 : -VIBEOS_EIO;
+    /* EROFS is the mount's answer (hierarchy F2 step 4) and is passed on;
+     * any other refusal from the filesystem is an I/O error here. */
+    r = vibeos_fs_unlink(w.mnt, w.tail);
+    return r == 0 ? 0 : (r == -VIBEOS_EROFS ? r : -VIBEOS_EIO);
 }
 
 static long linux_sys_unlink(uint64_t path_uptr) {

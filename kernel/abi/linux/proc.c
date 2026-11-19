@@ -1069,6 +1069,11 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
         if (!w.node.is_dir && linux_may(&w.node, VIBEOS_MAY_EXEC) != 0) {
             return -VIBEOS_EACCES;
         }
+        /* Nor from a mount made noexec (hierarchy F2 step 4), whoever asks:
+         * Linux's answer is EACCES, the superuser included. */
+        if (vibeos_fs_flags(w.mnt) & VIBEOS_MNT_NOEXEC) {
+            return -VIBEOS_EACCES;
+        }
         for (k = 0; k + 1u < VIBEOS_PATH_MAX && w.path[k]; k++) {
             path[k] = w.path[k];
         }

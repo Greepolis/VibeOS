@@ -34,6 +34,14 @@ static void fs_leave(vibeos_fsmount_t *mnt) {
     }
 }
 
+/* Mounted read-only (hierarchy F2 step 4): every writing operation is EROFS
+ * before the filesystem is asked, whatever it could do. The kernel's own
+ * writes through these wrappers are refused too - a mount marked ro is one
+ * nobody writes, not one only programs do not. */
+static int fs_ro(const vibeos_fsmount_t *mnt) {
+    return vibeos_fs_is_mounted(mnt) && (mnt->flags & VIBEOS_MNT_RO) != 0u;
+}
+
 int vibeos_fs_mount(vibeos_fsmount_t *mnt, const vibeos_fs_ops_t *ops,
                      void *fs, const char *type) {
     if (!mnt || !ops || !ops->lookup || !ops->read_at) {
@@ -46,6 +54,7 @@ int vibeos_fs_mount(vibeos_fsmount_t *mnt, const vibeos_fs_ops_t *ops,
     mnt->fs = fs;
     mnt->type = type;
     mnt->lock_word = 0;
+    mnt->flags = 0;
     mnt->mounted = 1;
     return 0;
 }
@@ -127,6 +136,9 @@ long vibeos_fs_write_file(vibeos_fsmount_t *mnt, const char *path,
                            const void *buf, uint32_t len) {
     if (!vibeos_fs_is_mounted(mnt) || !path || !buf) {
         return -1;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->write_file) {
         return -1;   /* a read-only filesystem, and saying so is the answer */
@@ -213,6 +225,9 @@ int vibeos_fs_unlink(vibeos_fsmount_t *mnt, const char *path) {
     vibeos_fs_node_t n;
     int had, r;
 
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
     if (!vibeos_fs_is_mounted(mnt) || !path || !mnt->ops->unlink) {
         return -1;
     }
@@ -246,6 +261,9 @@ int vibeos_fs_fallocate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uin
     if (!vibeos_fs_is_mounted(mnt) || !node) {
         return -VIBEOS_EINVAL;
     }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
     if (!mnt->ops->fallocate) {
         return -VIBEOS_EOPNOTSUPP;
     }
@@ -275,6 +293,9 @@ int vibeos_fs_setflags(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint
 
     if (!vibeos_fs_is_mounted(mnt) || !node) {
         return -VIBEOS_EINVAL;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->setflags) {
         return mnt->ops->getflags && !vibeos_fs_writable(mnt) ? -VIBEOS_EROFS : -VIBEOS_ENOTTY;
@@ -308,6 +329,9 @@ int vibeos_fs_setxattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint
     if (!vibeos_fs_is_mounted(mnt) || !node || !name) {
         return -VIBEOS_EINVAL;
     }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
     if (!mnt->ops->setxattr) {
         return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
     }
@@ -323,6 +347,9 @@ int vibeos_fs_removexattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, u
 
     if (!vibeos_fs_is_mounted(mnt) || !node || !name) {
         return -VIBEOS_EINVAL;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->removexattr) {
         return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
@@ -364,6 +391,9 @@ int vibeos_fs_release_node(vibeos_fsmount_t *mnt, uint64_t id) {
 int vibeos_fs_mkdir(vibeos_fsmount_t *mnt, const char *path) {
     int r;
 
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
     if (!vibeos_fs_is_mounted(mnt) || !path || !mnt->ops->mkdir) {
         return -1;
     }
@@ -379,8 +409,18 @@ int vibeos_fs_mkdir(vibeos_fsmount_t *mnt, const char *path) {
 /* ---- L1's operations ----------------------------------------------------------- */
 
 int vibeos_fs_writable(const vibeos_fsmount_t *mnt) {
-    return vibeos_fs_is_mounted(mnt) &&
+    return vibeos_fs_is_mounted(mnt) && !fs_ro(mnt) &&
            (mnt->ops->write_file || mnt->ops->write_at || mnt->ops->create);
+}
+
+uint32_t vibeos_fs_flags(const vibeos_fsmount_t *mnt) {
+    return vibeos_fs_is_mounted(mnt) ? mnt->flags : 0u;
+}
+
+void vibeos_fs_set_flags(vibeos_fsmount_t *mnt, uint32_t flags) {
+    if (vibeos_fs_is_mounted(mnt)) {
+        mnt->flags = flags;
+    }
 }
 
 /* What a missing operation means: a filesystem that writes nothing is
@@ -393,6 +433,9 @@ long vibeos_fs_write_at(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node,
                          uint64_t offset, const void *buf, uint32_t len) {
     if (!vibeos_fs_is_mounted(mnt) || !node || (!buf && len)) {
         return -VIBEOS_EINVAL;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->write_at) {
         return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
@@ -410,6 +453,9 @@ long vibeos_fs_write_at(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node,
 int vibeos_fs_truncate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint64_t size) {
     if (!vibeos_fs_is_mounted(mnt) || !node) {
         return -VIBEOS_EINVAL;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->truncate) {
         return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
@@ -449,6 +495,9 @@ int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
     if (!vibeos_fs_is_mounted(mnt) || !path || !out) {
         return -VIBEOS_EINVAL;
     }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
     if (!mnt->ops->create) {
         return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
     }
@@ -468,6 +517,9 @@ int vibeos_fs_mknod(vibeos_fsmount_t *mnt, const char *path, uint32_t mode, vibe
 
     if (!vibeos_fs_is_mounted(mnt) || !path || !out) {
         return -VIBEOS_EINVAL;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->mknod) {
         return vibeos_fs_writable(mnt) ? -VIBEOS_EPERM : -VIBEOS_EROFS;
@@ -490,6 +542,9 @@ int vibeos_fs_rmdir(vibeos_fsmount_t *mnt, const char *path) {
     if (!vibeos_fs_is_mounted(mnt) || !path) {
         return -VIBEOS_EINVAL;
     }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
     if (!mnt->ops->rmdir) {
         return fs_missing(mnt);
     }
@@ -511,6 +566,9 @@ int vibeos_fs_rename(vibeos_fsmount_t *mnt, const char *from, const char *to, ui
 
     if (!vibeos_fs_is_mounted(mnt) || !from || !to || (flags & ~VIBEOS_RENAME_NOREPLACE)) {
         return -VIBEOS_EINVAL;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->rename) {
         return fs_missing(mnt);
@@ -542,6 +600,9 @@ int vibeos_fs_link(vibeos_fsmount_t *mnt, const char *existing, const char *path
     if (!vibeos_fs_is_mounted(mnt) || !existing || !path) {
         return -VIBEOS_EINVAL;
     }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
     if (!mnt->ops->link) {
         return fs_missing(mnt);
     }
@@ -564,6 +625,9 @@ int vibeos_fs_symlink(vibeos_fsmount_t *mnt, const char *target, const char *pat
 
     if (!vibeos_fs_is_mounted(mnt) || !target || !path) {
         return -VIBEOS_EINVAL;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->symlink) {
         return fs_missing(mnt);
@@ -600,6 +664,9 @@ int vibeos_fs_setattr(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_a
 
     if (!vibeos_fs_is_mounted(mnt) || !path || !attr) {
         return -VIBEOS_EINVAL;
+    }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
     }
     if (!mnt->ops->setattr) {
         return fs_missing(mnt);
@@ -639,6 +706,9 @@ int vibeos_fs_setattr_node(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, 
     if (!vibeos_fs_is_mounted(mnt) || !node || !attr) {
         return -VIBEOS_EINVAL;
     }
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
     if (!mnt->ops->setattr_node) {
         return -VIBEOS_ENOSYS;
     }
@@ -664,17 +734,24 @@ int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out) {
     out->block_size = 512u;
     out->name_max = 255u;
     out->read_only = !vibeos_fs_writable(mnt);
-    if (!mnt->ops->statfs) {
-        return 0;
-    }
-    {
+    if (mnt->ops->statfs) {
         int r;
 
         fs_enter(mnt);
         r = mnt->ops->statfs(mnt->fs, out);
         fs_leave(mnt);
-        return r;
+        if (r != 0) {
+            return r;
+        }
     }
+    /* After the driver, which answers for the volume: these are the mount's,
+     * and a driver that fills read_only from what it can do knows nothing of
+     * a mount made ro. */
+    out->mnt_flags = mnt->flags;
+    if (fs_ro(mnt)) {
+        out->read_only = 1;
+    }
+    return 0;
 }
 
 int vibeos_fs_settle(vibeos_fsmount_t *mnt) {

@@ -1,0 +1,11 @@
+# nodev (hierarchy F2 step 4), broken. Caught by t_mount_options: /dev/null
+# does not open from /dev made nodev.
+#
+# Target source: kernel/abi/files/regular.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/regular.c scripts/dev/cases/fs-mount-nodev.txt build-gcc-Release
+
+### a device node opens on a nodev mount
+--- old
+        if ((node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFCHR && (vibeos_fs_flags(mnt) & VIBEOS_MNT_NODEV)) {
++++ new
+        if (0) {

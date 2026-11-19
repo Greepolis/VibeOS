@@ -107,6 +107,9 @@ static const struct { const char *name; long long value; } g_consts[] = {
     { "UTIME_NOW", UTIME_NOW },
     { "UTIME_OMIT", UTIME_OMIT },
     { "ST_RDONLY", ST_RDONLY },
+    { "ST_NOSUID", ST_NOSUID },
+    { "ST_NODEV", ST_NODEV },
+    { "ST_NOEXEC", ST_NOEXEC },
 };
 
 long linux_host_getdents(unsigned char *buf, unsigned long cap) {

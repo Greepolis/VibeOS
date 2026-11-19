@@ -1,0 +1,36 @@
+# Mount options in the VFS (hierarchy F2 step 4), broken. Caught by
+# t_mount_options in the host tests, which makes /tmp - a filesystem that can
+# do everything asked - ro, and expects each write EROFS from the mount.
+#
+# Target source: kernel/fs/vfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/vfs.c scripts/dev/cases/fs-mount-ro.txt build-gcc-Release
+
+### a mount made ro is written all the same
+--- old
+    return vibeos_fs_is_mounted(mnt) && (mnt->flags & VIBEOS_MNT_RO) != 0u;
++++ new
+    return 0;
+
+### rmdir is let through on a ro mount
+--- old
+    if (fs_ro(mnt)) {
+        return -VIBEOS_EROFS;
+    }
+    if (!mnt->ops->rmdir) {
++++ new
+    if (!mnt->ops->rmdir) {
+
+### statfs asks the driver whether it is read-only and believes it
+--- old
+    if (fs_ro(mnt)) {
+        out->read_only = 1;
++++ new
+    if (0) {
+        out->read_only = 1;
+
+### statfs reports the options before the driver overwrites them
+--- old
+    out->mnt_flags = mnt->flags;
+    if (fs_ro(mnt)) {
++++ new
+    if (fs_ro(mnt)) {

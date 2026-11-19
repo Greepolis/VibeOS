@@ -3424,6 +3424,10 @@ def main():
                     problems.append("run_round_trip_failed")
                 if not re.search(r"write\(ring3\): SHM_8\r?\n", text):
                     problems.append("dev_shm_round_trip_failed")
+                # The manifest's options, as /proc/mounts reports them
+                # (hierarchy F2 step 4). The typed grep names neither option.
+                if not re.search(r"write\(ring3\): tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\r?\n", text):
+                    problems.append("mount_options_not_reported")
                 # Writing through a descriptor (docs/abi/ L1 step 3): 820
                 # bytes written in twenty writes, five appended, and wc's
                 # count of the file. Any other number is on the line instead:

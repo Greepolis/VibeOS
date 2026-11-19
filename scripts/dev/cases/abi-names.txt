@@ -174,9 +174,9 @@
 
 ### statfs never says read-only
 --- old
-    k.f_flags = s.read_only ? LINUX_ST_RDONLY : 0;
+    k.f_flags = (s.read_only ? LINUX_ST_RDONLY : 0) | ((s.mnt_flags & VIBEOS_MNT_NOSUID) ? LINUX_ST_NOSUID : 0) |
 +++ new
-    k.f_flags = 0;
+    k.f_flags = ((s.mnt_flags & VIBEOS_MNT_NOSUID) ? LINUX_ST_NOSUID : 0) |
 
 ### fstatfs of a pipe asks a filesystem it does not have
 --- old

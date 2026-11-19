@@ -1,0 +1,13 @@
+# What /proc/mounts says of a mount's options (hierarchy F2 step 4), broken.
+# The shell self-test greps /dev/shm's line; the gate wants rw,nosuid,nodev.
+#
+#  1. nodev is not printed. Expect mount_options_not_reported.
+#
+# Target source: kernel/fs/procfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/procfs.c scripts/dev/cases/fs-mount-report.txt build-gcc-Release
+
+### nodev is left out of /proc/mounts
+--- old
+        if (vibeos_fs_flags(m) & VIBEOS_MNT_NODEV) {
++++ new
+        if (0) {

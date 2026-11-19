@@ -1,0 +1,11 @@
+# noexec (hierarchy F2 step 4), broken. Caught by t_mount_options: execve of
+# a file on a noexec mount is EACCES, the superuser included.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/fs-mount-exec.txt build-gcc-Release
+
+### execve ignores noexec
+--- old
+        if (vibeos_fs_flags(w.mnt) & VIBEOS_MNT_NOEXEC) {
++++ new
+        if (0) {

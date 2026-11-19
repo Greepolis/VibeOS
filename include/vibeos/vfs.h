@@ -112,6 +112,7 @@ typedef struct {
     uint64_t files_free;
     uint32_t name_max;
     int read_only;
+    uint32_t mnt_flags;   /* VIBEOS_MNT_*, as the mount was made */
 } vibeos_fs_statfs_t;
 
 /* rename: fail with EEXIST rather than replace an existing name. */
@@ -248,7 +249,18 @@ typedef struct {
     const char *type;     /* "fat", "ext2", ... - for reporting, not dispatch */
     int mounted;
     volatile uint32_t lock_word;   /* the mount's lock, when its ops ask to be serialised */
+    uint32_t flags;       /* VIBEOS_MNT_*: set by whoever attaches it, 0 at mount */
 } vibeos_fsmount_t;
+
+/* Mount options (hierarchy F2 step 4), as the manifest names them. ro is
+ * enforced by the wrappers here; noexec, nodev and nosuid by the layers that
+ * exec and open. */
+#define VIBEOS_MNT_RO 0x1u
+#define VIBEOS_MNT_NOEXEC 0x2u
+#define VIBEOS_MNT_NODEV 0x4u
+#define VIBEOS_MNT_NOSUID 0x8u
+uint32_t vibeos_fs_flags(const vibeos_fsmount_t *mnt);
+void vibeos_fs_set_flags(vibeos_fsmount_t *mnt, uint32_t flags);
 
 /* There is one volume. A mount table with paths belongs with partition support
  * (stage four), and adding it before there is a second filesystem to mount
