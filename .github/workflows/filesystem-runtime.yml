@@ -38,7 +38,7 @@ jobs:
   filesystem-runtime:
     name: Filesystem runtime / Clang Release
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Harden The Runner
         # Every outbound connection and process this job makes, recorded:
@@ -58,14 +58,16 @@ jobs:
 
       - name: Install dependencies
         # A stalled mirror held the filesystem gate's install for its whole
-        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
-        timeout-minutes: 15
+        # 30 minutes twice (2026-11-18); a bound turns that into a red. Not
+        # 15: a slow mirror moving 200 KB/s was still installing at that
+        # bound in four nightly jobs (2026-11-19).
+        timeout-minutes: 30
         run: |
           set -euo pipefail
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
           # ntfs-3g, exfatprogs and mtools build the NTFS, exFAT and long-name FAT images the boot
           # mounts and the gate asserts; without them both report "no image".
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       - name: Configure
         run: |

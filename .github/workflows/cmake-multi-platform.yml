@@ -112,7 +112,7 @@ jobs:
         # A mirror that stops answering held the clang Debug job here for six
         # hours, until GitHub cancelled the whole run (2026-10-07). It takes
         # under two minutes when it works.
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           # A stalled connection is dropped and retried rather than waited on.
           APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives"
@@ -123,7 +123,7 @@ jobs:
           # kind of gap that turns a gate into decoration.
           # ntfs-3g, exfatprogs and mtools build the NTFS, exFAT and long-name FAT images the boot
           # mounts and the gate asserts; without them both report "no image".
-          sudo apt-get $APT install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get $APT install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
           # The cache action runs as the runner user; apt left these root's.
           sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives"
 
@@ -272,11 +272,13 @@ jobs:
           submodules: recursive
       - name: Install guest and host dependencies
         # A stalled mirror held the filesystem gate's install for its whole
-        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
-        timeout-minutes: 15
+        # 30 minutes twice (2026-11-18); a bound turns that into a red. Not
+        # 15: a slow mirror moving 200 KB/s was still installing at that
+        # bound in four nightly jobs (2026-11-19).
+        timeout-minutes: 30
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools e2fsprogs gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools e2fsprogs gcc-mingw-w64-x86-64
       - name: Build guest and host test baseline
         run: |
           set -euo pipefail
@@ -346,7 +348,7 @@ jobs:
   parser-fuzz-build:
     name: Build and smoke parser fuzzers
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -356,8 +358,10 @@ jobs:
 
       - name: Install Dependencies
         # A stalled mirror held the filesystem gate's install for its whole
-        # 30 minutes twice (2026-11-18); a bound turns that into a quick red.
-        timeout-minutes: 15
+        # 30 minutes twice (2026-11-18); a bound turns that into a red. Not
+        # 15: a slow mirror moving 200 KB/s was still installing at that
+        # bound in four nightly jobs (2026-11-19).
+        timeout-minutes: 30
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
