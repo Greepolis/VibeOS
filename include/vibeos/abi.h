@@ -157,6 +157,8 @@
     X(FSYNC,           "fsync",           VIBEOS_CHECK_NONE) \
     X(FDATASYNC,       "fdatasync",       VIBEOS_CHECK_NONE) \
     X(SYNC,            "sync",            VIBEOS_CHECK_NONE) \
+    X(MOUNT,           "mount",           VIBEOS_CHECK_USER_MEMORY) \
+    X(UMOUNT2,         "umount2",         VIBEOS_CHECK_USER_MEMORY) \
     X(SYNCFS,          "syncfs",          VIBEOS_CHECK_NONE) \
     X(SYNC_RANGE,      "sync_range",      VIBEOS_CHECK_NONE) \
     X(FALLOCATE,       "fallocate",       VIBEOS_CHECK_NONE) \

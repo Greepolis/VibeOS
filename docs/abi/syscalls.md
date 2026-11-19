@@ -10,8 +10,8 @@ the registry, not this page; `check.sh` fails while the two differ.
 | State | Count | What the kernel answers |
 | --- | --- | --- |
 | done | 237 | through its row |
-| partial | 35 | through its row, with the gap named |
-| missing | 17 | ENOSYS, and the boot gate fails naming the number |
+| partial | 37 | through its row, with the gap named |
+| missing | 15 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -26,7 +26,7 @@ Without a row, by phase:
 | L5 - sockets | 0 |
 | L6 - threads and scheduling | 0 |
 | L7 - IPC | 0 |
-| L8 - system administration | 11 |
+| L8 - system administration | 9 |
 | L9 - security | 6 |
 | D - deferred | 50 |
 | R - refused | 34 |
@@ -201,8 +201,8 @@ calls, outside the Linux number space, are listed last.
 | 162 | `sync` | done | - | - | `fs.c` |  |
 | 163 | `acct` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 164 | `settimeofday` | partial | R | - | `timer.c` | judges its arguments; setting the clock is refused, EPERM, as clock_settime is |
-| 165 | `mount` | missing | L8 | ENOSYS |  |  |
-| 166 | `umount2` | missing | L8 | ENOSYS |  |  |
+| 165 | `mount` | partial | - | - | `fs.c` | F2 step 6: the superuser's; UUID=/LABEL= or a pseudo filesystem; no remount, bind or move |
+| 166 | `umount2` | partial | - | - | `fs.c` | F2 step 6: EBUSY while busy; MNT_FORCE, MNT_DETACH and MNT_EXPIRE refused |
 | 167 | `swapon` | missing | L8 | ENOSYS |  |  |
 | 168 | `swapoff` | missing | L8 | ENOSYS |  |  |
 | 169 | `reboot` | missing | L8 | ENOSYS |  |  |

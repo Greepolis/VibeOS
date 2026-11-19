@@ -303,6 +303,9 @@ void hw_logsink_bringup(void);
 void hw_fsimages_bringup(void);
 void hw_scratch_bringup(void);
 void hw_volumes_bringup(void);
+#include "vibeos/mounttab.h"
+int hw_mount_one(const vibeos_mounttab_entry_t *e);
+int hw_umount_one(const char *path);
 void hw_mount_report(void);
 int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why);
 int hw_signal_default_kills(uint32_t sig);

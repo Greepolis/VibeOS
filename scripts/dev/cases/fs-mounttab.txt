@@ -23,7 +23,7 @@
 
 ### a mount point named twice is accepted
 --- old
-        if (mt_is(e->at, fl[1], out->entry[i].at)) {
+        if (mt_is(e->at, fl[1], seen[i].at)) {
 +++ new
         if (0) {
 

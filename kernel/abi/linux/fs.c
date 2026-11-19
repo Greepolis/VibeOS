@@ -1111,6 +1111,99 @@ static long linux_sys_sync(void) {
     return 0;
 }
 
+/* mount(2) and umount2(2) (hierarchy F2 step 6): the superuser's, as on
+ * Linux without CAP_SYS_ADMIN for anybody else. A mount is a manifest line
+ * built from the arguments and judged by the manifest's own parser, so a
+ * program's mount and the boot's obey one set of rules: the source is a
+ * volume's UUID= or LABEL=, or anything at all for a filesystem with no
+ * volume (tmpfs, proc, devtmpfs); the data is the manifest's options (mode=,
+ * size=, ro, ...). A device path names no volume here - there are no block
+ * device nodes - and is ENODEV for a disk filesystem's type. MS_REMOUNT,
+ * MS_BIND, MS_MOVE and the propagation flags are EINVAL: none of them is
+ * implemented, and a flag ignored would be a mount other than the one asked
+ * for. */
+static long linux_sys_mount(uint64_t usrc, uint64_t utarget, uint64_t utype, uint64_t flags, uint64_t udata) {
+    vibeos_cred_t me;
+    vibeos_path_t w;
+    vibeos_mounttab_entry_t e;
+    char src[VIBEOS_MOUNTTAB_WHAT_MAX], type[VIBEOS_MOUNTTAB_TYPE_MAX], data[64], line[224];
+    uint64_t known = LINUX_MS_RDONLY | LINUX_MS_NOSUID | LINUX_MS_NODEV | LINUX_MS_NOEXEC | LINUX_MS_SILENT;
+    uint32_t n = 0, k;
+    long r;
+
+    linux_cred(&me);
+    if (me.euid != 0u) {
+        return -VIBEOS_EPERM;
+    }
+    /* The magic number old programs put in the top half means nothing. */
+    if ((flags & LINUX_MS_MGC_MSK) == LINUX_MS_MGC_VAL) {
+        flags &= ~(uint64_t)LINUX_MS_MGC_MSK;
+    }
+    if (flags & ~known) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!usrc || !utype || ks_copy_user_string(usrc, src, (int)sizeof(src)) != 0 ||
+        ks_copy_user_string(utype, type, (int)sizeof(type)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    data[0] = 0;
+    if (udata && ks_copy_user_string(udata, data, (int)sizeof(data)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    r = linux_walk_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, utarget, 0, &w);
+    if (r != 0) {
+        return r;
+    }
+    if (!w.node.is_dir) {
+        return -VIBEOS_ENOTDIR;
+    }
+    /* what where type options required */
+#define MNT_PUT(s)                                                \
+    for (k = 0; (s)[k] && n + 1u < sizeof(line); k++) {          \
+        line[n++] = (s)[k];                                       \
+    }
+    MNT_PUT(src);
+    MNT_PUT(" ");
+    MNT_PUT(w.path);
+    MNT_PUT(" ");
+    MNT_PUT(type);
+    MNT_PUT(" ");
+    MNT_PUT(data[0] ? data : "defaults");
+    MNT_PUT((flags & LINUX_MS_RDONLY) ? ",ro" : "");
+    MNT_PUT((flags & LINUX_MS_NOSUID) ? ",nosuid" : "");
+    MNT_PUT((flags & LINUX_MS_NODEV) ? ",nodev" : "");
+    MNT_PUT((flags & LINUX_MS_NOEXEC) ? ",noexec" : "");
+    MNT_PUT(" required");
+#undef MNT_PUT
+    line[n] = 0;
+    if (n + 1u >= sizeof(line) || vibeos_mounttab_parse_line(line, (long)n, &e) != VIBEOS_MOUNTTAB_OK) {
+        return -VIBEOS_EINVAL;
+    }
+    return ks_mount(&e);
+}
+
+static long linux_sys_umount2(uint64_t utarget, uint64_t flags) {
+    vibeos_cred_t me;
+    vibeos_path_t w;
+    long r;
+
+    linux_cred(&me);
+    if (me.euid != 0u) {
+        return -VIBEOS_EPERM;
+    }
+    /* MNT_FORCE, MNT_DETACH and MNT_EXPIRE are not implemented: a detach
+     * that left a busy mount attached would be a lie, so they are refused. */
+    if (flags & ~(uint64_t)LINUX_UMOUNT_NOFOLLOW) {
+        return -VIBEOS_EINVAL;
+    }
+    r = linux_walk_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, utarget,
+                      (flags & LINUX_UMOUNT_NOFOLLOW) ? VIBEOS_PATH_NOFOLLOW : 0u, &w);
+    if (r != 0) {
+        return r;
+    }
+    return ks_umount(w.path);
+}
+
 /* syncfs(fd): the filesystem the descriptor is on. */
 static long linux_sys_syncfs(uint64_t fd) {
     vibeos_file_t *f = linux_file_get(fd);
@@ -2610,6 +2703,8 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(85,  creat,       CREAT,       NOPTR, linux_sys_creat(ARG(0), ARG(1))) \
     X(95,  umask,       UMASK,       NOPTR, linux_sys_umask(ARG(0))) \
     X(162, sync,        SYNC,        NOPTR, linux_sys_sync()) \
+    X(165, mount,       MOUNT,       NOPTR, linux_sys_mount(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \
+    X(166, umount2,     UMOUNT2,     NOPTR, linux_sys_umount2(ARG(0), ARG(1))) \
     X(187, readahead,   READAHEAD,   NOPTR, linux_sys_readahead(ARG(0))) \
     X(221, fadvise64,   FADVISE,     NOPTR, linux_sys_fadvise64(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(72,  fcntl,       FCNTL,       NOPTR, linux_sys_fcntl(ARG(0), ARG(1), ARG(2))) \

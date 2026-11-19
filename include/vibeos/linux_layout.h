@@ -480,6 +480,21 @@ typedef struct {
 #define LINUX_ST_NODEV 4
 #define LINUX_ST_NOEXEC 8
 
+/* mount(2)'s flags (linux/mount.h) and umount2(2)'s (the C library's
+ * sys/mount.h; uapi exports none of them). */
+#define LINUX_MS_RDONLY 1
+#define LINUX_MS_NOSUID 2
+#define LINUX_MS_NODEV 4
+#define LINUX_MS_NOEXEC 8
+#define LINUX_MS_REMOUNT 32
+#define LINUX_MS_SILENT 32768
+#define LINUX_MS_MGC_VAL 0xC0ED0000
+#define LINUX_MS_MGC_MSK 0xffff0000
+#define LINUX_MNT_FORCE 1
+#define LINUX_MNT_DETACH 2
+#define LINUX_MNT_EXPIRE 4
+#define LINUX_UMOUNT_NOFOLLOW 8
+
 /* fcntl commands (asm-generic/fcntl.h, linux/fcntl.h). */
 #define LINUX_F_DUPFD          0
 #define LINUX_F_GETFD          1

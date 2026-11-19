@@ -974,7 +974,6 @@ static vibeos_storage_t g_storage;
 #define HW_TMPFS_INSTANCES 4u
 static vibeos_tmpfs_t g_tmpfs_pool[HW_TMPFS_INSTANCES];
 static vibeos_fsmount_t g_tmpfs_pool_mnt[HW_TMPFS_INSTANCES];
-static uint32_t g_tmpfs_used;
 static hw_lock_t g_tmpfs_lock;
 
 static void hw_tmpfs_lock(void) {
@@ -1167,11 +1166,17 @@ static int hw_tmpfs_instance(const char *at, uint64_t pages, uint32_t mode, uint
     vibeos_tmpfs_t *t = 0;
     vibeos_fsmount_t *mnt = 0;
 
-    if (g_tmpfs_used >= HW_TMPFS_INSTANCES) {
+    uint32_t slot;
+
+    /* A free instance is one not mounted: mount(2) can take one and umount2
+     * give it back (F2 step 6), so the pool is reused, not counted up. */
+    for (slot = 0; slot < HW_TMPFS_INSTANCES && vibeos_fs_is_mounted(&g_tmpfs_pool_mnt[slot]); slot++) {
+    }
+    if (slot >= HW_TMPFS_INSTANCES) {
         verdict = "FAILED: no instance left";
     } else {
-        t = &g_tmpfs_pool[g_tmpfs_used];
-        mnt = &g_tmpfs_pool_mnt[g_tmpfs_used++];
+        t = &g_tmpfs_pool[slot];
+        mnt = &g_tmpfs_pool_mnt[slot];
         if (vibeos_tmpfs_init(t, pages, hw_tmpfs_page, hw_tmpfs_page_free, hw_tmpfs_lock, hw_tmpfs_unlock) != 0 ||
             vibeos_fs_mount(mnt, vibeos_tmpfs_ops(), t, "tmpfs") != 0) {
             verdict = "FAILED: mount";
@@ -1182,6 +1187,10 @@ static int hw_tmpfs_instance(const char *at, uint64_t pages, uint32_t mode, uint
             vibeos_tmpfs_set_page_hold(t, hw_tmpfs_page_hold);
             vibeos_fs_set_flags(mnt, flags);
             if (vibeos_fs_attach(at, mnt) != 0) {
+                /* Given back, or the slot would stay taken by a mount
+                 * nobody can reach. */
+                vibeos_fs_unmount(mnt);
+                vibeos_tmpfs_destroy(t);
                 verdict = "FAILED: attach";
             }
         }
@@ -1210,6 +1219,7 @@ static int hw_devfs_bringup(const char *at, uint32_t flags) {
     } else if (vibeos_fs_mount(&g_devfs_mnt, vibeos_devfs_ops(), 0, "devtmpfs") != 0) {
         verdict = "FAILED: mount";
     } else if ((vibeos_fs_set_flags(&g_devfs_mnt, flags), vibeos_fs_attach(at, &g_devfs_mnt)) != 0) {
+        vibeos_fs_unmount(&g_devfs_mnt);
         verdict = "FAILED: attach";
     }
     vibeos_x86_64_serial_lock();
@@ -1230,6 +1240,7 @@ static int hw_procfs_bringup(const char *at, uint32_t flags) {
     } else if (vibeos_fs_mount(&g_procfs_mnt, vibeos_procfs_ops(), &g_procfs, "proc") != 0) {
         verdict = "FAILED: mount";
     } else if ((vibeos_fs_set_flags(&g_procfs_mnt, flags), vibeos_fs_attach(at, &g_procfs_mnt)) != 0) {
+        vibeos_fs_unmount(&g_procfs_mnt);
         verdict = "FAILED: attach";
     }
     vibeos_x86_64_serial_lock();
@@ -1302,6 +1313,9 @@ static void hw_mount_line(const char *what, const char *at, const char *result) 
 /* One manifest line. Returns the reason it was not mounted, or 0. The volume
  * that is already the root is not mounted a second time; a volume no line
  * names is not mounted at all - there is no /vol<N> since F2 step 3. */
+static int g_mnt_root = -1, g_mnt_boot = -1;
+static hw_lock_t g_mount_op_lock;
+
 static const char *hw_mount_entry(const vibeos_mounttab_entry_t *e, int root, int boot) {
     if (e->is_volume || hw_streq(e->what, "boot")) {
         int why = 0, idx;
@@ -1500,6 +1514,8 @@ void hw_volumes_bringup(void) {
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
 
+        g_mnt_root = root >= 0 ? root : rescue_from;
+        g_mnt_boot = boot;
         for (k = 0; k < tab.count; k++) {
             const vibeos_mounttab_entry_t *e = &tab.entry[k];
             const char *r = hw_mount_entry(e, root >= 0 ? root : rescue_from, boot);
@@ -1821,3 +1837,66 @@ void hw_swap_bringup(void) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* mount(2) and umount2(2) (hierarchy F2 step 6): one manifest line, mounted
+ * as the boot mounts its own, and its errno. One at a time - the tmpfs pool
+ * and the pseudo filesystems' single mounts are chosen and taken in two
+ * steps. */
+int hw_mount_one(const vibeos_mounttab_entry_t *e) {
+    const char *r;
+
+    hw_spin_lock(&g_mount_op_lock);
+    r = hw_mount_entry(e, g_mnt_root, g_mnt_boot);
+    hw_spin_unlock(&g_mount_op_lock);
+    hw_mount_line(e->what, e->at, r ? r : "ok");
+    if (!r) {
+        return 0;
+    }
+    if (r[0] == 'n' && r[1] == 'o' && r[2] == 't') {
+        return -VIBEOS_ENOENT;   /* not_found: no volume carries that name */
+    }
+    if (r[0] == 'u') {
+        return -VIBEOS_ENODEV;   /* unknown_type: no such filesystem */
+    }
+    if (r[0] == 'a' && r[1] == 'm') {
+        return -VIBEOS_EINVAL;   /* ambiguous: two volumes carry it */
+    }
+    if (r[0] == 'w') {
+        return -VIBEOS_EINVAL;   /* wrong_type: the volume is another filesystem */
+    }
+    if (r[0] == 'b' || r[0] == 'n') {
+        return -VIBEOS_EINVAL;   /* bad_spec, no_spec */
+    }
+    if (r[0] == 't' && r[1] == 'm') {
+        return -VIBEOS_ENOMEM;   /* tmpfs: no instance left, or no memory */
+    }
+    return -VIBEOS_EBUSY;        /* attach, is_the_root, already mounted */
+}
+
+int hw_umount_one(const char *path) {
+    vibeos_fsmount_t *mnt = 0;
+    const char *tail = 0;
+    uint32_t k;
+    int r;
+
+    hw_spin_lock(&g_mount_op_lock);
+    if (vibeos_fs_resolve(path, &mnt, &tail) != 0 || *tail != 0) {
+        mnt = 0;
+    }
+    r = vibeos_fs_umount(path);
+    if (r == 0 && mnt) {
+        /* What a pseudo filesystem held goes with it, so that it can be
+         * mounted again; a volume stays mounted where the scan made it, and
+         * is only no longer reachable. */
+        for (k = 0; k < HW_TMPFS_INSTANCES; k++) {
+            if (mnt == &g_tmpfs_pool_mnt[k]) {
+                vibeos_fs_unmount(mnt);
+                vibeos_tmpfs_destroy(&g_tmpfs_pool[k]);
+            }
+        }
+        if (mnt == &g_procfs_mnt || mnt == &g_devfs_mnt) {
+            vibeos_fs_unmount(mnt);
+        }
+    }
+    hw_spin_unlock(&g_mount_op_lock);
+    return r;
+}

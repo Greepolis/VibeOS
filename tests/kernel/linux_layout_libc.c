@@ -28,6 +28,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/shm.h>
+#include <sys/mount.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 
@@ -110,6 +111,10 @@ static const struct { const char *name; long long value; } g_consts[] = {
     { "ST_NOSUID", ST_NOSUID },
     { "ST_NODEV", ST_NODEV },
     { "ST_NOEXEC", ST_NOEXEC },
+    { "MNT_FORCE", MNT_FORCE },
+    { "MNT_DETACH", MNT_DETACH },
+    { "MNT_EXPIRE", MNT_EXPIRE },
+    { "UMOUNT_NOFOLLOW", UMOUNT_NOFOLLOW },
 };
 
 long linux_host_getdents(unsigned char *buf, unsigned long cap) {

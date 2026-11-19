@@ -16,10 +16,10 @@
 ### /tmp is never attached
 --- old
             if (vibeos_fs_attach(at, mnt) != 0) {
-                verdict = "FAILED: attach";
+                /* Given back, or the slot would stay taken by a mount
 +++ new
             if (at[1] == 't' || vibeos_fs_attach(at, mnt) != 0) {
-                verdict = "FAILED: attach";
+                /* Given back, or the slot would stay taken by a mount
 
 ### the NTFS row is gone
 --- old

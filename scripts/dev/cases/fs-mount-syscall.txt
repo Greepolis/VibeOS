@@ -1,0 +1,44 @@
+# mount(2) and umount2(2) (hierarchy F2 step 6), broken. Caught by
+# t_mount_syscalls in the host tests.
+#
+# Target source: kernel/abi/linux/fs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/fs.c scripts/dev/cases/fs-mount-syscall.txt build-gcc-Release
+
+### anybody may mount
+--- old
+    linux_cred(&me);
+    if (me.euid != 0u) {
+        return -VIBEOS_EPERM;
+    }
+    /* The magic number old programs put in the top half means nothing. */
++++ new
+    linux_cred(&me);
+    /* The magic number old programs put in the top half means nothing. */
+
+### a flag nothing implements is ignored
+--- old
+    if (flags & ~known) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### MS_RDONLY is not passed on
+--- old
+    MNT_PUT((flags & LINUX_MS_RDONLY) ? ",ro" : "");
++++ new
+
+### a file is taken as a mount point
+--- old
+    if (!w.node.is_dir) {
+        return -VIBEOS_ENOTDIR;
+    }
+    /* what where type options required */
++++ new
+    /* what where type options required */
+
+### MNT_DETACH is accepted as a plain unmount
+--- old
+    if (flags & ~(uint64_t)LINUX_UMOUNT_NOFOLLOW) {
+        return -VIBEOS_EINVAL;
+    }
++++ new

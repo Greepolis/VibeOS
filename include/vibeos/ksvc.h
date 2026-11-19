@@ -45,6 +45,7 @@
 #include "vibeos/abi.h"
 #include "vibeos/log.h"
 #include "vibeos/vfs.h"
+#include "vibeos/mounttab.h"
 #include "vibeos/inet.h"
 #include "vibeos/vmspace.h"
 #include "vibeos/pageinfo.h"
@@ -156,6 +157,17 @@ int ks_user_addr_ok(uint64_t va);
 int ks_user_range_why(uint64_t va, uint64_t len, int write, uint32_t *why);
 const char *ks_user_range_why_name(uint32_t why);
 int ks_copy_user_string(uint64_t uptr, char *dst, int max);
+
+/* ---- mounts (hierarchy F2 step 6) -----------------------------------------------
+ *
+ * One manifest line, mounted as the boot mounts its own: a volume by UUID= or
+ * LABEL=, or a pseudo filesystem by its type (tmpfs, proc, devtmpfs). 0 or a
+ * negative errno: ENOENT for a volume nobody carries, ENODEV for a type there
+ * is no such filesystem of, EBUSY for a place already taken, ENOMEM when no
+ * tmpfs instance is left. ks_umount takes the mount at an absolute path out
+ * (vibeos_fs_umount's answers) and gives back what a pseudo filesystem held. */
+int ks_mount(const vibeos_mounttab_entry_t *e);
+int ks_umount(const char *path);
 int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len);
 
 /* ---- the address space ----------------------------------------------------------

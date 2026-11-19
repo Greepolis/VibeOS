@@ -584,6 +584,7 @@ static void *kf_tmpfs_page(void) {
 }
 static void kf_tmpfs_page_free(void *p) { (void)vibeos_frame_put(kf_phys_of(p)); }
 static void kf_tmpfs_page_hold(void *p) { vibeos_frame_get(kf_phys_of(p)); }
+static vibeos_fsmount_t g_kf_mtmpfs_mnt;   /* mount(2)'s instance; see ks_mount */
 
 /* /tmp is tmpfs here as in the kernel (docs/abi/ L1): the root above stores
  * whole files, as FAT does, so the handlers' real write path - at an offset,
@@ -665,6 +666,9 @@ void kf_reset(void) {
     kf_share_page(-1, 0, 0);
     vibeos_pipe_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_pipe_set_pages(kf_pipe_page, kf_pipe_page_free);
+    /* A tmpfs a test mounted with mount(2) and left: the table is about to
+     * be emptied, so the instance is free again. */
+    vibeos_fs_unmount(&g_kf_mtmpfs_mnt);
     vibeos_fs_unmount(&g_root);
     (void)vibeos_fs_mount(&g_root, &g_kf_fs_ops, 0, "kf");
     /* Paths go through the mount table since docs/abi/ A4, as in the kernel. */
@@ -1226,6 +1230,59 @@ int kf_poke(uint64_t va, const void *in, uint64_t n) {
     g_copy_ring3 = 1;
     r = vibeos_uaccess_copy((void *)(uintptr_t)va, in, n);
     g_copy_ring3 = 0;
+    return r;
+}
+
+/* mount(2) and umount2(2) (F2 step 6), as the machine answers them: one
+ * tmpfs instance to give out beyond /tmp, /proc and /dev already mounted,
+ * no volumes. The same errnos as hw_mount_one. */
+static vibeos_tmpfs_t g_kf_mtmpfs;
+static vibeos_fsmount_t g_kf_mtmpfs_mnt;
+
+int ks_mount(const vibeos_mounttab_entry_t *e) {
+    if (e->is_volume || strcmp(e->what, "boot") == 0) {
+        return -VIBEOS_ENOENT;
+    }
+    if (strcmp(e->type, "proc") == 0 || strcmp(e->type, "devtmpfs") == 0) {
+        return -VIBEOS_EBUSY;   /* the one instance is mounted already */
+    }
+    if (strcmp(e->type, "tmpfs") != 0) {
+        return -VIBEOS_ENODEV;
+    }
+    if (vibeos_fs_is_mounted(&g_kf_mtmpfs_mnt)) {
+        return -VIBEOS_ENOMEM;
+    }
+    if (vibeos_tmpfs_init(&g_kf_mtmpfs, e->size_kib ? (e->size_kib + 3u) / 4u : 256u, kf_tmpfs_page,
+                          kf_tmpfs_page_free, kf_pipe_lock, kf_pipe_unlock) != 0 ||
+        vibeos_fs_mount(&g_kf_mtmpfs_mnt, vibeos_tmpfs_ops(), &g_kf_mtmpfs, "tmpfs") != 0) {
+        return -VIBEOS_ENOMEM;
+    }
+    if (e->mode) {
+        vibeos_tmpfs_set_root_mode(&g_kf_mtmpfs, e->mode);
+    }
+    vibeos_tmpfs_set_page_hold(&g_kf_mtmpfs, kf_tmpfs_page_hold);
+    vibeos_fs_set_flags(&g_kf_mtmpfs_mnt, e->options);
+    if (vibeos_fs_attach(e->at, &g_kf_mtmpfs_mnt) != 0) {
+        vibeos_fs_unmount(&g_kf_mtmpfs_mnt);
+        vibeos_tmpfs_destroy(&g_kf_mtmpfs);
+        return -VIBEOS_EBUSY;
+    }
+    return 0;
+}
+
+int ks_umount(const char *path) {
+    vibeos_fsmount_t *mnt = 0;
+    const char *tail = 0;
+    int r;
+
+    if (vibeos_fs_resolve(path, &mnt, &tail) != 0 || *tail != 0) {
+        mnt = 0;
+    }
+    r = vibeos_fs_umount(path);
+    if (r == 0 && mnt == &g_kf_mtmpfs_mnt) {
+        vibeos_fs_unmount(mnt);
+        vibeos_tmpfs_destroy(&g_kf_mtmpfs);
+    }
     return r;
 }
 

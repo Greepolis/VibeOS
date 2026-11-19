@@ -62,6 +62,11 @@ typedef struct {
 int vibeos_mounttab_parse(const char *text, long len, vibeos_mounttab_t *out, uint32_t *bad_line);
 const char *vibeos_mounttab_why(int why);
 
+/* One line, with no version line before it and nothing to be a duplicate of:
+ * what mount(2) builds from its arguments, so that a program's mount obeys
+ * the manifest's rules. A blank line is VIBEOS_MOUNTTAB_FIELDS. */
+int vibeos_mounttab_parse_line(const char *line, long len, vibeos_mounttab_entry_t *out);
+
 /* The built-in manifest: today's mounts, used when the root has none or has
  * one that does not parse. The ESP is named by what the root file named. */
 const char *vibeos_mounttab_default(void);

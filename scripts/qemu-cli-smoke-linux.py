@@ -3428,6 +3428,12 @@ def main():
                 # (hierarchy F2 step 4). The typed grep names neither option.
                 if not re.search(r"write\(ring3\): tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\r?\n", text):
                     problems.append("mount_options_not_reported")
+                # BusyBox's mount and umount (hierarchy F2 step 6): a tmpfs on
+                # /mnt, a file read back through it, and gone once unmounted.
+                if not re.search(r"write\(ring3\): MNT_6\r?\n", text):
+                    problems.append("mount_syscall_failed")
+                elif not re.search(r"write\(ring3\): UMNT_9\r?\n", text):
+                    problems.append("umount_syscall_failed")
                 # Writing through a descriptor (docs/abi/ L1 step 3): 820
                 # bytes written in twenty writes, five appended, and wc's
                 # count of the file. Any other number is on the line instead:

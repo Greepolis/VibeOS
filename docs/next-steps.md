@@ -12,8 +12,11 @@ was decided. What is still open in every register is gathered, generated, in
 1. **The filesystem's hierarchy** - [filesystems/hierarchy/](filesystems/hierarchy/README.md),
    phases F0-F2 first: what lives where, the current root's tree laid out on it,
    and a mount manifest. F0 and F1 are done (2026-11-17,
-   [inventory.md](filesystems/hierarchy/inventory.md)); F2, the mount
-   manifest, is next.
+   [inventory.md](filesystems/hierarchy/inventory.md)); F2 is done
+   (2026-11-19, [f2.md](filesystems/hierarchy/f2.md)): volumes by UUID, the
+   root's `/etc/vibeos/mounts`, mount options, EBUSY, mount(2) and umount2(2).
+   What follows is the user's shell (item 2); F3, the production root's
+   format, waits for the installer.
 
 ## Next
 

@@ -268,6 +268,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * makes /dev/shm nosuid and nodev. The
                                    * command names neither. */
                                   "grep ' /dev/shm ' /proc/mounts\n"
+                                  /* mount(2) and umount2(2) (F2 step 6),
+                                   * through BusyBox's own applets: a tmpfs on
+                                   * /mnt, a file through it, and the unmount.
+                                   * The answers are the shell's arithmetic. */
+                                  "mount -t tmpfs -o size=64k none /mnt && echo MNT_$((2*3)) > /mnt/m && "
+                                  "cat /mnt/m && umount /mnt && [ ! -e /mnt/m ] && echo UMNT_$((3*3))\n"
                                   /* The write path (L1 step 3): twenty lines of
                                    * forty-one bytes - past the 512 a descriptor
                                    * used to hold - then five more appended with

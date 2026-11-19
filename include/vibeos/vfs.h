@@ -395,7 +395,10 @@ uint64_t vibeos_fs_now_ns(void);
  * mounted and unreachable: its files still open, its blocks still dirty, and
  * nothing able to name it to unmount it.
  */
-#define VIBEOS_FS_MOUNTS_MAX 8u
+/* 32 since hierarchy F2 step 6: the manifest's seven and the I/O self-test's
+ * scratch volume filled eight, and the first mount(2) a program made was
+ * refused for want of a slot. */
+#define VIBEOS_FS_MOUNTS_MAX 32u
 #define VIBEOS_FS_MOUNT_PATH_MAX 32u
 
 /* The table's lock, supplied by the architecture, as the pipe and frame layers'

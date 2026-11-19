@@ -50,6 +50,7 @@ int test_linux_layout(void) {
 #include <asm/termios.h>
 #include <asm/mman.h>
 #include <linux/mman.h>
+#include <linux/mount.h>
 #include <linux/memfd.h>
 #include <linux/ipc.h>
 #include <linux/msg.h>
@@ -392,6 +393,18 @@ int test_linux_layout(void) {
     LIBC_CONST(LINUX_ST_NOSUID, "ST_NOSUID");
     LIBC_CONST(LINUX_ST_NODEV, "ST_NODEV");
     LIBC_CONST(LINUX_ST_NOEXEC, "ST_NOEXEC");
+    CONST(LINUX_MS_RDONLY, MS_RDONLY);
+    CONST(LINUX_MS_NOSUID, MS_NOSUID);
+    CONST(LINUX_MS_NODEV, MS_NODEV);
+    CONST(LINUX_MS_NOEXEC, MS_NOEXEC);
+    CONST(LINUX_MS_REMOUNT, MS_REMOUNT);
+    CONST(LINUX_MS_SILENT, MS_SILENT);
+    CONST(LINUX_MS_MGC_VAL, MS_MGC_VAL);
+    CONST(LINUX_MS_MGC_MSK, MS_MGC_MSK);
+    LIBC_CONST(LINUX_MNT_FORCE, "MNT_FORCE");
+    LIBC_CONST(LINUX_MNT_DETACH, "MNT_DETACH");
+    LIBC_CONST(LINUX_MNT_EXPIRE, "MNT_EXPIRE");
+    LIBC_CONST(LINUX_UMOUNT_NOFOLLOW, "UMOUNT_NOFOLLOW");
     LIBC_CONST(VIBEOS_S_ISUID, "S_ISUID");
     LIBC_CONST(VIBEOS_S_ISGID, "S_ISGID");
     LIBC_CONST(VIBEOS_S_ISVTX, "S_ISVTX");

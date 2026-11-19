@@ -109,12 +109,16 @@ static int mt_options(const char *s, long n, vibeos_mounttab_entry_t *e) {
     return 0;
 }
 
-static int mt_line(const char *s, long n, vibeos_mounttab_t *out) {
+/* One line into *e, judged against the `nseen` entries before it. A blank
+ * line or a comment is OK with e->what empty. */
+static int mt_one(const char *s, long n, vibeos_mounttab_entry_t *e, const vibeos_mounttab_entry_t *seen,
+                  uint32_t nseen) {
     const char *f[6];
     long fl[6];
     uint32_t nf = 0, i;
     long k = 0;
-    vibeos_mounttab_entry_t *e;
+
+    memset(e, 0, sizeof(*e));
 
     while (k < n) {
         long a;
@@ -140,11 +144,6 @@ static int mt_line(const char *s, long n, vibeos_mounttab_t *out) {
     if (nf != 5u) {
         return VIBEOS_MOUNTTAB_FIELDS;
     }
-    if (out->count >= VIBEOS_MOUNTTAB_MAX) {
-        return VIBEOS_MOUNTTAB_TOO_MANY;
-    }
-    e = &out->entry[out->count];
-    memset(e, 0, sizeof(*e));
     if (mt_field(f[0], fl[0], e->what, sizeof(e->what)) < 0 || mt_field(f[1], fl[1], e->at, sizeof(e->at)) < 0 ||
         mt_field(f[2], fl[2], e->type, sizeof(e->type)) < 0) {
         return VIBEOS_MOUNTTAB_TOO_LONG;
@@ -168,10 +167,10 @@ static int mt_line(const char *s, long n, vibeos_mounttab_t *out) {
             return VIBEOS_MOUNTTAB_PATH;
         }
     }
-    for (i = 0; i < out->count; i++) {
+    for (i = 0; i < nseen; i++) {
         /* No strcmp in the freestanding image: mt_is compares fl[1] bytes and
          * the terminator. */
-        if (mt_is(e->at, fl[1], out->entry[i].at)) {
+        if (mt_is(e->at, fl[1], seen[i].at)) {
             return VIBEOS_MOUNTTAB_DUPLICATE;
         }
     }
@@ -183,8 +182,27 @@ static int mt_line(const char *s, long n, vibeos_mounttab_t *out) {
     } else if (!mt_is(f[4], fl[4], "optional")) {
         return VIBEOS_MOUNTTAB_POLICY;
     }
-    out->count++;
     return VIBEOS_MOUNTTAB_OK;
+}
+
+static int mt_line(const char *s, long n, vibeos_mounttab_t *out) {
+    vibeos_mounttab_entry_t e;
+    int why = mt_one(s, n, &e, out->entry, out->count);
+
+    if (why != VIBEOS_MOUNTTAB_OK || e.what[0] == 0) {
+        return why;
+    }
+    if (out->count >= VIBEOS_MOUNTTAB_MAX) {
+        return VIBEOS_MOUNTTAB_TOO_MANY;
+    }
+    memcpy(&out->entry[out->count++], &e, sizeof(e));
+    return VIBEOS_MOUNTTAB_OK;
+}
+
+int vibeos_mounttab_parse_line(const char *line, long len, vibeos_mounttab_entry_t *out) {
+    int why = mt_one(line, len, out, 0, 0);
+
+    return why == VIBEOS_MOUNTTAB_OK && out->what[0] == 0 ? VIBEOS_MOUNTTAB_FIELDS : why;
 }
 
 int vibeos_mounttab_parse(const char *text, long len, vibeos_mounttab_t *out, uint32_t *bad_line) {

@@ -1140,6 +1140,59 @@ static void t_umount_busy(void) {
     mount_ro();
 }
 
+/* mount(2) and umount2(2) (hierarchy F2 step 6). */
+static void t_mount_syscalls(void) {
+    uint64_t ufs = kf_ualloc(sizeof(linux_statfs_t));
+    linux_statfs_t *sf = (linux_statfs_t *)kf_uptr(ufs);
+    linux_stat_t st;
+    long fd;
+
+    fresh(100);
+    (void)SYS2(83, ustr("/tmp/m"), 0755);
+    tmp_put("/tmp/file", "x");
+    expect(SYS5(165, ustr("none"), ustr("/tmp/m"), ustr("tmpfs"), 0, ustr("size=64k,mode=0700")) == 0,
+           "mount puts a tmpfs on a directory");
+    expect(tmp_stat("/tmp/m", 1, &st) == 0 && (st.st_mode & 07777u) == 0700u, "with the mode its data asked for");
+    expect(SYS2(137, ustr("/tmp/m"), ufs) == 0 && sf->f_type == 0x01021994 && sf->f_flags == 0,
+           "statfs says tmpfs, with no options");
+    tmp_put("/tmp/m/x", "on the new mount");
+    expect(tmp_is("/tmp/m/x", "on the new mount"), "a file written there reads back");
+    fd = tmp_open("/tmp/m/x", 0, 0);
+    expect(SYS2(166, ustr("/tmp/m"), 0) == -VIBEOS_EBUSY, "umount2 with it open is EBUSY");
+    (void)SYS1(3, (uint64_t)fd);
+    expect(SYS2(166, ustr("/tmp/m"), 0) == 0, "closed, umount2 takes it out");
+    expect(tmp_gone("/tmp/m/x"), "and what it held is no longer there");
+    expect(SYS2(166, ustr("/tmp/m"), 0) == -VIBEOS_EINVAL, "a directory nothing is mounted on is EINVAL");
+
+    expect(SYS5(165, ustr("none"), ustr("/tmp/m"), ustr("tmpfs"), 1 | 8, 0) == 0 &&
+           SYS2(137, ustr("/tmp/m"), ufs) == 0 && sf->f_flags == (1 | 8),
+           "MS_RDONLY|MS_NOEXEC are the mount's options");
+    expect(tmp_open("/tmp/m/y", 0x41, 0644) == -VIBEOS_EROFS, "and a read-only mount refuses a file");
+    expect(SYS2(166, ustr("/tmp/m"), 2 /* MNT_DETACH */) == -VIBEOS_EINVAL, "MNT_DETACH is refused, not pretended");
+    expect(SYS2(166, ustr("/tmp/m"), 0) == 0, "umount2 again");
+    expect(SYS5(165, ustr("none"), ustr("/tmp/m"), ustr("tmpfs"), 0xC0ED0000u, 0) == 0 &&
+           SYS2(166, ustr("/tmp/m"), 0) == 0, "the old magic number in the flags means nothing");
+
+    expect(SYS5(165, ustr("none"), ustr("/tmp/m"), ustr("tmpfs"), 32 /* MS_REMOUNT */, 0) == -VIBEOS_EINVAL,
+           "MS_REMOUNT is EINVAL");
+    expect(SYS5(165, ustr("none"), ustr("/tmp/m"), ustr("tmpfs"), 0, ustr("noexce")) == -VIBEOS_EINVAL,
+           "an option nobody knows is EINVAL");
+    expect(SYS5(165, ustr("/dev/sda1"), ustr("/tmp/m"), ustr("ext4"), 0, 0) == -VIBEOS_ENODEV,
+           "a device path names no volume: ENODEV");
+    expect(SYS5(165, ustr("UUID=0b3e9c4a"), ustr("/tmp/m"), ustr("ext4"), 0, 0) == -VIBEOS_ENOENT,
+           "a UUID no volume carries is ENOENT");
+    expect(SYS5(165, ustr("none"), ustr("/tmp/file"), ustr("tmpfs"), 0, 0) == -VIBEOS_ENOTDIR,
+           "a file is not a mount point");
+    expect(SYS5(165, ustr("none"), ustr("/tmp/nope"), ustr("tmpfs"), 0, 0) == -VIBEOS_ENOENT,
+           "nor is nothing");
+    expect(SYS5(165, ustr("proc"), ustr("/tmp/m"), ustr("proc"), 0, 0) == -VIBEOS_EBUSY,
+           "/proc's one instance is in use");
+
+    (void)SYS1(105, 1000);   /* setuid: nobody special */
+    expect(SYS5(165, ustr("none"), ustr("/tmp/m"), ustr("tmpfs"), 0, 0) == -VIBEOS_EPERM &&
+           SYS2(166, ustr("/tmp"), 0) == -VIBEOS_EPERM, "mount and umount2 are the superuser's");
+}
+
 static void t_rename(void) {
     long dfd;
 
@@ -7434,6 +7487,7 @@ int test_linux_handlers(void) {
     t_rename();
     t_mount_options();
     t_umount_busy();
+    t_mount_syscalls();
     t_rmdir_and_links();
     t_metadata();
     t_mknod_and_openat2();
@@ -7627,6 +7681,16 @@ int test_linux_gaps(void) {
         r = sys(9, 0, 4096, 1, 1 /* MAP_SHARED */, (uint64_t)fd, 0, 0);
         gap(9, fd >= 0 && r > 0, "a shared mapping of a file that is not kept in pages");
     }
+
+    /* mount (165) and umount2 (166), hierarchy F2 step 6: no remount, and no
+     * lazy detach - both refused rather than pretended. */
+    fresh(73);
+    (void)SYS2(83, ustr("/tmp/gm"), 0755);
+    (void)SYS5(165, ustr("none"), ustr("/tmp/gm"), ustr("tmpfs"), 0, 0);
+    gap(165, SYS5(165, ustr("none"), ustr("/tmp/gm"), ustr("tmpfs"), 32 /* MS_REMOUNT */ | 1, 0) == 0,
+        "MS_REMOUNT to make a mount read-only");
+    gap(166, SYS2(166, ustr("/tmp/gm"), 2 /* MNT_DETACH */) == 0, "MNT_DETACH");
+    (void)SYS2(166, ustr("/tmp/gm"), 0);
 
     /* ioctl (16), L1: TCFLSH - throw away what was typed and not read - is
      * one of the terminal requests still unanswered. */

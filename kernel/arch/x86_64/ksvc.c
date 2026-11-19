@@ -195,6 +195,8 @@ int ks_user_range_why(uint64_t va, uint64_t len, int write, uint32_t *why) {
     return hw_user_range_why(va, len, write, why);
 }
 int ks_copy_user_string(uint64_t uptr, char *dst, int max) { return hw_copy_user_string(uptr, dst, max); }
+int ks_mount(const vibeos_mounttab_entry_t *e) { return hw_mount_one(e); }
+int ks_umount(const char *path) { return hw_umount_one(path); }
 
 #define HW_RANGE_LEVEL1      4u
 #define HW_RANGE_LEVEL2      5u
