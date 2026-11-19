@@ -205,7 +205,16 @@ writes an `ext4` volume it can keep true (the table below the step), and
   commit, leaves the old tree with some of those bytes new. Linux leaves the
   same. It is accepted in exactly that shape - the state before that write, the
   old size, and every byte, read by `debugfs`, the old one or the new one - and
-  counted as `torn_writes`.
+  counted as `torn_writes`. A punch is such a write too (2026-11-19): it
+  zeroes the partial blocks at its edges in place before the commit that frees
+  the whole ones, and the generator had recorded only `write`s, so a cut
+  inside a punch read as `not_a_state` (nightly seeds 1000017917, 1000017985).
+- **Found by the nightly, 2026-11-19**: renaming an indexed directory pointed
+  its ".." with a leaf's checksum stamped on the htree root (`dir_dotdot`);
+  the next change to the directory made it linear and hid that, so only a cut
+  in between showed it - e2fsck, "root node fails checksum" (seed
+  1000017949). The first change to an indexed directory now makes it linear
+  here too; `ext4-dotdot.txt` puts the old code back and goes red.
 - **Found while writing it**, none a driver defect: `mkdir` and `unlink` answer
   0 or -1 by the VFS contract (the errno is the Linux handler's), so for those
   the script asks only for a refusal (`refuse`); the exerciser's commit check

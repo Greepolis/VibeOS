@@ -449,7 +449,22 @@ class Gen:
             if mode == 0 and off + n > size and room < off + n - size + 8192:
                 return
             hp = self.host(p)
+            # A punch zeroes the partial blocks at its edges in place, as
+            # Linux's ordered mode does, before the commit that frees the
+            # whole ones: a cut between leaves zeros over bytes the file still
+            # has. That is a write over existing bytes like any other, and is
+            # recorded as one for torn_write (nightly seeds 1000017917 and
+            # 1000017985, 2026-11-19, cut inside a punch).
+            punch = mode & FALLOC_PUNCH_HOLE and off < size
+            if punch:
+                with open(hp, "rb") as f:
+                    before = f.read()
+                names = [q for q, k in self.entries() if k == "f" and os.path.samefile(self.host(q), hp)]
+            at = len(self.lines)
             self.emit(["fallocate", p, mode, off, n], lambda: host_fallocate(hp, mode, off, n))
+            if punch and len(self.lines) > at:
+                with open(hp, "rb") as f:
+                    self.mix[at] = (names, before, f.read())
         elif op in ("setxattr", "removexattr"):
             # Linux's own call on the host (E4-011). The host's run is not
             # root, so Linux asks it for write permission and the driver,
