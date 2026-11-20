@@ -19,6 +19,10 @@
  * program calls its process id. For a single-threaded process they are equal.
  * getpid() returns tgid and gettid() returns pid; getting that backwards makes a C
  * library signal itself instead of another thread. */
+#define VIBEOS_STOP_REPORT_NONE 0u
+#define VIBEOS_STOP_REPORT_STOPPED 1u
+#define VIBEOS_STOP_REPORT_CONTINUED 2u
+
 typedef struct vibeos_task {
     uint32_t pid;
     uint32_t tgid;
@@ -32,6 +36,11 @@ typedef struct vibeos_task {
     int is_idle;         /* per-CPU idle task: only run when nothing else is ready */
     int wait_input;      /* blocked in read() on stdin */
     uint8_t signal_stopped;   /* stopped by SIGSTOP until SIGCONT */
+    /* On a process's leader (docs/shell/s1.md step 1): the signal that
+     * stopped the process, 0 while it runs, and what its parent has yet to
+     * be told by wait - VIBEOS_STOP_REPORT_*, each told once. */
+    uint8_t stop_sig;
+    uint8_t stop_report;
 
     /* How it ended. A task killed by a signal carries the signal here and leaves
      * the code byte zero, which is what wait() encodes: a parent that cannot tell

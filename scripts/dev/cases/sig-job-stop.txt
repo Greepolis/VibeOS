@@ -1,0 +1,37 @@
+# A stop that is the process's, and a parent that hears of it
+# (docs/shell/s1.md step 1), broken in the Linux layer. Caught by t_job_stop
+# in the host tests.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/sig-job-stop.txt build-gcc-Release
+
+### wait never reports a stop
+--- old
+                ((t->stop_report == VIBEOS_STOP_REPORT_STOPPED && (options & LINUX_WSTOPPED)) ||
++++ new
+                ((0 && (options & LINUX_WSTOPPED)) ||
+
+### a stop is reported without being asked for
+--- old
+                ((t->stop_report == VIBEOS_STOP_REPORT_STOPPED && (options & LINUX_WSTOPPED)) ||
++++ new
+                ((t->stop_report == VIBEOS_STOP_REPORT_STOPPED) ||
+
+### a stop is reported for ever
+--- old
+                if (reap) {
+                    t->stop_report = VIBEOS_STOP_REPORT_NONE;
+                }
++++ new
+
+### the stop's status word is the exit's
+--- old
+                out->status = out->event == VIBEOS_STOP_REPORT_STOPPED ? (int)(0x7fu | ((uint32_t)t->stop_sig << 8))
++++ new
+                out->status = out->event == VIBEOS_STOP_REPORT_STOPPED ? (int)((uint32_t)t->stop_sig << 8)
+
+### waitid calls a stop an exit
+--- old
+        si.si_code = w.event == VIBEOS_STOP_REPORT_STOPPED     ? LINUX_CLD_STOPPED
++++ new
+        si.si_code = 0                                         ? LINUX_CLD_STOPPED

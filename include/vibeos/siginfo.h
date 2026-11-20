@@ -24,6 +24,8 @@ typedef enum {
 /* How a child ended, for VIBEOS_SIG_FROM_CHILD. */
 #define VIBEOS_CHILD_EXITED 1u
 #define VIBEOS_CHILD_KILLED 2u
+#define VIBEOS_CHILD_STOPPED 5u     /* status: the signal that stopped it */
+#define VIBEOS_CHILD_CONTINUED 6u   /* status: SIGCONT */
 
 typedef struct vibeos_siginfo {
     uint32_t from;        /* vibeos_sig_from_t                                    */

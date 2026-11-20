@@ -180,6 +180,8 @@ void ks_membarrier(int global) { hw_membarrier(global); }
 int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info) { return hw_signal_send(slot, sig, info); }
 int ks_signal_take(int slot, uint32_t sig, vibeos_siginfo_t *out) { return hw_signal_take(slot, sig, out); }
 int ks_signal_default_kills(uint32_t sig) { return hw_signal_default_kills(sig); }
+int ks_signal_default_stops(uint32_t sig) { return hw_signal_default_stops(sig); }
+int ks_group_stop(int slot, uint32_t sig) { return hw_group_stop(slot, sig); }
 
 /* ---- time ------------------------------------------------------------------------- */
 

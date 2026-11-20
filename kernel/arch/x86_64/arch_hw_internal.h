@@ -309,6 +309,8 @@ int hw_umount_one(const char *path);
 void hw_mount_report(void);
 int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why);
 int hw_signal_default_kills(uint32_t sig);
+int hw_signal_default_stops(uint32_t sig);
+int hw_group_stop(int slot, uint32_t sig);
 
 /* ---- shared with the Linux ABI layer (kernel/abi/linux) ---------------------
  *

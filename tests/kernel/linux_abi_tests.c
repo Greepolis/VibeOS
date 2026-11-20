@@ -6043,6 +6043,61 @@ static int t_fork_child(long *pid_out) {
     return -1;
 }
 
+/* A stop is the process's, and its parent hears of it once (docs/shell/s1.md
+ * step 1): SIGTSTP at its default stops the child, wait4(WUNTRACED) reports
+ * it as 0x7f | sig << 8, SIGCONT continues it and wait4(WCONTINUED) reports
+ * 0xffff, and waitid says the same in a siginfo. */
+static void t_job_stop(void) {
+    uint64_t st = kf_ualloc(4), info = kf_ualloc(128);
+    linux_siginfo_t *si = (linux_siginfo_t *)kf_uptr(info);
+    struct ks_regs fr;
+    long pid;
+    int me = fresh(78), c;
+
+    c = t_fork_child(&pid);
+    expect(c >= 0, "a child to stop");
+    if (c < 0) {
+        return;
+    }
+    kf_set_current(c);
+    (void)ks_signal_raise(c, VIBEOS_SIGTSTP);
+    memset(&fr, 0, sizeof(fr));
+    fr.ip = 0x1000;
+    expect(linux_signal_deliver(&fr) == 0 && ks_id(c)->signal_stopped == 1u,
+           "SIGTSTP at its default stops the child, as Ctrl+Z needs");
+    expect(ks_id(c)->stop_sig == VIBEOS_SIGTSTP && ks_id(c)->stop_report == VIBEOS_STOP_REPORT_STOPPED,
+           "and the stop is recorded for its parent");
+    kf_set_current(me);
+    expect(SYS3(61, (uint64_t)pid, st, 1 /* WNOHANG */) == 0, "wait4 without WUNTRACED does not report it");
+    expect(SYS3(61, (uint64_t)pid, st, 2 /* WUNTRACED */) == pid && *(int *)kf_uptr(st) == 0x147f,
+           "wait4(WUNTRACED) reports the stop: 0x7f | SIGTSTP << 8");
+    expect(SYS3(61, (uint64_t)pid, st, 2 | 1) == 0, "once");
+
+    (void)ks_signal_raise(c, VIBEOS_SIGTTIN);
+    expect(SYS2(62, (uint64_t)pid, VIBEOS_SIGCONT) == 0 && ks_id(c)->signal_stopped == 0u,
+           "SIGCONT continues it");
+    expect((ks_id(c)->sig_pending & (1ull << VIBEOS_SIGTTIN)) == 0u, "and throws away a stop still pending");
+    memset(si, 0, sizeof(*si));
+    expect(sys(247, LINUX_P_PID, (uint64_t)pid, info, LINUX_WCONTINUED | LINUX_WNOWAIT, 0, 0, 0) == 0 &&
+           si->pid == (int32_t)pid && si->si_code == LINUX_CLD_CONTINUED,
+           "waitid(WCONTINUED|WNOWAIT) looks at the continue");
+    expect(SYS3(61, (uint64_t)pid, st, 8 /* WCONTINUED */) == pid && *(int *)kf_uptr(st) == 0xffff,
+           "and wait4(WCONTINUED) takes it: 0xffff");
+
+    kf_set_current(c);
+    (void)ks_signal_raise(c, VIBEOS_SIGSTOP);
+    memset(&fr, 0, sizeof(fr));
+    fr.ip = 0x1000;
+    (void)linux_signal_deliver(&fr);
+    kf_set_current(me);
+    memset(si, 0, sizeof(*si));
+    expect(sys(247, LINUX_P_PID, (uint64_t)pid, info, LINUX_WSTOPPED, 0, 0, 0) == 0 && si->pid == (int32_t)pid &&
+           si->si_code == LINUX_CLD_STOPPED && (uint32_t)si->value == VIBEOS_SIGSTOP,
+           "waitid(WSTOPPED) reports SIGSTOP's stop");
+    expect(SYS2(62, (uint64_t)pid, VIBEOS_SIGKILL) == 0 && ks_id(c)->signal_stopped == 0u,
+           "and SIGKILL ends a stop");
+}
+
 /* The child in `slot` ends with `code`, or killed by `sig`. */
 static void t_child_ends(int slot, uint32_t code, uint32_t sig) {
     ks_id(slot)->exit_code = code;
@@ -7488,6 +7543,7 @@ int test_linux_handlers(void) {
     t_mount_options();
     t_umount_busy();
     t_mount_syscalls();
+    t_job_stop();
     t_rmdir_and_links();
     t_metadata();
     t_mknod_and_openat2();
@@ -7868,21 +7924,6 @@ int test_linux_gaps(void) {
             r = SYS3(129, 73, 34, qi);
             gap(n, r == -VIBEOS_EAGAIN, "a queued signal past RLIMIT_SIGPENDING is EAGAIN");
         }
-    }
-
-    /* waitid (247), L2: a stopped child is never reported. */
-    {
-        long pid;
-        int me = fresh(77), c;
-        uint64_t info = kf_ualloc(128);
-
-        c = t_fork_child(&pid);
-        kf_set_current(me);
-        if (c >= 0) {
-            ks_id(c)->signal_stopped = 1;
-        }
-        (void)sys(247, LINUX_P_PID, (uint64_t)pid, info, LINUX_WSTOPPED | 1u, 0, 0, 0);
-        gap(247, ((linux_siginfo_t *)kf_uptr(info))->pid == (int32_t)pid, "waitid(WSTOPPED) reports a stopped child");
     }
 
     /* clone (56) and clone3 (435), L6: a process on its parent's memory

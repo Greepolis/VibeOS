@@ -3434,6 +3434,14 @@ def main():
                     problems.append("mount_syscall_failed")
                 elif not re.search(r"write\(ring3\): UMNT_9\r?\n", text):
                     problems.append("umount_syscall_failed")
+                # Job control (docs/shell/s1.md step 1): a background sleep
+                # stopped by SIGTSTP, which ash's jobs calls Stopped - plain,
+                # not "Stopped (signal)", which is SIGSTOP's - then continued
+                # and ended.
+                if not re.search(r"write\(ring3\): \[1\]\+\s+Stopped\s+sleep 30", text):
+                    problems.append("job_not_stopped")
+                elif not re.search(r"write\(ring3\): JOBCTL_20\r?\n", text):
+                    problems.append("job_control_did_not_finish")
                 # Writing through a descriptor (docs/abi/ L1 step 3): 820
                 # bytes written in twenty writes, five appended, and wc's
                 # count of the file. Any other number is on the line instead:

@@ -9,8 +9,8 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 237 | through its row |
-| partial | 37 | through its row, with the gap named |
+| done | 238 | through its row |
+| partial | 36 | through its row, with the gap named |
 | missing | 15 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
@@ -283,7 +283,7 @@ calls, outside the Linux number space, are listed last.
 | 244 | `mq_notify` | done | - | - | `mqueue.c` |  |
 | 245 | `mq_getsetattr` | done | - | - | `mqueue.c` |  |
 | 246 | `kexec_load` | refused | R | EPERM |  | no kexec: the machine is booted by the bootloader, not by itself |
-| 247 | `waitid` | partial | L2 | - | `proc.c` | stopped and continued children are never reported |
+| 247 | `waitid` | done | - | - | `proc.c` |  |
 | 248 | `add_key` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 249 | `request_key` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 250 | `keyctl` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |

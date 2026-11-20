@@ -97,6 +97,10 @@
 #define VIBEOS_SIGCHLD 17u
 #define VIBEOS_SIGCONT 18u
 #define VIBEOS_SIGSTOP 19u
+/* The job-control stops (docs/shell/s1.md step 1): catchable, default stop. */
+#define VIBEOS_SIGTSTP 20u
+#define VIBEOS_SIGTTIN 21u
+#define VIBEOS_SIGTTOU 22u
 #define VIBEOS_SIGXCPU 24u
 #define VIBEOS_SIGXFSZ 25u
 #define VIBEOS_SIGVTALRM 26u
@@ -108,6 +112,8 @@
 #define SIG_DFL_ADDR 0ull
 #define SIG_IGN_ADDR 1ull
 #define VIBEOS_SA_RESTORER 0x04000000u
+/* On SIGCHLD: the parent is not told when a child stops or continues. */
+#define VIBEOS_SA_NOCLDSTOP 0x00000001u
 /* The handler asks that a call it interrupted be run again when it returns. */
 #define VIBEOS_SA_RESTART 0x10000000u
 

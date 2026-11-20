@@ -1,0 +1,18 @@
+# The default action of the job-control stops (docs/shell/s1.md step 1),
+# broken where a signal is delivered. Caught by t_job_stop.
+#
+# Target source: kernel/abi/linux/signal.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/signal.c scripts/dev/cases/sig-job-stop-deliver.txt build-gcc-Release
+
+### only SIGSTOP stops, as before S1
+--- old
+            if (ks_signal_default_stops(sig)) {
++++ new
+            if (sig == VIBEOS_SIGSTOP) {
+
+### the stop is not recorded for the process
+--- old
+                if (!ks_group_stop(me, sig)) {
+                    continue;
+                }
++++ new

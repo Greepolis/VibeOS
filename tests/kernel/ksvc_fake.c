@@ -1069,9 +1069,24 @@ int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info) {
     if (sig == 0u || sig > VIBEOS_SIG_MAX || !g_t[slot].ps) {
         return -1;
     }
-    /* As the machine: only SIGCONT and SIGKILL end a stop. */
+    /* As the machine: only SIGCONT and SIGKILL end a stop; SIGCONT ends the
+     * process's, says so to the parent's wait, and drops pending stops. */
     if (sig == VIBEOS_SIGCONT || sig == VIBEOS_SIGKILL) {
         g_t[slot].id.signal_stopped = 0;
+    }
+    if (sig == VIBEOS_SIGCONT) {
+        int i;
+        for (i = 0; i < KF_SLOTS; i++) {
+            if (g_t[i].ps && g_t[i].id.tgid == g_t[slot].id.tgid) {
+                g_t[i].id.signal_stopped = 0;
+                g_t[i].id.sig_pending &= ~((1ull << VIBEOS_SIGSTOP) | (1ull << VIBEOS_SIGTSTP) |
+                                           (1ull << VIBEOS_SIGTTIN) | (1ull << VIBEOS_SIGTTOU));
+                if (g_t[i].id.pid == g_t[i].id.tgid && g_t[i].id.stop_sig != 0u) {
+                    g_t[i].id.stop_sig = 0;
+                    g_t[i].id.stop_report = VIBEOS_STOP_REPORT_CONTINUED;
+                }
+            }
+        }
     }
     if (sig != VIBEOS_SIGKILL && sig != VIBEOS_SIGSTOP && g_t[slot].ps &&
         g_t[slot].ps->sig_handler[sig] == SIG_IGN_ADDR &&
@@ -1098,8 +1113,25 @@ int ks_signal_take(int slot, uint32_t sig, vibeos_siginfo_t *out) {
     return 1;
 }
 const vibeos_siginfo_t *kf_siginfo(int slot, uint32_t sig) { return &g_t[slot].info[sig]; }
+int ks_signal_default_stops(uint32_t sig) {
+    return sig == VIBEOS_SIGSTOP || sig == VIBEOS_SIGTSTP || sig == VIBEOS_SIGTTIN || sig == VIBEOS_SIGTTOU;
+}
 int ks_signal_default_kills(uint32_t sig) {
-    return !(sig == VIBEOS_SIGCHLD || sig == VIBEOS_SIGCONT || sig == VIBEOS_SIGWINCH);
+    return !(sig == VIBEOS_SIGCHLD || sig == VIBEOS_SIGCONT || sig == VIBEOS_SIGWINCH || ks_signal_default_stops(sig));
+}
+/* As the machine (hw_group_stop): the first thread to stop records it on the
+ * leader for the parent's wait. The fake has no orphaned groups - every
+ * process's parent is in the test's session - and one thread to stop. */
+int ks_group_stop(int slot, uint32_t sig) {
+    int i;
+
+    for (i = 0; i < KF_SLOTS; i++) {
+        if (g_t[i].ps && g_t[i].id.pid == g_t[slot].id.tgid && g_t[i].id.stop_sig == 0u) {
+            g_t[i].id.stop_sig = (uint8_t)sig;
+            g_t[i].id.stop_report = VIBEOS_STOP_REPORT_STOPPED;
+        }
+    }
+    return 1;
 }
 
 uint64_t ks_ticks(void) { return g_ticks_v; }

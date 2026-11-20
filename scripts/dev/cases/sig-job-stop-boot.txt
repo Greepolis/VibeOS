@@ -1,0 +1,17 @@
+# Job control on the machine (docs/shell/s1.md step 1): the shell self-test
+# stops a background sleep with SIGTSTP and asks ash's jobs about it.
+#
+#  1. A job-control stop is always taken as orphaned and thrown away. Expect
+#     job_not_stopped.
+#  2. SIGCONT continues only the task it is sent to and tells nobody: the
+#     process's record keeps saying stopped. Expect job_control_did_not_finish
+#     or job_not_stopped - ash waits for a continue it is never told of.
+#
+# Target source: kernel/arch/x86_64/task_life.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/sig-job-stop-boot.txt build-gcc-Release
+
+### every job-control stop is taken as orphaned
+--- old
+    if (sig != VIBEOS_SIGSTOP && hw_pgrp_orphaned(g_tasks[slot].id.pgid, 0)) {
++++ new
+    if (sig != VIBEOS_SIGSTOP) {

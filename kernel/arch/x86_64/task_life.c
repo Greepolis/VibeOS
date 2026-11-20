@@ -1890,9 +1890,93 @@ int hw_signal_default_kills(uint32_t sig) {
         case VIBEOS_SIGCONT:
         case VIBEOS_SIGWINCH:
             return 0;   /* ignored by default */
+        case VIBEOS_SIGSTOP:
+        case VIBEOS_SIGTSTP:
+        case VIBEOS_SIGTTIN:
+        case VIBEOS_SIGTTOU:
+            return 0;   /* stops: hw_signal_default_stops. Ctrl+Z killed the job before S1 */
         default:
             return 1;
     }
+}
+
+int hw_signal_default_stops(uint32_t sig) {
+    return sig == VIBEOS_SIGSTOP || sig == VIBEOS_SIGTSTP || sig == VIBEOS_SIGTTIN || sig == VIBEOS_SIGTTOU;
+}
+
+#define HW_STOP_SIGS ((1ull << VIBEOS_SIGSTOP) | (1ull << VIBEOS_SIGTSTP) | (1ull << VIBEOS_SIGTTIN) | \
+                      (1ull << VIBEOS_SIGTTOU))
+
+/* Tell a stopped or continued process's parent (docs/shell/s1.md step 1):
+ * out of wait, and SIGCHLD with what happened unless it asked not to be told
+ * (SA_NOCLDSTOP). The exit's own notice is hw_notify_parent. */
+static void hw_notify_parent_stop(int leader, int32_t code, uint32_t sig) {
+    int i;
+    uint32_t ppid = g_tasks[leader].id.ppid;
+
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (hw_slot_state(i) == HW_TASK_BLOCKED && !g_tasks[i].id.signal_stopped &&
+            g_tasks[i].id.pid == ppid) {
+            (void)hw_task_set_state(i, HW_TASK_READY, __func__);
+            HW_TASK_MARK(i, ready_by, "parent_woken_by_child_stop");
+        }
+    }
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        vibeos_task_state_t st = hw_slot_state(i);
+
+        if (i != leader && g_tasks[i].id.is_user && st != HW_TASK_FREE && st != HW_TASK_RESERVED &&
+            st != HW_TASK_ZOMBIE && g_tasks[i].id.pid == ppid && g_tasks[i].id.pid == g_tasks[i].id.tgid) {
+            vibeos_siginfo_t why;
+            uint32_t k;
+
+            if (g_tasks[i].ps && (g_tasks[i].ps->sig_flags[VIBEOS_SIGCHLD] & VIBEOS_SA_NOCLDSTOP)) {
+                break;
+            }
+            for (k = 0; k < sizeof(why); k++) {
+                ((unsigned char *)&why)[k] = 0;
+            }
+            why.from = VIBEOS_SIG_FROM_CHILD;
+            why.pid = g_tasks[leader].id.tgid;
+            why.code = code;
+            why.status = (int32_t)sig;
+            (void)hw_signal_send(i, VIBEOS_SIGCHLD, &why);
+            break;
+        }
+    }
+}
+
+int hw_group_stop(int slot, uint32_t sig) {
+    uint32_t tgid;
+    int leader, i;
+
+    if (slot < 0 || slot >= VIBEOS_HW_MAX_TASKS) {
+        return 0;
+    }
+    hw_spin_lock_named(&g_sched_lock, __func__);
+    tgid = g_tasks[slot].id.tgid;
+    /* A job-control stop in a group nobody can continue is dropped, as
+     * POSIX says and Linux does: otherwise Ctrl+Z on a job whose shell has
+     * gone would stop it for ever. SIGSTOP is not a job-control signal. */
+    if (sig != VIBEOS_SIGSTOP && hw_pgrp_orphaned(g_tasks[slot].id.pgid, 0)) {
+        hw_spin_unlock(&g_sched_lock);
+        return 0;
+    }
+    leader = hw_leader_of(tgid);
+    if (leader >= 0 && g_tasks[leader].id.stop_sig == 0u) {
+        g_tasks[leader].id.stop_sig = (uint8_t)sig;
+        g_tasks[leader].id.stop_report = VIBEOS_STOP_REPORT_STOPPED;
+        hw_notify_parent_stop(leader, (int32_t)VIBEOS_CHILD_STOPPED, sig);
+        /* The rest of the process stops on its next way out of the kernel:
+         * a sibling waiting is woken to take it, as Linux's group stop. */
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (i != slot && hw_task_live(i) && g_tasks[i].id.is_user && g_tasks[i].id.tgid == tgid &&
+                !g_tasks[i].id.signal_stopped) {
+                (void)hw_signal_send(i, VIBEOS_SIGSTOP, 0);
+            }
+        }
+    }
+    hw_spin_unlock(&g_sched_lock);
+    return 1;
 }
 
 /* Should a task waiting in the kernel stop waiting?
@@ -1941,7 +2025,7 @@ int hw_signal_interrupts(int task) {
         if (handler == SIG_IGN_ADDR) {
             continue;
         }
-        if (handler == SIG_DFL_ADDR && !hw_signal_default_kills(sig)) {
+        if (handler == SIG_DFL_ADDR && !hw_signal_default_kills(sig) && !hw_signal_default_stops(sig)) {
             continue;
         }
         return 1;
@@ -1969,10 +2053,36 @@ int hw_signal_send(int task_index, uint32_t sig, const vibeos_siginfo_t *info) {
     }
     /* SIGKILL ends a stop as SIGCONT does: a stopped process can always be
      * killed, and it is not stopped while it dies. */
-    if ((sig == VIBEOS_SIGCONT || sig == VIBEOS_SIGKILL) && g_tasks[task_index].id.signal_stopped) {
+    if (sig == VIBEOS_SIGKILL && g_tasks[task_index].id.signal_stopped) {
         g_tasks[task_index].id.signal_stopped = 0;
         (void)hw_task_set_state(task_index, HW_TASK_READY, __func__);
-        HW_TASK_MARK(task_index, ready_by, sig == VIBEOS_SIGKILL ? "sigkill_stopped" : "sigcont");
+        HW_TASK_MARK(task_index, ready_by, "sigkill_stopped");
+    }
+    /* SIGCONT continues the process, every thread of it, when it is sent -
+     * whatever its disposition, blocked or not - and throws away any stop
+     * still pending; a stop sent throws away a pending SIGCONT. Each to the
+     * whole process, as the stop is (docs/shell/s1.md step 1). */
+    if (sig == VIBEOS_SIGCONT || hw_signal_default_stops(sig)) {
+        uint32_t tgid = g_tasks[task_index].id.tgid;
+        uint64_t drop = sig == VIBEOS_SIGCONT ? HW_STOP_SIGS : (1ull << VIBEOS_SIGCONT);
+        int i, leader = hw_leader_of(tgid);
+
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (!hw_task_live(i) || !g_tasks[i].id.is_user || g_tasks[i].id.tgid != tgid) {
+                continue;
+            }
+            __sync_fetch_and_and(&g_tasks[i].id.sig_pending, ~drop);
+            if (sig == VIBEOS_SIGCONT && g_tasks[i].id.signal_stopped) {
+                g_tasks[i].id.signal_stopped = 0;
+                (void)hw_task_set_state(i, HW_TASK_READY, __func__);
+                HW_TASK_MARK(i, ready_by, "sigcont");
+            }
+        }
+        if (sig == VIBEOS_SIGCONT && leader >= 0 && g_tasks[leader].id.stop_sig != 0u) {
+            g_tasks[leader].id.stop_sig = 0;
+            g_tasks[leader].id.stop_report = VIBEOS_STOP_REPORT_CONTINUED;
+            hw_notify_parent_stop(leader, (int32_t)VIBEOS_CHILD_CONTINUED, VIBEOS_SIGCONT);
+        }
     }
     /* SIGKILL and SIGSTOP cannot be caught or blocked. Honouring a handler for
      * them would make a process unkillable. */

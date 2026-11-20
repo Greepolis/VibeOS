@@ -212,6 +212,8 @@ static long linux_fork_body(const ks_regs_t *frame, uint32_t exit_sig, uint64_t 
     child->pgid = parent->pgid;
     child->sid = parent->sid;
     child->signal_stopped = 0;
+    child->stop_sig = 0;
+    child->stop_report = 0;
     child->is_thread = 0;
     child->clear_child_tid = (flags & LINUX_CLONE_CHILD_CLEARTID) ? ctid : 0;
     child->robust_head = 0;   /* the child's C library registers its own */
@@ -462,6 +464,8 @@ static long linux_clone_body(const ks_regs_t *frame,
     child->pgid = parent->pgid;
     child->sid = parent->sid;
     child->signal_stopped = 0;
+    child->stop_sig = 0;
+    child->stop_report = 0;
     child->is_thread = 1;
     child->cpu_base = linux_cpu_slot(idx);
     child->start_tick = ks_ticks();
@@ -554,8 +558,9 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
  *
  * What is selected: every child, one by pid, or a process group's. A child
  * that has ended is reported and, unless the caller asked only to look
- * (WNOWAIT), reaped. Stopped and continued children are not reported: this
- * kernel does not keep that state for a parent (the registry's gap). */
+ * (WNOWAIT), reaped. A child that stopped or continued is reported once,
+ * when the caller asked for it (WUNTRACED/WSTOPPED, WCONTINUED), and never
+ * reaped (docs/shell/s1.md step 1). */
 
 #define LINUX_WAIT_ANY  0u
 #define LINUX_WAIT_PID  1u
@@ -568,6 +573,7 @@ typedef struct {
     uint32_t signal;      /* the signal that ended it, or 0                     */
     uint32_t code;        /* the exit code, when it exited                      */
     uint64_t cpu;         /* the ticks it ran, for rusage and times()           */
+    uint32_t event;       /* VIBEOS_STOP_REPORT_*: NONE for an end               */
 } linux_waited_t;
 
 /* 1 if a thread of `tgid` other than slot `leader` has not finished exiting.
@@ -617,8 +623,30 @@ static long linux_wait_child(uint32_t kind, uint32_t id, uint64_t options, int r
                 continue;
             }
             have_children = 1;
+            /* Stopped or continued, if that was asked for: told once, unless
+             * the caller only looks (WNOWAIT), and the child stays. */
+            if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE &&
+                ((t->stop_report == VIBEOS_STOP_REPORT_STOPPED && (options & LINUX_WSTOPPED)) ||
+                 (t->stop_report == VIBEOS_STOP_REPORT_CONTINUED && (options & LINUX_WCONTINUED)))) {
+                out->pid = t->tgid;
+                /* The real uid, read without its process's files_lock: a
+                 * report's, and setuid racing a wait is a race on Linux too. */
+                out->uid = ks_ps(i) ? ks_ps(i)->cred.uid : 0u;
+                out->event = t->stop_report;
+                out->signal = out->event == VIBEOS_STOP_REPORT_STOPPED ? t->stop_sig : VIBEOS_SIGCONT;
+                out->code = 0;
+                out->cpu = 0;
+                out->status = out->event == VIBEOS_STOP_REPORT_STOPPED ? (int)(0x7fu | ((uint32_t)t->stop_sig << 8))
+                                                                       : 0xffff;
+                if (reap) {
+                    t->stop_report = VIBEOS_STOP_REPORT_NONE;
+                }
+                ks_unlock(ks_sched_lock());
+                ks_irq_on();
+                return 1;
+            }
             if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
-                linux_group_still_running(t->tgid, i)) {
+                linux_group_still_running(t->tgid, i) || !(options & LINUX_WEXITED)) {
                 continue;
             }
             {
@@ -626,6 +654,7 @@ static long linux_wait_child(uint32_t kind, uint32_t id, uint64_t options, int r
 
                 out->pid = t->tgid;
                 out->uid = t->exit_uid;
+                out->event = VIBEOS_STOP_REPORT_NONE;
                 out->signal = t->exit_signal;
                 out->code = (uint32_t)t->exit_code;
                 /* One encoding, defined once. A wait status is not an exit
@@ -716,11 +745,10 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr, uint64_t o
     if (p == (int32_t)0x80000000) {
         return -VIBEOS_ESRCH;
     }
-    /* WNOHANG is honoured. WUNTRACED, WCONTINUED and Linux's __WALL, __WCLONE
-     * and __WNOTHREAD are accepted and have no effect: this kernel reports
-     * neither stopped nor continued children. Refusing them would break
-     * BusyBox's shell, which passes WUNTRACED for job control. Any other bit is
-     * refused, as Linux refuses it. */
+    /* WNOHANG, WUNTRACED and WCONTINUED are honoured (WUNTRACED is waitid's
+     * WSTOPPED; s1.md step 1); Linux's __WALL, __WCLONE and __WNOTHREAD are
+     * accepted and have no effect. Any other bit is refused, as Linux
+     * refuses it. */
     if (options & ~(uint64_t)(LINUX_WNOHANG | LINUX_WUNTRACED | LINUX_WCONTINUED |
                               LINUX_WNOTHREAD | LINUX_WALL | LINUX_WCLONE)) {
         return -VIBEOS_EINVAL;
@@ -738,7 +766,8 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr, uint64_t o
         kind = LINUX_WAIT_PID;
         id = (uint32_t)p;
     }
-    r = linux_wait_child(kind, id, options, 1, &w);
+    /* wait4 always asks for an end; waitid says what it wants. */
+    r = linux_wait_child(kind, id, options | LINUX_WEXITED, 1, &w);
     if (r <= 0) {
         return r;
     }
@@ -809,29 +838,19 @@ static long linux_sys_waitid(uint64_t idtype, uint64_t id, uint64_t info_ptr, ui
         default:
             return -VIBEOS_EINVAL;
     }
-    if (!(options & LINUX_WEXITED)) {
-        /* Only stopped or continued children asked for, and those are never
-         * reported here: nothing to find, as if no child ever changed. */
-        if (options & LINUX_WNOHANG) {
-            r = 0;
-        } else {
-            while (!ks_signal_interrupts(ks_current())) {
-                ks_wait_tick();
-            }
-            return -VIBEOS_EINTR;
-        }
-    } else {
-        r = linux_wait_child(kind, sel, options, (options & LINUX_WNOWAIT) == 0u, &w);
-        if (r < 0) {
-            return r;
-        }
+    r = linux_wait_child(kind, sel, options, (options & LINUX_WNOWAIT) == 0u, &w);
+    if (r < 0) {
+        return r;
     }
     for (i = 0; i < sizeof(si); i++) {
         ((unsigned char *)&si)[i] = 0;
     }
     if (r > 0) {
         si.si_signo = (int32_t)VIBEOS_SIGCHLD;
-        si.si_code = w.signal ? LINUX_CLD_KILLED : LINUX_CLD_EXITED;
+        si.si_code = w.event == VIBEOS_STOP_REPORT_STOPPED     ? LINUX_CLD_STOPPED
+                     : w.event == VIBEOS_STOP_REPORT_CONTINUED ? LINUX_CLD_CONTINUED
+                     : w.signal                                ? LINUX_CLD_KILLED
+                                                               : LINUX_CLD_EXITED;
         si.pid = (int32_t)w.pid;
         si.uid = w.uid;
         linux_si_set_status(&si, w.signal ? (int32_t)w.signal : (int32_t)(w.code & 0xFFu));

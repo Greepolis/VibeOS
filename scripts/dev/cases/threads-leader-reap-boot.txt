@@ -14,7 +14,7 @@
 ### a zombie leader is reaped while a thread of it is still running
 --- old
             if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
-                linux_group_still_running(t->tgid, i)) {
+                linux_group_still_running(t->tgid, i) || !(options & LINUX_WEXITED)) {
 +++ new
             if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE ||
-                (0 && linux_group_still_running(t->tgid, i))) {
+                (0 && linux_group_still_running(t->tgid, i)) || !(options & LINUX_WEXITED)) {

@@ -1017,6 +1017,9 @@ static inline void linux_si_set_status(linux_siginfo_t *o, int32_t status) {
 #define LINUX_ILL_ILLOPN     2
 #define LINUX_CLD_EXITED     1
 #define LINUX_CLD_KILLED     2
+#define LINUX_CLD_STOPPED    5
+#define LINUX_CLD_CONTINUED  6
+#define LINUX_SA_NOCLDSTOP   1
 
 /* uc_flags (asm/ucontext.h): the frame carries ss, and sigreturn is to put it
  * back exactly. */

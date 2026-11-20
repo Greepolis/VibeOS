@@ -259,6 +259,8 @@ static uint32_t thread_spawn_body(nt_mm_t *m, ks_regs_t *frame, uint64_t start, 
     child->is_thread = 1;
     child->is_user = 1;
     child->signal_stopped = 0;
+    child->stop_sig = 0;
+    child->stop_report = 0;
     child->exit_code = 0;
     child->exit_signal = 0;
     child->clear_child_tid = 0;

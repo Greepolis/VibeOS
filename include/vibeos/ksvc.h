@@ -137,6 +137,15 @@ int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info);
  * take are one critical section each, so a reason is never read half-written. */
 int ks_signal_take(int slot, uint32_t sig, vibeos_siginfo_t *out);
 int ks_signal_default_kills(uint32_t sig);
+/* SIGSTOP, SIGTSTP, SIGTTIN and SIGTTOU: a default that stops the process. */
+int ks_signal_default_stops(uint32_t sig);
+/* The calling task takes a stop signal at its default (docs/shell/s1.md
+ * step 1): 0 when it is to be discarded - SIGTSTP, SIGTTIN or SIGTTOU in an
+ * orphaned process group - and 1 when the task is to stop. The first thread
+ * of a process to stop records the stop on its leader, tells the parent
+ * (SIGCHLD with CLD_STOPPED unless SA_NOCLDSTOP, and a wake out of wait) and
+ * sends SIGSTOP to every other thread, so that the process stops whole. */
+int ks_group_stop(int slot, uint32_t sig);
 
 /* ---- time ------------------------------------------------------------------- */
 

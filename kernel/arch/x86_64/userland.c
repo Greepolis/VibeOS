@@ -274,6 +274,17 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * The answers are the shell's arithmetic. */
                                   "mount -t tmpfs -o size=64k none /mnt && echo MNT_$((2*3)) > /mnt/m && "
                                   "cat /mnt/m && umount /mnt && [ ! -e /mnt/m ] && echo UMNT_$((3*3))\n"
+                                  /* Job control (docs/shell/s1.md step 1): a
+                                   * background job stopped by SIGTSTP, which
+                                   * ash's jobs must call Stopped, then
+                                   * continued and ended. The marker is the
+                                   * shell's arithmetic. The first sleep is
+                                   * not decoration: until the child has put
+                                   * SIGTSTP back to its default it ignores it
+                                   * as ash does, and a TSTP sent then is
+                                   * discarded - on Linux too. */
+                                  "sleep 30 & sleep 1; kill -TSTP $!; sleep 1; jobs; kill -CONT %1; kill %1; wait; "
+                                  "echo JOBCTL_$((4*5))\n"
                                   /* The write path (L1 step 3): twenty lines of
                                    * forty-one bytes - past the 512 a descriptor
                                    * used to hold - then five more appended with

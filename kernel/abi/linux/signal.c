@@ -119,7 +119,10 @@ void linux_siginfo_from(linux_siginfo_t *o, uint32_t sig, const vibeos_siginfo_t
             o->value = in->addr;
             break;
         case VIBEOS_SIG_FROM_CHILD:
-            o->si_code = in->code == (int32_t)VIBEOS_CHILD_KILLED ? LINUX_CLD_KILLED : LINUX_CLD_EXITED;
+            o->si_code = in->code == (int32_t)VIBEOS_CHILD_KILLED      ? LINUX_CLD_KILLED
+                         : in->code == (int32_t)VIBEOS_CHILD_STOPPED   ? LINUX_CLD_STOPPED
+                         : in->code == (int32_t)VIBEOS_CHILD_CONTINUED ? LINUX_CLD_CONTINUED
+                                                                       : LINUX_CLD_EXITED;
             o->pid = (int32_t)in->pid;
             o->uid = in->uid;
             linux_si_set_status(o, in->status);
@@ -228,7 +231,12 @@ int linux_signal_deliver(ks_regs_t *frame) {
             continue;
         }
         if (handler == SIG_DFL_ADDR) {
-            if (sig == VIBEOS_SIGSTOP) {
+            if (ks_signal_default_stops(sig)) {
+                /* The process stops, not this thread alone; a job-control
+                 * stop in an orphaned group is thrown away (s1.md step 1). */
+                if (!ks_group_stop(me, sig)) {
+                    continue;
+                }
                 t->signal_stopped = 1;
                 (void)ks_set_state(me, VIBEOS_TASK_BLOCKED, __func__);
                 ks_mark_ready(me, "sigstop");
