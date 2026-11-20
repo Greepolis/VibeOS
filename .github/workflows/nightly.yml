@@ -98,7 +98,7 @@ jobs:
         timeout-minutes: 30
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64-win32
 
       - name: Build
         run: |
@@ -172,7 +172,7 @@ jobs:
         timeout-minutes: 30
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64-win32
 
       # Two boots at two round counts, because one figure cannot tell a fixed
       # startup cost from a per-round leak - and those are the same number with
@@ -767,7 +767,7 @@ jobs:
         timeout-minutes: 30
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils e2fsprogs ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64-win32
       - name: Build the guest
         run: |
           set -euo pipefail
@@ -1046,7 +1046,7 @@ jobs:
         timeout-minutes: 30
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64-win32 \
             mtools exfatprogs ntfs-3g xorriso fdisk gdisk
 
       - name: Configure instrumented fuzzers

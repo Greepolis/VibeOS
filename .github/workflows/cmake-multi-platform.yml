@@ -123,7 +123,7 @@ jobs:
           # kind of gap that turns a gate into decoration.
           # ntfs-3g, exfatprogs and mtools build the NTFS, exFAT and long-name FAT images the boot
           # mounts and the gate asserts; without them both report "no image".
-          sudo apt-get $APT install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
+          sudo apt-get $APT install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64-win32
           # The cache action runs as the runner user; apt left these root's.
           sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives"
 
@@ -278,7 +278,7 @@ jobs:
         timeout-minutes: 30
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools e2fsprogs gcc-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ipxe-qemu qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools e2fsprogs gcc-mingw-w64-x86-64-win32
       - name: Build guest and host test baseline
         run: |
           set -euo pipefail
@@ -364,7 +364,7 @@ jobs:
         timeout-minutes: 30
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64 \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y ninja-build clang python3 e2fsprogs gcc-mingw-w64-x86-64-win32 \
             mtools exfatprogs ntfs-3g xorriso fdisk gdisk
 
       - name: Configure host tests for production sabotage verification
