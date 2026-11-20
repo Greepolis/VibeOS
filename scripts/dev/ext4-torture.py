@@ -30,7 +30,7 @@ a rename over something already there.
 The seed is printed on every failure, and with --keep the failing seed's script,
 volume and both listings are left in DIR (never removed by this script).
 
-Prints ext4_torture=ok seeds=<n> ops=<n> cuts=<n> torn_writes=<n>, =skip reason=..., or
+Prints ext4_torture=ok seeds=<n> ops=<n> cuts=<n> torn_writes=<n> orphan_fallback=<n>, =skip reason=..., or
 ext4_torture=FAILED seed=<s> reason=<why>.
 """
 
@@ -567,7 +567,22 @@ def torn_write(gen, mine, img):
         touched = set()
         for _, (names, _, _) in later:
             touched |= set(names)
-        if not rows <= touched:
+        # A name the write did not know of can still be the written file: a
+        # hard link removed before the write, by an unlink the cut has not
+        # yet committed, shows the bytes written in place under every name
+        # the inode still has on disk (nightly seed 1000018124, 2026-11-20).
+        # Such a name is accepted when, in the state and in the cut alike, it
+        # reads exactly as a touched name does; its bytes are those checked.
+        wantrow = {l.split("\t")[0]: l.split("\t")[1:] for l in want}
+        gotrow = {l.split("\t")[0]: l.split("\t")[1:] for l in got}
+        alias = set()
+        for r in rows - touched:
+            for t in rows & touched:
+                if r in wantrow and r in gotrow and wantrow.get(r) == wantrow.get(t) and \
+                        gotrow.get(r) == gotrow.get(t):
+                    alias.add(r)
+                    break
+        if not rows <= touched | alias:
             continue
         sizes = {}
         for l in want:
@@ -578,7 +593,7 @@ def torn_write(gen, mine, img):
                for l in differ):
             continue
         ok = True
-        for name in rows:
+        for name in rows - alias:
             mixes = [m for _, m in later if name in m[0]]
             base = mixes[0][1]
             r = subprocess.run(["debugfs", "-R", "cat \"%s\"" % name, img], stdout=subprocess.PIPE,
@@ -646,7 +661,8 @@ def one_seed(args):
     ex, seed, nops, cuts, keep = args
     rng = random.Random(seed)
     work = tempfile.mkdtemp(prefix="ext4-torture-")
-    result = {"seed": seed, "ok": False, "ops": 0, "cuts": 0, "torn": 0, "why": "", "detail": ""}
+    result = {"seed": seed, "ok": False, "ops": 0, "cuts": 0, "torn": 0, "orphan_fallback": 0, "why": "",
+              "detail": ""}
 
     def failed(why, detail=""):
         result["why"], result["detail"] = why, detail.strip().replace("\n", " | ")[:400]
@@ -763,6 +779,7 @@ def one_seed(args):
                 theirs = os.path.join(c, "e")
                 os.mkdir(theirs)
                 shutil.copy(os.path.join(c, "fs.img"), os.path.join(theirs, "fs.img"))
+                shutil.copy(os.path.join(c, "fs.img"), os.path.join(c, "cut.img"))
 
                 r = run([ex, "recover"], c)
                 if r.returncode != 0:
@@ -777,12 +794,47 @@ def one_seed(args):
                 r = run(["e2fsck", "-fy", os.path.join(theirs, "fs.img")], None)
                 if r.returncode > 1:
                     return failed("e2fsck_replay_failed", "n=%d %s" % (n, r.stdout))
+                e2out = r.stdout
                 ok, out = fsck_clean(os.path.join(theirs, "fs.img"))
                 if not ok:
                     return failed("e2fsck_replay_not_clean", "n=%d %s" % (n, out))
                 other, err = walk(ex, theirs)
                 if other is None:
                     return failed("e2fsck_replay_unreadable", "n=%d %s" % (n, err))
+                if mine != other and "Truncating orphaned inode" in e2out and "Already cleared" in e2out:
+                    # e2fsck 1.47 gives up truncating an orphan to zero
+                    # through a two-level extent tree ("Already cleared ...
+                    # block found in orphaned inode") and then mends the
+                    # size up to the blocks it left - a file Linux's mount
+                    # would have emptied (nightly seed 1000018057,
+                    # 2026-11-20; partial truncates of the same tree it
+                    # finishes). The log is then replayed by e2fsprogs
+                    # alone (debugfs jr), the orphan completed as a mount
+                    # completes it, by the driver with nothing left to
+                    # replay, and that must be clean and agree. Counted, so
+                    # a run that leans on it says so.
+                    alt = os.path.join(c, "e2")
+                    os.mkdir(alt)
+                    shutil.copy(os.path.join(c, "cut.img"), os.path.join(alt, "fs.img"))
+                    shutil.copy(os.path.join(c, "script.txt"), os.path.join(alt, "script.txt"))
+                    subprocess.run(["debugfs", "-w", "-f", "-", os.path.join(alt, "fs.img")], input="jr\n",
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, universal_newlines=True,
+                                   timeout=300)
+                    # A replay that did not happen would leave the driver's
+                    # recover to do it, and the driver to agree with itself.
+                    r = run(["dumpe2fs", "-h", os.path.join(alt, "fs.img")], None)
+                    if "needs_recovery" in r.stdout:
+                        return failed("orphan_fallback_not_replayed", "n=%d" % n)
+                    r = run([ex, "recover"], alt)
+                    if r.returncode != 0:
+                        return failed("orphan_fallback_failed", "n=%d %s" % (n, r.stdout))
+                    ok, out = fsck_clean(os.path.join(alt, "fs.img"))
+                    if not ok:
+                        return failed("orphan_fallback_not_clean", "n=%d %s" % (n, out))
+                    other, err = walk(ex, alt)
+                    if other is None:
+                        return failed("orphan_fallback_unreadable", "n=%d %s" % (n, err))
+                    result["orphan_fallback"] += 1
                 if mine != other:
                     return failed("replays_disagree", "n=%d" % n)
                 if mine not in states:
@@ -825,7 +877,7 @@ def main():
         os.makedirs(keep, exist_ok=True)
 
     jobs = [(ex, s, a.ops, a.cuts, keep) for s in range(a.first, a.first + a.seeds)]
-    ops = cuts = torn = 0
+    ops = cuts = torn = fallback = 0
     bad = []
     with ProcessPoolExecutor(max_workers=max(1, a.j)) as pool:
         for res in pool.map(one_seed, jobs):
@@ -834,6 +886,7 @@ def main():
                 print("  seed=%d ops=%d cuts=%d torn=%d" % (res["seed"], res["ops"], res["cuts"], res["torn"]))
             cuts += res["cuts"]
             torn += res["torn"]
+            fallback += res["orphan_fallback"]
             if not res["ok"]:
                 bad.append(res)
                 print("  seed=%d reason=%s %s" % (res["seed"], res["why"], res["detail"]), flush=True)
@@ -841,7 +894,8 @@ def main():
         print("ext4_torture=FAILED seed=%d reason=%s failing_seeds=%d of %d"
               % (bad[0]["seed"], bad[0]["why"], len(bad), a.seeds))
         return 1
-    print("ext4_torture=ok seeds=%d ops=%d cuts=%d torn_writes=%d" % (a.seeds, ops, cuts, torn))
+    print("ext4_torture=ok seeds=%d ops=%d cuts=%d torn_writes=%d orphan_fallback=%d"
+          % (a.seeds, ops, cuts, torn, fallback))
     return 0
 
 

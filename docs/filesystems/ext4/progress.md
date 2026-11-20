@@ -215,6 +215,20 @@ writes an `ext4` volume it can keep true (the table below the step), and
   in between showed it - e2fsck, "root node fails checksum" (seed
   1000017949). The first change to an indexed directory now makes it linear
   here too; `ext4-dotdot.txt` puts the old code back and goes red.
+- **The oracle's own limits, 2026-11-20.** A cut that leaves a write over a
+  file with several names, one of them unlinked by a commit the cut has not
+  reached, shows the written bytes under that name too; the judge took only
+  the names the file had when it was written (seed 1000018124), and now also
+  takes a name that reads exactly as a written one in the state and in the
+  cut alike. And e2fsck 1.47, asked to finish an orphan truncate to zero
+  through a two-level extent tree, stops at "Already cleared ... block found
+  in orphaned inode" and mends the size up to what it left, where Linux's
+  mount empties the file (seed 1000018057); it finishes partial truncates of
+  the same tree. The driver's committed state was checked by hand and is
+  valid. When e2fsck says that, the log is replayed by e2fsprogs alone
+  (`debugfs jr`, refused if it leaves `needs_recovery`), the orphan finished
+  by the driver as a mount would, and that must be clean and agree; the run
+  prints how often it happened (`orphan_fallback=`).
 - **Found while writing it**, none a driver defect: `mkdir` and `unlink` answer
   0 or -1 by the VFS contract (the errno is the Linux handler's), so for those
   the script asks only for a refusal (`refuse`); the exerciser's commit check
