@@ -193,6 +193,9 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "/usr/bin/TFORK.ELF\n"
                                   "/usr/bin/SIGNAL.ELF\n"
                                   "/usr/bin/EVENTS.ELF\n"
+                                  /* login, driven through a pseudo-terminal
+                                   * (docs/shell/s2.md). */
+                                  "/usr/bin/LOGINT.ELF\n"
                                   /* The NT personality's first program
                                    * (docs/abi/windows.md W1): a PE image,
                                    * exec'd by this Linux-ABI shell like any

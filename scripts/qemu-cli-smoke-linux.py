@@ -3483,6 +3483,13 @@ def main():
                         not re.search(r"write\(ring3\): DIRS_4_1\r?\n", text)):
                     problems.append("directory_listing_failed")
 
+            # login, as a person uses it (docs/shell/s2.md), read off the
+            # driving program's own line.
+            if os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "LOGINT.ELF")) and disk_img:
+                if not re.search(r"write\(ring3\): LOGIN_OK: ", text):
+                    m = re.search(r"LOGIN_FAIL: ([^\r\n]*)", text)
+                    problems.append("login_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
+
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):
                 if "SIG_OK" not in text:

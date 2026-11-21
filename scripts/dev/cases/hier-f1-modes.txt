@@ -14,12 +14,12 @@
 
 ### /root gets the default mode (root_tree_mode_wrong)
 --- old
-SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700}
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700, "home/vibe": 0o700}
 +++ new
-SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777}
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "home/vibe": 0o700}
 
 ### /var/tmp is not sticky (root_tree_mode_wrong)
 --- old
-SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700}
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700, "home/vibe": 0o700}
 +++ new
-SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o777, "root": 0o700}
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o777, "root": 0o700, "home/vibe": 0o700}

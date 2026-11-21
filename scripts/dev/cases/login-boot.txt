@@ -1,0 +1,22 @@
+# login on the machine (docs/shell/s2.md), broken. LOGINT.ELF plays the person
+# at a pseudo-terminal. Each expects login_failed, with its own reason.
+#
+# Target source: user/login/login.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py user/login/login.c scripts/dev/cases/login-boot.txt build-gcc-Release
+
+### any password is right
+--- old
+    usable = usable && got && same_hash(got, hash);
++++ new
+    usable = usable && got;
+
+### the session keeps root's ids
+--- old
+    if (initgroups(a->name, a->gid) != 0 || setgid(a->gid) != 0 || setuid(a->uid) != 0) {
++++ new
+    if (0) {
+
+### the caller's environment reaches the session
+--- old
+    clearenv();
++++ new

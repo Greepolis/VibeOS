@@ -207,13 +207,24 @@ jobs:
       # The disk the .vdi/.vmdk/.ova carry, booted as it ships: init has to
       # read the production manifest from the native root (E4-025: it was a
       # bare ESP with no root; E4-023: it ran the gate's self-test). The line
-      # says one service and no malformed ones - the shell, nothing else.
+      # is login's, which only the manifest starts, asking for the first
+      # password: a shipped image has none (docs/shell/s2.md).
       - name: QEMU Boot-Test the VirtualBox Disk Runs the Production Root (Required Gate, GCC)
         if: matrix.compiler == 'gcc'
         timeout-minutes: 6
         run: |
           set -euo pipefail
-          python3 scripts/qemu-boot-image-linux.py build/artifacts/vibeos.vdi "NATIVE_INIT_MANIFEST file 1 0" 240 disk vdi
+          python3 scripts/qemu-boot-image-linux.py build/artifacts/vibeos.vdi "New password for root" 240 disk vdi
+
+      # The same image's first two boots, typed at its keyboard: it asks for
+      # the passwords once, they work, and they survive a power cut.
+      - name: First Boot Sets the Passwords and Keeps Them (Required Gate, GCC)
+        if: matrix.compiler == 'gcc'
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          python3 scripts/dev/verify-first-boot.py build/artifacts/vibeos.vdi | tee first-boot.log
+          grep -q '^first_boot=ok' first-boot.log
 
       - name: QEMU OVMF Summary
         if: always()

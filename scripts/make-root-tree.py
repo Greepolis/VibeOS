@@ -60,19 +60,41 @@ ESP_ONLY = ("VIBEOSKR.ELF", "SWAPFILE.BIN")
 # native utilities. Everything else in EFI/BOOT is a test program the boot
 # gate runs. A list of what to keep rather than of what to drop, so that a new
 # test program is left out by default instead of shipped by default.
-PRODUCTION_PROGRAMS = ("INIT.ELF", "NATIVE_INIT.ELF", "BUSYBOX.ELF", "SH.ELF",
+PRODUCTION_PROGRAMS = ("INIT.ELF", "NATIVE_INIT.ELF", "BUSYBOX.ELF", "LOGIN.ELF", "SH.ELF",
                        "CAT", "ECHO", "LS", "WC")
 
 # /win holds the Windows test programs; the system's own files are in
 # /usr/lib/windows (C:\Windows), which a production root keeps.
 
-# What init starts on a production root: BusyBox's shell on the console, as a
-# session - when it ends, so does the machine's userland.
+# What init starts on a production root: login on the console, which starts
+# each user's session and asks again when it ends (docs/shell/s2.md). There is
+# no stage at which a shell runs as root because nobody asked who was there.
 PRODUCTION_SERVICES = """\
 # Services init starts (user/prog/init.c): <name> <path> <restart_limit> <oneshot> [<arg>]
-# BusyBox becomes the command it is invoked as, so the name is the applet.
-sh /usr/bin/BUSYBOX.ELF 0 1
+login /usr/bin/LOGIN.ELF 8 0
 """
+
+# The accounts (docs/shell/s2.md). The development image's password is
+# "vibeos", for the boot gate and whoever is working on the system; it is a
+# fixture, in the repository, and never reaches a production root, whose
+# accounts have none until login asks for them at the first boot.
+DEV_PASSWORD_HASH = "$6$abcdefgh$0US6Mv0G3alNupRNbIpFDp5qniJQRJgD/25LfUV4hNeiK70XRH/GfamO35Lg2EGF286hrC0S8NtsXThuO0GJq/"
+FIRST_BOOT_HASH = "!firstboot"
+USER_NAME = "vibe"
+USER_ID = 1000
+
+
+def write_accounts(out, production):
+    h = FIRST_BOOT_HASH if production else DEV_PASSWORD_HASH
+    with open(os.path.join(out, "etc", "passwd"), "w", newline="\n") as f:
+        f.write("root:x:0:0:root:/root:/usr/bin/sh\n")
+        f.write("%s:x:%d:%d:VibeOS user:/home/%s:/usr/bin/sh\n" % (USER_NAME, USER_ID, USER_ID, USER_NAME))
+    with open(os.path.join(out, "etc", "group"), "w", newline="\n") as f:
+        f.write("root:x:0:\n%s:x:%d:\n" % (USER_NAME, USER_ID))
+    with open(os.path.join(out, "etc", "shadow"), "w", newline="\n") as f:
+        f.write("root:%s:20000:0:99999:7:::\n" % h)
+        f.write("%s:%s:20000:0:99999:7:::\n" % (USER_NAME, h))
+    os.makedirs(os.path.join(out, "home", USER_NAME), exist_ok=True)
 
 
 def make(efi_root, out, marker, production):
@@ -107,6 +129,13 @@ def make(efi_root, out, marker, production):
         path = os.path.join(out, link)
         if not os.path.lexists(path):
             os.symlink(target, path)
+    # The name a login shell is started under, and what /bin/sh is.
+    sh = os.path.join(out, "usr", "bin", "sh")
+    if not os.path.lexists(sh):
+        os.symlink("BUSYBOX.ELF", sh)
+    if production and not os.path.exists(os.path.join(out, "usr", "bin", "LOGIN.ELF")):
+        raise SystemExit("make-root-tree: a production root needs login (musl-gcc was not there to build it)")
+    write_accounts(out, production)
     if marker:
         with open(os.path.join(out, "etc", "vibeos", "root"), "w") as f:
             f.write("VIBEOS_ROOT_MARKER\n")
@@ -121,7 +150,7 @@ def make(efi_root, out, marker, production):
 # copied that onto the root - any user could have replaced /usr/bin/BUSYBOX.ELF
 # (E4-028). Directories 0755, programs and libraries 0755, the rest 0644;
 # /tmp and /var/tmp are sticky and writable by all, /root is root's.
-SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700}
+SPECIAL_DIR_MODES = {"tmp": 0o1777, "var/tmp": 0o1777, "root": 0o700, "home/vibe": 0o700}
 # /win: the Windows test programs, which the gate execs - a boot whose modes
 # left them 0644 said "cannot exec" for every one of them.
 EXECUTABLE_DIRS = ("usr/bin", "usr/lib", "win")

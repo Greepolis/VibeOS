@@ -7,6 +7,7 @@ decided with the project's owner on 2026-11-19.
 |---|---|
 | [design.md](design.md) | The design: the session and login, the native shell `vsh` and its syntax, bash and cmd beside it, scripts run by their type, the names in `/usr/bin` |
 | [s1.md](s1.md) | S1: job control and pseudo-terminals in the kernel - the plan, step by step, and its status |
+| [s2.md](s2.md) | S2: login - the accounts, first boot, the session |
 
 The phases, each with its own file once it starts:
 

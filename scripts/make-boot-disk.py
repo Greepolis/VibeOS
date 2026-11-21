@@ -58,6 +58,14 @@ def owned_by_root(img, tree):
                 raise SystemExit("make-boot-disk: a name debugfs cannot quote: %r" % p)
             cmds.append('sif "%s" uid 0' % p)
             cmds.append('sif "%s" gid 0' % p)
+    # What is not root's, and what nobody else may read. Set here and not left
+    # to the tree's modes: on a Windows disk mounted into WSL every file of the
+    # tree reports 0777, and mkfs.ext4 -d would have copied that onto
+    # /etc/shadow (docs/shell/s2.md).
+    if os.path.exists(os.path.join(tree, "etc", "shadow")):
+        cmds.append('sif "/etc/shadow" mode 0100600')
+    if os.path.isdir(os.path.join(tree, "home", "vibe")):
+        cmds += ['sif "/home/vibe" uid 1000', 'sif "/home/vibe" gid 1000', 'sif "/home/vibe" mode 040700']
     script = img + ".debugfs"
     with open(script, "w") as f:
         f.write("\n".join(cmds) + "\n")

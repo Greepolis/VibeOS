@@ -701,6 +701,29 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         )
         add_custom_target(vibeos_musl_signal ALL DEPENDS "${VIBEOS_SIG_BIN}")
 
+        # login (docs/shell/s2.md), against a real C library for its crypt(),
+        # and the program that drives it through a pseudo-terminal.
+        set(VIBEOS_LOGIN_SRC "${CMAKE_CURRENT_SOURCE_DIR}/user/login/login.c")
+        set(VIBEOS_LOGIN_BIN "${CMAKE_BINARY_DIR}/login_program")
+        add_custom_command(
+            OUTPUT "${VIBEOS_LOGIN_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_LOGIN_BIN}" "${VIBEOS_LOGIN_SRC}"
+            DEPENDS "${VIBEOS_LOGIN_SRC}"
+            COMMENT "Building login as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_login ALL DEPENDS "${VIBEOS_LOGIN_BIN}")
+        set(VIBEOS_LOGINT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_login.c")
+        set(VIBEOS_LOGINT_BIN "${CMAKE_BINARY_DIR}/musl_login")
+        add_custom_command(
+            OUTPUT "${VIBEOS_LOGINT_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_LOGINT_BIN}" "${VIBEOS_LOGINT_SRC}"
+            DEPENDS "${VIBEOS_LOGINT_SRC}"
+            COMMENT "Building the login test as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_login ALL DEPENDS "${VIBEOS_LOGINT_BIN}")
+
         # The event loops (docs/abi/ L4), one program grown a step at a time as
         # the signal test was for L2.
         set(VIBEOS_EVENTS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_events.c")
