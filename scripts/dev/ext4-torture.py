@@ -599,7 +599,12 @@ def torn_write(gen, mine, img):
             r = subprocess.run(["debugfs", "-R", "cat \"%s\"" % name, img], stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, timeout=120)
             data = r.stdout
-            if len(data) != len(base) or any(
+            # The size the state says, not the one the first later write
+            # found: a write past the end between the commit and that one
+            # had grown the file, and the commit knows nothing of it (nightly
+            # seed 1000018246, 2026-11-21: 4134 bytes, some of them from a
+            # write made when the file had 389754).
+            if len(data) != int(sizes[name][1]) or len(data) > len(base) or any(
                     b != base[x] and all(x >= len(m[2]) or b != m[2][x] for m in mixes)
                     for x, b in enumerate(data)):
                 ok = False

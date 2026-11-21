@@ -229,6 +229,8 @@ writes an `ext4` volume it can keep true (the table below the step), and
   (`debugfs jr`, refused if it leaves `needs_recovery`), the orphan finished
   by the driver as a mount would, and that must be clean and agree; the run
   prints how often it happened (`orphan_fallback=`).
+  And a torn file is held to the size of the state it came from, not to the
+  size the first later write found (seed 1000018246, 2026-11-21).
 - **Found while writing it**, none a driver defect: `mkdir` and `unlink` answer
   0 or -1 by the VFS contract (the errno is the Linux handler's), so for those
   the script asks only for a refusal (`refuse`); the exerciser's commit check
