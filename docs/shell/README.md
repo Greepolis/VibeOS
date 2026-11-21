@@ -9,6 +9,7 @@ decided with the project's owner on 2026-11-19.
 | [s1.md](s1.md) | S1: job control and pseudo-terminals in the kernel - the plan, step by step, and its status |
 | [s2.md](s2.md) | S2: login - the accounts, first boot, the session |
 | [s3.md](s3.md) | S3: the names in `/usr/bin` |
+| [s4.md](s4.md) | S4: `vsh` - the grammar agreed before the parser, its rules and its status |
 
 The phases, each with its own file once it starts:
 
