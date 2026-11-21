@@ -26,6 +26,9 @@
  * another personality translates its own into these, as it does open flags. */
 #define VIBEOS_IOCTL_GET_PGRP 0x540Fu
 #define VIBEOS_IOCTL_SET_PGRP 0x5410u
+#define VIBEOS_IOCTL_SCTTY 0x540Eu   /* TIOCSCTTY: this terminal, for this session */
+#define VIBEOS_IOCTL_NOTTY 0x5422u   /* TIOCNOTTY: give it up                      */
+#define VIBEOS_IOCTL_GSID 0x5429u    /* TIOCGSID: whose it is                      */
 
 extern const vibeos_file_ops_t vibeos_fops_regular;
 /* An O_PATH description of a file: what it names can be asked about, and

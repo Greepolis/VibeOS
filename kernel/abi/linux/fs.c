@@ -2232,6 +2232,13 @@ static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
                 vibeos_uaccess_copy(&t, (const void *)(uintptr_t)arg, sizeof(t)) != 0) {
                 return -VIBEOS_EFAULT;
             }
+            {
+                /* A background job does not change the terminal (S1 step 2). */
+                long job = vibeos_tty_job_check(VIBEOS_SIGTTOU);
+                if (job != 0) {
+                    return job;
+                }
+            }
             m.iflag = t.c_iflag;
             m.oflag = t.c_oflag;
             m.cflag = t.c_cflag;
@@ -2256,6 +2263,12 @@ static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
             if (!linux_ioctl_arg(arg, sizeof(w), 0) ||
                 vibeos_uaccess_copy(&w, (const void *)(uintptr_t)arg, sizeof(w)) != 0) {
                 return -VIBEOS_EFAULT;
+            }
+            {
+                long job = vibeos_tty_job_check(VIBEOS_SIGTTOU);
+                if (job != 0) {
+                    return job;
+                }
             }
             sz.rows = w.ws_row;
             sz.cols = w.ws_col;
@@ -2685,7 +2698,7 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(5,   fstat,       FSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_fstat(ARG(0), ARG(1))) \
     X(6,   lstat,       LSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_lstat(ARG(0), ARG(1))) \
     X(8,   lseek,       LSEEK,       NOPTR, linux_sys_lseek(ARG(0), ARG(1), ARG(2))) \
-    X(16,  ioctl,       IOCTL,       PTRS(OUT_IF(1, VIBEOS_IOCTL_GET_PGRP, 2, sizeof(uint32_t)), IN_IF(1, VIBEOS_IOCTL_SET_PGRP, 2, sizeof(uint32_t))), linux_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
+    X(16,  ioctl,       IOCTL,       PTRS(OUT_IF(1, VIBEOS_IOCTL_GET_PGRP, 2, sizeof(uint32_t)), IN_IF(1, VIBEOS_IOCTL_SET_PGRP, 2, sizeof(uint32_t)), OUT_IF(1, VIBEOS_IOCTL_GSID, 2, sizeof(uint32_t))), linux_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
     X(19,  readv,       READV,       PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_readv(ARG(0), ARG(1), ARG(2))) \
     X(20,  writev,      WRITEV,      PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_writev(ARG(0), ARG(1), ARG(2))) \
     X(22,  pipe,        PIPE,        PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), 0)) \

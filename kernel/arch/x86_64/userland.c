@@ -21,6 +21,7 @@
 #include "vibeos/elf.h"
 #include "vibeos/services.h"
 #include "vibeos/exec_stats.h"
+#include "vibeos/tty.h"
 #include "arch_hw_internal.h"
 #include "vibeos/account.h"
 #include "vibeos/forkguard.h"
@@ -285,6 +286,13 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * discarded - on Linux too. */
                                   "sleep 30 & sleep 1; kill -TSTP $!; sleep 1; jobs; kill -CONT %1; kill %1; wait; "
                                   "echo JOBCTL_$((4*5))\n"
+                                  /* The terminal's own signals (s1.md step
+                                   * 2), typed: a foreground cat stopped by
+                                   * Ctrl+Z, brought back by fg and ended by
+                                   * Ctrl+C; then a cat in the background,
+                                   * which reading stops with SIGTTIN. */
+                                  "cat\n" "\x1a" "jobs\n" "fg\n" "\x03"
+                                  "cat & sleep 1; jobs; kill -KILL %%; wait; echo TTYJOB_$((5*5))\n"
                                   /* The write path (L1 step 3): twenty lines of
                                    * forty-one bytes - past the 512 a descriptor
                                    * used to hold - then five more appended with
@@ -392,6 +400,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                                  hw_task_pid_of(&g_tasks[hello_id]));
     }
     g_console_foreground_pgid = hw_task_pgid_of(&g_tasks[hello_id]);
+    vibeos_tty_set_session(g_tasks[hello_id].id.sid);   /* the console is the first session's */
 
     /* Printed before the scheduler is armed, so this line cannot be split by a
      * preemption. */

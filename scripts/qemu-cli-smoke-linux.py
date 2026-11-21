@@ -3442,6 +3442,14 @@ def main():
                     problems.append("job_not_stopped")
                 elif not re.search(r"write\(ring3\): JOBCTL_20\r?\n", text):
                     problems.append("job_control_did_not_finish")
+                # The terminal's own signals (s1.md step 2): Ctrl+Z typed at a
+                # foreground cat, and a background cat stopped by reading.
+                if not re.search(r"write\(ring3\): \[\d+\]\+\s+Stopped\s+cat", text):
+                    problems.append("tty_suspend_did_not_stop")
+                elif not re.search(r"write\(ring3\): \[\d+\]\+\s+Stopped \(tty input\)\s+cat", text):
+                    problems.append("background_read_not_stopped")
+                elif not re.search(r"write\(ring3\): TTYJOB_25\r?\n", text):
+                    problems.append("tty_job_control_did_not_finish")
                 # Writing through a descriptor (docs/abi/ L1 step 3): 820
                 # bytes written in twenty writes, five appended, and wc's
                 # count of the file. Any other number is on the line instead:

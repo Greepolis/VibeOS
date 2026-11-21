@@ -902,6 +902,7 @@ int ks_console_getc(void) { return hw_console_getc(); }
 void ks_console_echo(char c) { hw_console_echo(c); }
 uint32_t ks_foreground_pgid(void) { return g_console_foreground_pgid; }
 void ks_set_foreground_pgid(uint32_t pgid) { g_console_foreground_pgid = pgid; }
+int ks_pgrp_orphaned(uint32_t pgid) { return hw_pgrp_is_orphaned(pgid); }
 
 void ks_con_lock(void) { vibeos_x86_64_serial_lock(); }
 void ks_con_unlock(void) { vibeos_x86_64_serial_unlock(); }

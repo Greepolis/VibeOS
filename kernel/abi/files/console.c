@@ -27,6 +27,8 @@ static struct {
     uint32_t len;
     uint32_t ready;
     int eof;                      /* end-of-file typed on an empty line */
+    uint32_t session;             /* whose controlling terminal it is; 0: nobody's */
+    uint32_t sig_due;             /* signals typed, raised once the lock is let go */
 } g_tty;
 static vibeos_lock_t g_tty_lock;
 static int g_tty_set_up;
@@ -53,6 +55,8 @@ static void tty_defaults(void) {
     g_tty.size.xpixel = g_tty.size.ypixel = 0;
     g_tty.len = g_tty.ready = 0;
     g_tty.eof = 0;
+    g_tty.session = 0;
+    g_tty.sig_due = 0;
     g_tty_set_up = 1;
 }
 
@@ -65,8 +69,54 @@ static void tty_lock(void) {
     }
 }
 
+/* A live task, for what is sent to a group. */
+static int tty_live(int i) {
+    vibeos_task_state_t st = vibeos_task_state((uint32_t)i);
+
+    return ks_id(i)->is_user && st != VIBEOS_TASK_FREE && st != VIBEOS_TASK_SETUP && st != VIBEOS_TASK_ZOMBIE;
+}
+
+/* To each process of the group once - its leader, or its first live thread
+ * when the leader has gone: a handler runs once for a Ctrl+C, not once a
+ * thread. Under the scheduler's lock. */
+static void tty_send_group(uint32_t pgid, uint32_t sig) {
+    int i, j, n = (int)ks_slots();
+
+    for (i = 0; pgid != 0u && i < n; i++) {
+        int first = 1;
+
+        if (!tty_live(i) || ks_id(i)->pgid != pgid) {
+            continue;
+        }
+        for (j = 0; j < n && ks_id(i)->pid != ks_id(i)->tgid; j++) {
+            if (j != i && tty_live(j) && ks_id(j)->tgid == ks_id(i)->tgid &&
+                (ks_id(j)->pid == ks_id(j)->tgid || j < i)) {
+                first = 0;
+                break;
+            }
+        }
+        if (first) {
+            (void)ks_signal_raise(i, sig);
+        }
+    }
+}
+
+/* Raising takes the scheduler's lock, and a program waiting holds it while it
+ * asks about signals: never under the terminal's. */
 static void tty_unlock(void) {
+    uint32_t due = g_tty.sig_due, sig;
+
+    g_tty.sig_due = 0;
     ks_unlock(&g_tty_lock);
+    if (due != 0u) {
+        ks_lock(ks_sched_lock(), __func__);
+        for (sig = 1; sig < 32u; sig++) {
+            if (due & (1u << sig)) {
+                tty_send_group(ks_foreground_pgid(), sig);
+            }
+        }
+        ks_unlock(ks_sched_lock());
+    }
 }
 
 void vibeos_tty_reset(void) {
@@ -138,6 +188,97 @@ static void tty_rub_out(void) {
     ks_console_echo('\b');
 }
 
+/* The signal a typed character stands for under the present modes, or 0. A
+ * character set to 0 is disabled, as POSIX's _POSIX_VDISABLE. */
+static uint32_t tty_sig_of(uint8_t c) {
+    if (!(g_tty.m.lflag & VIBEOS_TTY_ISIG) || c == 0u) {
+        return 0;
+    }
+    if (c == g_tty.m.cc[VIBEOS_TTY_VINTR]) {
+        return VIBEOS_SIGINT;
+    }
+    if (c == g_tty.m.cc[VIBEOS_TTY_VQUIT]) {
+        return VIBEOS_SIGQUIT;
+    }
+    if (c == g_tty.m.cc[VIBEOS_TTY_VSUSP]) {
+        return VIBEOS_SIGTSTP;
+    }
+    return 0;
+}
+
+/* Under the terminal's lock: what was typed goes unless NOFLSH, the character
+ * is shown as ^C, and the signal is raised when the lock is let go. */
+static void tty_take_signal(uint8_t c, uint32_t sig) {
+    if (!(g_tty.m.lflag & VIBEOS_TTY_NOFLSH)) {
+        g_tty.len = g_tty.ready = 0;
+        g_tty.eof = 0;
+    }
+    if ((g_tty.m.lflag & VIBEOS_TTY_ECHO) && (g_tty.m.lflag & VIBEOS_TTY_ECHOCTL)) {
+        tty_echo('^');
+        tty_echo((char)((c + 64u) & 0x7Fu));
+    }
+    g_tty.sig_due |= 1u << sig;
+}
+
+int vibeos_tty_control(uint8_t c) {
+    uint32_t sig;
+
+    tty_lock();
+    sig = tty_sig_of(c);
+    if (sig != 0u) {
+        tty_take_signal(c, sig);
+    }
+    tty_unlock();
+    return sig != 0u;
+}
+
+void vibeos_tty_set_session(uint32_t sid) {
+    tty_lock();
+    g_tty.session = sid;
+    tty_unlock();
+}
+
+long vibeos_tty_job_check(uint32_t sig) {
+    int me = ks_current();
+    vibeos_task_t *t;
+    vibeos_procstate_t *ps;
+    uint32_t session, fg;
+    int held, orphan;
+
+    if (me < 0 || !ks_id(me)->is_user) {
+        return 0;
+    }
+    tty_lock();
+    session = g_tty.session;
+    tty_unlock();
+    t = ks_id(me);
+    ps = ks_ps(me);
+    ks_lock(ks_sched_lock(), __func__);
+    fg = ks_foreground_pgid();
+    /* Not its controlling terminal, or its job is the foreground: nothing to
+     * decide. A descriptor on a terminal another session owns is not job
+     * control's business, as on Linux. */
+    if (session == 0u || t->sid != session || fg == 0u || t->pgid == fg) {
+        ks_unlock(ks_sched_lock());
+        return 0;
+    }
+    held = (t->sig_blocked & (1ull << sig)) != 0u || (ps && ps->sig_handler[sig] == SIG_IGN_ADDR);
+    orphan = ks_pgrp_orphaned(t->pgid);
+    if (held) {
+        /* Refused the signal: a write or a change goes through, as POSIX
+         * says, and a read cannot, having nothing to give. */
+        ks_unlock(ks_sched_lock());
+        return sig == VIBEOS_SIGTTOU ? 0 : -VIBEOS_EIO;
+    }
+    if (orphan) {
+        ks_unlock(ks_sched_lock());
+        return -VIBEOS_EIO;   /* nobody could continue it */
+    }
+    tty_send_group(t->pgid, sig);
+    ks_unlock(ks_sched_lock());
+    return -VIBEOS_RESTART_CALL;   /* issued again once it is continued */
+}
+
 /* Take what the keyboard has, as far as this read needs it: in canonical mode
  * until a line is finished, otherwise until `want` bytes are there. No further
  * - what is typed ahead stays in the keyboard's queue for whoever reads next,
@@ -163,6 +304,15 @@ static void tty_pump(uint64_t want) {
         }
         if (c == '\r' && (g_tty.m.iflag & VIBEOS_TTY_ICRNL)) {
             c = '\n';
+        }
+        /* From a queue, not the key itself: the boot's injected script and a
+         * serial line arrive this way. */
+        if (tty_sig_of((uint8_t)c) != 0u) {
+            /* And no further: what follows is for whoever reads after the
+             * signal has acted - a killed cat must not take the shell's next
+             * line with it. */
+            tty_take_signal((uint8_t)c, tty_sig_of((uint8_t)c));
+            break;
         }
         if (!canon) {
             g_tty.line[g_tty.len++] = (uint8_t)c;
@@ -226,6 +376,12 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
      * one drawing the screen itself does, and then sends its own. */
     vibeos_tty_get(&modes);
     onlcr = (modes.oflag & VIBEOS_TTY_OPOST) && (modes.oflag & VIBEOS_TTY_ONLCR);
+    if (modes.lflag & VIBEOS_TTY_TOSTOP) {
+        long job = vibeos_tty_job_check(VIBEOS_SIGTTOU);
+        if (job != 0) {
+            return job;
+        }
+    }
 
     /* A text write whose leading bytes read as NUL, reported at the moment it
      * happens rather than reconstructed afterwards.
@@ -348,7 +504,11 @@ static long console_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     for (;;) {
         uint32_t n = 0, min, i;
         int canon, done = 0;
+        long job = vibeos_tty_job_check(VIBEOS_SIGTTIN);   /* each time: it may have been moved */
 
+        if (job != 0) {
+            return job;
+        }
         ks_irq_off();
         tty_lock();
         tty_pump(len);
@@ -452,7 +612,69 @@ static int console_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
  * vibeos/tty.h by the personality, which owns the request numbers and the
  * structures they carry. */
 static long console_ioctl(vibeos_file_t *f, uint64_t req, uint64_t arg) {
+    uint32_t session;
+
     (void)f;
+    tty_lock();
+    session = g_tty.session;
+    tty_unlock();
+    /* These are questions about the caller's controlling terminal. A terminal
+     * nobody holds yet answers as it did, for what runs before a session. */
+    if ((req == VIBEOS_IOCTL_GET_PGRP || req == VIBEOS_IOCTL_SET_PGRP || req == VIBEOS_IOCTL_GSID ||
+         req == VIBEOS_IOCTL_NOTTY) &&
+        ks_current() >= 0 && ks_id(ks_current())->is_user && session != 0u &&
+        ks_id(ks_current())->sid != session) {
+        return -VIBEOS_ENOTTY;
+    }
+    if (req == VIBEOS_IOCTL_GSID) {
+        if (session == 0u) {
+            return -VIBEOS_ENOTTY;
+        }
+        return vibeos_uaccess_copy((void *)(uintptr_t)arg, &session, sizeof(session)) != 0 ? -VIBEOS_EFAULT : 0;
+    }
+    if (req == VIBEOS_IOCTL_SCTTY) {
+        vibeos_task_t *t = ks_current() >= 0 ? ks_id(ks_current()) : 0;
+        vibeos_procstate_t *ps = ks_current() >= 0 ? ks_ps(ks_current()) : 0;
+        int i, held = 0;
+
+        if (!t || t->sid != t->tgid) {
+            return t && t->sid == session ? 0 : -VIBEOS_EPERM;   /* a session leader's to take */
+        }
+        if (session == t->sid) {
+            return 0;
+        }
+        ks_lock(ks_sched_lock(), __func__);
+        for (i = 0; session != 0u && i < (int)ks_slots(); i++) {
+            held |= tty_live(i) && ks_id(i)->sid == session;
+        }
+        /* Held by a live session: only the superuser, asking to steal it. */
+        if (held && !((uint32_t)arg == 1u && ps && ps->cred.euid == 0u)) {
+            ks_unlock(ks_sched_lock());
+            return -VIBEOS_EPERM;
+        }
+        ks_set_foreground_pgid(t->pgid);
+        ks_unlock(ks_sched_lock());
+        vibeos_tty_set_session(t->sid);
+        return 0;
+    }
+    if (req == VIBEOS_IOCTL_NOTTY) {
+        vibeos_task_t *t = ks_current() >= 0 ? ks_id(ks_current()) : 0;
+
+        if (session == 0u || !t) {
+            return -VIBEOS_ENOTTY;
+        }
+        /* The leader giving it up ends the session's hold: the foreground
+         * job is told, as when a terminal goes away. */
+        if (t->sid == t->tgid) {
+            ks_lock(ks_sched_lock(), __func__);
+            tty_send_group(ks_foreground_pgid(), VIBEOS_SIGHUP);
+            tty_send_group(ks_foreground_pgid(), VIBEOS_SIGCONT);
+            ks_set_foreground_pgid(0);
+            ks_unlock(ks_sched_lock());
+            vibeos_tty_set_session(0);
+        }
+        return 0;
+    }
     if (req == VIBEOS_IOCTL_GET_PGRP) {
         uint32_t v = ks_foreground_pgid();
         if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0) {
@@ -468,6 +690,12 @@ static long console_ioctl(vibeos_file_t *f, uint64_t req, uint64_t arg) {
         }
         if (vibeos_uaccess_copy(&pgid, (const void *)(uintptr_t)arg, sizeof(pgid)) != 0) {
             return -VIBEOS_EFAULT;   /* H-025 */
+        }
+        {
+            long job = vibeos_tty_job_check(VIBEOS_SIGTTOU);   /* a background job asking is stopped */
+            if (job != 0) {
+                return job;
+            }
         }
         /* Found, judged and used in one hold of the scheduler's lock: an
          * index from ks_task_by_pid is the slot's for only as long as that

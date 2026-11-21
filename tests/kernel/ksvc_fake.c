@@ -1783,6 +1783,10 @@ int ks_console_getc(void) {
 void ks_console_echo(char c) { (void)c; }
 uint32_t ks_foreground_pgid(void) { return g_fg_pgid; }
 void ks_set_foreground_pgid(uint32_t pgid) { g_fg_pgid = pgid; }
+/* The fake's groups all have a parent in the session unless a test says not. */
+static uint32_t g_kf_orphan_pgid;
+void kf_set_orphaned_pgid(uint32_t pgid) { g_kf_orphan_pgid = pgid; }
+int ks_pgrp_orphaned(uint32_t pgid) { return pgid != 0u && pgid == g_kf_orphan_pgid; }
 
 void ks_con_lock(void) {}
 void ks_con_unlock(void) {}

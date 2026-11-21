@@ -108,6 +108,7 @@ int kf_poke(uint64_t va, const void *in, uint64_t n);
 
 /* Type at the console: the bytes wait in the keyboard's queue until read. */
 void kf_type(const char *s);
+void kf_set_orphaned_pgid(uint32_t pgid);
 int kf_lock_imbalance(void);
 /* Copies to or from user memory made under the caller's mm lock: must be 0. */
 uint32_t kf_uaccess_under_mm(void);

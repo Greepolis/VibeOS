@@ -24,6 +24,8 @@
 #include <string.h>
 
 #include "ksvc_fake.h"
+#include "vibeos/fileops.h"
+#include "vibeos/tty.h"
 #include "vibeos/abi_linux.h"
 #include "vibeos/linux_exports.h"
 #include "vibeos/linux_layout.h"
@@ -6098,6 +6100,102 @@ static void t_job_stop(void) {
            "and SIGKILL ends a stop");
 }
 
+/* The terminal's own signals, and its background jobs (docs/shell/s1.md
+ * step 2). */
+static int t_took(int slot, uint32_t sig) {
+    int had = (ks_id(slot)->sig_pending & (1ull << sig)) != 0u;
+
+    ks_id(slot)->sig_pending &= ~(1ull << sig);
+    ks_id(slot)->sys_restart = 0;
+    return had;
+}
+
+static void t_tty_jobs(void) {
+    uint64_t n = kf_ualloc(4), buf = kf_ualloc(16), term = kf_ualloc(sizeof(linux_termios_t)), sidp = kf_ualloc(4);
+    vibeos_tty_modes_t m;
+    int me = fresh(80);
+
+    vibeos_tty_set_session(ks_id(me)->sid);
+    ks_set_foreground_pgid(ks_id(me)->pgid);
+
+    kf_type("abc\x03");
+    (void)SYS3(16, 0, LINUX_FIONREAD, n);
+    expect(t_took(me, VIBEOS_SIGINT) && *(int *)kf_uptr(n) == 0, "Ctrl+C is SIGINT, and what was typed goes");
+    kf_type("\x1c");
+    (void)SYS3(16, 0, LINUX_FIONREAD, n);
+    expect(t_took(me, VIBEOS_SIGQUIT), "Ctrl+\\ is SIGQUIT");
+    expect(vibeos_tty_control(26) == 1 && t_took(me, VIBEOS_SIGTSTP), "Ctrl+Z at the key is SIGTSTP, nobody reading");
+    expect(vibeos_tty_control(1) == 0, "another control character is a byte");
+    vibeos_tty_get(&m);
+    m.cc[VIBEOS_TTY_VSUSP] = 0;
+    vibeos_tty_set(&m, 0);
+    expect(vibeos_tty_control(0) == 0 && !t_took(me, VIBEOS_SIGTSTP), "a character set to 0 is disabled, not NUL's signal");
+    m.cc[VIBEOS_TTY_VSUSP] = 26;
+    vibeos_tty_set(&m, 0);
+
+    vibeos_tty_get(&m);
+    m.lflag |= VIBEOS_TTY_NOFLSH;
+    vibeos_tty_set(&m, 0);
+    kf_type("x\x03");
+    (void)SYS3(16, 0, LINUX_FIONREAD, n);
+    m.lflag &= ~VIBEOS_TTY_ICANON;
+    vibeos_tty_set(&m, 0);
+    (void)SYS3(16, 0, LINUX_FIONREAD, n);
+    expect(t_took(me, VIBEOS_SIGINT) && *(int *)kf_uptr(n) == 1, "NOFLSH keeps what was typed");
+    (void)SYS3(0, 0, buf, 16);
+    m.lflag &= ~(VIBEOS_TTY_ISIG | VIBEOS_TTY_NOFLSH);
+    vibeos_tty_set(&m, 0);
+    expect(vibeos_tty_control(3) == 0 && !t_took(me, VIBEOS_SIGINT), "with ISIG clear Ctrl+C is no signal");
+    kf_type("\x03");
+    expect(SYS3(0, 0, buf, 16) == 1 && *(uint8_t *)kf_uptr(buf) == 3u, "and is a byte a raw program reads");
+    vibeos_tty_reset();
+    vibeos_tty_set_session(ks_id(me)->sid);
+    ks_set_foreground_pgid(ks_id(me)->pgid);
+
+    expect(SYS3(16, 0, VIBEOS_IOCTL_GSID, sidp) == 0 && *(uint32_t *)kf_uptr(sidp) == ks_id(me)->sid,
+           "TIOCGSID names the session");
+
+    /* Now a background job of that session. */
+    ks_set_foreground_pgid(ks_id(me)->pgid + 1000u);
+    expect(SYS3(0, 0, buf, 1) == -VIBEOS_EINTR && t_took(me, VIBEOS_SIGTTIN), "a background read is SIGTTIN");
+    expect(SYS3(1, 1, ustr("w"), 1) == 1 && !t_took(me, VIBEOS_SIGTTOU), "a background write goes, without TOSTOP");
+    (void)SYS3(16, 0, LINUX_TCGETS, term);
+    expect(SYS3(16, 0, LINUX_TCSETS, term) == -VIBEOS_EINTR && t_took(me, VIBEOS_SIGTTOU),
+           "changing the modes from the background is SIGTTOU");
+    ks_ps(me)->sig_handler[VIBEOS_SIGTTOU] = SIG_IGN_ADDR;
+    expect(SYS3(16, 0, LINUX_TCSETS, term) == 0, "unless it ignores SIGTTOU, as a shell does");
+    ks_ps(me)->sig_handler[VIBEOS_SIGTTOU] = SIG_DFL_ADDR;
+    ks_ps(me)->sig_handler[VIBEOS_SIGTTIN] = SIG_IGN_ADDR;
+    expect(SYS3(0, 0, buf, 1) == -VIBEOS_EIO, "a background read that ignores SIGTTIN is EIO");
+    ks_ps(me)->sig_handler[VIBEOS_SIGTTIN] = SIG_DFL_ADDR;
+    kf_set_orphaned_pgid(ks_id(me)->pgid);
+    expect(SYS3(0, 0, buf, 1) == -VIBEOS_EIO && !t_took(me, VIBEOS_SIGTTIN), "so is one from an orphaned group");
+    kf_set_orphaned_pgid(0);
+    vibeos_tty_get(&m);
+    m.lflag |= VIBEOS_TTY_TOSTOP;
+    ks_set_foreground_pgid(ks_id(me)->pgid);
+    vibeos_tty_set(&m, 0);
+    ks_set_foreground_pgid(ks_id(me)->pgid + 1000u);
+    expect(SYS3(1, 1, ustr("w"), 1) == -VIBEOS_EINTR && t_took(me, VIBEOS_SIGTTOU), "with TOSTOP a write is SIGTTOU");
+    vibeos_tty_reset();
+
+    /* Another session's terminal is not this one's. */
+    vibeos_tty_set_session(ks_id(me)->sid + 1000u);
+    expect(SYS3(16, 0, VIBEOS_IOCTL_GET_PGRP, n) == -VIBEOS_ENOTTY &&
+           SYS3(16, 0, VIBEOS_IOCTL_GSID, sidp) == -VIBEOS_ENOTTY, "another session's terminal answers ENOTTY");
+    expect(SYS3(0, 1, ustr("w"), 0) == 0, "and no job control applies to it");
+    vibeos_tty_set_session(0);
+    expect(SYS3(16, 0, VIBEOS_IOCTL_SCTTY, 0) == 0 && SYS3(16, 0, VIBEOS_IOCTL_GSID, sidp) == 0 &&
+           *(uint32_t *)kf_uptr(sidp) == ks_id(me)->sid && ks_foreground_pgid() == ks_id(me)->pgid,
+           "TIOCSCTTY takes a free terminal for the leader's session");
+    expect(SYS3(16, 0, VIBEOS_IOCTL_NOTTY, 0) == 0 && SYS3(16, 0, VIBEOS_IOCTL_GSID, sidp) == -VIBEOS_ENOTTY,
+           "TIOCNOTTY gives it up");
+    (void)t_took(me, VIBEOS_SIGHUP);
+    (void)t_took(me, VIBEOS_SIGCONT);
+    vibeos_tty_reset();
+    ks_set_foreground_pgid(0);
+}
+
 /* The child in `slot` ends with `code`, or killed by `sig`. */
 static void t_child_ends(int slot, uint32_t code, uint32_t sig) {
     ks_id(slot)->exit_code = code;
@@ -7544,6 +7642,7 @@ int test_linux_handlers(void) {
     t_umount_busy();
     t_mount_syscalls();
     t_job_stop();
+    t_tty_jobs();
     t_rmdir_and_links();
     t_metadata();
     t_mknod_and_openat2();

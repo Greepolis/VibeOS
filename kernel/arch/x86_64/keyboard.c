@@ -9,6 +9,7 @@
 
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/device.h"
+#include "vibeos/tty.h"
 #include "arch_hw_internal.h"   /* g_timer_ticks, VIBEOS_HW_TIMER_HZ */
 
 #define KBD_DATA 0x60u
@@ -39,16 +40,11 @@ static volatile uint32_t g_head; /* producer (IRQ) */
 static volatile uint32_t g_tail; /* consumer (read) */
 
 
-/* Raised by the console when the interrupt key is typed. Weak so this file
- * still links where there is no process to signal. */
-__attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
-
 /* Control is a modifier, so it has to be tracked across keystrokes: the scan
  * code for C is the same whether or not Control is down, and the difference is
  * entirely in what arrived before it. */
 static int g_ctrl_down;
 #define KBD_SC_LCTRL 0x1Du
-#define KBD_SC_C     0x2Eu
 
 /* Two ways a keystroke disappears here, and they are not the same harm.
  *
@@ -100,19 +96,25 @@ static int kbd_irq(void) {
         g_ctrl_down = 1;
         return VIBEOS_DEV_IRQ_INPUT;
     }
-    if (g_ctrl_down && sc == KBD_SC_C) {
-        /* Control-C is not a character. Putting it in the input ring would
-         * hand the shell a byte to echo; it has to become a signal, which is
-         * the whole difference between a terminal and a pipe. */
-        vibeos_x86_64_console_interrupt();
-        return VIBEOS_DEV_IRQ_INPUT;
-    }
     if (sc >= 0x3Au) {
         return VIBEOS_DEV_IRQ_INPUT; /* outside the simple map */
     }
     c = g_map[sc];
     if (c == 0) {
         return VIBEOS_DEV_IRQ_INPUT;
+    }
+    /* Control and a letter is a control character. Whether it is a signal is
+     * the terminal's to say, and said here, at the interrupt: a program that
+     * is computing and reading nothing has to be reachable by Ctrl+C. With
+     * ISIG clear it is a byte like any other, for the program to read. */
+    if (g_ctrl_down) {
+        char ctl = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 1) : c == '\\' ? (char)28 : 0;
+        if (ctl != 0) {
+            if (vibeos_tty_control((uint8_t)ctl)) {
+                return VIBEOS_DEV_IRQ_INPUT;
+            }
+            c = ctl;
+        }
     }
     next = (g_head + 1u) % KBD_RING;
     if (next != g_tail) {

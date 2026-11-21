@@ -353,6 +353,9 @@ int ks_console_getc(void);            /* next console byte, or -1               
 void ks_console_echo(char c);         /* one byte to the screen                   */
 uint32_t ks_foreground_pgid(void);
 void ks_set_foreground_pgid(uint32_t pgid);
+/* POSIX's orphaned process group: nobody left who could continue it. Under
+ * ks_sched_lock. */
+int ks_pgrp_orphaned(uint32_t pgid);
 
 /* The serial console. A multi-part line is bracketed by ks_con_lock/unlock, or
  * another core writes into the middle of it. */

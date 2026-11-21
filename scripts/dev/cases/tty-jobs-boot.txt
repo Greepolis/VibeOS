@@ -1,0 +1,36 @@
+# The terminal's signals on the machine (docs/shell/s1.md step 2): the script
+# types Ctrl+Z at a foreground cat, brings it back, ends it with Ctrl+C, and
+# leaves another cat reading in the background.
+#
+#  1. Ctrl+Z is no signal. Expect tty_suspend_did_not_stop.
+#  2. A background read takes the input: the cat eats the rest of the script
+#     and the boot never reaches the kernel's CLI. Measured: guest_wedged,
+#     missing CLI_READY - not background_read_not_stopped, which it never
+#     gets as far as reporting.
+#  3. The line discipline goes on reading past a signal character, so a killed
+#     cat takes the shell's next line with it. Measured:
+#     background_read_not_stopped, that line being the one that starts the
+#     background cat. tty_job_control_did_not_finish has no case of its own.
+#
+# Target source: kernel/abi/files/console.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/console.c scripts/dev/cases/tty-jobs-boot.txt build-gcc-Release
+
+### Ctrl+Z is no signal
+--- old
+    if (c == g_tty.m.cc[VIBEOS_TTY_VSUSP]) {
++++ new
+    if (0) {
+
+### a background read takes the input
+--- old
+        long job = vibeos_tty_job_check(VIBEOS_SIGTTIN);   /* each time: it may have been moved */
++++ new
+        long job = 0;
+
+### reading goes on past a signal character
+--- old
+            tty_take_signal((uint8_t)c, tty_sig_of((uint8_t)c));
+            break;
++++ new
+            tty_take_signal((uint8_t)c, tty_sig_of((uint8_t)c));
+            continue;

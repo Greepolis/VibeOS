@@ -6,6 +6,7 @@
  * switching. What the context switch needs of it, and it of the switch, is declared in
  * arch_hw_internal.h. */
 
+#include "vibeos/tty.h"
 #include "arch_hw_internal.h"
 #include "vibeos/crash.h"
 #include "vibeos/path.h"
@@ -997,6 +998,10 @@ static int hw_pgrp_orphaned(uint32_t pgid, uint32_t gone) {
     return 1;
 }
 
+int hw_pgrp_is_orphaned(uint32_t pgid) {
+    return hw_pgrp_orphaned(pgid, 0);
+}
+
 /* An orphaned group with a stopped member is sent SIGHUP and then SIGCONT,
  * as POSIX requires and Linux does (kill_orphaned_pgrp): otherwise what was
  * stopped stays stopped for ever, since whoever could have continued it is
@@ -1150,77 +1155,18 @@ int hw_task_alloc_for_user(const char *what) {
     return idx;
 }
 
-/* Control-C from the console.
- *
- * A real system sends this to the foreground process group of the controlling
- * terminal. There are no sessions or process groups here, so the target is the
- * most recently created live user task - which is the one the console is
- * talking to in every arrangement this system can currently produce. That is a
- * limitation of the model, not an approximation of the signal: the signal
- * itself is delivered exactly as any other. */
+/* Control-C from the kernel's own serial console. What it does is the
+ * terminal's to decide (docs/shell/s1.md step 2): it goes to the foreground
+ * group when ISIG is set. There used to be a fallback to the newest task when
+ * the group had nobody, which signalled a program that was not the job. */
 void vibeos_x86_64_console_interrupt(void) {
-    int i, newest = -1;
-    uint32_t delivered = 0;
-    uint32_t best = 0;
+    int taken = vibeos_tty_control(3);
 
-    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (!g_tasks[i].id.is_user || hw_slot_state(i) == HW_TASK_FREE ||
-            hw_slot_state(i) == HW_TASK_ZOMBIE ||
-            (g_console_foreground_pgid != 0 &&
-             g_tasks[i].id.pgid != g_console_foreground_pgid)) {
-            continue;
-        }
-        if (newest < 0 || g_tasks[i].id.pid > best) {
-            best = g_tasks[i].id.pid;
-            newest = i;
-        }
-    }
-    /* A stale foreground group must not make console input disappear during
-     * early boot. Use the legacy newest-task fallback only when the group has
-     * no live member, and keep it visible in diagnostics through the signal
-     * path rather than silently dropping Ctrl-C. */
-    if (newest < 0 && g_console_foreground_pgid != 0) {
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (!g_tasks[i].id.is_user || hw_slot_state(i) == HW_TASK_FREE ||
-                hw_slot_state(i) == HW_TASK_ZOMBIE ||
-                (newest >= 0 && g_tasks[i].id.pid <= best)) {
-                continue;
-            }
-            best = g_tasks[i].id.pid;
-            newest = i;
-        }
-    }
-    if (g_console_foreground_pgid != 0) {
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (!g_tasks[i].id.is_user || hw_slot_state(i) == HW_TASK_FREE ||
-                hw_slot_state(i) == HW_TASK_ZOMBIE ||
-                g_tasks[i].id.pgid != g_console_foreground_pgid) {
-                continue;
-            }
-            if (hw_signal_raise(i, VIBEOS_SIGINT) == 0) {
-                delivered++;
-            }
-        }
-    }
-    if (delivered == 0 && newest >= 0) {
-        (void)hw_signal_raise(newest, VIBEOS_SIGINT);
-        delivered = 1;
-    }
-    if (delivered > 1) {
-        vibeos_x86_64_serial_puts("[SIG] Ctrl-C delivered to foreground process group members=0x");
-        vibeos_x86_64_serial_print_hex(delivered);
-        vibeos_x86_64_serial_puts("\n");
-    }
-    /* Always say what happened, including "nothing". A gate could otherwise
-     * only check that the byte was echoed - and it did exactly that: removing
-     * the call to this function left the boot green, because an echo and a
-     * signal look identical from outside. One line, one call: this is read
-     * next to output from other cores. */
+    /* Always say what happened, including "nothing": an echo and a signal look
+     * identical from outside. One line, one call. */
     vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[SIG] console interrupt: delivered=0x");
-    vibeos_x86_64_serial_print_hex(delivered);
-    vibeos_x86_64_serial_puts(" newest_pid=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)best);
+    vibeos_x86_64_serial_puts("[SIG] console interrupt: taken=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)taken);
     vibeos_x86_64_serial_puts(" fg_pgid=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)g_console_foreground_pgid);
     vibeos_x86_64_serial_puts("\n");

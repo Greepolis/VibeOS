@@ -45,6 +45,8 @@
 #define VIBEOS_TTY_ECHOE   0x0010u  /* an erase rubs the character out            */
 #define VIBEOS_TTY_ECHOK   0x0020u
 #define VIBEOS_TTY_ECHONL  0x0040u  /* a newline is shown even without ECHO       */
+#define VIBEOS_TTY_NOFLSH  0x0080u  /* a signal character keeps what was typed   */
+#define VIBEOS_TTY_TOSTOP  0x0100u  /* a background write is SIGTTOU              */
 #define VIBEOS_TTY_ECHOCTL 0x0200u
 #define VIBEOS_TTY_ECHOKE  0x0800u
 #define VIBEOS_TTY_IEXTEN  0x8000u
@@ -56,6 +58,7 @@
 #define VIBEOS_TTY_VEOF   4u
 #define VIBEOS_TTY_VTIME  5u
 #define VIBEOS_TTY_VMIN   6u
+#define VIBEOS_TTY_VSUSP 10u
 
 typedef struct {
     uint32_t iflag;
@@ -73,11 +76,11 @@ typedef struct {
     uint16_t ypixel;
 } vibeos_tty_size_t;
 
-/* What is honoured: ICRNL; OPOST with ONLCR; ICANON, ECHO, ECHOE, ECHONL; the
- * erase, kill and end-of-file characters; MIN. Everything else is stored and
- * given back as it was set, which is what lets a program save the modes and
- * restore them - and nothing more: the interrupt character still interrupts
- * with ISIG clear, and TIME is not a timer. */
+/* What is honoured: ICRNL; OPOST with ONLCR; ICANON, ECHO, ECHOE, ECHONL; ISIG
+ * with the interrupt, quit and suspend characters, NOFLSH, TOSTOP; the erase,
+ * kill and end-of-file characters; MIN. Everything else is stored and given
+ * back as it was set, which is what lets a program save the modes and restore
+ * them - and nothing more: TIME is not a timer. */
 void vibeos_tty_get(vibeos_tty_modes_t *out);
 /* `flush` discards what was typed and not yet read - from the terminal's own
  * line; what is still in the keyboard's queue behind it is kept. */
@@ -88,5 +91,18 @@ void vibeos_tty_set_size(const vibeos_tty_size_t *in);
 uint32_t vibeos_tty_pending(void);
 /* Boot and tests: the modes a terminal starts with, nothing typed. */
 void vibeos_tty_reset(void);
+
+/* A control character as it is typed (docs/shell/s1.md step 2), from the
+ * keyboard's interrupt: a signal has to reach a program that is not reading.
+ * 1 when it was a signal to the foreground group; 0 when it is an ordinary
+ * byte for the input queue - with ISIG clear, Ctrl+C is a program's to read. */
+int vibeos_tty_control(uint8_t c);
+/* The session whose controlling terminal this is; 0 for none. */
+void vibeos_tty_set_session(uint32_t sid);
+/* May the caller act on the terminal, or is it a background job? For SIGTTOU
+ * (changing the terminal; writing under TOSTOP) and SIGTTIN (reading): 0 to go
+ * on, -EIO when the job can neither be stopped nor let through, or the restart
+ * code with the signal sent to its group. */
+long vibeos_tty_job_check(uint32_t sig);
 
 #endif

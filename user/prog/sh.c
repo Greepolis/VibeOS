@@ -22,6 +22,9 @@
 #define SYS_setpgid 109
 #define SYS_ioctl 16
 #define TIOCSPGRP 0x5410
+#define SYS_rt_sigaction 13
+#define SYS_getpgrp 111
+#define SIGTTOU 22
 
 static long sys3(long nr, long a1, long a2, long a3) {
     long ret;
@@ -222,6 +225,29 @@ static char *g_envp[] = {
     0
 };
 
+/* SIGTTOU's disposition. A shell takes the terminal back from a job that has
+ * ended while it is itself in the background, which the terminal answers with
+ * SIGTTOU unless the signal is ignored (docs/shell/s1.md step 2): refused, the
+ * foreground stayed the dead job's and the next read of the script was EIO -
+ * "sh: end of input", on the boots where the child's setpgid won the race. The
+ * job gets the default back: an ignored signal survives exec. */
+static void sigttou(unsigned long handler) {
+    unsigned long act[4];
+    register long r10 __asm__("r10") = 8;   /* the size of the signal set */
+    register long r8 __asm__("r8") = 0;
+    register long r9 __asm__("r9") = 0;
+    long ret;
+
+    act[0] = handler;
+    act[1] = act[2] = act[3] = 0;
+    __asm__ __volatile__("syscall"
+                         : "=a"(ret)
+                         : "a"(SYS_rt_sigaction), "D"(SIGTTOU), "S"(act), "d"(0),
+                           "r"(r10), "r"(r8), "r"(r9)
+                         : "rcx", "r11", "memory");
+    (void)ret;
+}
+
 static void run_program(char *line) {
     /* Not static: these point into the caller's line buffer, and a static
      * array keeps them reachable after that buffer is gone. The array is a
@@ -239,15 +265,19 @@ static void run_program(char *line) {
     if (child == 0) {
         /* Give each foreground job its own group before exec. */
         sys3(SYS_setpgid, 0, 0, 0);
+        sigttou(0);
         sys3(SYS_execve, (long)(unsigned long)path,
              (long)(unsigned long)argv, (long)(unsigned long)g_envp);
         put("sh: cannot exec\n");
         sys3(SYS_exit, 127, 0, 0);
     } else if (child > 0) {
+        /* In the parent too, as every job-control shell: whichever of the
+         * two runs first, the group exists before the terminal is given it. */
+        sys3(SYS_setpgid, child, child, 0);
         sys3(SYS_ioctl, 1, TIOCSPGRP, (long)(unsigned long)&child);
         sys3(SYS_wait4, child, 0, 0);
         {
-            long self = sys3(39, 0, 0, 0);
+            long self = sys3(SYS_getpgrp, 0, 0, 0);
             sys3(SYS_ioctl, 1, TIOCSPGRP, (long)(unsigned long)&self);
         }
     } else {
@@ -272,6 +302,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
      * exactly the arguments it was asked to pass. */
     char cmdline[128];
 
+    sigttou(1);   /* SIG_IGN */
     put("VibeOS shell. Commands: help, echo <text>, exit, <program path>\n");
 
     for (;;) {
