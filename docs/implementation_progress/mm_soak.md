@@ -63,6 +63,16 @@ So the sabotage case is recorded as environment-dependent, in the same spirit
 as the AHCI cases that QEMU cannot exercise: "no case exists" and "the case
 exists and this run could not tell" are different things.
 
+## The long run has to reach its end
+
+Init ended the session when the self-test did, and SIGKILL took whatever was
+left. The 12000-round stress run usually finished first; on 2026-11-21 it did
+not, its log had no `STRESS_OK`, and the nightly correctly refused a verdict.
+`svc-stress` is a *bounded* service now: the end of the session waits for it,
+and it prints `STRESS_PROGRESS` every 500 rounds so the gate does not read the
+wait as a wedge. A daemon must not be bounded. At 12000 rounds it then lost 55
+frames, the same as at 120 on that nightly.
+
 ## What is still open
 
 The twenty-six frames. They are a fixed cost, not a leak, and the boot gate

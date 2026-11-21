@@ -136,6 +136,12 @@ typedef struct {
     int restarts;
     int64_t pid;
     int state;
+    /* Does a bounded amount of work and its exit status is a result, so the
+     * end of the session waits for it. The nightly's 12000-round stress run
+     * was killed with the session whenever the self-test finished first, and
+     * the soak then had no verdict. A daemon must not have this: it would
+     * keep the machine from ever stopping. */
+    int bounded;
 } service_t;
 
 /* Each service is exec'd under its own name. argv[0] is chosen by whoever
@@ -149,18 +155,18 @@ static service_t services[] = {
     /* The bring-up workload: everything the boot gate checks runs inside this
      * one, and it ends by exec'ing the shell. A session - when the shell is
      * done, so is the machine. */
-    {"selftest", "/usr/lib/vibeos/test/SELFTEST.ELF", 0, 0, 1, 0, -1, SVC_STOPPED},
+    {"selftest", "/usr/lib/vibeos/test/SELFTEST.ELF", 0, 0, 1, 0, -1, SVC_STOPPED, 0},
     /* Exits zero: a clean stop, which must not be restarted. */
-    {"svc-ok", "/usr/lib/vibeos/test/SVC_OK.ELF", 0, 2, 0, 0, -1, SVC_STOPPED},
+    {"svc-ok", "/usr/lib/vibeos/test/SVC_OK.ELF", 0, 2, 0, 0, -1, SVC_STOPPED, 0},
     /* Fails every time: restarted twice, then marked FAILED and left alone. */
-    {"svc-flap", "/usr/lib/vibeos/test/SVC_FLAP.ELF", 0, 2, 0, 0, -1, SVC_STOPPED},
+    {"svc-flap", "/usr/lib/vibeos/test/SVC_FLAP.ELF", 0, 2, 0, 0, -1, SVC_STOPPED, 0},
     /* Faults instead of exiting. Not restarted: the point is not recovery but
      * that the supervisor is still running to report it, which is only true
      * because the kernel now kills the faulting task instead of halting. */
-    {"svc-crash", "/usr/lib/vibeos/test/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-crash", "/usr/lib/vibeos/test/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0},
     /* Randomised churn with a printed seed. A session, not a daemon: it runs a
      * bounded number of rounds and its exit status is the verdict. */
-    {"svc-stress", "/usr/lib/vibeos/test/SVC_STRS.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-stress", "/usr/lib/vibeos/test/SVC_STRS.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 1},
     /* A fork storm, on purpose. What it proves is not its own output but that
      * everything after it still works: init can still start something and the
      * shell can still run a command once a program has taken everything it is
@@ -174,8 +180,8 @@ static service_t services[] = {
      * the TLB quarantine (M-061). Both are what a boot now gates by running it.
      * It does not reach the watermarks; svc-reclaim does, run last in the
      * boot's self-test rather than from here so that nothing runs beside it. */
-    {"svc-press", "/usr/lib/vibeos/test/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
-    {"svc-bomb", "/usr/lib/vibeos/test/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-press", "/usr/lib/vibeos/test/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0},
+    {"svc-bomb", "/usr/lib/vibeos/test/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0},
 };
 
 /* ---- the manifest on the root ------------------------------------------- */
@@ -279,6 +285,7 @@ static void load_manifest(void) {
         manifest[count].restarts = 0;
         manifest[count].pid = -1;
         manifest[count].state = SVC_STOPPED;
+        manifest[count].bounded = 0;
         count++;
     }
     /* A file that names nothing usable is a broken system, not a reason to run
@@ -345,6 +352,8 @@ int vibeos_main(int argc, char **argv, char **envp) {
      * rather than the workload wearing init's name. */
     say("NATIVE_INIT_CHILD_PID=", 0, nsvcs > 0 ? svcs[0].pid : -1, -1);
 
+    int session_over = 0;
+
     for (;;) {
         int64_t status = 0;
         int64_t gone = sys3(SYS_wait4, (uint64_t)-1,
@@ -387,11 +396,14 @@ int vibeos_main(int argc, char **argv, char **envp) {
         }
 
         if (svc->oneshot) {
-            break;   /* the session is over; nothing else is worth waiting for */
+            session_over = 1;
         }
+        /* Once the session is over only a bounded service is worth waiting
+         * for; anything else goes down with the machine. */
         live = 0;
         for (i = 0; i < SERVICE_COUNT; i++) {
-            if (svcs[i].state == SVC_RUNNING) {
+            if (svcs[i].state == SVC_RUNNING &&
+                (!session_over || svcs[i].bounded)) {
                 live++;
             }
         }

@@ -596,6 +596,11 @@ int vibeos_main(int argc, char **argv, char **envp) {
             say("STRESS_FAIL: rounds ", (uint64_t)rounds, 1);
             sys3(SYS_exit, 1, 0, 0);
         }
+        /* A long run is otherwise silent once the rest of the boot is done,
+         * and the gate reads silence as a wedge. */
+        if ((round + 1u) % 500u == 0u) {
+            say("STRESS_PROGRESS rounds=", (uint64_t)(round + 1u), 1);
+        }
     }
 
     say("STRESS_OK rounds=", (uint64_t)rounds, 1);
