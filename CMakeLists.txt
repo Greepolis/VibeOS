@@ -325,6 +325,19 @@ if(VIBEOS_BUILD_TESTS)
     endif()
     add_test(NAME vibeos-ntrtl-host COMMAND vibeos_ntrtl_tests)
 
+    # vsh's language (docs/shell/s4.md): the parser and the evaluators, which
+    # start no process, with random scripts behind them.
+    add_executable(vibeos_vsh_tests
+        tests/vsh/vsh_tests.c
+        user/vsh/vsh_parse.c
+        user/vsh/vsh_expand.c)
+    target_include_directories(vibeos_vsh_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/user/vsh)
+    # Not -Werror under mingw: its printf attribute does not know %lld.
+    target_compile_options(vibeos_vsh_tests PRIVATE -Wall -Wextra
+        $<$<NOT:$<PLATFORM_ID:Windows>>:-Werror>)
+    add_test(NAME vibeos-vsh-host COMMAND vibeos_vsh_tests)
+
     # Randomised torture for the memory manager, checked against a reference
     # model kept in plain arrays. Its own executable rather than a test case
     # because it takes a seed and a round count: the nightly runs many seeds

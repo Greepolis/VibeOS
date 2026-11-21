@@ -1,0 +1,34 @@
+# vsh's parser (docs/shell/s4.md). Host test: tests/vsh/vsh_tests.c.
+#
+# Target source: user/vsh/vsh_parse.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-vsh.sh" python3 scripts/dev/sabotage.py user/vsh/vsh_parse.c scripts/dev/cases/vsh-parse.txt
+
+### the backslash escapes everything, so C:\Users loses its separators
+--- old
+            } else if (n == ' ' || n == '\'' || n == '"' || n == '$' || n == '\\') {
++++ new
+            } else if (n) {
+
+### a bare assignment is accepted
+--- old
+    if (!n->words) {
++++ new
+    if (!n->words && !n->assigns) {
+
+### nesting has no bound
+--- old
+    if (++s->depth > VSH_MAX_DEPTH) {
++++ new
+    if (++s->depth > 2000000) {
+
+### a brace inside an argument closes the block
+--- old
+    return s->p[0] == '}' && (is_delim(s->p[1]) || s->p[1] == ')');
++++ new
+    return s->p[0] == '}';
+
+### a comparison in a condition is read as a redirection's word
+--- old
+        if ((c == '=' || c == '!') && s->p[1] == '=') {
++++ new
+        if (0) {

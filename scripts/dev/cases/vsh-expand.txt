@@ -1,0 +1,47 @@
+# What vsh's words and conditions evaluate to (docs/shell/s4.md).
+# Host test: tests/vsh/vsh_tests.c.
+#
+# Target source: user/vsh/vsh_expand.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-vsh.sh" python3 scripts/dev/sabotage.py user/vsh/vsh_expand.c scripts/dev/cases/vsh-expand.txt
+
+### a quoted list still becomes several words
+--- old
+    if (p && !p->next && p->kind == VSH_P_VAR && !p->quoted && p->index < 0) {
++++ new
+    if (p && !p->next && p->kind == VSH_P_VAR && p->index < 0) {
+
+### a percent that names no variable loses its name
+--- old
+                    put_text(o, p->text, pattern, 1);
++++ new
+                    ;
+
+### a decided condition still runs its right side
+--- old
+            if ((n->kind == VSH_N_AND) == (*out != 0)) {
++++ new
+            if (1) {
+
+### numbers are compared as text, so 10 < 9
+--- old
+    if (parse_int(l, &li) == 0 && parse_int(r, &ri) == 0) {
++++ new
+    if (0) {
+
+### INT64_MIN / -1 reaches the CPU
+--- old
+        } else if (r == -1) {
++++ new
+        } else if (0) {
+
+### a quoted pattern still acts as a pattern
+--- old
+        if (*t == '\\' || (literal && (*t == '*' || *t == '?' || *t == '['))) {
++++ new
+        if (*t == '\\' || (literal && 0)) {
+
+### the trailing newlines of $(...) are kept
+--- old
+                while (n > 0u && text[n - 1u] == '\n') {
++++ new
+                while (0) {
