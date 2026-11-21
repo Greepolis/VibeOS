@@ -313,14 +313,17 @@ static void ctx_init(vsh_ctx_t *c, vsh_arena_t *a) {
 /* ---- pathname expansion ---------------------------------------------------- */
 
 static int has_magic(const char *p, size_t n) {
-    size_t i;
+    size_t i = 0;
 
-    for (i = 0; i < n; i++) {
+    while (i < n) {
         if (p[i] == '\\' && i + 1u < n) {
-            i++;
-        } else if (p[i] == '*' || p[i] == '?' || p[i] == '[') {
+            i += 2u;      /* an escaped character is not magic */
+            continue;
+        }
+        if (p[i] == '*' || p[i] == '?' || p[i] == '[') {
             return 1;
         }
+        i++;
     }
     return 0;
 }
@@ -357,14 +360,13 @@ static void glob_walk(vsh_ctx_t *c, const char *base, const char *pat, vsh_list_
     if (!has_magic(comp, n)) {
         vsh_sb_t path = {0, 0, 0};
         struct stat st;
-        size_t i;
+        size_t i = 0;
 
         vsh_sb_puts(&path, base);
-        for (i = 0; i < n; i++) {
-            if (comp[i] == '\\' && i + 1u < n) {
-                i++;
-            }
+        while (i < n) {
+            i += comp[i] == '\\' && i + 1u < n ? 1u : 0u;
             vsh_sb_putc(&path, comp[i]);
+            i++;
         }
         if (last) {
             if (lstat(path.b, &st) == 0) {
@@ -921,7 +923,7 @@ static int b_type(int argc, char **argv) {
 /* ---- commands -------------------------------------------------------------- */
 
 static int call_func(const func_t *f, int argc, char **argv) {
-    frame_t frame = {0};
+    frame_t *frame;
     frame_t *caller = G.top;
     const vsh_word_t *p;
     int i = 1, loops = G.loops;
@@ -930,11 +932,15 @@ static int call_func(const func_t *f, int argc, char **argv) {
         say_err(f->name, "function calls nested too deeply");
         return 1;
     }
+    /* On the heap: G.top outlives nothing here, but a global holding the
+     * address of a local is one early return away from a dangling pointer. */
+    frame = (frame_t *)xmalloc(sizeof(*frame));
+    frame->vars = 0;
     for (p = f->node->words; p; p = p->next, i++) {
-        set_scalar(&frame, p->parts->text, i < argc ? argv[i] : "");
+        set_scalar(frame, p->parts->text, i < argc ? argv[i] : "");
     }
-    (void)var_put(&frame, "args", (const char *const *)(argv + 1), (size_t)(argc - 1), 1);
-    G.top = &frame;
+    (void)var_put(frame, "args", (const char *const *)(argv + 1), (size_t)(argc - 1), 1);
+    G.top = frame;
     G.calls++;
     G.loops = 0;
     G.status = 0;
@@ -945,7 +951,8 @@ static int call_func(const func_t *f, int argc, char **argv) {
     G.loops = loops;
     G.calls--;
     G.top = caller;
-    frame_free(&frame);
+    frame_free(frame);
+    free(frame);
     return G.status;
 }
 
@@ -1224,9 +1231,138 @@ static void run_loop_body(const vsh_node_t *body, int *stop) {
     }
 }
 
+/* The statements below answer through *ran: a body ran and has already left
+ * $? and the flow as they should be, so run_statement adds nothing. */
+
+static int run_if(const vsh_node_t *n, int *ran) {
+    int yes = 0;
+
+    if (eval_cond(n->a, &yes) != 0) {
+        return 1;
+    }
+    if (!yes && !n->otherwise) {
+        return 0;
+    }
+    G.status = 0;
+    (void)run_list(yes ? n->b : n->otherwise);
+    *ran = 1;
+    return G.status;
+}
+
+static int run_for(const vsh_node_t *n, int *ran) {
+    vsh_arena_t arena;
+    vsh_ctx_t c;
+    vsh_list_t l = {0, 0, 0};
+    frame_t *f = G.top ? G.top : &G.globals;
+    size_t i;
+    int stop = 0, st = 1;
+
+    ctx_init(&c, &arena);
+    if (expand_words(&c, n->words, &l) != 0) {
+        say_err(c.err, 0);
+    } else {
+        G.status = 0;
+        for (i = 0; i < l.count && !stop; i++) {
+            set_scalar(f, n->name, l.items[i]);
+            run_loop_body(n->b, &stop);
+        }
+        *ran = 1;
+        st = G.status;
+    }
+    vsh_arena_free(&arena);
+    return st;
+}
+
+static int run_while(const vsh_node_t *n, int *ran) {
+    int stop = 0;
+
+    G.status = 0;
+    while (!stop) {
+        int yes = 0;
+
+        if (eval_cond(n->a, &yes) != 0) {
+            return 1;
+        }
+        if (!yes) {
+            break;
+        }
+        run_loop_body(n->b, &stop);
+    }
+    if (G.flow == F_NONE && !stop) {
+        G.status = 0;
+    }
+    *ran = 1;
+    return G.status;
+}
+
+static void define_func(const vsh_node_t *n) {
+    func_t *f = find_func(n->name);
+
+    if (!f) {
+        f = (func_t *)xmalloc(sizeof(*f));
+        f->name = xstrdup(n->name);
+        f->next = G.funcs;
+        G.funcs = f;
+    }
+    f->node = n;
+}
+
+static int run_return(const vsh_node_t *n, int *ran) {
+    int st = G.status;
+
+    if (!G.top) {
+        say_err("return outside a function", 0);
+        return 1;
+    }
+    if (n->words) {
+        vsh_arena_t arena;
+        vsh_ctx_t c;
+        char *t;
+
+        ctx_init(&c, &arena);
+        if (vsh_word_text(&c, n->words, &t) != 0 || parse_status(t, &st) != 0) {
+            say_err("return: not a number", 0);
+            st = 2;
+        }
+        vsh_arena_free(&arena);
+    }
+    G.status = st;
+    G.flow = F_RETURN;
+    *ran = 1;
+    return st;
+}
+
+static int run_jump(const vsh_node_t *n, int *ran) {
+    if (!G.loops) {
+        say_err(n->kind == VSH_N_BREAK ? "break outside a loop" : "continue outside a loop", 0);
+        return 1;
+    }
+    G.flow = n->kind == VSH_N_BREAK ? F_BREAK : F_CONTINUE;
+    *ran = 1;
+    return G.status;
+}
+
+static int run_background(const vsh_node_t *n) {
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        say_err("fork", strerror(errno));
+        return 126;
+    }
+    if (pid == 0) {
+        int ignored = 0;
+        int st;
+
+        G.flow = F_NONE;
+        G.errexit = 0;
+        st = run_chain(n->a, &ignored);
+        _exit(st & 0xff);
+    }
+    return 0;
+}
+
 static void run_statement(const vsh_node_t *n) {
-    int exempt = 0;
-    int st = 0;
+    int exempt = 0, ran = 0, st = 0;
 
     switch (n->kind) {
         case VSH_N_SET:
@@ -1237,131 +1373,35 @@ static void run_statement(const vsh_node_t *n) {
         case VSH_N_ERRORS:
             G.errexit = n->flag;
             break;
-        case VSH_N_IF: {
-            int yes = 0;
-
-            if (eval_cond(n->a, &yes) != 0) {
-                st = 1;
-            } else if (yes) {
-                G.status = 0;
-                (void)run_list(n->b);
-                return;
-            } else if (n->otherwise) {
-                G.status = 0;
-                (void)run_list(n->otherwise);
-                return;
-            }
+        case VSH_N_IF:
+            st = run_if(n, &ran);
             break;
-        }
-        case VSH_N_FOR: {
-            vsh_arena_t arena;
-            vsh_ctx_t c;
-            vsh_list_t l = {0, 0, 0};
-            frame_t *f = G.top ? G.top : &G.globals;
-            size_t i;
-            int stop = 0;
-
-            ctx_init(&c, &arena);
-            if (expand_words(&c, n->words, &l) != 0) {
-                say_err(c.err, 0);
-                st = 1;
-            } else {
-                G.status = 0;
-                for (i = 0; i < l.count && !stop; i++) {
-                    set_scalar(f, n->name, l.items[i]);
-                    run_loop_body(n->b, &stop);
-                }
-                vsh_arena_free(&arena);
-                return;
-            }
-            vsh_arena_free(&arena);
+        case VSH_N_FOR:
+            st = run_for(n, &ran);
             break;
-        }
-        case VSH_N_WHILE: {
-            int stop = 0;
-
-            G.status = 0;
-            while (!stop) {
-                int yes = 0;
-
-                if (eval_cond(n->a, &yes) != 0) {
-                    st = 1;
-                    goto done;
-                }
-                if (!yes) {
-                    break;
-                }
-                run_loop_body(n->b, &stop);
-            }
-            if (G.flow == F_NONE && !stop) {
-                G.status = 0;
-            }
-            return;
-        }
-        case VSH_N_FUNC: {
-            func_t *f = find_func(n->name);
-
-            if (!f) {
-                f = (func_t *)xmalloc(sizeof(*f));
-                f->name = xstrdup(n->name);
-                f->next = G.funcs;
-                G.funcs = f;
-            }
-            f->node = n;
+        case VSH_N_WHILE:
+            st = run_while(n, &ran);
             break;
-        }
+        case VSH_N_FUNC:
+            define_func(n);
+            break;
         case VSH_N_RETURN:
-            if (!G.top) {
-                say_err("return outside a function", 0);
-                st = 1;
-                break;
-            }
-            st = G.status;
-            if (n->words) {
-                vsh_arena_t arena;
-                vsh_ctx_t c;
-                char *t;
-
-                ctx_init(&c, &arena);
-                if (vsh_word_text(&c, n->words, &t) != 0 || parse_status(t, &st) != 0) {
-                    say_err("return: not a number", 0);
-                    st = 2;
-                }
-                vsh_arena_free(&arena);
-            }
-            G.status = st;
-            G.flow = F_RETURN;
-            return;
+            st = run_return(n, &ran);
+            break;
         case VSH_N_BREAK:
         case VSH_N_CONTINUE:
-            if (!G.loops) {
-                say_err(n->kind == VSH_N_BREAK ? "break outside a loop" : "continue outside a loop", 0);
-                st = 1;
-                break;
-            }
-            G.flow = n->kind == VSH_N_BREAK ? F_BREAK : F_CONTINUE;
-            return;
-        case VSH_N_BACKGROUND: {
-            pid_t pid = fork();
-
-            if (pid < 0) {
-                say_err("fork", strerror(errno));
-                st = 126;
-            } else if (pid == 0) {
-                int ignored = 0;
-
-                G.flow = F_NONE;
-                G.errexit = 0;
-                st = run_chain(n->a, &ignored);
-                _exit(st & 0xff);
-            }
+            st = run_jump(n, &ran);
             break;
-        }
+        case VSH_N_BACKGROUND:
+            st = run_background(n);
+            break;
         default:
             st = run_chain(n, &exempt);
             break;
     }
-done:
+    if (ran) {
+        return;
+    }
     G.status = st;
     /* The first failure ends a script: a condition asked and a `try` said it
      * may fail. */

@@ -1246,61 +1246,97 @@ static void dump_command(const vsh_node_t *n, vsh_sb_t *o) {
     vsh_sb_putc(o, ']');
 }
 
-static void dump_node(const vsh_node_t *n, vsh_sb_t *o) {
-    static const char *const cmps[] = {"==", "!=", "<", "<=", ">", ">=", "~", "~~"};
+static void dump_assignment(const vsh_node_t *n, vsh_sb_t *o) {
+    vsh_sb_puts(o, n->kind == VSH_N_SET ? "set " : n->kind == VSH_N_GLOBAL ? "global " : "export ");
+    vsh_sb_puts(o, n->name);
+    if (n->flag) {
+        vsh_sb_puts(o, " = ");
+        vsh_sb_puts(o, n->is_list ? "(" : "");
+        dump_words(n->words, o);
+        vsh_sb_puts(o, n->is_list ? ")" : "");
+    }
+}
+
+static void dump_if(const vsh_node_t *n, vsh_sb_t *o) {
+    vsh_sb_puts(o, "if ");
+    dump_node(n->a, o);
+    vsh_sb_putc(o, ' ');
+    dump_block(n->b, o);
+    if (n->otherwise) {
+        vsh_sb_puts(o, " else ");
+        if (n->otherwise->kind == VSH_N_IF && !n->otherwise->next) {
+            dump_node(n->otherwise, o);
+        } else {
+            dump_block(n->otherwise, o);
+        }
+    }
+}
+
+/* for, while and func: a head, then a block. */
+static void dump_loop_or_func(const vsh_node_t *n, vsh_sb_t *o) {
+    if (n->kind == VSH_N_WHILE) {
+        vsh_sb_puts(o, "while ");
+        dump_node(n->a, o);
+        vsh_sb_putc(o, ' ');
+    } else if (n->kind == VSH_N_FOR) {
+        vsh_sb_puts(o, "for ");
+        vsh_sb_puts(o, n->name);
+        vsh_sb_puts(o, " in ");
+        dump_words(n->words, o);
+        vsh_sb_putc(o, ' ');
+    } else {
+        vsh_sb_puts(o, "func ");
+        vsh_sb_puts(o, n->name);
+        vsh_sb_puts(o, "(");
+        dump_words(n->words, o);
+        vsh_sb_puts(o, ") ");
+    }
+    dump_block(n->b, o);
+}
+
+static void dump_pipeline(const vsh_node_t *n, vsh_sb_t *o) {
     const vsh_node_t *c;
 
+    if (n->flag) {
+        vsh_sb_puts(o, "try ");
+    }
+    for (c = n->a; c; c = c->next) {
+        dump_command(c, o);
+        if (c->next) {
+            vsh_sb_puts(o, " | ");
+        }
+    }
+}
+
+static void dump_cmp(const vsh_node_t *n, vsh_sb_t *o) {
+    static const char *const cmps[] = {"==", "!=", "<", "<=", ">", ">=", "~", "~~"};
+
+    vsh_sb_putc(o, '(');
+    dump_word(n->words, o);
+    vsh_sb_putc(o, ' ');
+    vsh_sb_puts(o, cmps[n->cmp]);
+    vsh_sb_putc(o, ' ');
+    dump_word(n->words->next, o);
+    vsh_sb_putc(o, ')');
+}
+
+static void dump_node(const vsh_node_t *n, vsh_sb_t *o) {
     switch (n->kind) {
         case VSH_N_SET:
         case VSH_N_GLOBAL:
         case VSH_N_EXPORT:
-            vsh_sb_puts(o, n->kind == VSH_N_SET ? "set " : n->kind == VSH_N_GLOBAL ? "global " : "export ");
-            vsh_sb_puts(o, n->name);
-            if (n->flag) {
-                vsh_sb_puts(o, " = ");
-                vsh_sb_puts(o, n->is_list ? "(" : "");
-                dump_words(n->words, o);
-                vsh_sb_puts(o, n->is_list ? ")" : "");
-            }
+            dump_assignment(n, o);
             break;
         case VSH_N_ERRORS:
             vsh_sb_puts(o, n->flag ? "errors on" : "errors off");
             break;
         case VSH_N_IF:
-            vsh_sb_puts(o, "if ");
-            dump_node(n->a, o);
-            vsh_sb_putc(o, ' ');
-            dump_block(n->b, o);
-            if (n->otherwise) {
-                vsh_sb_puts(o, " else ");
-                if (n->otherwise->kind == VSH_N_IF && !n->otherwise->next) {
-                    dump_node(n->otherwise, o);
-                } else {
-                    dump_block(n->otherwise, o);
-                }
-            }
+            dump_if(n, o);
             break;
         case VSH_N_FOR:
-            vsh_sb_puts(o, "for ");
-            vsh_sb_puts(o, n->name);
-            vsh_sb_puts(o, " in ");
-            dump_words(n->words, o);
-            vsh_sb_putc(o, ' ');
-            dump_block(n->b, o);
-            break;
         case VSH_N_WHILE:
-            vsh_sb_puts(o, "while ");
-            dump_node(n->a, o);
-            vsh_sb_putc(o, ' ');
-            dump_block(n->b, o);
-            break;
         case VSH_N_FUNC:
-            vsh_sb_puts(o, "func ");
-            vsh_sb_puts(o, n->name);
-            vsh_sb_puts(o, "(");
-            dump_words(n->words, o);
-            vsh_sb_puts(o, ") ");
-            dump_block(n->b, o);
+            dump_loop_or_func(n, o);
             break;
         case VSH_N_RETURN:
             vsh_sb_puts(o, "return");
@@ -1328,15 +1364,7 @@ static void dump_node(const vsh_node_t *n, vsh_sb_t *o) {
             vsh_sb_putc(o, ')');
             break;
         case VSH_N_PIPELINE:
-            if (n->flag) {
-                vsh_sb_puts(o, "try ");
-            }
-            for (c = n->a; c; c = c->next) {
-                dump_command(c, o);
-                if (c->next) {
-                    vsh_sb_puts(o, " | ");
-                }
-            }
+            dump_pipeline(n, o);
             break;
         case VSH_N_COMMAND:
             dump_command(n, o);
@@ -1346,13 +1374,7 @@ static void dump_node(const vsh_node_t *n, vsh_sb_t *o) {
             dump_node(n->a, o);
             break;
         case VSH_N_CMP:
-            vsh_sb_putc(o, '(');
-            dump_word(n->words, o);
-            vsh_sb_putc(o, ' ');
-            vsh_sb_puts(o, cmps[n->cmp]);
-            vsh_sb_putc(o, ' ');
-            dump_word(n->words->next, o);
-            vsh_sb_putc(o, ')');
+            dump_cmp(n, o);
             break;
         case VSH_N_TRUTH:
             dump_word(n->words, o);
