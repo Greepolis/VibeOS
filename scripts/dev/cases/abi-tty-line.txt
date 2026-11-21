@@ -1,0 +1,105 @@
+# The cases of abi-tty.txt on the line discipline, which left the console for
+# kernel/abi/files/tty.c (docs/shell/s1.md step 3).
+#
+# The console as a terminal (kernel/abi/files/tty.c, docs/abi/ L1 step 7),
+# proved by the handlers' host tests in tests/kernel/linux_abi_tests.c, which
+# type at the fake kernel's keyboard.
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/abi/files/tty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/tty.c scripts/dev/cases/abi-tty-line.txt
+
+### an erase erases nothing
+--- old
+            if (t->len > t->ready) {
+                t->len--;
+                if (echo && (lf & VIBEOS_TTY_ECHOE)) {
+                    tty_rub_out(t);
+                }
+            }
+            continue;
++++ new
+            continue;
+
+### half a line can be read
+--- old
+        if (c == '\n' || t->len == VIBEOS_TERM_LINE) {
++++ new
+        if (1) {
+
+### a read returns every finished line at once
+--- old
+                    if (t->line[i] == '\n') {
++++ new
+                    if (0) {
+
+### ECHO off still echoes
+--- old
+        if (echo || (c == '\n' && (lf & VIBEOS_TTY_ECHONL))) {
++++ new
+        if (1) {
+
+### the terminal is always canonical
+--- old
+    const int canon = (lf & VIBEOS_TTY_ICANON) != 0u;
+    const int echo = (lf & VIBEOS_TTY_ECHO) != 0u;
++++ new
+    const int canon = 1;
+    const int echo = (lf & VIBEOS_TTY_ECHO) != 0u;
+
+### a carriage return stays one
+--- old
+        if (c == '\r' && (t->m.iflag & VIBEOS_TTY_ICRNL)) {
++++ new
+        if (0) {
+
+### the end-of-file character is a byte
+--- old
+        if (c == (int)t->m.cc[VIBEOS_TTY_VEOF]) {
++++ new
+        if (0) {
+
+### the kill character is a byte
+--- old
+        if (c == (int)t->m.cc[VIBEOS_TTY_VKILL]) {
++++ new
+        if (0) {
+
+### MIN 0 waits
+--- old
+        } else if (!canon && min == 0u) {
++++ new
+        } else if (0) {
+
+### leaving canonical mode keeps the half line back
+--- old
+    if (!(t->m.lflag & VIBEOS_TTY_ICANON)) {
+        t->ready = t->len;
+    }
+    tty_unlock(t);
++++ new
+    tty_unlock(t);
+
+### a flush throws nothing away
+--- old
+    if (flush) {
++++ new
+    if (0) {
+
+### a non-blocking read waits
+--- old
+        if (nonblock) {
++++ new
+        if (0) {
+
+### half a line counts as readable
+--- old
+    if (t->eof || ((t->m.lflag & VIBEOS_TTY_ICANON) ? t->ready > 0u
++++ new
+    if (t->eof || ((t->m.lflag & VIBEOS_TTY_ICANON) ? t->len > 0u
+
+### what was typed and not yet read is not counted
+--- old
+    tty_pump(t, VIBEOS_TERM_LINE);   /* what was typed counts whether or not a read has looked yet */
++++ new

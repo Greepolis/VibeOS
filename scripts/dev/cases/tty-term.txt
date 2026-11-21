@@ -1,0 +1,29 @@
+# A terminal is an instance (docs/shell/s1.md step 3), broken. Caught by
+# t_term_instances: a second terminal behind a backend of the test's.
+#
+# Target source: kernel/abi/files/tty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/tty.c scripts/dev/cases/tty-term.txt build-gcc-Release
+
+### every terminal's foreground group is the console's
+--- old
+    return t->ops->get_fg ? t->ops->get_fg(t->ctx) : t->fg;
++++ new
+    return ks_foreground_pgid();
+
+### a terminal takes its bytes from the console
+--- old
+        c = t->ops->getc(t->ctx);
++++ new
+        c = ks_console_getc();
+
+### a terminal echoes to the console
+--- old
+    t->ops->echo(t->ctx, c);
++++ new
+    ks_con_putc(c);
+
+### an erase is rubbed out on the console
+--- old
+    t->ops->rub(t->ctx);
++++ new
+    ks_con_puts("x");

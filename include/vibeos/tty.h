@@ -15,8 +15,8 @@
  * Enter - or a byte at a time as it is typed, which is what an editor and a
  * shell's own line editing ask for.
  *
- * There is one terminal, so one set of modes, shared by every description that
- * names the console and outliving the program that set them - as a real
+ * A terminal has one set of modes, shared by every description that names it
+ * and outliving the program that set them - as a real
  * terminal's do, which is why a program that dies in raw mode leaves the next
  * one in it.
  *
@@ -26,6 +26,8 @@
  * is compared with Linux's by tests/kernel/linux_layout_tests.c. */
 
 #include <stdint.h>
+
+#include "vibeos/procstate.h"   /* vibeos_lock_t */
 
 #define VIBEOS_TTY_NCC 19u
 
@@ -91,6 +93,51 @@ void vibeos_tty_set_size(const vibeos_tty_size_t *in);
 uint32_t vibeos_tty_pending(void);
 /* Boot and tests: the modes a terminal starts with, nothing typed. */
 void vibeos_tty_reset(void);
+
+/* A terminal as an instance (docs/shell/s1.md step 3). The functions above
+ * and below named vibeos_tty_ are the console's; vibeos_term_ take the
+ * instance. The backend says where typed bytes come from and where an echo
+ * goes. get_fg and set_fg are optional: without them the instance keeps its
+ * own foreground group. A zeroed instance with `ops` set has its default modes
+ * from the first use. */
+#define VIBEOS_TERM_LINE 256u
+
+typedef struct {
+    int (*getc)(void *ctx);            /* the next byte typed, or -1 */
+    void (*echo)(void *ctx, char c);
+    void (*rub)(void *ctx);            /* take the last character back off the screen */
+    uint32_t (*get_fg)(void *ctx);
+    void (*set_fg)(void *ctx, uint32_t pgid);
+} vibeos_term_ops_t;
+
+typedef struct {
+    const vibeos_term_ops_t *ops;
+    void *ctx;
+    vibeos_tty_modes_t m;
+    vibeos_tty_size_t size;
+    uint8_t line[VIBEOS_TERM_LINE];
+    uint32_t len;
+    uint32_t ready;
+    int eof;                      /* end-of-file typed on an empty line */
+    uint32_t session;             /* whose controlling terminal it is; 0: nobody's */
+    uint32_t fg;                  /* the foreground group, without get_fg */
+    uint32_t sig_due;             /* signals typed, raised once the lock is let go */
+    vibeos_lock_t lock;
+    int set_up;
+} vibeos_term_t;
+
+void vibeos_term_reset(vibeos_term_t *t);
+void vibeos_term_get(vibeos_term_t *t, vibeos_tty_modes_t *out);
+void vibeos_term_set(vibeos_term_t *t, const vibeos_tty_modes_t *in, int flush);
+void vibeos_term_get_size(vibeos_term_t *t, vibeos_tty_size_t *out);
+void vibeos_term_set_size(vibeos_term_t *t, const vibeos_tty_size_t *in);
+uint32_t vibeos_term_pending(vibeos_term_t *t);
+int vibeos_term_control(vibeos_term_t *t, uint8_t c);
+void vibeos_term_set_session(vibeos_term_t *t, uint32_t sid);
+long vibeos_term_job_check(vibeos_term_t *t, uint32_t sig);
+long vibeos_term_read(vibeos_term_t *t, uint64_t buf, uint64_t len, int nonblock);
+uint32_t vibeos_term_ready(vibeos_term_t *t);
+long vibeos_term_ioctl(vibeos_term_t *t, uint64_t req, uint64_t arg);
 
 /* A control character as it is typed (docs/shell/s1.md step 2), from the
  * keyboard's interrupt: a signal has to reach a program that is not reading.

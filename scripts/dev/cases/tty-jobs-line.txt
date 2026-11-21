@@ -1,0 +1,64 @@
+# The cases of tty-jobs.txt on the line discipline, which left the console for
+# kernel/abi/files/tty.c (docs/shell/s1.md step 3).
+#
+# The terminal's own signals and its background jobs (docs/shell/s1.md step
+# 2), broken. Caught by t_tty_jobs in the host tests.
+#
+# Target source: kernel/abi/files/tty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/tty.c scripts/dev/cases/tty-jobs-line.txt build-gcc-Release
+
+### Ctrl+C is a signal with ISIG clear, and a raw program never reads it
+--- old
+    if (!(t->m.lflag & VIBEOS_TTY_ISIG) || c == 0u) {
++++ new
+    if (c == 0u) {
+
+### a character set to zero is the signal for a NUL typed
+--- old
+    if (!(t->m.lflag & VIBEOS_TTY_ISIG) || c == 0u) {
++++ new
+    if (!(t->m.lflag & VIBEOS_TTY_ISIG)) {
+
+### Ctrl+\ is no signal
+--- old
+    if (c == t->m.cc[VIBEOS_TTY_VQUIT]) {
++++ new
+    if (0) {
+
+### Ctrl+Z is no signal
+--- old
+    if (c == t->m.cc[VIBEOS_TTY_VSUSP]) {
++++ new
+    if (0) {
+
+### a signal keeps what was typed
+--- old
+    if (!(t->m.lflag & VIBEOS_TTY_NOFLSH)) {
++++ new
+    if (0) {
+
+### a background read takes the input
+--- old
+        long job = vibeos_term_job_check(t, VIBEOS_SIGTTIN);   /* each time: it may have been moved */
++++ new
+        long job = 0;
+
+### a background job that ignores the signal reads anyway
+--- old
+        return sig == VIBEOS_SIGTTOU ? 0 : -VIBEOS_EIO;
++++ new
+        return 0;
+
+### an orphaned group is stopped with nobody to continue it
+--- old
+    if (orphan) {
++++ new
+    if (0) {
+
+### TIOCGSID answers for another session's terminal
+--- old
+        ks_id(ks_current())->sid != session) {
+        return -VIBEOS_ENOTTY;
++++ new
+        0) {
+        return -VIBEOS_ENOTTY;

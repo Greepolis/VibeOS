@@ -6196,6 +6196,85 @@ static void t_tty_jobs(void) {
     ks_set_foreground_pgid(0);
 }
 
+/* A terminal is an instance (docs/shell/s1.md step 3): a second one, behind a
+ * backend of the test's, shares nothing with the console - modes, typed line,
+ * foreground group, session - and takes its bytes and shows its echo there. */
+static const char *g_term_in;
+static char g_term_shown[32];
+static uint32_t g_term_n;
+
+static int term_getc(void *ctx) {
+    (void)ctx;
+    return g_term_in && *g_term_in ? (uint8_t)*g_term_in++ : -1;
+}
+
+static void term_echo(void *ctx, char c) {
+    (void)ctx;
+    if (g_term_n + 1u < sizeof(g_term_shown)) {
+        g_term_shown[g_term_n++] = c;
+        g_term_shown[g_term_n] = 0;
+    }
+}
+
+static void term_rub(void *ctx) {
+    (void)ctx;
+    if (g_term_n > 0u) {
+        g_term_shown[--g_term_n] = 0;
+    }
+}
+
+static void t_term_instances(void) {
+    static const vibeos_term_ops_t ops = {.getc = term_getc, .echo = term_echo, .rub = term_rub};
+    static vibeos_term_t a;
+    uint64_t buf = kf_ualloc(16), pg = kf_ualloc(4);
+    vibeos_tty_modes_t m, con;
+    vibeos_tty_size_t sz = {.rows = 50, .cols = 132};
+    vibeos_tty_size_t consz;
+    int me = fresh(81);
+
+    memset(&a, 0, sizeof(a));
+    a.ops = &ops;
+    g_term_n = 0;
+    g_term_shown[0] = 0;
+    vibeos_term_reset(&a);
+    vibeos_tty_get(&con);
+    vibeos_term_get(&a, &m);
+    m.lflag &= ~VIBEOS_TTY_ECHOE;
+    m.cc[VIBEOS_TTY_VINTR] = 7;
+    vibeos_term_set(&a, &m, 0);
+    vibeos_tty_get(&m);
+    expect(m.cc[VIBEOS_TTY_VINTR] == con.cc[VIBEOS_TTY_VINTR] && m.lflag == con.lflag,
+           "a terminal's modes are its own: the console's did not move");
+    vibeos_term_set_size(&a, &sz);
+    vibeos_tty_get_size(&consz);
+    expect(consz.rows == 25u, "and so is its size");
+
+    vibeos_term_reset(&a);
+    g_term_in = "hix\x7fo\n";
+    expect(vibeos_term_read(&a, buf, 16, 1) == 4 && memcmp(kf_uptr(buf), "hio\n", 4) == 0,
+           "a line typed on it, edited, is read from it");
+    expect(strcmp(g_term_shown, "hio\n") == 0, "and shown where its backend shows it");
+    expect(vibeos_tty_pending() == 0u, "none of it reached the console");
+    g_term_in = 0;
+
+    vibeos_term_set_session(&a, ks_id(me)->sid);
+    vibeos_tty_set_session(ks_id(me)->sid + 1000u);
+    ks_set_foreground_pgid(4242u);
+    expect(vibeos_term_ioctl(&a, VIBEOS_IOCTL_SCTTY, 0) == 0 && a.fg == 0u, "already this session's: nothing to do");
+    a.fg = ks_id(me)->pgid;
+    expect(vibeos_term_ioctl(&a, VIBEOS_IOCTL_GET_PGRP, pg) == 0 && *(uint32_t *)kf_uptr(pg) == ks_id(me)->pgid,
+           "its foreground group is its own");
+    expect(ks_foreground_pgid() == 4242u, "and not the console's");
+    expect(vibeos_term_control(&a, 3) == 1 && (ks_id(me)->sig_pending & (1ull << VIBEOS_SIGINT)) != 0u,
+           "Ctrl+C on it signals its foreground group");
+    ks_id(me)->sig_pending = 0;
+    a.fg = ks_id(me)->pgid + 1000u;
+    expect(vibeos_term_job_check(&a, VIBEOS_SIGTTIN) == -VIBEOS_RESTART_CALL, "a job is background on it by its group");
+    ks_id(me)->sig_pending = 0;
+    vibeos_tty_reset();
+    ks_set_foreground_pgid(0);
+}
+
 /* The child in `slot` ends with `code`, or killed by `sig`. */
 static void t_child_ends(int slot, uint32_t code, uint32_t sig) {
     ks_id(slot)->exit_code = code;
@@ -7643,6 +7722,7 @@ int test_linux_handlers(void) {
     t_mount_syscalls();
     t_job_stop();
     t_tty_jobs();
+    t_term_instances();
     t_rmdir_and_links();
     t_metadata();
     t_mknod_and_openat2();

@@ -12,25 +12,25 @@
 #     background_read_not_stopped, that line being the one that starts the
 #     background cat. tty_job_control_did_not_finish has no case of its own.
 #
-# Target source: kernel/abi/files/console.c
-# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/console.c scripts/dev/cases/tty-jobs-boot.txt build-gcc-Release
+# Target source: kernel/abi/files/tty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/tty.c scripts/dev/cases/tty-jobs-boot.txt build-gcc-Release
 
 ### Ctrl+Z is no signal
 --- old
-    if (c == g_tty.m.cc[VIBEOS_TTY_VSUSP]) {
+    if (c == t->m.cc[VIBEOS_TTY_VSUSP]) {
 +++ new
     if (0) {
 
 ### a background read takes the input
 --- old
-        long job = vibeos_tty_job_check(VIBEOS_SIGTTIN);   /* each time: it may have been moved */
+        long job = vibeos_term_job_check(t, VIBEOS_SIGTTIN);   /* each time: it may have been moved */
 +++ new
         long job = 0;
 
 ### reading goes on past a signal character
 --- old
-            tty_take_signal((uint8_t)c, tty_sig_of((uint8_t)c));
+            tty_take_signal(t, (uint8_t)c, tty_sig_of(t, (uint8_t)c));
             break;
 +++ new
-            tty_take_signal((uint8_t)c, tty_sig_of((uint8_t)c));
+            tty_take_signal(t, (uint8_t)c, tty_sig_of(t, (uint8_t)c));
             continue;
