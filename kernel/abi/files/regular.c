@@ -14,6 +14,7 @@
 #include <stddef.h>
 
 #include "files_internal.h"
+#include "vibeos/procfs.h"
 static void (*g_on_write_back)(void);
 
 void vibeos_files_on_write_back(void (*fn)(void)) {
@@ -131,11 +132,65 @@ void vibeos_file_pos_give(vibeos_file_t *f) {
     pos_give(f);
 }
 
+/* A /proc file is made when it is read, so two reads of one file could see two
+ * different texts, and the offset of the first means nothing in the second: a
+ * /proc/loadavg that gained a digit between them answered the second read with
+ * its last newline, and awk counted a line that does not exist (M-145). As
+ * Linux's seq_file does, the description keeps what it was given. A read from
+ * the start makes it again, which is how a monitor rereads a file. Past a page
+ * the text is live: a process's maps can be longer than anything worth holding.
+ * 1 if this answered the read, into *out; the caller holds pos_busy. */
+static int generated_read(vibeos_file_t *f, uint64_t buf, uint64_t len, long *out) {
+    uint64_t off = f->pos, take;
+
+    if (!f->mnt || f->mnt->ops != vibeos_procfs_ops() || len == 0u ||
+        (f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY) {
+        return 0;
+    }
+    if (off == 0u || !f->gen_text) {
+        vibeos_fs_node_t node = node_of(f);
+        long got;
+
+        if (!f->gen_text) {
+            f->gen_text = ks_page_alloc();
+            if (!f->gen_text) {
+                return 0;   /* no page: still a read, as it was before */
+            }
+        }
+        f->gen_len = 0;
+        got = vibeos_fs_read_at(f->mnt, &node, 0, f->gen_text, 4096u);
+        if (got < 0) {
+            *out = got;
+            return 1;
+        }
+        f->gen_len = (uint32_t)got;
+    }
+    if (off >= f->gen_len) {
+        if (f->gen_len == 4096u) {
+            return 0;       /* past what is held */
+        }
+        *out = 0;
+        return 1;
+    }
+    take = f->gen_len - off;
+    if (take > len) {
+        take = len;
+    }
+    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, (const uint8_t *)f->gen_text + off, take) != 0) {
+        *out = -VIBEOS_EFAULT;
+        return 1;
+    }
+    *out = (long)take;
+    return 1;
+}
+
 static long regular_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     long n;
 
     pos_take(f);
-    n = regular_pread(f, buf, len, f->pos);
+    if (!generated_read(f, buf, len, &n)) {
+        n = regular_pread(f, buf, len, f->pos);
+    }
     if (n > 0) {
         f->pos += (uint64_t)n;
     }
@@ -423,6 +478,10 @@ static void release_name(vibeos_file_t *f) {
 static void regular_release(vibeos_file_t *f) {
     file_notify(f, (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDONLY ? VIBEOS_FSN_CLOSE_WRITE
                                                                     : VIBEOS_FSN_CLOSE_NOWRITE);
+    if (f->gen_text) {
+        ks_page_free(f->gen_text, "/proc text");
+        f->gen_text = 0;
+    }
     release_name(f);
 }
 

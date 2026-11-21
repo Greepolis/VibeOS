@@ -1,0 +1,16 @@
+# A /proc file's text belongs to the description that read it (M-145).
+# Host test: t_procfs in tests/kernel/linux_abi_tests.c.
+#
+# Target source: kernel/abi/files/regular.c
+
+### every read makes the text again
+--- old
+    if (off == 0u || !f->gen_text) {
++++ new
+    if (1) {
+
+### a read from the start keeps the old text
+--- old
+    if (off == 0u || !f->gen_text) {
++++ new
+    if (!f->gen_text) {

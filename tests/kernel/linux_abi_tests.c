@@ -2372,6 +2372,42 @@ static void t_procfs(void) {
             (void)SYS1(3, (uint64_t)wfd);
         }
     }
+    {
+        /* M-145: the text changes length between two reads of one description. */
+        char whole[600], parts[600];
+        long a, b, c, again;
+        long rfd;
+
+        memset(whole, 0, sizeof(whole));
+        memset(parts, 0, sizeof(parts));
+        rfd = SYS2(2, ustr("/proc/meminfo"), 0);
+        a = SYS3(0, (uint64_t)rfd, buf, 599);
+        if (a > 0) {
+            memcpy(whole, kf_uptr(buf), (size_t)a);
+        }
+        /* pread does not go through the kept text: it asks the filesystem for
+         * that offset, so this is what holds the filesystem to it. */
+        expect(a > 5 && sys(17, (uint64_t)rfd, buf, 5, 5, 0, 0, 0) == 5 &&
+               memcmp(kf_uptr(buf), whole + 5, 5) == 0, "pread answers from the offset it names");
+        (void)SYS3(8, (uint64_t)rfd, 0, 0);
+        b = SYS3(0, (uint64_t)rfd, buf, 10);
+        if (b > 0) {
+            memcpy(parts, kf_uptr(buf), (size_t)b);
+        }
+        kf_set_mem_extra(900000000ull);
+        c = b > 0 ? SYS3(0, (uint64_t)rfd, buf, 589) : -1;
+        if (c > 0) {
+            memcpy(parts + b, kf_uptr(buf), (size_t)c);
+        }
+        expect(a > 10 && b == 10 && b + c == a && memcmp(whole, parts, (size_t)a) == 0,
+               "a file that changes between two reads is still the text the first one began");
+        expect(SYS3(0, (uint64_t)rfd, buf, 599) == 0, "and it ends where that text ends");
+        (void)SYS3(8, (uint64_t)rfd, 0, 0);
+        again = SYS3(0, (uint64_t)rfd, buf, 599);
+        expect(again > a, "a read from the start sees the file as it is now");
+        (void)SYS1(3, (uint64_t)rfd);
+        kf_set_mem_extra(0);
+    }
     expect(SYS2(2, ustr("/proc/nothing"), 0) == -VIBEOS_ENOENT, "a name it does not have is ENOENT");
     fd = SYS2(2, ustr("/proc/sys/kernel/pid_max"), 0);
     n = fd >= 0 ? SYS3(0, (uint64_t)fd, buf, 599) : -1;

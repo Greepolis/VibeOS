@@ -595,8 +595,11 @@ static vibeos_fsmount_t g_procfs_mnt;
 static vibeos_procfs_t g_procfs;
 static vibeos_fsmount_t g_devfs_mnt;
 
+static uint64_t g_kf_mem_extra;
+void kf_set_mem_extra(uint64_t kb) { g_kf_mem_extra = kb; }
+
 static void kf_procfs_mem(vibeos_procfs_mem_t *out) {
-    out->total_kb = vibeos_frame_total() * 4ull;
+    out->total_kb = vibeos_frame_total() * 4ull + g_kf_mem_extra;
     out->free_kb = vibeos_frame_free_count() * 4ull;
     out->available_kb = out->free_kb;
     out->cached_kb = 0;
@@ -652,6 +655,7 @@ void kf_reset(void) {
     }
     g_cur = -1;
     g_next_pid_v = 100;
+    g_kf_mem_extra = 0;
     g_ticks_v = 0;
     g_illegal = 0;
     g_user_used = 0;

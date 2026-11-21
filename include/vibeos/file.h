@@ -191,6 +191,10 @@ struct vibeos_file {
     /* The name goes when the last descriptor does: memfd_create's file, which
      * has a name only because every file here has one. */
     int unlink_on_release;
+    /* A /proc file's text as this description first read it, up to a page
+     * (M-145); under pos_busy, given back by the release. */
+    void *gen_text;
+    uint32_t gen_len;
     char path[VIBEOS_FILE_PATH];
     /* Set at the first write through this description, which is when anything
      * cached from the file stops being true (vibeos_files_on_write_back). */
