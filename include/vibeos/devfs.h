@@ -35,8 +35,14 @@
 #define VIBEOS_DEV_URANDOM VIBEOS_MKDEV(1, 9)
 #define VIBEOS_DEV_TTY     VIBEOS_MKDEV(5, 0)
 #define VIBEOS_DEV_CONSOLE VIBEOS_MKDEV(5, 1)
+#define VIBEOS_DEV_PTMX    VIBEOS_MKDEV(5, 2)
+#define VIBEOS_DEV_PTS_MAJOR 136u   /* /dev/pts/N is (136, N) */
 
 /* The operations, for vibeos_fs_mount. No state: `fs` is unused. */
 const vibeos_fs_ops_t *vibeos_devfs_ops(void);
+
+/* Who says which /dev/pts/N exist (docs/shell/s1.md step 4): the file layer,
+ * which holds the pairs, and how many numbers there can be. */
+void vibeos_devfs_set_pts(int (*exists)(uint32_t n, uint32_t *uid, uint32_t *gid), uint32_t max);
 
 #endif

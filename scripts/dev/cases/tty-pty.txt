@@ -1,0 +1,71 @@
+# Pseudo-terminals (docs/shell/s1.md step 4), broken. Caught by t_pty, whose
+# answers were read off the host's Linux.
+#
+# Target source: kernel/abi/files/pty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/pty.c scripts/dev/cases/tty-pty.txt build-gcc-Release
+
+### a locked slave opens
+--- old
+    } else if (p->locked) {
++++ new
+    } else if (0) {
+
+# Deliberately not a case: "a slave opens with its master gone". devfs asks the
+# same question first and answers ENOENT, so through a path nothing can see the
+# check in vibeos_pty_open_slave; it closes the window between that lookup and
+# the open, which one thread cannot reach. Written, run, NOT RED.
+
+### the slave's newline goes out bare
+--- old
+            if (chunk[i] == '\n' && onlcr) {
++++ new
+            if (0) {
+
+### the master's close tells nobody
+--- old
+    vibeos_term_hangup(&p->term);   /* the terminal has gone from under its session */
++++ new
+
+### a closed slave is not a hangup to the master
+--- old
+        if (hung) {
+            return -VIBEOS_EIO;
+        }
++++ new
+
+### a slave with its master gone can still write
+--- old
+    if (pty_hung(p)) {
+        return -VIBEOS_EIO;
+    }
+    vibeos_term_get(&p->term, &m);
++++ new
+    vibeos_term_get(&p->term, &m);
+
+### a signal character from the master is only a byte
+--- old
+            if (vibeos_term_control(&p->term, chunk[i])) {
++++ new
+            if (0) {
+
+### what is typed is echoed only when somebody reads
+--- old
+    /* Echoed when it is typed, whether or not anybody is reading the slave. */
+    (void)vibeos_term_pending(&p->term);
++++ new
+    /* Echoed when it is typed, whether or not anybody is reading the slave. */
+
+### a pair is never given back
+--- old
+        p->used = 0;
+    }
+    ks_unlock(&g_pty_table_lock);
++++ new
+    }
+    ks_unlock(&g_pty_table_lock);
+
+### one user can take every pair
+--- old
+        i = euid != 0u && mine >= PTY_PER_USER ? PTY_MAX : 0u;
++++ new
+        i = 0u;

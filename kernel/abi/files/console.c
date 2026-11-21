@@ -57,7 +57,12 @@ static const vibeos_term_ops_t g_console_ops = {
 static vibeos_term_t g_console = {.ops = &g_console_ops};
 
 /* The console's terminal, for the callers that have only ever had the one. */
-void vibeos_tty_reset(void) { vibeos_term_reset(&g_console); }
+vibeos_term_t *vibeos_tty_console(void) { return &g_console; }
+void vibeos_tty_reset(void) {
+    vibeos_term_reset(&g_console);
+    vibeos_term_register(&g_console);
+    vibeos_pty_reset();
+}
 void vibeos_tty_get(vibeos_tty_modes_t *out) { vibeos_term_get(&g_console, out); }
 void vibeos_tty_set(const vibeos_tty_modes_t *in, int flush) { vibeos_term_set(&g_console, in, flush); }
 void vibeos_tty_get_size(vibeos_tty_size_t *out) { vibeos_term_get_size(&g_console, out); }

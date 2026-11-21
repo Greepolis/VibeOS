@@ -2192,10 +2192,10 @@ static int linux_ioctl_arg(uint64_t arg, uint64_t n, int write) {
     return linux_user_ok(arg, n, write);
 }
 
-/* The terminal's requests, on a description that is the console. The modes
+/* The terminal's requests, on a description of a terminal. The modes
  * are kept in Linux's numbering (vibeos/tty.h), so this is a copy field by
  * field between two structures that agree, not a translation. */
-static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
+static long linux_tty_ioctl(vibeos_term_t *term, int job_control, uint32_t req, uint64_t arg) {
     vibeos_tty_modes_t m;
     vibeos_tty_size_t sz;
     linux_termios_t t;
@@ -2208,7 +2208,7 @@ static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
             if (!linux_ioctl_arg(arg, sizeof(t), 1)) {
                 return -VIBEOS_EFAULT;
             }
-            vibeos_tty_get(&m);
+            vibeos_term_get(term, &m);
             raw = (uint8_t *)&t;
             for (i = 0; i < sizeof(t); i++) {
                 raw[i] = 0;
@@ -2234,7 +2234,7 @@ static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
             }
             {
                 /* A background job does not change the terminal (S1 step 2). */
-                long job = vibeos_tty_job_check(VIBEOS_SIGTTOU);
+                long job = job_control ? vibeos_term_job_check(term, VIBEOS_SIGTTOU) : 0;
                 if (job != 0) {
                     return job;
                 }
@@ -2247,13 +2247,13 @@ static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
             for (i = 0; i < VIBEOS_TTY_NCC; i++) {
                 m.cc[i] = t.c_cc[i];
             }
-            vibeos_tty_set(&m, req == LINUX_TCSETSF);
+            vibeos_term_set(term, &m, req == LINUX_TCSETSF);
             return 0;
         case LINUX_TIOCGWINSZ:
             if (!linux_ioctl_arg(arg, sizeof(w), 1)) {
                 return -VIBEOS_EFAULT;
             }
-            vibeos_tty_get_size(&sz);
+            vibeos_term_get_size(term, &sz);
             w.ws_row = sz.rows;
             w.ws_col = sz.cols;
             w.ws_xpixel = sz.xpixel;
@@ -2265,7 +2265,7 @@ static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
                 return -VIBEOS_EFAULT;
             }
             {
-                long job = vibeos_tty_job_check(VIBEOS_SIGTTOU);
+                long job = job_control ? vibeos_term_job_check(term, VIBEOS_SIGTTOU) : 0;
                 if (job != 0) {
                     return job;
                 }
@@ -2274,7 +2274,7 @@ static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
             sz.cols = w.ws_col;
             sz.xpixel = w.ws_xpixel;
             sz.ypixel = w.ws_ypixel;
-            vibeos_tty_set_size(&sz);
+            vibeos_term_set_size(term, &sz);
             return 0;
         default:
             return 1;   /* not one of these */
@@ -2327,6 +2327,10 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
         case LINUX_FIONREAD:
             if (f->ops == &vibeos_fops_console) {
                 v = (int32_t)vibeos_tty_pending();
+            } else if (f->ops == &vibeos_fops_ptmx) {
+                v = (int32_t)vibeos_pty_master_pending(f);
+            } else if (f->ops == &vibeos_fops_pts) {
+                v = (int32_t)vibeos_term_pending(vibeos_pty_term(f));
             } else if (f->ops == &vibeos_fops_regular) {
                 vibeos_file_stat_t st;
                 vibeos_file_stat_clear(&st);
@@ -2393,7 +2397,12 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
                 vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0 ? -VIBEOS_EFAULT : 0;
             break;
         default:
-            r = f->ops == &vibeos_fops_console ? linux_tty_ioctl(r32, arg) : 1;
+            /* The master changes the terminal it serves from outside its
+             * session, so job control does not apply to it. */
+            r = f->ops == &vibeos_fops_console ? linux_tty_ioctl(vibeos_tty_console(), 1, r32, arg)
+                : f->ops == &vibeos_fops_pts   ? linux_tty_ioctl(vibeos_pty_term(f), 1, r32, arg)
+                : f->ops == &vibeos_fops_ptmx  ? linux_tty_ioctl(vibeos_pty_term(f), 0, r32, arg)
+                                               : 1;
             if (r == 1 && f->ops->ioctl) {
                 /* A request built with _IOR, _IOW or _IOWR says in its own
                  * number which way its argument goes and how large it is, and

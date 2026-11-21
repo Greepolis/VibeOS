@@ -154,6 +154,12 @@ void vibeos_term_get_size(vibeos_term_t *t, vibeos_tty_size_t *out) {
 
 void vibeos_term_set_size(vibeos_term_t *t, const vibeos_tty_size_t *in) {
     tty_lock(t);
+    /* Told only of a change: a program redraws on SIGWINCH, and setting the
+     * size it already has is what many do at startup. */
+    if (t->size.rows != in->rows || t->size.cols != in->cols || t->size.xpixel != in->xpixel ||
+        t->size.ypixel != in->ypixel) {
+        t->sig_due |= 1u << VIBEOS_SIGWINCH;
+    }
     t->size = *in;
     tty_unlock(t);
 }
@@ -419,9 +425,24 @@ long vibeos_term_read(vibeos_term_t *t, uint64_t buf, uint64_t len, int nonblock
             ks_irq_on();
             return (long)n;
         }
+        /* The other end has gone, and nothing is left: end of file. */
+        if (t->ops->hung && t->ops->hung(t->ctx)) {
+            ks_irq_on();
+            return 0;
+        }
         if (nonblock) {
             ks_irq_on();
             return -VIBEOS_EAGAIN;
+        }
+        if (t->ops->hung) {
+            /* No interrupt will wake this reader: it looks again each tick,
+             * as a pipe's does, never BLOCKED. */
+            ks_irq_on();
+            if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+                return -VIBEOS_RESTART_CALL;
+            }
+            ks_block_point();
+            continue;
         }
         if (ks_current() >= 0) {
             ks_id(ks_current())->wait_input = 1;
@@ -493,6 +514,9 @@ long vibeos_term_ioctl(vibeos_term_t *t, uint64_t req, uint64_t arg) {
         }
         if (session == me->sid) {
             return 0;
+        }
+        if (vibeos_term_of_session(me->sid)) {
+            return -VIBEOS_EPERM;   /* it has another: one terminal a session */
         }
         ks_lock(ks_sched_lock(), __func__);
         for (i = 0; session != 0u && i < (int)ks_slots(); i++) {
@@ -566,3 +590,125 @@ long vibeos_term_ioctl(vibeos_term_t *t, uint64_t req, uint64_t arg) {
     return -VIBEOS_ENOTTY;
 }
 
+
+uint32_t vibeos_term_foreground(vibeos_term_t *t) {
+    uint32_t v;
+
+    ks_lock(ks_sched_lock(), __func__);
+    v = tty_fg(t);
+    ks_unlock(ks_sched_lock());
+    return v;
+}
+
+/* ---- which terminals there are (docs/shell/s1.md step 4) ------------------ */
+
+#define TTY_REGISTERED 16u
+/* quota: none - an entry a terminal, and the terminals are bounded where they
+ * are made (the console; pty.c's pool, which has the per-user share). */
+static vibeos_term_t *g_terms[TTY_REGISTERED];
+static vibeos_lock_t g_terms_lock;
+
+void vibeos_term_register(vibeos_term_t *t) {
+    uint32_t i, free_at = TTY_REGISTERED;
+
+    ks_lock(&g_terms_lock, "tty_terms");
+    for (i = 0; i < TTY_REGISTERED; i++) {
+        if (g_terms[i] == t) {
+            free_at = TTY_REGISTERED;
+            break;
+        }
+        if (!g_terms[i] && free_at == TTY_REGISTERED) {
+            free_at = i;
+        }
+    }
+    if (i == TTY_REGISTERED && free_at < TTY_REGISTERED) {
+        g_terms[free_at] = t;
+    }
+    ks_unlock(&g_terms_lock);
+}
+
+void vibeos_term_unregister(vibeos_term_t *t) {
+    uint32_t i;
+
+    ks_lock(&g_terms_lock, "tty_terms");
+    for (i = 0; i < TTY_REGISTERED; i++) {
+        if (g_terms[i] == t) {
+            g_terms[i] = 0;
+        }
+    }
+    ks_unlock(&g_terms_lock);
+}
+
+vibeos_term_t *vibeos_term_of_session(uint32_t sid) {
+    vibeos_term_t *found = 0;
+    uint32_t i;
+
+    if (sid == 0u) {
+        return 0;
+    }
+    ks_lock(&g_terms_lock, "tty_terms");
+    for (i = 0; i < TTY_REGISTERED && !found; i++) {
+        if (g_terms[i] && __atomic_load_n(&g_terms[i]->session, __ATOMIC_ACQUIRE) == sid) {
+            found = g_terms[i];
+        }
+    }
+    ks_unlock(&g_terms_lock);
+    return found;
+}
+
+void vibeos_term_acquire(vibeos_term_t *t) {
+    int me = ks_current();
+    vibeos_task_t *who;
+    int took = 0;
+
+    if (me < 0 || !ks_id(me)->is_user) {
+        return;
+    }
+    who = ks_id(me);
+    if (who->sid != who->tgid || vibeos_term_of_session(who->sid)) {
+        return;
+    }
+    tty_lock(t);
+    if (t->session == 0u) {
+        t->session = who->sid;
+        took = 1;
+    }
+    tty_unlock(t);
+    if (took) {
+        ks_lock(ks_sched_lock(), __func__);
+        tty_set_fg(t, who->pgid);
+        ks_unlock(ks_sched_lock());
+    }
+}
+
+void vibeos_term_hangup(vibeos_term_t *t) {
+    uint32_t session, fg;
+    int leader;
+
+    tty_lock(t);
+    session = t->session;
+    t->session = 0;
+    tty_unlock(t);
+    if (session == 0u) {
+        return;
+    }
+    ks_lock(ks_sched_lock(), __func__);
+    fg = tty_fg(t);
+    tty_send_group(fg, VIBEOS_SIGHUP);
+    tty_send_group(fg, VIBEOS_SIGCONT);
+    leader = ks_task_by_pid(session);
+    if (leader >= 0 && ks_id(leader)->pgid != fg && tty_live(leader)) {
+        (void)ks_signal_raise(leader, VIBEOS_SIGHUP);
+        (void)ks_signal_raise(leader, VIBEOS_SIGCONT);
+    }
+    tty_set_fg(t, 0);
+    ks_unlock(ks_sched_lock());
+}
+
+void vibeos_tty_session_ended(uint32_t sid) {
+    vibeos_term_t *t = vibeos_term_of_session(sid);
+
+    if (t) {
+        vibeos_term_hangup(t);
+    }
+}

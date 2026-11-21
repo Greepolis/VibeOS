@@ -108,6 +108,10 @@ typedef struct {
     void (*rub)(void *ctx);            /* take the last character back off the screen */
     uint32_t (*get_fg)(void *ctx);
     void (*set_fg)(void *ctx, uint32_t pgid);
+    /* A backend with no interrupt to wake a reader (a pseudo-terminal) says
+     * whether the other end has gone: a reader then gets end of file, and
+     * otherwise looks again each tick. Without it, a reader is woken. */
+    int (*hung)(void *ctx);
 } vibeos_term_ops_t;
 
 typedef struct {
@@ -138,6 +142,27 @@ long vibeos_term_job_check(vibeos_term_t *t, uint32_t sig);
 long vibeos_term_read(vibeos_term_t *t, uint64_t buf, uint64_t len, int nonblock);
 uint32_t vibeos_term_ready(vibeos_term_t *t);
 long vibeos_term_ioctl(vibeos_term_t *t, uint64_t req, uint64_t arg);
+uint32_t vibeos_term_foreground(vibeos_term_t *t);
+
+/* Which terminals exist, so that a session can be asked for its own: /dev/tty
+ * is whatever that is, and a session holds at most one (s1.md step 4). */
+void vibeos_term_register(vibeos_term_t *t);
+void vibeos_term_unregister(vibeos_term_t *t);
+vibeos_term_t *vibeos_term_of_session(uint32_t sid);
+/* The caller, a session leader with no terminal, takes `t` if nobody holds it. */
+void vibeos_term_acquire(vibeos_term_t *t);
+/* The terminal goes from under its session: SIGHUP and SIGCONT to the
+ * foreground group and the leader, and it is nobody's. */
+void vibeos_term_hangup(vibeos_term_t *t);
+/* A session leader is exiting: its terminal, if it has one, is hung up. */
+void vibeos_tty_session_ended(uint32_t sid);
+/* The console's instance. */
+vibeos_term_t *vibeos_tty_console(void);
+/* A pseudo-terminal's, for a description of either end; which pair an
+ * instance is, or -1 for one that is not a pseudo-terminal. */
+struct vibeos_file;
+vibeos_term_t *vibeos_pty_term(const struct vibeos_file *f);
+int vibeos_pty_slave_of(const vibeos_term_t *t);
 
 /* A control character as it is typed (docs/shell/s1.md step 2), from the
  * keyboard's interrupt: a signal has to reach a program that is not reading.

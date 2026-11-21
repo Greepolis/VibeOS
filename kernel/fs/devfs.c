@@ -21,6 +21,7 @@ static const devfs_entry_t g_dev[] = {
     {"urandom", VIBEOS_S_IFCHR | 0666u, VIBEOS_DEV_URANDOM, 0},
     {"tty", VIBEOS_S_IFCHR | 0666u, VIBEOS_DEV_TTY, 0},
     {"console", VIBEOS_S_IFCHR | 0600u, VIBEOS_DEV_CONSOLE, 0},
+    {"ptmx", VIBEOS_S_IFCHR | 0666u, VIBEOS_DEV_PTMX, 0},
     {"fd", VIBEOS_S_IFLNK | 0777u, 0, "/proc/self/fd"},
     {"stdin", VIBEOS_S_IFLNK | 0777u, 0, "/proc/self/fd/0"},
     {"stdout", VIBEOS_S_IFLNK | 0777u, 0, "/proc/self/fd/1"},
@@ -44,6 +45,46 @@ static uint32_t devfs_len(const char *s) {
     return n;
 }
 
+/* /dev/pts: a directory of the pairs that exist, which the file layer knows.
+ * Asked rather than kept, as everything here is. */
+static int (*g_pts_exists)(uint32_t n, uint32_t *uid, uint32_t *gid);
+static uint32_t g_pts_max;
+
+void vibeos_devfs_set_pts(int (*exists)(uint32_t n, uint32_t *uid, uint32_t *gid), uint32_t max) {
+    g_pts_exists = exists;
+    g_pts_max = max;
+}
+
+#define DEVFS_ID_PTS 0x1000u
+#define DEVFS_ID_PTS_N 0x1100u
+
+/* "pts" is 1 and "pts/N" is 2 with *n set; 0 for any other path. */
+static int devfs_pts(const char *path, uint32_t *n) {
+    uint32_t v = 0, k = 4;
+
+    while (*path == '/') {
+        path++;
+    }
+    if (path[0] != 'p' || path[1] != 't' || path[2] != 's' || (path[3] != 0 && path[3] != '/')) {
+        return 0;
+    }
+    if (path[3] == 0 || path[4] == 0) {
+        return 1;
+    }
+    /* Digits only, and no leading zero: "00" is not the name of pair 0. */
+    if (path[4] == '0' && path[5] != 0) {
+        return -1;
+    }
+    for (; path[k]; k++) {
+        if (path[k] < '0' || path[k] > '9' || v > 1000u) {
+            return -1;
+        }
+        v = v * 10u + (uint32_t)(path[k] - '0');
+    }
+    *n = v;
+    return 2;
+}
+
 /* The entry `path` names, or -1 for the directory itself, or -2 for nothing. */
 static int devfs_find(const char *path) {
     uint32_t i;
@@ -65,8 +106,32 @@ static int devfs_find(const char *path) {
 /* Node ids: the directory is 1, an entry 2 + its place in the table. */
 static int devfs_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
     int i = devfs_find(path);
+    uint32_t n = 0;
+    int pts = devfs_pts(path, &n);
 
     (void)fs;
+    if (pts == 1) {
+        out->id = DEVFS_ID_PTS;
+        out->is_dir = 1;
+        out->mode = VIBEOS_S_IFDIR | 0755u;
+        out->nlink = 2u;
+        return 0;
+    }
+    if (pts == 2) {
+        uint32_t uid = 0, gid = 0;
+
+        if (!g_pts_exists || !g_pts_exists(n, &uid, &gid)) {
+            return -VIBEOS_ENOENT;
+        }
+        out->id = DEVFS_ID_PTS_N + n;
+        out->is_dir = 0;
+        out->nlink = 1u;
+        out->mode = VIBEOS_S_IFCHR | 0620u;
+        out->rdev = VIBEOS_MKDEV(VIBEOS_DEV_PTS_MAJOR, n);
+        out->uid = uid;
+        out->gid = gid;
+        return 0;
+    }
     if (i == -2) {
         return -VIBEOS_ENOENT;
     }
@@ -98,13 +163,59 @@ static long devfs_read_at(void *fs, const vibeos_fs_node_t *node, uint64_t off, 
 
 static int devfs_list(void *fs, const char *path, uint32_t index, char *name, uint32_t cap,
                       uint64_t *out_size, int *out_is_dir) {
-    uint32_t k;
+    uint32_t k, n = 0;
+    int pts = devfs_pts(path, &n);
 
     (void)fs;
+    if (pts == 1) {
+        uint32_t seen = 0;
+
+        for (n = 0; n < g_pts_max && g_pts_exists; n++) {
+            if (g_pts_exists(n, 0, 0) && seen++ == index) {
+                char d[12];
+                uint32_t w = 0, v = n;
+
+                do {
+                    d[w++] = (char)('0' + v % 10u);
+                    v /= 10u;
+                } while (v != 0u);
+                for (k = 0; k < w && k + 1u < cap; k++) {
+                    name[k] = d[w - 1u - k];
+                }
+                name[k] = 0;
+                if (out_size) {
+                    *out_size = 0;
+                }
+                if (out_is_dir) {
+                    *out_is_dir = 0;
+                }
+                return 0;
+            }
+        }
+        return -1;
+    }
     if (devfs_find(path) != -1) {
         return -VIBEOS_ENOTDIR;
     }
-    if (index >= DEVFS_ENTRIES || cap == 0u) {
+    if (cap == 0u) {
+        return -1;
+    }
+    if (index == DEVFS_ENTRIES) {   /* the one directory in it */
+        static const char dir[] = "pts";
+
+        for (k = 0; k + 1u < cap && dir[k]; k++) {
+            name[k] = dir[k];
+        }
+        name[k] = 0;
+        if (out_size) {
+            *out_size = 0;
+        }
+        if (out_is_dir) {
+            *out_is_dir = 1;
+        }
+        return 0;
+    }
+    if (index > DEVFS_ENTRIES) {
         return -1;
     }
     for (k = 0; k + 1u < cap && g_dev[index].name[k]; k++) {

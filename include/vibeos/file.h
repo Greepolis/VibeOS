@@ -45,6 +45,7 @@
 #define VIBEOS_O_EXCL     0x80u
 #define VIBEOS_O_TRUNC    0x200u
 #define VIBEOS_O_APPEND   0x400u
+#define VIBEOS_O_NOCTTY   0x100u   /* opening a terminal does not make it the session's */
 #define VIBEOS_O_NONBLOCK 0x800u
 #define VIBEOS_O_DIRECTORY 0x10000u
 #define VIBEOS_O_NOFOLLOW 0x20000u
@@ -178,6 +179,7 @@ struct vibeos_file {
     uint64_t sk_rcvtimeo;
     uint64_t sk_sndtimeo;
     int ux;
+    int pty;                      /* a pseudo-terminal's pair (pty.c) */
     /* regular file or directory: which mount, and the absolute path - the
      * part inside the mount starts at path + tail (docs/abi/ A4) */
     vibeos_fsmount_t *mnt;

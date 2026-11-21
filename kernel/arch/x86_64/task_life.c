@@ -1482,6 +1482,13 @@ void hw_task_exit(uint64_t code) {
         hw_spin_unlock(&g_sched_lock);
     }
 
+    /* A session leader leaving hangs its terminal up (docs/shell/s1.md step
+     * 4): the job in the foreground is told, and the terminal is free. */
+    if (dying >= 0 && g_tasks[dying].id.is_user && g_tasks[dying].id.pid == g_tasks[dying].id.tgid &&
+        g_tasks[dying].id.sid == g_tasks[dying].id.tgid) {
+        vibeos_tty_session_ended(g_tasks[dying].id.sid);
+    }
+
     if (dying >= 0 && g_runtime_supervisor_ready && g_tasks[dying].id.service_id != 0) {
         vibeos_process_exit_reason_t reason = g_tasks[dying].id.exit_signal != 0
             ? VIBEOS_PROCESS_EXIT_SIGNAL : VIBEOS_PROCESS_EXIT_NORMAL;

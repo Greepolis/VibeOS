@@ -1,0 +1,38 @@
+# What the line discipline does for a pseudo-terminal (docs/shell/s1.md step
+# 4), broken. Caught by t_pty.
+#
+# Target source: kernel/abi/files/tty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/tty.c scripts/dev/cases/tty-pty-line.txt build-gcc-Release
+
+### a new size tells nobody
+--- old
+        t->sig_due |= 1u << VIBEOS_SIGWINCH;
++++ new
+
+### the same size is SIGWINCH every time
+--- old
+    if (t->size.rows != in->rows || t->size.cols != in->cols || t->size.xpixel != in->xpixel ||
+        t->size.ypixel != in->ypixel) {
++++ new
+    if (1) {
+
+### a reader whose other end has gone is not told
+--- old
+        if (t->ops->hung && t->ops->hung(t->ctx)) {
++++ new
+        if (0) {
+
+### a hangup leaves the session holding the terminal
+--- old
+    session = t->session;
+    t->session = 0;
+    tty_unlock(t);
+    if (session == 0u) {
+        return;
+    }
++++ new
+    session = t->session;
+    tty_unlock(t);
+    if (session == 0u) {
+        return;
+    }

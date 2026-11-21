@@ -3487,6 +3487,10 @@ def main():
             if os.path.exists(signal_elf):
                 if "SIG_OK" not in text:
                     problems.append("signal_delivery_broken")
+                # A pseudo-terminal (docs/shell/s1.md step 4), read off the
+                # program's own line, which it prints if each check held.
+                if not re.search(r"write\(ring3\): PTY_OK: ", text):
+                    problems.append("pty_conversation_failed")
                 # docs/abi/ L2 step 2: the frame is Linux's, a fault goes to a
                 # handler that asked for it, and the calls that wait for a
                 # signal work. Read off the program's own line, which it prints

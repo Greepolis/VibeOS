@@ -44,7 +44,9 @@
 #include <fcntl.h>
 #include <sys/personality.h>
 #include <sys/resource.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <termios.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -1263,6 +1265,136 @@ static int job_checks(void) {
     return ok;
 }
 
+/* ---- docs/shell/s1.md step 4: a pseudo-terminal ---------------------------
+ *
+ * Written against Linux and run on it too: the same checks hold on the host. */
+static volatile sig_atomic_t g_pty_int, g_pty_winch, g_pty_hup;
+
+static void pty_on(int sig) {
+    if (sig == SIGINT) g_pty_int = 1;
+    if (sig == SIGWINCH) g_pty_winch = 1;
+    if (sig == SIGHUP) g_pty_hup = 1;
+}
+
+/* Reads the master until `word` has appeared. */
+static int pty_until(int m, const char *word) {
+    char all[512];
+    size_t n = 0;
+
+    for (;;) {
+        ssize_t r = read(m, all + n, sizeof(all) - 1 - n);
+        if (r <= 0) {
+            return 0;
+        }
+        n += (size_t)r;
+        all[n] = 0;
+        if (strstr(all, word)) {
+            return 1;
+        }
+        if (n >= sizeof(all) - 1) {
+            return 0;
+        }
+    }
+}
+
+static void pty_child(const char *name) {
+    char b[16];
+    int s, t;
+
+    signal(SIGINT, pty_on);
+    signal(SIGWINCH, pty_on);
+    signal(SIGHUP, pty_on);
+    if (setsid() < 0) _exit(10);
+    if (open("/dev/tty", O_RDWR) >= 0 || errno != ENXIO) _exit(11);   /* none yet */
+    s = open(name, O_RDWR);                                           /* the leader's first: its own */
+    if (s < 0) _exit(12);
+    if (tcgetpgrp(s) != getpid()) _exit(13);
+    if (!isatty(s) || !ttyname(s) || strcmp(ttyname(s), name) != 0) _exit(14);
+    t = open("/dev/tty", O_RDWR);
+    if (t < 0) _exit(15);
+    close(t);
+    if (write(s, "ready\n", 6) != 6) _exit(16);
+    if (read(s, b, sizeof(b)) != 5 || memcmp(b, "line\n", 5) != 0) _exit(17);
+    if (write(s, "got\n", 4) != 4) _exit(18);
+    while (!g_pty_int) usleep(1000);
+    if (write(s, "int\n", 4) != 4) _exit(19);
+    while (!g_pty_winch) usleep(1000);
+    if (write(s, "win\n", 4) != 4) _exit(20);
+    while (!g_pty_hup) usleep(1000);
+    if (read(s, b, sizeof(b)) != 0) _exit(21);                        /* master gone: end of file */
+    errno = 0;
+    if (write(s, "x", 1) != -1 || errno != EIO) _exit(22);
+    _exit(42);
+}
+
+static int pty_checks(void) {
+    struct winsize ws = {.ws_row = 40, .ws_col = 100};
+    char name[64], b[8];
+    int m, m2, s2, status = 0, n = 0, unlock = 0;
+    pid_t c;
+
+    m = posix_openpt(O_RDWR | O_NOCTTY);
+    if (m < 0 || ioctl(m, TIOCGPTN, &n) != 0) {
+        printf("PTY_FAIL: no master: errno %d\n", errno);
+        return 0;
+    }
+    snprintf(name, sizeof(name), "/dev/pts/%d", n);
+    errno = 0;
+    if (open(name, O_RDWR | O_NOCTTY) >= 0 || errno != EIO) {
+        printf("PTY_FAIL: a locked slave opened: errno %d\n", errno);
+        return 0;
+    }
+    if (grantpt(m) != 0 || ioctl(m, TIOCSPTLCK, &unlock) != 0 || !ptsname(m) || strcmp(ptsname(m), name) != 0) {
+        printf("PTY_FAIL: unlock or name: errno %d\n", errno);
+        return 0;
+    }
+    alarm(20);
+    fflush(stdout);
+    c = fork();
+    if (c == 0) {
+        close(m);   /* or the master never closes, and nothing hangs up */
+        pty_child(name);
+    }
+    if (c < 0 || !pty_until(m, "ready") || write(m, "line\n", 5) != 5 || !pty_until(m, "got") ||
+        write(m, "\x03", 1) != 1 || !pty_until(m, "int") || ioctl(m, TIOCSWINSZ, &ws) != 0 || !pty_until(m, "win")) {
+        printf("PTY_FAIL: the conversation\n");
+        alarm(0);
+        if (c > 0) {
+            kill(c, SIGKILL);
+            waitpid(c, &status, 0);
+            printf("PTY_FAIL: child status 0x%x\n", status);
+        }
+        return 0;
+    }
+    close(m);
+    waitpid(c, &status, 0);
+    alarm(0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 42) {
+        printf("PTY_FAIL: child status 0x%x\n", status);
+        return 0;
+    }
+    errno = 0;
+    if (open(name, O_RDWR | O_NOCTTY) >= 0 && errno == 0) {
+        printf("PTY_FAIL: a slave opened with its master gone\n");
+        return 0;
+    }
+    /* The other direction: every slave closed, the master reads EIO. */
+    m2 = posix_openpt(O_RDWR | O_NOCTTY);
+    if (m2 < 0 || unlockpt(m2) != 0 || (s2 = open(ptsname(m2), O_RDWR | O_NOCTTY)) < 0) {
+        printf("PTY_FAIL: a second pair\n");
+        return 0;
+    }
+    close(s2);
+    errno = 0;
+    if (read(m2, b, sizeof(b)) != -1 || errno != EIO) {
+        printf("PTY_FAIL: master of a closed slave: errno %d\n", errno);
+        return 0;
+    }
+    close(m2);
+    printf("PTY_OK: session, ttyname, line, Ctrl+C, SIGWINCH, hangup both ways\n");
+    return 1;
+}
+
 int main(void) {
     struct sigaction sa;
     sigset_t block, old;
@@ -1444,6 +1576,8 @@ int main(void) {
     ok &= procdev_checks();
     /* ---- L2 step 7: stops, and orphaned process groups --------------------- */
     ok &= job_checks();
+    /* ---- S1 step 4: a pseudo-terminal -------------------------------------- */
+    ok &= pty_checks();
 
     printf(ok ? "SIG_OK: handlers, masking, ignoring and default actions\n"
               : "SIG_FAIL: see above\n");

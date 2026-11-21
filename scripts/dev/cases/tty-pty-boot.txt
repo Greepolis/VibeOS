@@ -1,0 +1,13 @@
+# A pseudo-terminal on the machine (docs/shell/s1.md step 4): SIGNAL.ELF has a
+# session on one and holds a conversation with it through the master.
+#
+#  1. The first open by a session leader does not make it the session's: the
+#     child's tcgetpgrp fails. Expect pty_conversation_failed.
+#
+# Target source: kernel/abi/files/pty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/pty.c scripts/dev/cases/tty-pty-boot.txt build-gcc-Release
+
+### a session leader's first open takes nothing
+--- old
+        vibeos_term_acquire(&p->term);
++++ new

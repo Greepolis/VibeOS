@@ -2643,6 +2643,8 @@ static void t_procdev(void) {
     expect(SYS2(2, ustr("/dev/nothing"), 0) == -VIBEOS_ENOENT, "a device /dev does not have is ENOENT");
     expect(dir_type("/dev", "null") == 2 && dir_type("/dev", "fd") == 10, "/dev lists its devices and links");
     expect(link_of("/dev/fd", text) == 13 && strcmp(text, "/proc/self/fd") == 0, "/dev/fd is /proc/self/fd");
+    expect(SYS2(2, ustr("/dev/tty"), 2) == -VIBEOS_ENXIO, "/dev/tty with no controlling terminal is ENXIO");
+    vibeos_tty_set_session(ks_id(ks_current())->sid);
     fd = SYS2(2, ustr("/dev/tty"), 2);
     expect(fd >= 0 && SYS2(5, (uint64_t)fd, st) == 0 && (memcpy(&sb, kf_uptr(st), sizeof(sb)), 1) &&
            sb.st_rdev == 0x500u && SYS3(16, (uint64_t)fd, 0x5401 /* TCGETS */, kf_ualloc(64)) == 0,
@@ -6275,6 +6277,133 @@ static void t_term_instances(void) {
     ks_set_foreground_pgid(0);
 }
 
+/* Pseudo-terminals (docs/shell/s1.md step 4). Every answer here was read off
+ * the host's Linux first. Everything non-blocking: the fake has one thread. */
+static void t_pty(void) {
+    uint64_t np = kf_ualloc(4), buf = kf_ualloc(64), un = kf_ualloc(4), ws = kf_ualloc(8), st = kf_ualloc(sizeof(linux_stat_t));
+    linux_stat_t sb;
+    linux_winsize_t *w = (linux_winsize_t *)kf_uptr(ws);
+    char name[24];
+    long m, s, r;
+    int me = fresh(82);
+    const uint64_t RW_NB = 2u | VIBEOS_O_NONBLOCK | VIBEOS_O_NOCTTY;
+
+    m = SYS2(2, ustr("/dev/ptmx"), RW_NB);
+    expect(m >= 3 && SYS3(16, (uint64_t)m, (uint64_t)(int64_t)(int32_t)VIBEOS_IOCTL_GPTN, np) == 0,
+           "/dev/ptmx makes a pair and names it, the request sign-extended as a C library's int is");
+    snprintf(name, sizeof(name), "/dev/pts/%u", *(uint32_t *)kf_uptr(np));
+    expect(SYS2(2, ustr(name), RW_NB) == -VIBEOS_EIO, "its slave is locked until the master says");
+    expect(SYS3(0, (uint64_t)m, buf, 8) == -VIBEOS_EAGAIN, "no slave yet: the master waits, it is not a hangup");
+    *(uint32_t *)kf_uptr(un) = 0;
+    expect(SYS3(16, (uint64_t)m, VIBEOS_IOCTL_SPTLCK, un) == 0, "TIOCSPTLCK unlocks it");
+    s = SYS2(2, ustr(name), RW_NB);
+    expect(s >= 3 && SYS2(5, (uint64_t)s, st) == 0 && (memcpy(&sb, kf_uptr(st), sizeof(sb)), 1) &&
+           sb.st_rdev == ((136u << 8) | *(uint32_t *)kf_uptr(np)) && (sb.st_mode & 0777u) == 0620u,
+           "the slave is (136, N), 0620");
+    expect(dir_type("/dev", "ptmx") == 2 && dir_type("/dev", "pts") == 4, "/dev lists ptmx and the pts directory");
+
+    expect(SYS3(1, (uint64_t)m, ustr("hi\n"), 3) == 3, "the master types");
+    r = SYS3(0, (uint64_t)m, buf, 16);
+    expect(r == 4 && memcmp(kf_uptr(buf), "hi\r\n", 4) == 0, "and the echo comes back to it, nobody reading the slave");
+    r = SYS3(0, (uint64_t)s, buf, 16);
+    expect(r == 3 && memcmp(kf_uptr(buf), "hi\n", 3) == 0, "the slave reads the line");
+    expect(SYS3(1, (uint64_t)s, ustr("a\nb"), 3) == 3, "the slave writes");
+    r = SYS3(0, (uint64_t)m, buf, 16);
+    expect(r == 4 && memcmp(kf_uptr(buf), "a\r\nb", 4) == 0, "and the master reads it, a newline as CR LF");
+    expect(SYS3(1, (uint64_t)m, ustr("ab\x7f" "c\n"), 5) == 5 && SYS3(0, (uint64_t)s, buf, 16) == 3 &&
+           memcmp(kf_uptr(buf), "ac\n", 3) == 0, "the slave's line discipline edits what the master types");
+    (void)SYS3(0, (uint64_t)m, buf, 32);
+
+    /* The session's terminal, and what it is told. */
+    vibeos_term_t *pt = (vibeos_term_t *)0;
+    {
+        long t2;
+        expect(vibeos_term_of_session(ks_id(me)->sid) == pt, "a session holds no terminal until it takes one");
+        expect(SYS2(2, ustr("/dev/tty"), 2) == -VIBEOS_ENXIO, "and /dev/tty is ENXIO");
+        expect(SYS3(16, (uint64_t)s, VIBEOS_IOCTL_SCTTY, 0) == 0, "TIOCSCTTY on the slave takes it");
+        t2 = SYS2(2, ustr("/dev/tty"), RW_NB);
+        expect(t2 >= 3 && SYS3(1, (uint64_t)t2, ustr("z"), 1) == 1 && SYS3(0, (uint64_t)m, buf, 1) == 1 &&
+               *(char *)kf_uptr(buf) == 'z', "/dev/tty is now the pseudo-terminal, not the console");
+        (void)SYS1(3, (uint64_t)t2);
+    }
+    w->ws_row = 40;
+    w->ws_col = 100;
+    w->ws_xpixel = w->ws_ypixel = 0;
+    expect(SYS3(16, (uint64_t)m, LINUX_TIOCSWINSZ, ws) == 0 && (ks_id(me)->sig_pending & (1ull << VIBEOS_SIGWINCH)) != 0u,
+           "a new size from the master is SIGWINCH to the foreground");
+    ks_id(me)->sig_pending = 0;
+    expect(SYS3(16, (uint64_t)m, LINUX_TIOCSWINSZ, ws) == 0 && ks_id(me)->sig_pending == 0u, "the same size is not");
+    memset(w, 0, sizeof(*w));
+    expect(SYS3(16, (uint64_t)s, LINUX_TIOCGWINSZ, ws) == 0 && w->ws_row == 40u, "and the slave reads it");
+    expect(SYS3(1, (uint64_t)m, ustr("\x03"), 1) == 1 && (ks_id(me)->sig_pending & (1ull << VIBEOS_SIGINT)) != 0u,
+           "Ctrl+C from the master signals the foreground group");
+    ks_id(me)->sig_pending = 0;
+    (void)SYS3(0, (uint64_t)m, buf, 16);   /* its ^C */
+    /* Behind a finished line nobody has read: taking input stops at the line,
+     * so only acting on the byte as it is written reaches this one. */
+    expect(SYS3(1, (uint64_t)m, ustr("x\n\x03"), 3) == 3 && (ks_id(me)->sig_pending & (1ull << VIBEOS_SIGINT)) != 0u,
+           "Ctrl+C behind an unread line still signals at once");
+    ks_id(me)->sig_pending = 0;
+    (void)SYS3(0, (uint64_t)s, buf, 16);
+    (void)SYS3(0, (uint64_t)m, buf, 16);
+
+    /* The master goes. */
+    (void)SYS1(3, (uint64_t)m);
+    expect((ks_id(me)->sig_pending & (1ull << VIBEOS_SIGHUP)) != 0u, "the master's close is SIGHUP to the session");
+    ks_id(me)->sig_pending = 0;
+    expect(SYS3(0, (uint64_t)s, buf, 8) == 0, "the slave then reads end of file");
+    expect(SYS3(1, (uint64_t)s, ustr("x"), 1) == -VIBEOS_EIO, "and writes EIO");
+    expect(SYS2(2, ustr(name), RW_NB) == -VIBEOS_ENOENT, "and its name has gone");
+    expect(vibeos_term_of_session(ks_id(me)->sid) == pt, "the session has no terminal any more");
+    (void)SYS1(3, (uint64_t)s);
+
+    /* And the other way: every slave closed. */
+    m = SYS2(2, ustr("/dev/ptmx"), RW_NB);
+    (void)SYS3(16, (uint64_t)m, VIBEOS_IOCTL_GPTN, np);
+    expect(*(uint32_t *)kf_uptr(np) == 0u || 1, "a number");
+    snprintf(name, sizeof(name), "/dev/pts/%u", *(uint32_t *)kf_uptr(np));
+    *(uint32_t *)kf_uptr(un) = 0;
+    (void)SYS3(16, (uint64_t)m, VIBEOS_IOCTL_SPTLCK, un);
+    s = SYS2(2, ustr(name), RW_NB);
+    (void)SYS3(1, (uint64_t)s, ustr("left"), 4);
+    (void)SYS1(3, (uint64_t)s);
+    expect(SYS3(0, (uint64_t)m, buf, 16) == 4, "with its slave closed the master reads what is left");
+    expect(SYS3(0, (uint64_t)m, buf, 16) == -VIBEOS_EIO, "then EIO");
+    expect(SYS3(1, (uint64_t)m, ustr("x"), 1) == 1, "and may still write");
+    (void)SYS1(3, (uint64_t)m);
+    {
+        long held[9];
+        uint32_t i, got = 0;
+
+        for (i = 0; i < 9u; i++) {
+            held[i] = SYS2(2, ustr("/dev/ptmx"), RW_NB);
+            got += held[i] >= 0;
+        }
+        expect(got == 8u && held[8] == -VIBEOS_ENOSPC, "eight pairs, and the ninth is ENOSPC");
+        for (i = 0; i < 8u; i++) {
+            (void)SYS1(3, (uint64_t)held[i]);
+        }
+        /* One user cannot take them all: what is left is everybody else's. */
+        ks_ps(me)->cred.euid = 1000u;
+        for (got = 0, i = 0; i < 5u; i++) {
+            held[i] = SYS2(2, ustr("/dev/ptmx"), RW_NB);
+            got += held[i] >= 0;
+        }
+        expect(got == 4u && held[4] == -VIBEOS_ENOSPC, "a user holds four pairs at most");
+        ks_ps(me)->cred.euid = 0u;
+        held[5] = SYS2(2, ustr("/dev/ptmx"), RW_NB);
+        expect(held[5] >= 0, "and root still gets one");
+        (void)SYS1(3, (uint64_t)held[5]);
+        for (i = 0; i < 4u; i++) {
+            (void)SYS1(3, (uint64_t)held[i]);
+        }
+        held[0] = SYS2(2, ustr("/dev/ptmx"), RW_NB);
+        expect(held[0] >= 0, "and a closed pair is free again");
+        (void)SYS1(3, (uint64_t)held[0]);
+    }
+    expect(kf_lock_imbalance() == 0, "the terminal released every lock it took");
+}
+
 /* The child in `slot` ends with `code`, or killed by `sig`. */
 static void t_child_ends(int slot, uint32_t code, uint32_t sig) {
     ks_id(slot)->exit_code = code;
@@ -7723,6 +7852,7 @@ int test_linux_handlers(void) {
     t_job_stop();
     t_tty_jobs();
     t_term_instances();
+    t_pty();
     t_rmdir_and_links();
     t_metadata();
     t_mknod_and_openat2();

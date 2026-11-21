@@ -323,6 +323,8 @@ static long src_fd_name(const vibeos_file_t *f, char *buf, uint32_t cap) {
         id = 0x30000u + (uint64_t)(uint32_t)f->ux;   /* what fstat says its inode is */
     } else if (f->ops == &vibeos_fops_console) {
         return src_copy(buf, cap, "/dev/console");
+    } else if (f->ops == &vibeos_fops_pts || f->ops == &vibeos_fops_ptmx) {
+        return src_copy(buf, cap, f->path);   /* what ttyname() compares with fstat */
     } else {
         return src_copy(buf, cap, f->ops == &vibeos_fops_pidfd ? "anon_inode:[pidfd]"
                                   : f->ops == &vibeos_fops_eventfd ? "anon_inode:[eventfd]"

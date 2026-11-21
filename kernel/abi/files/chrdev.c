@@ -11,6 +11,7 @@
 #include "files_internal.h"
 #include "vibeos/devfs.h"
 #include "vibeos/random.h"
+#include "vibeos/tty.h"
 
 #define CHR_CHUNK 256u
 
@@ -144,11 +145,32 @@ vibeos_file_t *vibeos_open_chrdev(uint32_t rdev, uint32_t flags, long *err) {
         case VIBEOS_DEV_URANDOM:
             ops = &vibeos_fops_chrdev;
             break;
-        case VIBEOS_DEV_TTY:
+        case VIBEOS_DEV_TTY: {
+            /* The caller's own terminal, whichever it is, and ENXIO for a
+             * process with none (docs/shell/s1.md step 4). */
+            vibeos_term_t *mine = ks_current() >= 0 && ks_id(ks_current())->is_user
+                                      ? vibeos_term_of_session(ks_id(ks_current())->sid)
+                                      : vibeos_tty_console();
+
+            if (!mine) {
+                *err = -VIBEOS_ENXIO;
+                return 0;
+            }
+            if (mine != vibeos_tty_console()) {
+                return vibeos_pty_open_slave((uint32_t)vibeos_pty_slave_of(mine), flags | VIBEOS_O_NOCTTY, rdev, err);
+            }
+            ops = &vibeos_fops_console;
+            break;
+        }
         case VIBEOS_DEV_CONSOLE:
             ops = &vibeos_fops_console;
             break;
+        case VIBEOS_DEV_PTMX:
+            return vibeos_pty_open_master(flags, err);
         default:
+            if (VIBEOS_DEV_MAJOR(rdev) == VIBEOS_DEV_PTS_MAJOR) {
+                return vibeos_pty_open_slave(VIBEOS_DEV_MINOR(rdev), flags, rdev, err);
+            }
             *err = -VIBEOS_ENXIO;
             return 0;
     }

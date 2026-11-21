@@ -143,6 +143,7 @@ set(VIBEOS_ABI_FILES_SOURCES
     kernel/abi/files/chrdev.c
     kernel/abi/files/console.c
     kernel/abi/files/tty.c
+    kernel/abi/files/pty.c
     kernel/abi/files/pipefile.c
     kernel/abi/files/pidfd.c
     kernel/abi/files/eventfd.c

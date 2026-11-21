@@ -29,6 +29,8 @@
 #define VIBEOS_IOCTL_SCTTY 0x540Eu   /* TIOCSCTTY: this terminal, for this session */
 #define VIBEOS_IOCTL_NOTTY 0x5422u   /* TIOCNOTTY: give it up                      */
 #define VIBEOS_IOCTL_GSID 0x5429u    /* TIOCGSID: whose it is                      */
+#define VIBEOS_IOCTL_GPTN 0x80045430u    /* TIOCGPTN: a master's slave number       */
+#define VIBEOS_IOCTL_SPTLCK 0x40045431u  /* TIOCSPTLCK: lock or unlock the slave    */
 
 extern const vibeos_file_ops_t vibeos_fops_regular;
 /* An O_PATH description of a file: what it names can be asked about, and
@@ -63,6 +65,14 @@ void vibeos_timerfd_get(vibeos_file_t *f, uint64_t *left, uint64_t *interval);
  * the random devices. -ENXIO for a number with no driver, -ENFILE when the
  * table is full; *err is 0 otherwise. */
 vibeos_file_t *vibeos_open_chrdev(uint32_t rdev, uint32_t flags, long *err);
+
+/* Pseudo-terminals (kernel/abi/files/pty.c, docs/shell/s1.md step 4). */
+extern const vibeos_file_ops_t vibeos_fops_ptmx;
+extern const vibeos_file_ops_t vibeos_fops_pts;
+vibeos_file_t *vibeos_pty_open_master(uint32_t flags, long *err);
+vibeos_file_t *vibeos_pty_open_slave(uint32_t n, uint32_t flags, uint32_t rdev, long *err);
+uint32_t vibeos_pty_master_pending(const vibeos_file_t *f);
+void vibeos_pty_reset(void);
 
 /* A description naming a process (L2 step 5): its pid and the tenancy of its
  * slot, so that a reused pid is not it. NULL if the table is full. */

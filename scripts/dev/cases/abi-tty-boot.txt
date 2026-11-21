@@ -11,6 +11,9 @@
 
 ### the console answers no terminal request
 --- old
-            r = f->ops == &vibeos_fops_console ? linux_tty_ioctl(r32, arg) : 1;
+            r = f->ops == &vibeos_fops_console ? linux_tty_ioctl(vibeos_tty_console(), 1, r32, arg)
+                : f->ops == &vibeos_fops_pts   ? linux_tty_ioctl(vibeos_pty_term(f), 1, r32, arg)
+                : f->ops == &vibeos_fops_ptmx  ? linux_tty_ioctl(vibeos_pty_term(f), 0, r32, arg)
+                                               : 1;
 +++ new
             r = 1;

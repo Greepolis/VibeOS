@@ -1,0 +1,22 @@
+# /dev/tty is the caller's own terminal (docs/shell/s1.md step 4), broken.
+# Caught by t_pty.
+#
+# Target source: kernel/abi/files/chrdev.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/chrdev.c scripts/dev/cases/tty-pty-open.txt build-gcc-Release
+
+### /dev/tty with no terminal is the console
+--- old
+            if (!mine) {
+                *err = -VIBEOS_ENXIO;
+                return 0;
+            }
++++ new
+            if (!mine) {
+                mine = vibeos_tty_console();
+            }
+
+### /dev/tty is always the console
+--- old
+            if (mine != vibeos_tty_console()) {
++++ new
+            if (0) {
