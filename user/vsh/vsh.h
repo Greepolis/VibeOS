@@ -147,6 +147,9 @@ typedef struct {
 int vsh_expand_word(vsh_ctx_t *c, const vsh_word_t *w, vsh_list_t *out);
 /* One string whatever the word holds; a list is joined by spaces. */
 int vsh_word_text(vsh_ctx_t *c, const vsh_word_t *w, char **out);
+/* The word as a file pattern: only what was written unquoted can act as one,
+ * so a variable holding `*` names a file called `*`. */
+int vsh_word_glob(vsh_ctx_t *c, const vsh_word_t *w, char **out);
 int vsh_arith(vsh_ctx_t *c, const char *text, int64_t *out);
 int vsh_cond(vsh_ctx_t *c, const vsh_node_t *cond, int *out);
 /* * ? [a-z] [!a] and \x for a literal x. */

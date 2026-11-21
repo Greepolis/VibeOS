@@ -196,6 +196,9 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   /* login, driven through a pseudo-terminal
                                    * (docs/shell/s2.md). */
                                   "/usr/lib/vibeos/test/LOGINT.ELF\n"
+                                  /* vsh running a script whose every answer
+                                   * the gate compares (docs/shell/s4.md). */
+                                  "/usr/bin/vsh /usr/lib/vibeos/test/EXEC.VSH /usr/bin/vsh\n"
                                   /* The NT personality's first program
                                    * (docs/abi/windows.md W1): a PE image,
                                    * exec'd by this Linux-ABI shell like any

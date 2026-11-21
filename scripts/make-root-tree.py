@@ -66,6 +66,7 @@ ESP_ONLY = ("VIBEOSKR.ELF", "SWAPFILE.BIN")
 SYSTEM_PROGRAMS = {
     "BUSYBOX.ELF": "usr/bin/busybox",
     "LOGIN.ELF": "usr/bin/login",
+    "VSH.ELF": "usr/bin/vsh",
     "INIT.ELF": "usr/lib/vibeos/init",
 }
 TEST_DIR = "usr/lib/vibeos/test"

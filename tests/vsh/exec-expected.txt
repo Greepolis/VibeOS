@@ -1,0 +1,51 @@
+V:pwd /tmp/vsh-exec
+V:cd /tmp/vsh-exec
+V:word two words
+V:list a
+V:list b c
+V:list d
+V:idx b c
+V:joined a b c d
+V:grown e
+V:if-big
+V:elseif
+V:nocase
+V:cmd-false
+V:not
+V:while 2
+V:while 0
+V:for p
+V:f me extra
+V:status 3
+V:outer kept
+V:global by f
+V:fact 120
+V:lines 3
+V:grep three
+V:stderr 1
+V:or 1
+V:captured 1
+V:after-redirect
+V:glob sub/a.c
+V:glob sub/b.c
+V:quoted sub/*.c
+V:nomatch sub/*.none
+V:env-one 1
+V:env-gone []
+V:env-export exported
+V:alias hello
+V:alias again
+V:builtin-case
+V:cd is a builtin
+V:single $a
+V:back slash C:\Users\vibe
+V:percent +%d%m%Y
+V:stops a
+V:rc 1
+V:off b
+V:try b
+V:andor b
+V:sigpipe 2
+V:bare 2
+V:hint 1
+V:done

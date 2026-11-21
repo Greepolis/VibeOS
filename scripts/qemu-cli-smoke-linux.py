@@ -1052,6 +1052,22 @@ def corpus_answers(text):
     return out
 
 
+def vsh_script_differs(serial_text):
+    """The first line vsh's script got wrong, or None. In order and complete:
+    a script that stopped half-way has fewer lines, and that is the failure."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "tests", "vsh", "exec-expected.txt"), encoding="utf-8") as f:
+        want = [ln.rstrip() for ln in f if ln.strip()]
+    got = [m.rstrip() for m in re.findall(r"^\[HW\]\[SYS\] write\(ring3\): (V:[^\r\n]*)\r?$",
+                                          serial_text, re.M)]
+    for i, line in enumerate(want):
+        if i >= len(got):
+            return "ended before: " + line
+        if got[i] != line:
+            return "wanted %r, got %r" % (line, got[i])
+    return "extra line: " + got[len(want)] if len(got) > len(want) else None
+
+
 def corpus_problems(serial_text):
     """What the guest answered the corpus with, against what Linux answered."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -3493,6 +3509,14 @@ def main():
                 if not re.search(r"write\(ring3\): LOGIN_OK: ", text):
                     m = re.search(r"LOGIN_FAIL: ([^\r\n]*)", text)
                     problems.append("login_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
+
+            # vsh, against what the grammar says its script answers
+            # (docs/shell/s4.md step 2).
+            if os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "VSH.ELF")) and disk_img:
+                differs = vsh_script_differs(text)
+                if differs:
+                    problems.append("vsh_script_differs")
+                    print(f"[QEMU-CLI] vsh: {differs[:160]}")
 
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):

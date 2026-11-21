@@ -1,0 +1,10 @@
+# vsh in the guest (docs/shell/s4.md step 2). Expects vsh_script_differs.
+#
+# Target source: user/vsh/vsh_exec.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py user/vsh/vsh_exec.c scripts/dev/cases/vsh-exec-boot.txt
+
+### a variable set in a function is global
+--- old
+    frame_t *f = n->kind == VSH_N_SET && G.top ? G.top : &G.globals;
++++ new
+    frame_t *f = &G.globals;

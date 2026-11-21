@@ -1,0 +1,46 @@
+# vsh running (docs/shell/s4.md step 2). Host: tests/vsh/exec.vsh.
+#
+# Target source: user/vsh/vsh_exec.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-vsh.sh" python3 scripts/dev/sabotage.py user/vsh/vsh_exec.c scripts/dev/cases/vsh-exec.txt
+
+### a variable set in a function is global
+--- old
+    frame_t *f = n->kind == VSH_N_SET && G.top ? G.top : &G.globals;
++++ new
+    frame_t *f = &G.globals;
+
+### a failure does not stop a script
+--- old
+    if (st != 0 && !exempt && G.errexit && !G.in_cond && G.flow == F_NONE) {
++++ new
+    if (0 && st != 0 && !exempt && G.errexit && !G.in_cond && G.flow == F_NONE) {
+
+### try does not excuse a failure
+--- old
+            *exempt = n->flag;
++++ new
+            *exempt = 0;
+
+### a writer ended by SIGPIPE fails the pipeline
+--- old
+        if (st != 0 && st != 128 + SIGPIPE) {
++++ new
+        if (st != 0) {
+
+### a builtin's redirection stays in the shell
+--- old
+            restore_redirs(saved, nsaved);
++++ new
+            ;
+
+### a pattern names hidden files
+--- old
+            if (e->d_name[0] == '.' && comp[0] != '.') {
++++ new
+            if (0) {
+
+### X=1 reaches nobody
+--- old
+        if (!shadowed) {
++++ new
+        if (0) {

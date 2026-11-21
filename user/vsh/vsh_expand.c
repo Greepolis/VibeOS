@@ -77,12 +77,12 @@ static int append_word(vsh_ctx_t *c, const vsh_word_t *w, vsh_sb_t *o, int patte
                 break;
             case VSH_P_VAR:
                 if (c->lookup(c->user, p->text, &v) == 0) {
-                    put_value(o, &v, p->index, pattern, p->quoted);
+                    put_value(o, &v, p->index, pattern, p->quoted || pattern == 2);
                 }
                 break;
             case VSH_P_PERCENT:
                 if (c->lookup(c->user, p->text, &v) == 0) {
-                    put_value(o, &v, -1, pattern, p->quoted);
+                    put_value(o, &v, -1, pattern, p->quoted || pattern == 2);
                 } else {
                     /* Not a variable: the bytes that were written, so that
                      * `date +%d%m%Y` still means what it says. */
@@ -102,7 +102,7 @@ static int append_word(vsh_ctx_t *c, const vsh_word_t *w, vsh_sb_t *o, int patte
                 while (n > 0u && text[n - 1u] == '\n') {
                     text[--n] = 0;
                 }
-                put_text(o, text, pattern, p->quoted);
+                put_text(o, text, pattern, p->quoted || pattern == 2);
                 break;
             }
             case VSH_P_ARITH: {
@@ -127,6 +127,17 @@ static int append_word(vsh_ctx_t *c, const vsh_word_t *w, vsh_sb_t *o, int patte
 int vsh_word_text(vsh_ctx_t *c, const vsh_word_t *w, char **out) {
     vsh_sb_t o = {0, 0, 0};
     int r = append_word(c, w, &o, 0);
+
+    if (r == 0) {
+        *out = vsh_strndup(c->arena, o.b, o.n);
+    }
+    vsh_sb_free(&o);
+    return r;
+}
+
+int vsh_word_glob(vsh_ctx_t *c, const vsh_word_t *w, char **out) {
+    vsh_sb_t o = {0, 0, 0};
+    int r = append_word(c, w, &o, 2);
 
     if (r == 0) {
         *out = vsh_strndup(c->arena, o.b, o.n);

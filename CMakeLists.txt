@@ -337,6 +337,21 @@ if(VIBEOS_BUILD_TESTS)
     target_compile_options(vibeos_vsh_tests PRIVATE -Wall -Wextra
         $<$<NOT:$<PLATFORM_ID:Windows>>:-Werror>)
     add_test(NAME vibeos-vsh-host COMMAND vibeos_vsh_tests)
+    # vsh itself on the host, running the script the boot runs in the guest.
+    if(NOT WIN32)
+        add_executable(vibeos_vsh
+            user/vsh/vsh_main.c
+            user/vsh/vsh_exec.c
+            user/vsh/vsh_parse.c
+            user/vsh/vsh_expand.c)
+        target_include_directories(vibeos_vsh PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/user/vsh)
+        target_compile_options(vibeos_vsh PRIVATE -Wall -Wextra -Werror)
+        add_test(NAME vibeos-vsh-exec
+            COMMAND sh -c "\"$1\" tests/vsh/exec.vsh \"$1\" | diff --strip-trailing-cr tests/vsh/exec-expected.txt -"
+                sh $<TARGET_FILE:vibeos_vsh>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
 
     # Randomised torture for the memory manager, checked against a reference
     # model kept in plain arrays. Its own executable rather than a test case
@@ -726,6 +741,23 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_login ALL DEPENDS "${VIBEOS_LOGIN_BIN}")
+
+        # vsh (docs/shell/s4.md), the native shell.
+        set(VIBEOS_VSH_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_main.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_exec.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_parse.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_expand.c")
+        set(VIBEOS_VSH_BIN "${CMAKE_BINARY_DIR}/vsh_program")
+        add_custom_command(
+            OUTPUT "${VIBEOS_VSH_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 "-I${CMAKE_CURRENT_SOURCE_DIR}/user/vsh"
+                    -o "${VIBEOS_VSH_BIN}" ${VIBEOS_VSH_SRC}
+            DEPENDS ${VIBEOS_VSH_SRC} "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh.h"
+            COMMENT "Building vsh as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_vsh_static ALL DEPENDS "${VIBEOS_VSH_BIN}")
         set(VIBEOS_LOGINT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_login.c")
         set(VIBEOS_LOGINT_BIN "${CMAKE_BINARY_DIR}/musl_login")
         add_custom_command(
