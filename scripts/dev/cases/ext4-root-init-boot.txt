@@ -1,6 +1,6 @@
 # init from the native root (docs/filesystems/ext4/design.md, E4-024), broken;
 # caught by the boot gate, which asks that the kernel says it read
-# /usr/bin/INIT.ELF from the root when the disk has one.
+# /usr/lib/vibeos/init from the root when the disk has one.
 # Reason: init_not_from_root.
 #
 # Target source: kernel/arch/x86_64/arch_hw.c

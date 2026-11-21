@@ -4,7 +4,7 @@
  *
  * Builtins: help, echo <text>, exit [code]
  * Anything else is treated as a program path on the filesystem and run as a
- * child process (fork + execve + wait), e.g. "/usr/bin/TASK.ELF".
+ * child process (fork + execve + wait), e.g. "/usr/lib/vibeos/test/TASK.ELF".
  */
 
 #define SYS_read   0
@@ -349,7 +349,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
                 "ping <a.b.c.d>    ICMP echo a host\n"
                 "resolve <name>    look a name up in DNS\n"
                 "exit              leave the shell\n"
-                "<path>            run a program, e.g. /usr/bin/TASK.ELF\n");
+                "<path>            run a program, e.g. /usr/lib/vibeos/test/TASK.ELF\n");
         } else if (seq(line, "echo")) {
             put(args);
             put("\n");
@@ -469,7 +469,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
              * poll() before every key. */
             static char *ash_argv[] = {(char *)"sh", 0};
             put("handing the console to BusyBox sh\n");
-            sys3(SYS_execve, (long)(unsigned long)"/usr/bin/BUSYBOX.ELF",
+            sys3(SYS_execve, (long)(unsigned long)"/usr/bin/busybox",
                  (long)(unsigned long)ash_argv, (long)(unsigned long)g_envp);
             put("sh: cannot exec BusyBox\n");
         } else if (seq(line, "exit")) {

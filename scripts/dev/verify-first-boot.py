@@ -107,9 +107,32 @@ class Machine:
         self.monitor.close()
 
 
+def check_names(disk, tmp):
+    """What a production root has, read off its partition by debugfs: the
+    system's programs under their names, and none of the gate's test programs
+    (docs/shell/s3.md)."""
+    esp, root = os.path.join(tmp, "esp.part"), os.path.join(tmp, "root.part")
+    tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "make-boot-disk.py")
+    subprocess.run([sys.executable, tool, "extract", disk, esp, root], check=True, stdout=subprocess.DEVNULL)
+
+    def there(path):
+        r = subprocess.run(["debugfs", "-R", "stat %s" % path, root], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True)
+        return "Inode:" in r.stdout
+    for path in ("/usr/bin/busybox", "/usr/bin/login", "/usr/bin/sh", "/usr/bin/ls", "/usr/lib/vibeos/init"):
+        if not there(path):
+            raise RuntimeError("a production root has no " + path)
+    for path in ("/usr/lib/vibeos/test", "/usr/bin/BUSYBOX.ELF", "/usr/bin/INIT.ELF"):
+        if there(path):
+            raise RuntimeError("a production root has " + path)
+    os.unlink(esp)
+    os.unlink(root)
+
+
 def run(image, tmp):
     disk = os.path.join(tmp, "disk.raw")
     subprocess.run(["qemu-img", "convert", "-O", "raw", image, disk], check=True)
+    check_names(disk, tmp)
 
     m = Machine(disk, tmp)
     try:

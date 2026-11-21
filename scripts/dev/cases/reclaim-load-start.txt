@@ -13,5 +13,5 @@
 
 ### the self-test no longer runs svc-reclaim
 --- old
-                                  "/usr/bin/SVC_RECL.ELF\n"
+                                  "/usr/lib/vibeos/test/SVC_RECL.ELF\n"
 +++ new

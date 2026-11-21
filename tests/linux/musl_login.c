@@ -20,7 +20,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define LOGIN_PATH "/usr/bin/LOGIN.ELF"
+#define LOGIN_PATH "/usr/bin/login"
 
 static char g_seen[8192], g_rest[8192];
 static size_t g_n;

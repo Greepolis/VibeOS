@@ -40,6 +40,7 @@ the VM images - and two copies of the list would drift.
 
 import os
 import shutil
+import subprocess
 import sys
 
 # The hierarchy's directories (hierarchy.md). /dev, /proc, /run and /tmp are
@@ -56,12 +57,39 @@ ALIASES = (("lib", "usr/lib"), ("lib64", "usr/lib"), ("bin", "usr/bin"),
 # program for /usr/bin.
 ESP_ONLY = ("VIBEOSKR.ELF", "SWAPFILE.BIN")
 
-# The programs a production root keeps: init, the shells, and the small
-# native utilities. Everything else in EFI/BOOT is a test program the boot
-# gate runs. A list of what to keep rather than of what to drop, so that a new
-# test program is left out by default instead of shipped by default.
-PRODUCTION_PROGRAMS = ("INIT.ELF", "NATIVE_INIT.ELF", "BUSYBOX.ELF", "LOGIN.ELF", "SH.ELF",
-                       "CAT", "ECHO", "LS", "WC")
+# Where each program lives on the root (docs/shell/s3.md, E4-021). The ESP's
+# names are 8.3 and stay; on the root, the system's programs have the names
+# Linux programs expect, and everything else in EFI/BOOT is a test program the
+# boot gate runs, in a directory of its own that a production root does not
+# have. A list of what is the system's rather than of what is not, so that a
+# new test program is left out of production by default.
+SYSTEM_PROGRAMS = {
+    "BUSYBOX.ELF": "usr/bin/busybox",
+    "LOGIN.ELF": "usr/bin/login",
+    "INIT.ELF": "usr/lib/vibeos/init",
+}
+TEST_DIR = "usr/lib/vibeos/test"
+
+# BusyBox's applets that are not BusyBox's to answer for here: login is ours,
+# and init is what the kernel starts.
+NOT_APPLETS = ("login", "init", "linuxrc", "busybox")
+
+
+def busybox_links(out):
+    """Every applet, as a link in /usr/bin: BusyBox becomes the command it is
+    invoked as. Asked of the binary, so the list is what this build has."""
+    bb = os.path.join(out, "usr", "bin", "busybox")
+    if not os.path.exists(bb):
+        return
+    r = subprocess.run([bb, "--list"], stdout=subprocess.PIPE, universal_newlines=True)
+    names = r.stdout.split()
+    if r.returncode != 0 or "sh" not in names:
+        raise SystemExit("make-root-tree: BusyBox did not list its applets")
+    for name in names:
+        link = os.path.join(out, "usr", "bin", name)
+        if name not in NOT_APPLETS and not os.path.lexists(link):
+            os.symlink("busybox", link)
+
 
 # /win holds the Windows test programs; the system's own files are in
 # /usr/lib/windows (C:\Windows), which a production root keeps.
@@ -71,7 +99,7 @@ PRODUCTION_PROGRAMS = ("INIT.ELF", "NATIVE_INIT.ELF", "BUSYBOX.ELF", "LOGIN.ELF"
 # no stage at which a shell runs as root because nobody asked who was there.
 PRODUCTION_SERVICES = """\
 # Services init starts (user/prog/init.c): <name> <path> <restart_limit> <oneshot> [<arg>]
-login /usr/bin/LOGIN.ELF 8 0
+login /usr/bin/login 8 0
 """
 
 # The accounts (docs/shell/s2.md). The development image's password is
@@ -108,9 +136,14 @@ def make(efi_root, out, marker, production):
     for n in sorted(os.listdir(boot_dir)):
         if n.endswith((".IMG", ".EFI", ".tmp")) or n in ESP_ONLY:
             continue
-        if production and n not in PRODUCTION_PROGRAMS:
+        if n in SYSTEM_PROGRAMS:
+            dst = os.path.join(out, SYSTEM_PROGRAMS[n])
+        elif production:
             continue
-        shutil.copy2(os.path.join(boot_dir, n), os.path.join(out, "usr", "bin", n))
+        else:
+            dst = os.path.join(out, TEST_DIR, n)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(os.path.join(boot_dir, n), dst)
     for d in ROOT_TREE_DIRS:
         os.makedirs(os.path.join(out, d), exist_ok=True)
     # The EFI tree's /lib and /lib64 move into /usr/lib, and each becomes a
@@ -129,11 +162,8 @@ def make(efi_root, out, marker, production):
         path = os.path.join(out, link)
         if not os.path.lexists(path):
             os.symlink(target, path)
-    # The name a login shell is started under, and what /bin/sh is.
-    sh = os.path.join(out, "usr", "bin", "sh")
-    if not os.path.lexists(sh):
-        os.symlink("BUSYBOX.ELF", sh)
-    if production and not os.path.exists(os.path.join(out, "usr", "bin", "LOGIN.ELF")):
+    busybox_links(out)
+    if production and not os.path.exists(os.path.join(out, "usr", "bin", "login")):
         raise SystemExit("make-root-tree: a production root needs login (musl-gcc was not there to build it)")
     write_accounts(out, production)
     if marker:

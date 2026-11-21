@@ -1,0 +1,14 @@
+# The names in /usr/bin (docs/shell/s3.md), broken where the root is laid out.
+#
+#  1. The test programs stay in /usr/bin under their 8.3 names. Expect
+#     usr_bin_names_wrong.
+#
+# Target source: scripts/make-root-tree.py
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py scripts/make-root-tree.py scripts/dev/cases/names-boot.txt build-gcc-Release
+
+### the gate's programs are left in /usr/bin as well
+--- old
+        shutil.copy2(os.path.join(boot_dir, n), dst)
++++ new
+        shutil.copy2(os.path.join(boot_dir, n), dst)
+        shutil.copy2(os.path.join(boot_dir, n), os.path.join(out, "usr", "bin", n))

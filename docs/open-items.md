@@ -6,13 +6,7 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-67 open in 3 registers.
-
-## [ext4](filesystems/ext4/progress.md) - 1
-
-| ID | What | Status |
-|---|---|---|
-| E4-021 | The programs keep their ESP names (`BUSYBOX.ELF`, `SVC_OK.ELF`): the gate recognises many of them by those names. Lower-case command names without the ... | open - deferred 2026-11-11 to the shell's design (next-steps item 2): which ... |
+66 open in 2 registers.
 
 ## [Review findings tracker](implementation_progress/review_findings_tracker.md) - 6
 

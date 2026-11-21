@@ -182,20 +182,20 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "ls DOCS\n"
                                   "write TMP.TXT scratch\b\b\bch\n"  /* backspace editing */
                                   "rm TMP.TXT\n"
-                                  "/usr/bin/TASK.ELF\n"
+                                  "/usr/lib/vibeos/test/TASK.ELF\n"
                                   "net\n"
                                   "ping 10.0.2.2\n"
-                                  "/usr/bin/NET.ELF\n"
-                                  "/usr/bin/MUSL.ELF\n"
-                                  "/usr/bin/PIE.ELF\n"
-                                  "/usr/bin/DYN.ELF\n"
-                                  "/usr/bin/THREADS.ELF\n"
-                                  "/usr/bin/TFORK.ELF\n"
-                                  "/usr/bin/SIGNAL.ELF\n"
-                                  "/usr/bin/EVENTS.ELF\n"
+                                  "/usr/lib/vibeos/test/NET.ELF\n"
+                                  "/usr/lib/vibeos/test/MUSL.ELF\n"
+                                  "/usr/lib/vibeos/test/PIE.ELF\n"
+                                  "/usr/lib/vibeos/test/DYN.ELF\n"
+                                  "/usr/lib/vibeos/test/THREADS.ELF\n"
+                                  "/usr/lib/vibeos/test/TFORK.ELF\n"
+                                  "/usr/lib/vibeos/test/SIGNAL.ELF\n"
+                                  "/usr/lib/vibeos/test/EVENTS.ELF\n"
                                   /* login, driven through a pseudo-terminal
                                    * (docs/shell/s2.md). */
-                                  "/usr/bin/LOGINT.ELF\n"
+                                  "/usr/lib/vibeos/test/LOGINT.ELF\n"
                                   /* The NT personality's first program
                                    * (docs/abi/windows.md W1): a PE image,
                                    * exec'd by this Linux-ABI shell like any
@@ -218,11 +218,11 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * empties the page cache, and the BusyBox
                                    * commands after it are what give the exec
                                    * cache audit something to compare. */
-                                  "/usr/bin/SVC_RECL.ELF\n"
-                                  "/usr/bin/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
-                                  "/usr/bin/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"
-                                  "/usr/bin/BUSYBOX.ELF ls /usr/bin\n"
-                                  "/usr/bin/BUSYBOX.ELF sh -c \"echo BUSYBOX_SH_OK; cat DOCS/NOTES.TXT\"\n"
+                                  "/usr/lib/vibeos/test/SVC_RECL.ELF\n"
+                                  "/usr/bin/busybox echo BUSYBOX_ECHO_OK\n"
+                                  "/usr/bin/busybox cat DOCS/NOTES.TXT\n"
+                                  "/usr/bin/busybox ls /usr/bin\n"
+                                  "/usr/bin/busybox sh -c \"echo BUSYBOX_SH_OK; cat DOCS/NOTES.TXT\"\n"
                                   /* Everything from here is typed at BusyBox's
                                    * shell, not ours: it replaces this process
                                    * and reads the rest of the console itself. */
@@ -296,6 +296,10 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * which reading stops with SIGTTIN. */
                                   "cat\n" "\x1a" "jobs\n" "fg\n" "\x03"
                                   "cat & sleep 1; jobs; kill -KILL %%; wait; echo TTYJOB_$((5*5))\n"
+                                  /* The names in /usr/bin (docs/shell/s3.md):
+                                   * how many are a build's 8.3 name, and what
+                                   * ls is. */
+                                  "echo NAMES_$(ls /usr/bin | grep -c ELF)_$(readlink /usr/bin/ls)_$(which sh)\n"
                                   /* The write path (L1 step 3): twenty lines of
                                    * forty-one bytes - past the 512 a descriptor
                                    * used to hold - then five more appended with

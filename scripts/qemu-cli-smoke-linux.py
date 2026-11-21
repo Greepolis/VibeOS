@@ -269,7 +269,7 @@ def thread_fault_signature(text):
 
 assert thread_fault_signature(
     "[MM] COW_FAULT va=0x800000016b err=0x7 NOT-handled\n"
-    "[CRASH] recorded pid=0x9 exe=/usr/bin/SVC_CRSH.ELF") is None, \
+    "[CRASH] recorded pid=0x9 exe=/usr/lib/vibeos/test/SVC_CRSH.ELF") is None, \
     "fires on the benign svc-crash fault"
 assert thread_fault_signature(
     "[CRASH] this task's stack is the free-page poison: reclaimed while running") \
@@ -3383,7 +3383,7 @@ def main():
                         problems.append("esp_not_at_boot_efi")
                     elif "VIBEOS_ROOT_MARKER" not in text:
                         problems.append("native_root_not_read")
-                    elif "[IO] read /usr/bin/INIT.ELF from the root" not in text:
+                    elif "[IO] read /usr/lib/vibeos/init from the root" not in text:
                         # init is a program like the others (E4-024): with a
                         # root, it comes from /usr/bin, not from the ESP.
                         problems.append("init_not_from_root")
@@ -3450,6 +3450,10 @@ def main():
                     problems.append("background_read_not_stopped")
                 elif not re.search(r"write\(ring3\): TTYJOB_25\r?\n", text):
                     problems.append("tty_job_control_did_not_finish")
+                # The names in /usr/bin (docs/shell/s3.md): none is a build's
+                # 8.3 name, ls is BusyBox's, and the shell finds sh there.
+                if not re.search(r"write\(ring3\): NAMES_0_busybox_/usr/bin/sh\r?\n", text):
+                    problems.append("usr_bin_names_wrong")
                 # Writing through a descriptor (docs/abi/ L1 step 3): 820
                 # bytes written in twenty writes, five appended, and wc's
                 # count of the file. Any other number is on the line instead:

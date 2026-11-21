@@ -137,7 +137,7 @@ def parse_crashes(text):
             "vector": None, "rip": None,
             "stress": what,
             "dump": "\n".join(f.strip() for f in fails) +
-                    (f"\n\nreplay: /usr/bin/SVC_STRS.ELF {seed.group(1)}"
+                    (f"\n\nreplay: /usr/lib/vibeos/test/SVC_STRS.ELF {seed.group(1)}"
                      if seed else ""),
         })
 
