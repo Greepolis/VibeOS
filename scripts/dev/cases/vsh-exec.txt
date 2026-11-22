@@ -29,9 +29,11 @@
 
 ### a builtin's redirection stays in the shell
 --- old
-            restore_redirs(saved, nsaved);
+    if (!forked) {
+        restore_redirs(saved, nsaved);
 +++ new
-            ;
+    if (!forked) {
+        ;
 
 ### a pattern names hidden files
 --- old

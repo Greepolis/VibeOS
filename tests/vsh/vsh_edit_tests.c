@@ -47,27 +47,27 @@ static void scr_down(screen_t *s) {
 }
 
 static void scr_feed(screen_t *s, const char *b, size_t n) {
-    size_t i;
+    size_t i = 0;
 
-    for (i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)b[i];
+    while (i < n) {
+        unsigned char c = (unsigned char)b[i++];
 
         if (c == '\r') {
             s->col = s->pending = 0;
         } else if (c == '\n') {
             scr_down(s);
             s->pending = 0;
-        } else if (c == 0x1b && i + 1 < n && b[i + 1] == '[') {
+        } else if (c == 0x1b && i < n && b[i] == '[') {
             int v = 0, have = 0;
 
-            i += 2;
+            i++;
             while (i < n && b[i] >= '0' && b[i] <= '9') {
                 v = v * 10 + (b[i++] - '0');
                 have = 1;
             }
             v = have ? v : 1;
             s->pending = 0;
-            switch (i < n ? b[i] : 0) {
+            switch (i < n ? b[i++] : 0) {
                 case 'A': s->row = s->row >= v ? s->row - v : 0; break;
                 case 'B': s->row = s->row + v < SCR_ROWS ? s->row + v : SCR_ROWS - 1; break;
                 case 'C': s->col = s->col + v < s->cols ? s->col + v : s->cols - 1; break;

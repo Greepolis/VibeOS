@@ -285,23 +285,24 @@ static size_t word_start(const vsh_edit_t *e, int *first) {
     char quote = 0;
     int seen = 0, cmd_seen = 0;
 
-    for (i = 0; i < e->pos; i++) {
-        char c = e->b[i];
+    i = 0;
+    while (i < e->pos) {
+        char c = e->b[i++];
 
         if (quote) {
             quote = c == quote ? 0 : quote;
-        } else if (c == '\\' && i + 1u < e->pos) {
-            i++;
+        } else if (c == '\\' && i < e->pos) {
+            i++;        /* the escaped character is not a separator */
             seen = 1;
         } else if (c == '\'' || c == '"') {
             quote = c;
             seen = 1;
         } else if (c == ' ' || c == '\t') {
-            start = i + 1u;
+            start = i;
             cmd_seen |= seen;
             seen = 0;
         } else if (c == ';' || c == '|' || c == '&' || c == '(') {
-            start = i + 1u;
+            start = i;
             seen = 0;
             cmd_seen = 0;
         } else {
@@ -322,8 +323,9 @@ static char *word_text(const char *s, size_t n) {
         (void)!fputs("vsh: out of memory\n", stderr);
         exit(2);
     }
-    for (i = 0; i < n; i++) {
-        char c = s[i];
+    i = 0;
+    while (i < n) {
+        char c = s[i++];
 
         if (quote) {
             if (c == quote) {
@@ -333,8 +335,8 @@ static char *word_text(const char *s, size_t n) {
             }
         } else if (c == '\'' || c == '"') {
             quote = c;
-        } else if (c == '\\' && i + 1u < n && strchr(" '\"$\\", s[i + 1u])) {
-            out[k++] = s[++i];
+        } else if (c == '\\' && i < n && strchr(" '\"$\\", s[i])) {
+            out[k++] = s[i++];
         } else {
             out[k++] = c;
         }
@@ -355,16 +357,18 @@ static void put_quoted(vsh_sb_t *o, const char *name) {
         vsh_sb_puts(o, name);
         vsh_sb_putc(o, '\'');
     } else {
-        for (p = name; *p; p++) {
+        p = name;
+        while (*p) {
             if (*p == '\'') {
                 vsh_sb_puts(o, "\"'\"");
+                p++;
             } else {
+                size_t run = strcspn(p, "'");
+
                 vsh_sb_putc(o, '\'');
-                while (*p && *p != '\'') {
-                    vsh_sb_putc(o, *p++);
-                }
+                vsh_sb_putn(o, p, run);
                 vsh_sb_putc(o, '\'');
-                p--;
+                p += run;
             }
         }
     }

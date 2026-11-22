@@ -1441,7 +1441,8 @@ static int b_type(int argc, char **argv) {
 /* ---- commands -------------------------------------------------------------- */
 
 static int call_func(const func_t *f, int argc, char **argv) {
-    frame_t *frame;
+    frame_t frame_store;
+    frame_t *frame = &frame_store;
     frame_t *caller = G.top;
     const vsh_word_t *p;
     int i = 1, loops = G.loops;
@@ -1450,10 +1451,9 @@ static int call_func(const func_t *f, int argc, char **argv) {
         say_err(f->name, "function calls nested too deeply");
         return 1;
     }
-    /* On the heap: G.top outlives nothing here, but a global holding the
-     * address of a local is one early return away from a dangling pointer. */
-    frame = (frame_t *)xmalloc(sizeof(*frame));
-    frame->vars = 0;
+    /* On the stack, bounded by VSH_MAX_CALLS. G.top holds its address only
+     * until the one way out below puts the caller back. */
+    memset(frame, 0, sizeof(*frame));
     for (p = f->node->words; p; p = p->next, i++) {
         set_scalar(frame, p->parts->text, i < argc ? argv[i] : "");
     }
@@ -1470,8 +1470,99 @@ static int call_func(const func_t *f, int argc, char **argv) {
     G.calls--;
     G.top = caller;
     frame_free(frame);
-    free(frame);
     return G.status;
+}
+
+/* The command's words, its alias applied, ending in a null. 0, or -1 with the
+ * status the command ends with in *rc. */
+static int command_words(vsh_ctx_t *c, const vsh_node_t *cmd, vsh_arena_t *arena,
+                         vsh_list_t *words, int *rc) {
+    const alias_t *al;
+    size_t i;
+
+    G.cap_status = 0;
+    *rc = 1;
+    if (expand_words(c, cmd->words, words) != 0) {
+        say_err(c->err, 0);
+        return -1;
+    }
+    if (words->count == 0u) {       /* an empty list and nothing else */
+        *rc = G.cap_status;
+        return -1;
+    }
+    /* One round, so that `alias ls = ls -l` is not a loop. */
+    al = find_alias(words->items[0]);
+    if (al) {
+        char err[128];
+        vsh_list_t rest = {0, 0, 0};
+        const vsh_node_t *parsed = vsh_parse(arena, al->text, err, sizeof(err), 0);
+
+        if (!parsed || parsed->kind != VSH_N_PIPELINE || parsed->a->next) {
+            say_err(al->name, "the alias is not one command");
+            return -1;
+        }
+        if (expand_words(c, parsed->a->words, &rest) != 0) {
+            say_err(c->err, 0);
+            return -1;
+        }
+        for (i = 1; i < words->count; i++) {
+            list_add(c, &rest, words->items[i]);
+        }
+        *words = rest;
+    }
+    list_add(c, words, 0);
+    return 0;
+}
+
+/* A function or a builtin, in this process: its redirections are undone after
+ * unless this process is a pipeline's child and ends with it. */
+static int run_inside(vsh_ctx_t *c, const vsh_node_t *cmd, const func_t *fn,
+                      int (*bi)(int, char **), int argc, char **argv, int forked) {
+    saved_fd_t saved[VSH_MAX_REDIRS];
+    int nsaved = 0, rc;
+
+    if (cmd->assigns) {
+        say_err(argv[0], "X=1 is for a program, not a builtin or a function");
+        return 1;
+    }
+    if (apply_redirs(c, cmd->redirs, forked ? 0 : saved, &nsaved) != 0) {
+        restore_redirs(saved, forked ? 0 : nsaved);
+        return 1;
+    }
+    rc = fn ? call_func(fn, argc, argv) : bi(argc, argv);
+    if (!forked) {
+        restore_redirs(saved, nsaved);
+    }
+    return rc;
+}
+
+/* A program in the foreground, as a job of one. */
+static int run_program(vsh_ctx_t *c, const vsh_node_t *cmd, char **argv) {
+    job_t j;
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        say_err("fork", strerror(errno));
+        return 126;
+    }
+    if (pid == 0) {
+        job_child(0, 1);
+        if (apply_redirs(c, cmd->redirs, 0, 0) != 0) {
+            _exit(1);
+        }
+        exec_program(c, cmd, argv);
+    }
+    memset(&j, 0, sizeof(j));
+    j.state = J_RUNNING;
+    j.pgid = pid;
+    j.own_group = G.jc;
+    j.n = 1;
+    j.pids[0] = pid;
+    job_name(&j, cmd);
+    if (G.jc) {
+        (void)setpgid(pid, pid);
+    }
+    return job_finish_foreground(&j);
 }
 
 /* `forked`: this is already a child of a pipeline, so a program replaces it. */
@@ -1479,107 +1570,29 @@ static int run_command(const vsh_node_t *cmd, int forked) {
     vsh_arena_t arena;
     vsh_ctx_t c;
     vsh_list_t words = {0, 0, 0};
-    const alias_t *al;
     const func_t *fn;
     int (*bi)(int, char **);
     char **argv;
-    size_t i;
     int rc;
 
     ctx_init(&c, &arena);
-    G.cap_status = 0;
-    if (expand_words(&c, cmd->words, &words) != 0) {
-        say_err(c.err, 0);
-        vsh_arena_free(&arena);
-        return 1;
-    }
-    if (words.count == 0u) {       /* an empty list and nothing else */
-        vsh_arena_free(&arena);
-        return G.cap_status;
-    }
-    /* One round, so that `alias ls = ls -l` is not a loop. */
-    al = find_alias(words.items[0]);
-    if (al) {
-        char err[128];
-        vsh_list_t rest = {0, 0, 0};
-        const vsh_node_t *parsed = vsh_parse(&arena, al->text, err, sizeof(err), 0);
-
-        if (!parsed || parsed->kind != VSH_N_PIPELINE || parsed->a->next) {
-            say_err(al->name, "the alias is not one command");
-            vsh_arena_free(&arena);
-            return 1;
-        }
-        if (expand_words(&c, parsed->a->words, &rest) != 0) {
-            say_err(c.err, 0);
-            vsh_arena_free(&arena);
-            return 1;
-        }
-        for (i = 1; i < words.count; i++) {
-            list_add(&c, &rest, words.items[i]);
-        }
-        words = rest;
-    }
-    list_add(&c, &words, 0);
-    argv = (char **)words.items;
-
-    fn = find_func(argv[0]);
-    bi = fn ? 0 : find_builtin(argv[0]);
-    if (fn || bi) {
-        saved_fd_t saved[VSH_MAX_REDIRS];
-        int nsaved = 0;
-        int argc = (int)words.count - 1;
-
-        if (cmd->assigns) {
-            say_err(argv[0], "X=1 is for a program, not a builtin or a function");
-            restore_redirs(saved, 0);
-            vsh_arena_free(&arena);
-            return 1;
-        }
-        if (apply_redirs(&c, cmd->redirs, forked ? 0 : saved, &nsaved) != 0) {
-            restore_redirs(saved, forked ? 0 : nsaved);
-            vsh_arena_free(&arena);
-            return 1;
-        }
-        rc = fn ? call_func(fn, argc, argv) : bi(argc, argv);
-        if (!forked) {
-            restore_redirs(saved, nsaved);
-        }
+    if (command_words(&c, cmd, &arena, &words, &rc) != 0) {
         vsh_arena_free(&arena);
         return rc;
     }
-    if (forked) {
+    argv = (char **)words.items;
+    fn = find_func(argv[0]);
+    bi = fn ? 0 : find_builtin(argv[0]);
+    if (fn || bi) {
+        rc = run_inside(&c, cmd, fn, bi, (int)words.count - 1, argv, forked);
+    } else if (forked) {
         if (apply_redirs(&c, cmd->redirs, 0, 0) != 0) {
             _exit(1);
         }
         exec_program(&c, cmd, argv);
-    }
-    {
-        job_t j;
-        pid_t pid = fork();
-
-        if (pid < 0) {
-            say_err("fork", strerror(errno));
-            vsh_arena_free(&arena);
-            return 126;
-        }
-        if (pid == 0) {
-            job_child(0, 1);
-            if (apply_redirs(&c, cmd->redirs, 0, 0) != 0) {
-                _exit(1);
-            }
-            exec_program(&c, cmd, argv);
-        }
-        memset(&j, 0, sizeof(j));
-        j.state = J_RUNNING;
-        j.pgid = pid;
-        j.own_group = G.jc;
-        j.n = 1;
-        j.pids[0] = pid;
-        job_name(&j, cmd);
-        if (G.jc) {
-            (void)setpgid(pid, pid);
-        }
-        rc = job_finish_foreground(&j);
+        rc = 127;       /* exec_program does not come back */
+    } else {
+        rc = run_program(&c, cmd, argv);
     }
     vsh_arena_free(&arena);
     return rc;
