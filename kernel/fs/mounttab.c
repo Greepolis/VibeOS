@@ -109,6 +109,16 @@ static int mt_options(const char *s, long n, vibeos_mounttab_entry_t *e) {
     return 0;
 }
 
+/* After a slash: an empty component, "." or "..". */
+static int mt_bad_component(const char *c) {
+    size_t dots = 0;
+
+    while (dots < 2u && c[dots] == '.') {
+        dots++;
+    }
+    return c[dots] == '/' || c[dots] == 0;
+}
+
 /* One line into *e, judged against the `nseen` entries before it. A blank
  * line or a comment is OK with e->what empty. */
 static int mt_one(const char *s, long n, vibeos_mounttab_entry_t *e, const vibeos_mounttab_entry_t *seen,
@@ -160,10 +170,7 @@ static int mt_one(const char *s, long n, vibeos_mounttab_entry_t *e, const vibeo
         return VIBEOS_MOUNTTAB_PATH;
     }
     for (k = 0; k < fl[1]; k++) {
-        if (e->at[k] == '/' && (e->at[k + 1] == '/' ||
-                                (e->at[k + 1] == '.' && (e->at[k + 2] == '/' || e->at[k + 2] == 0 ||
-                                                         (e->at[k + 2] == '.' &&
-                                                          (e->at[k + 3] == '/' || e->at[k + 3] == 0)))))) {
+        if (e->at[k] == '/' && mt_bad_component(e->at + k + 1)) {
             return VIBEOS_MOUNTTAB_PATH;
         }
     }

@@ -57,9 +57,9 @@
 
 ### ".." in a mount point is accepted
 --- old
-                                                         (e->at[k + 2] == '.' &&
+    while (dots < 2u && c[dots] == '.') {
 +++ new
-                                                         (0 &&
+    while (dots < 1u && c[dots] == '.') {
 
 ### size= in megabytes is taken as kilobytes
 --- old
