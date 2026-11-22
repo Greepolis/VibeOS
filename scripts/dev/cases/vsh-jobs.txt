@@ -1,0 +1,48 @@
+# vsh's job control (docs/shell/s4.md step 3). tests/linux/musl_vshjobs.c.
+#
+# Target source: user/vsh/vsh_exec.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-vsh.sh" python3 scripts/dev/sabotage.py user/vsh/vsh_exec.c scripts/dev/cases/vsh-jobs.txt
+
+### a foreground program never gets the terminal
+--- old
+            (void)tcsetpgrp(G.tty, getpgrp());
++++ new
+            ;
+
+### the shell does not take the terminal back
+--- old
+        (void)tcsetpgrp(G.tty, G.shell_pgid);
++++ new
+        ;
+
+### a child keeps ignoring Ctrl+Z
+--- old
+        signal(SIGTSTP, SIG_DFL);
++++ new
+        ;
+
+### a stop is not seen
+--- old
+        got = waitpid(j->pids[i], &st, G.jc ? WUNTRACED : 0);
++++ new
+        got = waitpid(j->pids[i], &st, 0);
+
+### Ctrl+C ends the program and the loop goes on
+--- old
+        G.flow = F_ABORT;   /* a loop around it must not carry on */
++++ new
+        ;
+
+### bg resumes nothing
+--- old
+    j->seq = ++g_job_seq;
+    job_signal(j, SIGCONT);
++++ new
+    j->seq = ++g_job_seq;
+
+### a killed stopped job never runs to die of it
+--- old
+                job_signal(j, SIGCONT);
+                j->state = J_RUNNING;
++++ new
+                j->state = J_RUNNING;

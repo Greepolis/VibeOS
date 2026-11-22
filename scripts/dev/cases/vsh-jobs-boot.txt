@@ -1,0 +1,11 @@
+# vsh's job control in the guest (docs/shell/s4.md step 3). Expects
+# vsh_jobs_failed.
+#
+# Target source: user/vsh/vsh_exec.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py user/vsh/vsh_exec.c scripts/dev/cases/vsh-jobs-boot.txt
+
+### the shell does not take the terminal back
+--- old
+        (void)tcsetpgrp(G.tty, G.shell_pgid);
++++ new
+        ;

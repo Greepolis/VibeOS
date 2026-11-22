@@ -199,6 +199,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   /* vsh running a script whose every answer
                                    * the gate compares (docs/shell/s4.md). */
                                   "/usr/bin/vsh /usr/lib/vibeos/test/EXEC.VSH /usr/bin/vsh\n"
+                                  /* And its job control, at a pseudo-terminal. */
+                                  "/usr/lib/vibeos/test/VSHJOBS.ELF /usr/bin/vsh\n"
                                   /* The NT personality's first program
                                    * (docs/abi/windows.md W1): a PE image,
                                    * exec'd by this Linux-ABI shell like any

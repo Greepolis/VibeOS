@@ -1,0 +1,16 @@
+# A sleep stopped and continued sleeps the rest of its time (M-147). Read by
+# VSHJOBS.ELF; expects vsh_jobs_failed.
+#
+# Not a case, because this test cannot tell: a continued sleep that starts its
+# whole time again. VSHJOBS.ELF holds a sleep to a minimum only, since a maximum
+# on elapsed time would fail on a loaded host. Removing the saved deadline went
+# NOT RED on 2026-11-22.
+#
+# Target source: kernel/abi/linux/misc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/misc.c scripts/dev/cases/abi-sleep-stop-boot.txt
+
+### a stop ends the sleep with EINTR
+--- old
+    if (r == -VIBEOS_EINTR && linux_only_a_stop()) {
++++ new
+    if (r == -VIBEOS_EINTR && linux_only_a_stop() && 0) {

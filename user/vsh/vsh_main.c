@@ -23,6 +23,8 @@ int vsh_run_stdin(void);
 int vsh_finished(void);
 void vsh_next_line(void);
 void vsh_reap(void);
+void vsh_job_init(void);
+void vsh_job_end(void);
 void vsh_init(int stop_on_error, int argc, char **argv);
 
 static int read_line(vsh_sb_t *out) {
@@ -99,7 +101,9 @@ int main(int argc, char **argv) {
         rc = vsh_run_file(argv[1]);
     } else if (isatty(0)) {
         vsh_init(0, 0, argv + 1);
+        vsh_job_init();
         rc = interactive();
+        vsh_job_end();
     } else {
         vsh_init(1, 0, argv + 1);
         rc = vsh_run_stdin();

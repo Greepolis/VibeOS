@@ -351,6 +351,10 @@ if(VIBEOS_BUILD_TESTS)
             COMMAND sh -c "\"$1\" tests/vsh/exec.vsh \"$1\" | diff --strip-trailing-cr tests/vsh/exec-expected.txt -"
                 sh $<TARGET_FILE:vibeos_vsh>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        # Job control, played at a pseudo-terminal; the boot runs the same one.
+        add_executable(vibeos_vshjobs tests/linux/musl_vshjobs.c)
+        target_compile_options(vibeos_vshjobs PRIVATE -Wall -Wextra -Werror)
+        add_test(NAME vibeos-vsh-jobs COMMAND vibeos_vshjobs $<TARGET_FILE:vibeos_vsh>)
     endif()
 
     # Randomised torture for the memory manager, checked against a reference
@@ -758,6 +762,16 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_vsh_static ALL DEPENDS "${VIBEOS_VSH_BIN}")
+        set(VIBEOS_VSHJOBS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_vshjobs.c")
+        set(VIBEOS_VSHJOBS_BIN "${CMAKE_BINARY_DIR}/musl_vshjobs")
+        add_custom_command(
+            OUTPUT "${VIBEOS_VSHJOBS_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_VSHJOBS_BIN}" "${VIBEOS_VSHJOBS_SRC}"
+            DEPENDS "${VIBEOS_VSHJOBS_SRC}"
+            COMMENT "Building the vsh job-control test as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_vshjobs ALL DEPENDS "${VIBEOS_VSHJOBS_BIN}")
         set(VIBEOS_LOGINT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_login.c")
         set(VIBEOS_LOGINT_BIN "${CMAKE_BINARY_DIR}/musl_login")
         add_custom_command(

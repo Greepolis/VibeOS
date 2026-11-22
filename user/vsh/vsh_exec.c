@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "vsh.h"
@@ -48,7 +49,8 @@ typedef struct alias {
     struct alias *next;
 } alias_t;
 
-enum { F_NONE, F_BREAK, F_CONTINUE, F_RETURN, F_EXIT };
+/* F_ABORT: Ctrl+C or Ctrl+Z took the line's program; the rest of the line goes. */
+enum { F_NONE, F_BREAK, F_CONTINUE, F_RETURN, F_EXIT, F_ABORT };
 
 static struct {
     vsh_arena_t arena;     /* parsed text that outlives its statement */
@@ -63,6 +65,10 @@ static struct {
     int loops;
     int calls;
     int cap_status;
+    int jc;                /* a terminal, and this shell runs its jobs on it */
+    int tty;
+    pid_t shell_pgid;
+    struct termios tmodes;
 } G;
 
 static int run_list(const vsh_node_t *n);
@@ -136,6 +142,307 @@ static int wait_status(pid_t pid) {
         }
     }
     return WIFSIGNALED(st) ? 128 + WTERMSIG(st) : WEXITSTATUS(st);
+}
+
+/* ---- jobs ------------------------------------------------------------------ */
+
+#define VSH_MAX_JOBS 32
+#define VSH_JOB_PIDS 64
+
+enum { J_FREE, J_RUNNING, J_STOPPED, J_DONE };
+
+typedef struct {
+    int state;
+    pid_t pgid;
+    int own_group;        /* a script's job shares the shell's group */
+    int n;
+    pid_t pids[VSH_JOB_PIDS];
+    char finished[VSH_JOB_PIDS];
+    int st[VSH_JOB_PIDS];
+    char text[120];
+    struct termios modes;
+    int has_modes;
+    unsigned long seq;
+} job_t;
+
+static job_t g_jobs[VSH_MAX_JOBS];
+static unsigned long g_job_seq;
+
+static int decode_status(int st) {
+    return WIFSIGNALED(st) ? 128 + WTERMSIG(st) : WEXITSTATUS(st);
+}
+
+static void job_forget(void) {
+    memset(g_jobs, 0, sizeof(g_jobs));
+}
+
+static int job_result(const job_t *j) {
+    int i, r = 0;
+
+    for (i = 0; i < j->n; i++) {
+        /* `yes | head`: the writer told to stop is not a failure. */
+        if (j->st[i] != 0 && j->st[i] != 128 + SIGPIPE) {
+            r = j->st[i];
+        }
+    }
+    return r;
+}
+
+static void job_update(job_t *j, pid_t pid, int st) {
+    int i, left = 0;
+
+    for (i = 0; i < j->n; i++) {
+        if (j->pids[i] == pid) {
+            if (WIFSTOPPED(st)) {
+                j->state = J_STOPPED;
+                return;
+            }
+            if (WIFCONTINUED(st)) {
+                j->state = J_RUNNING;
+                return;
+            }
+            j->finished[i] = 1;
+            j->st[i] = decode_status(st);
+        }
+        left += !j->finished[i];
+    }
+    if (!left) {
+        j->state = J_DONE;
+    }
+}
+
+/* Until it ends or stops. */
+static void job_wait(job_t *j) {
+    while (j->state == J_RUNNING) {
+        int i, st = 0;
+        pid_t got;
+
+        for (i = 0; i < j->n && j->finished[i]; i++) {
+        }
+        if (i == j->n) {
+            j->state = J_DONE;
+            return;
+        }
+        got = waitpid(j->pids[i], &st, G.jc ? WUNTRACED : 0);
+        if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            j->finished[i] = 1;
+            j->st[i] = 127;
+            continue;
+        }
+        job_update(j, got, st);
+    }
+}
+
+static void job_signal(const job_t *j, int sig) {
+    int i;
+
+    if (j->own_group) {
+        (void)kill(-j->pgid, sig);
+        return;
+    }
+    for (i = 0; i < j->n; i++) {
+        if (!j->finished[i]) {
+            (void)kill(j->pids[i], sig);
+        }
+    }
+}
+
+/* A free entry; in a script nobody collects a finished job unless it waits, so
+ * the oldest of those goes when the table is full. */
+static job_t *job_slot(void) {
+    job_t *old = 0;
+    int i;
+
+    for (i = 0; i < VSH_MAX_JOBS; i++) {
+        if (g_jobs[i].state == J_FREE) {
+            return &g_jobs[i];
+        }
+        if (g_jobs[i].state == J_DONE && (!old || g_jobs[i].seq < old->seq)) {
+            old = &g_jobs[i];
+        }
+    }
+    return old;
+}
+
+static int job_id(const job_t *j) {
+    return (int)(j - g_jobs) + 1;
+}
+
+static int job_in_table(const job_t *j) {
+    return j >= g_jobs && j < g_jobs + VSH_MAX_JOBS;
+}
+
+static job_t *job_current(void) {
+    job_t *best = 0;
+    int i;
+
+    for (i = 0; i < VSH_MAX_JOBS; i++) {
+        job_t *j = &g_jobs[i];
+
+        if ((j->state == J_RUNNING || j->state == J_STOPPED) && (!best || j->seq > best->seq)) {
+            best = j;
+        }
+    }
+    return best;
+}
+
+static job_t *job_from_spec(const char *spec) {
+    long n;
+    char *end = 0;
+
+    if (!spec || strcmp(spec, "%%") == 0 || strcmp(spec, "%+") == 0) {
+        return job_current();
+    }
+    if (spec[0] != '%') {
+        return 0;
+    }
+    n = strtol(spec + 1, &end, 10);
+    if (end == spec + 1 || *end || n < 1 || n > VSH_MAX_JOBS || g_jobs[n - 1].state == J_FREE) {
+        return 0;
+    }
+    return &g_jobs[n - 1];
+}
+
+static void job_line(const job_t *j, const char *state) {
+    vsh_sb_t o = {0, 0, 0};
+    char head[32];
+
+    snprintf(head, sizeof(head), "[%d]%c ", job_id(j), j == job_current() ? '+' : ' ');
+    vsh_sb_puts(&o, head);
+    vsh_sb_puts(&o, state);
+    vsh_sb_puts(&o, "  ");
+    vsh_sb_puts(&o, j->text);
+    vsh_sb_putc(&o, '\n');
+    put_all(1, o.b, o.n);
+    vsh_sb_free(&o);
+}
+
+static void word_text(const vsh_word_t *w, vsh_sb_t *o) {
+    const vsh_part_t *p;
+
+    for (p = w->parts; p; p = p->next) {
+        if (p->kind == VSH_P_LIT) {
+            vsh_sb_puts(o, p->text);
+        } else if (p->kind == VSH_P_VAR) {
+            vsh_sb_putc(o, '$');
+            vsh_sb_puts(o, p->text);
+        } else {
+            vsh_sb_puts(o, "...");
+        }
+    }
+}
+
+/* What `jobs` calls it. */
+static void node_text(const vsh_node_t *n, vsh_sb_t *o) {
+    const vsh_node_t *c;
+    const vsh_word_t *w;
+
+    if (n->kind == VSH_N_AND || n->kind == VSH_N_OR) {
+        node_text(n->a, o);
+        vsh_sb_puts(o, n->kind == VSH_N_AND ? " && " : " || ");
+        node_text(n->b, o);
+    } else if (n->kind == VSH_N_PIPELINE) {
+        for (c = n->a; c; c = c->next) {
+            node_text(c, o);
+            if (c->next) {
+                vsh_sb_puts(o, " | ");
+            }
+        }
+    } else if (n->kind == VSH_N_COMMAND) {
+        for (w = n->words; w; w = w->next) {
+            word_text(w, o);
+            if (w->next) {
+                vsh_sb_putc(o, ' ');
+            }
+        }
+    }
+}
+
+static void job_name(job_t *j, const vsh_node_t *n) {
+    vsh_sb_t o = {0, 0, 0};
+
+    vsh_sb_putn(&o, "", 0u);
+    node_text(n, &o);
+    snprintf(j->text, sizeof(j->text), "%s", o.b);
+    vsh_sb_free(&o);
+}
+
+/* A child that becomes a job. The signals first: once it is in the foreground
+ * a Ctrl+Z is meant for it, and one it still ignores is lost. SIGTTOU last,
+ * because taking the terminal from the background raises it. */
+static void job_child(pid_t pgid, int foreground) {
+    if (G.jc) {
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
+        signal(SIGTTIN, SIG_DFL);
+        (void)setpgid(0, pgid);
+        if (foreground) {
+            (void)tcsetpgrp(G.tty, getpgrp());
+        }
+        signal(SIGTTOU, SIG_DFL);
+        G.jc = 0;
+    }
+    job_forget();
+}
+
+/* A $(...): part of the shell's own line, in the shell's group. Ctrl+Z stays
+ * ignored there, since nobody could resume it from a prompt that is waiting. */
+static void subshell_child(void) {
+    if (G.jc) {
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGTTIN, SIG_DFL);
+        signal(SIGTTOU, SIG_DFL);
+        G.jc = 0;
+    }
+    job_forget();
+}
+
+static int job_finish_foreground(job_t *j) {
+    int r;
+
+    job_wait(j);
+    if (G.jc) {
+        if (j->state == J_STOPPED) {
+            j->has_modes = tcgetattr(G.tty, &j->modes) == 0;
+        }
+        (void)tcsetpgrp(G.tty, G.shell_pgid);
+        (void)tcsetattr(G.tty, TCSANOW, &G.tmodes);
+    }
+    if (j->state == J_STOPPED) {
+        job_t *t = job_in_table(j) ? j : job_slot();
+
+        if (!t) {
+            say_err("too many jobs", "ending this one");
+            job_signal(j, SIGKILL);
+            job_signal(j, SIGCONT);
+            j->state = J_RUNNING;
+            job_wait(j);
+            G.flow = F_ABORT;
+            return 137;
+        }
+        if (t != j) {
+            *t = *j;
+        }
+        t->seq = ++g_job_seq;
+        (void)!write(1, "\n", 1);
+        job_line(t, "Stopped");
+        G.flow = F_ABORT;
+        return 128 + SIGTSTP;
+    }
+    r = job_result(j);
+    if (job_in_table(j)) {
+        j->state = J_FREE;
+    }
+    if (G.jc && r == 128 + SIGINT) {
+        (void)!write(1, "\n", 1);
+        G.flow = F_ABORT;   /* a loop around it must not carry on */
+    }
+    return r;
 }
 
 /* ---- variables ------------------------------------------------------------- */
@@ -259,6 +566,7 @@ static int ctx_capture(void *user, const vsh_node_t *script, char **out) {
         return -1;
     }
     if (pid == 0) {
+        subshell_child();
         close(fds[0]);
         if (fds[1] != 1) {
             dup2(fds[1], 1);
@@ -834,16 +1142,219 @@ static int b_source(int argc, char **argv) {
     return run_file(argv[1]);
 }
 
+static void jobs_collect(void) {
+    int st = 0, i;
+    pid_t pid;
+
+    while ((pid = waitpid(-1, &st, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        for (i = 0; i < VSH_MAX_JOBS; i++) {
+            if (g_jobs[i].state != J_FREE) {
+                job_update(&g_jobs[i], pid, st);
+            }
+        }
+    }
+}
+
+static int wait_one(job_t *j) {
+    int r;
+
+    if (j->state == J_STOPPED) {
+        say_err(j->text, "the job is stopped");
+        return 128 + SIGTSTP;
+    }
+    job_wait(j);
+    if (j->state == J_STOPPED) {
+        return 128 + SIGTSTP;
+    }
+    r = job_result(j);
+    j->state = J_FREE;
+    return r;
+}
+
 static int b_wait(int argc, char **argv) {
     int i, rc = 0;
 
     if (argc == 1) {
-        while (wait(0) > 0 || errno == EINTR) {
+        for (i = 0; i < VSH_MAX_JOBS; i++) {
+            if (g_jobs[i].state == J_RUNNING || g_jobs[i].state == J_DONE) {
+                (void)wait_one(&g_jobs[i]);
+            }
         }
         return 0;
     }
     for (i = 1; i < argc; i++) {
-        rc = wait_status((pid_t)atol(argv[i]));
+        if (argv[i][0] == '%') {
+            job_t *j = job_from_spec(argv[i]);
+
+            if (!j) {
+                say_err(argv[i], "no such job");
+                rc = 127;
+            } else {
+                rc = wait_one(j);
+            }
+        } else {
+            pid_t pid = (pid_t)atol(argv[i]);
+            int k, found = 0;
+
+            for (k = 0; k < VSH_MAX_JOBS && !found; k++) {
+                if (g_jobs[k].state != J_FREE && g_jobs[k].pids[0] == pid) {
+                    rc = wait_one(&g_jobs[k]);
+                    found = 1;
+                }
+            }
+            if (!found) {
+                rc = wait_status(pid);
+            }
+        }
+    }
+    return rc;
+}
+
+static int b_jobs(int argc, char **argv) {
+    int i;
+
+    (void)argc;
+    (void)argv;
+    jobs_collect();
+    for (i = 0; i < VSH_MAX_JOBS; i++) {
+        job_t *j = &g_jobs[i];
+
+        if (j->state == J_RUNNING) {
+            job_line(j, "Running");
+        } else if (j->state == J_STOPPED) {
+            job_line(j, "Stopped");
+        } else if (j->state == J_DONE) {
+            job_line(j, "Done");
+            j->state = J_FREE;
+        }
+    }
+    return 0;
+}
+
+static job_t *job_argument(const char *who, int argc, char **argv) {
+    job_t *j;
+
+    if (!G.jc) {
+        say_err(who, "no job control here");
+        return 0;
+    }
+    jobs_collect();
+    j = job_from_spec(argc > 1 ? argv[1] : 0);
+    if (!j || j->state == J_DONE) {
+        say_err(who, "no such job");
+        return 0;
+    }
+    return j;
+}
+
+static int b_fg(int argc, char **argv) {
+    job_t *j = job_argument("fg", argc, argv);
+    vsh_sb_t o = {0, 0, 0};
+
+    if (!j) {
+        return 1;
+    }
+    vsh_sb_puts(&o, j->text);
+    vsh_sb_putc(&o, '\n');
+    put_all(1, o.b, o.n);
+    vsh_sb_free(&o);
+    (void)tcsetpgrp(G.tty, j->pgid);
+    if (j->has_modes) {
+        (void)tcsetattr(G.tty, TCSANOW, &j->modes);
+    }
+    j->state = J_RUNNING;
+    job_signal(j, SIGCONT);
+    return job_finish_foreground(j);
+}
+
+static int b_bg(int argc, char **argv) {
+    job_t *j = job_argument("bg", argc, argv);
+    vsh_sb_t o = {0, 0, 0};
+    char head[24];
+
+    if (!j) {
+        return 1;
+    }
+    j->state = J_RUNNING;
+    j->seq = ++g_job_seq;
+    job_signal(j, SIGCONT);
+    snprintf(head, sizeof(head), "[%d] ", job_id(j));
+    vsh_sb_puts(&o, head);
+    vsh_sb_puts(&o, j->text);
+    vsh_sb_puts(&o, " &\n");
+    put_all(1, o.b, o.n);
+    vsh_sb_free(&o);
+    return 0;
+}
+
+static int signal_number(const char *t) {
+    static const struct {
+        const char *n;
+        int s;
+    } names[] = {
+        {"HUP", SIGHUP},   {"INT", SIGINT},   {"QUIT", SIGQUIT}, {"KILL", SIGKILL},
+        {"USR1", SIGUSR1}, {"USR2", SIGUSR2}, {"PIPE", SIGPIPE}, {"ALRM", SIGALRM},
+        {"TERM", SIGTERM}, {"CHLD", SIGCHLD}, {"CONT", SIGCONT}, {"STOP", SIGSTOP},
+        {"TSTP", SIGTSTP},
+    };
+    size_t i;
+    char *end = 0;
+    long v;
+
+    if (same_nocase(t, "0")) {
+        return 0;
+    }
+    if (strncmp(t, "SIG", 3) == 0 || strncmp(t, "sig", 3) == 0) {
+        t += 3;
+    }
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (same_nocase(names[i].n, t)) {
+            return names[i].s;
+        }
+    }
+    v = strtol(t, &end, 10);
+    return end != t && !*end && v > 0 && v < 65 ? (int)v : -1;
+}
+
+static int b_kill(int argc, char **argv) {
+    int sig = SIGTERM, i = 1, rc = 0;
+
+    if (i < argc && argv[i][0] == '-' && argv[i][1]) {
+        sig = signal_number(argv[i] + 1);
+        if (sig < 0) {
+            say_err("kill: no such signal", argv[i] + 1);
+            return 2;
+        }
+        i++;
+    }
+    if (i >= argc) {
+        say_err("kill", "takes a pid or %job");
+        return 2;
+    }
+    for (; i < argc; i++) {
+        if (argv[i][0] == '%') {
+            job_t *j = job_from_spec(argv[i]);
+
+            if (!j) {
+                say_err(argv[i], "no such job");
+                rc = 1;
+                continue;
+            }
+            job_signal(j, sig);
+            /* A stopped job acts on a signal only once it runs. */
+            if (j->state == J_STOPPED && sig != SIGSTOP && sig != SIGTSTP && sig != 0) {
+                job_signal(j, SIGCONT);
+                j->state = J_RUNNING;
+            }
+        } else {
+            char *end = 0;
+            long pid = strtol(argv[i], &end, 10);
+
+            if (end == argv[i] || *end || kill((pid_t)pid, sig) != 0) {
+                say_err(argv[i], *end ? "not a pid" : strerror(errno));
+                rc = 1;
+            }
+        }
     }
     return rc;
 }
@@ -854,8 +1365,9 @@ static const struct {
     const char *name;
     int (*fn)(int argc, char **argv);
 } g_builtins[] = {
-    {"alias", b_alias}, {"cd", b_cd},       {"echo", b_echo},       {"exit", b_exit},
-    {"false", b_false}, {"pwd", b_pwd},     {"source", b_source},   {"true", b_true},
+    {"alias", b_alias}, {"bg", b_bg},       {"cd", b_cd},           {"echo", b_echo},
+    {"exit", b_exit},   {"false", b_false}, {"fg", b_fg},           {"jobs", b_jobs},
+    {"kill", b_kill},   {"pwd", b_pwd},     {"source", b_source},   {"true", b_true},
     {"type", b_type},   {"unalias", b_unalias}, {"unset", b_unset}, {"wait", b_wait},
 };
 
@@ -1036,6 +1548,7 @@ static int run_command(const vsh_node_t *cmd, int forked) {
         exec_program(&c, cmd, argv);
     }
     {
+        job_t j;
         pid_t pid = fork();
 
         if (pid < 0) {
@@ -1044,12 +1557,23 @@ static int run_command(const vsh_node_t *cmd, int forked) {
             return 126;
         }
         if (pid == 0) {
+            job_child(0, 1);
             if (apply_redirs(&c, cmd->redirs, 0, 0) != 0) {
                 _exit(1);
             }
             exec_program(&c, cmd, argv);
         }
-        rc = wait_status(pid);
+        memset(&j, 0, sizeof(j));
+        j.state = J_RUNNING;
+        j.pgid = pid;
+        j.own_group = G.jc;
+        j.n = 1;
+        j.pids[0] = pid;
+        job_name(&j, cmd);
+        if (G.jc) {
+            (void)setpgid(pid, pid);
+        }
+        rc = job_finish_foreground(&j);
     }
     vsh_arena_free(&arena);
     return rc;
@@ -1057,17 +1581,21 @@ static int run_command(const vsh_node_t *cmd, int forked) {
 
 static int run_pipeline(const vsh_node_t *p) {
     const vsh_node_t *c;
-    pid_t pids[64];
-    int n = 0, input = -1, i, result = 0;
+    job_t j;
+    int input = -1, result = 0, rc;
 
     if (!p->a->next) {
         return run_command(p->a, 0);
     }
+    memset(&j, 0, sizeof(j));
+    j.state = J_RUNNING;
+    j.own_group = G.jc;
+    job_name(&j, p);
     for (c = p->a; c; c = c->next) {
         int fds[2] = {-1, -1};
         pid_t pid;
 
-        if (n == (int)(sizeof(pids) / sizeof(pids[0]))) {
+        if (j.n == VSH_JOB_PIDS) {
             say_err("pipeline too long", 0);
             result = 1;
             break;
@@ -1088,6 +1616,7 @@ static int run_pipeline(const vsh_node_t *p) {
             break;
         }
         if (pid == 0) {
+            job_child(j.pgid, 1);
             if (input >= 0) {
                 dup2(input, 0);
                 close(input);
@@ -1100,7 +1629,15 @@ static int run_pipeline(const vsh_node_t *p) {
             G.flow = F_NONE;
             _exit(run_command(c, 1) & 0xff);
         }
-        pids[n++] = pid;
+        /* From both sides: whichever runs first, the next stage joins a group
+         * that exists. */
+        if (!j.pgid) {
+            j.pgid = pid;
+        }
+        if (G.jc) {
+            (void)setpgid(pid, j.pgid);
+        }
+        j.pids[j.n++] = pid;
         if (input >= 0) {
             close(input);
         }
@@ -1113,15 +1650,8 @@ static int run_pipeline(const vsh_node_t *p) {
     if (input >= 0) {
         close(input);
     }
-    for (i = 0; i < n; i++) {
-        int st = wait_status(pids[i]);
-
-        /* `yes | head`: the writer told to stop is not a failure. */
-        if (st != 0 && st != 128 + SIGPIPE) {
-            result = st;
-        }
-    }
-    return result;
+    rc = job_finish_foreground(&j);
+    return result ? result : rc;
 }
 
 /* *exempt: a nonzero result here does not stop a script. */
@@ -1283,6 +1813,10 @@ static int run_while(const vsh_node_t *n, int *ran) {
         if (eval_cond(n->a, &yes) != 0) {
             return 1;
         }
+        if (G.flow) {       /* Ctrl+C in the condition's command */
+            *ran = 1;
+            return G.status;
+        }
         if (!yes) {
             break;
         }
@@ -1343,8 +1877,15 @@ static int run_jump(const vsh_node_t *n, int *ran) {
 }
 
 static int run_background(const vsh_node_t *n) {
-    pid_t pid = fork();
+    job_t *j = job_slot();
+    int was_jc = G.jc;
+    pid_t pid;
 
+    if (!j) {
+        say_err("too many jobs", 0);
+        return 1;
+    }
+    pid = fork();
     if (pid < 0) {
         say_err("fork", strerror(errno));
         return 126;
@@ -1353,10 +1894,37 @@ static int run_background(const vsh_node_t *n) {
         int ignored = 0;
         int st;
 
+        job_child(0, 0);
+        if (!was_jc) {
+            /* No terminal to stop it for reading: it reads nothing, as a
+             * script's background command does in every shell. */
+            int null = open("/dev/null", O_RDONLY);
+
+            if (null >= 0) {
+                dup2(null, 0);
+                close(null);
+            }
+        }
         G.flow = F_NONE;
         G.errexit = 0;
         st = run_chain(n->a, &ignored);
         _exit(st & 0xff);
+    }
+    memset(j, 0, sizeof(*j));
+    j->state = J_RUNNING;
+    j->pgid = pid;
+    j->own_group = was_jc;
+    j->n = 1;
+    j->pids[0] = pid;
+    j->seq = ++g_job_seq;
+    job_name(j, n->a);
+    if (was_jc) {
+        char line[48];
+        int len;
+
+        (void)setpgid(pid, pid);
+        len = snprintf(line, sizeof(line), "[%d] %ld\n", job_id(j), (long)pid);
+        put_all(1, line, (size_t)len);
     }
     return 0;
 }
@@ -1519,8 +2087,54 @@ void vsh_next_line(void) {
     G.flow = G.flow == F_EXIT ? F_EXIT : F_NONE;
 }
 
+/* Before a prompt: what happened to the jobs while the last line ran. */
 void vsh_reap(void) {
-    while (waitpid(-1, 0, WNOHANG) > 0) {
+    int i;
+
+    jobs_collect();
+    for (i = 0; i < VSH_MAX_JOBS; i++) {
+        if (g_jobs[i].state == J_DONE) {
+            job_line(&g_jobs[i], "Done");
+            g_jobs[i].state = J_FREE;
+        }
+    }
+}
+
+/* A shell on a terminal: its own group, in the foreground, deaf to what the
+ * keyboard sends the foreground. If it is not in the foreground it waits to be
+ * put there, as the terminal's SIGTTIN does to any reader. */
+void vsh_job_init(void) {
+    pid_t pgid;
+
+    G.tty = 0;
+    while ((pgid = getpgrp()) != tcgetpgrp(G.tty)) {
+        if (tcgetpgrp(G.tty) < 0) {
+            return;     /* no job control on this terminal */
+        }
+        (void)kill(-pgid, SIGTTIN);
+    }
+    signal(SIGINT, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
+    signal(SIGTSTP, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
+    (void)setpgid(0, 0);      /* a session leader already leads its group */
+    G.shell_pgid = getpgrp();
+    if (tcsetpgrp(G.tty, G.shell_pgid) != 0 || tcgetattr(G.tty, &G.tmodes) != 0) {
+        return;
+    }
+    G.jc = 1;
+}
+
+/* A stopped job would otherwise outlive its shell, stopped for ever. */
+void vsh_job_end(void) {
+    int i;
+
+    for (i = 0; i < VSH_MAX_JOBS; i++) {
+        if (g_jobs[i].state == J_RUNNING || g_jobs[i].state == J_STOPPED) {
+            job_signal(&g_jobs[i], SIGHUP);
+            job_signal(&g_jobs[i], SIGCONT);
+        }
     }
 }
 

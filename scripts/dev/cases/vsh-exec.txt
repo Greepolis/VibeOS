@@ -23,9 +23,9 @@
 
 ### a writer ended by SIGPIPE fails the pipeline
 --- old
-        if (st != 0 && st != 128 + SIGPIPE) {
+        if (j->st[i] != 0 && j->st[i] != 128 + SIGPIPE) {
 +++ new
-        if (st != 0) {
+        if (j->st[i] != 0) {
 
 ### a builtin's redirection stays in the shell
 --- old

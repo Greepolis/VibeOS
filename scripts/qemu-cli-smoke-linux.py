@@ -3517,6 +3517,10 @@ def main():
                 if differs:
                     problems.append("vsh_script_differs")
                     print(f"[QEMU-CLI] vsh: {differs[:160]}")
+            if os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "VSHJOBS.ELF")) and disk_img:
+                if not re.search(r"write\(ring3\): VSHJOBS_OK: ", text):
+                    m = re.search(r"VSHJOBS_FAIL: ([^\r\n]*)", text)
+                    problems.append("vsh_jobs_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
 
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):

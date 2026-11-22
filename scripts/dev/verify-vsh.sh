@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.." || exit 1
 
 BUILD="${1:-build-gcc-Release}"
 
-if ! cmake --build "$BUILD" --target vibeos_vsh_tests vibeos_vsh -j8 > /tmp/verify-vsh-build.log 2>&1; then
+if ! cmake --build "$BUILD" --target vibeos_vsh_tests vibeos_vsh vibeos_vshjobs -j8 > /tmp/verify-vsh-build.log 2>&1; then
     echo "BUILD_FAILED (see /tmp/verify-vsh-build.log)"
     exit 1
 fi
@@ -22,4 +22,9 @@ if [ -n "$got" ]; then
     echo "FAIL:exec.vsh $got"
     exit 1
 fi
+jobs="$(timeout 200 "./$BUILD/vibeos_vshjobs" "$PWD/$BUILD/vibeos_vsh" 2>&1 | tail -1)"
+case "$jobs" in
+    VSHJOBS_OK*) ;;
+    *) echo "FAIL:vshjobs $jobs"; exit 1 ;;
+esac
 echo "reason=host_tests_pass"
