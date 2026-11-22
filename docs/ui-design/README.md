@@ -42,6 +42,7 @@ limitations.
 | [interaction-and-visual-system.md](interaction-and-visual-system.md) | Product behavior, visual language, keyboard/pointer UX and accessibility |
 | [visual-mockups.md](visual-mockups.md) | Drawn desktop/taskbar, file manager, launcher, full Settings, CLI-only and dialog screens |
 | [implementation-phases.md](implementation-phases.md) | Sequenced work, dependencies, tests and release acceptance |
+| [desktop-environments.md](desktop-environments.md) | Proposed plan for selectable desktops (Xfce, KDE Plasma, GNOME) on the Wayland path |
 
 ## Visual Preview
 
