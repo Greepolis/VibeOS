@@ -43,7 +43,20 @@ static char g_hist_path[PATH_MAX];
 /* ---- history, kept between sessions ------------------------------------------- */
 
 /* Commands can hold things their owner would not show: 0600, and never through
- * a link somebody else left at that name. No HOME, no file. */
+ * a link somebody else left at that name. O_NONBLOCK because a FIFO there would
+ * otherwise hang the login in open; then it has to be a file of one's own. */
+static int hist_fd(int flags) {
+    struct stat st;
+    int fd = open(g_hist_path, flags | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600);
+
+    if (fd >= 0 && (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid())) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* No HOME, no file. */
 static void hist_open(void) {
     const char *home = getenv("HOME");
     FILE *f;
@@ -57,7 +70,7 @@ static void hist_open(void) {
         g_hist_path[0] = 0;
         return;
     }
-    fd = open(g_hist_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    fd = hist_fd(O_RDONLY);
     if (fd < 0 || !(f = fdopen(fd, "r"))) {
         if (fd >= 0) {
             close(fd);
@@ -81,7 +94,7 @@ static void hist_keep(const char *line) {
     if (!vsh_hist_add(&g_hist, line) || !g_hist_path[0]) {
         return;
     }
-    fd = open(g_hist_path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0600);
+    fd = hist_fd(O_WRONLY | O_CREAT | O_APPEND);
     if (fd >= 0) {
         (void)!write(fd, line, n);
         (void)!write(fd, "\n", 1);
