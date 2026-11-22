@@ -581,6 +581,14 @@ int ext4_j_data_write(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf) {
     return 0;
 }
 
+/* A long write stops here and returns short. Data over blocks the live log
+ * still holds is logged, so one write can fill a transaction by itself - nightly
+ * seed 124705 did at 2 MiB, and then had no room left for its own inode. The last
+ * quarter stays for the metadata that closes the operation. */
+int ext4_j_low(const vibeos_ext2_t *fs) {
+    return fs->j.open && fs->j.n >= fs->j.cap - fs->j.cap / 4u;
+}
+
 /* A block this transaction frees may be named by the volume as it is on the
  * disk until the commit: an extent leaf, a directory block. Writing a file's
  * data over it in place before then would put data where the last committed

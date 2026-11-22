@@ -86,6 +86,7 @@ int ext2_inode_is_fast_symlink(const vibeos_ext2_t *fs, const uint8_t *inode);
 int ext2_sec_read(vibeos_ext2_t *fs, uint64_t lba, void *buf);
 int ext4_j_meta_write(vibeos_ext2_t *fs, uint64_t lba, const void *buf);
 int ext4_j_data_write(vibeos_ext2_t *fs, uint64_t block, const uint8_t *buf);
+int ext4_j_low(const vibeos_ext2_t *fs);
 void ext4_j_freed(vibeos_ext2_t *fs, uint64_t start, uint64_t count);
 /* At mount, for the writer: find the journal and decide whether writes go
  * through it. 0, or -1 for a journal this driver will not write (the volume

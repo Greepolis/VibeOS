@@ -3851,7 +3851,12 @@ static long x_write_at(void *fsv, const vibeos_fs_node_t *node, uint64_t off, co
             fresh_to = (uint64_t)bi + 1u;
         }
         fresh = bi >= fresh_from && bi < fresh_to;
-        if (chunk == bs) {
+        if (done > 0u && ext4_j_low(fs)) {
+            /* A short write, which the caller's next call continues in a new
+             * transaction. Through the failure path below: the rest of a run
+             * taken for this write has not been written and must leave the file. */
+            rc = -VIBEOS_ENOSPC;
+        } else if (chunk == bs) {
             rc = blk_data(fs, phys, src + done);
         } else {
             if (fresh) {

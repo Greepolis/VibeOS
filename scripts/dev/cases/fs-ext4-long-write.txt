@@ -1,0 +1,11 @@
+# A write that fills the journal's transaction returns short (nightly seed
+# 124705, 2026-11-22). Reproduced by that seed of the torture.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-ext4-seed.sh build-gcc-Release 124705" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/fs-ext4-long-write.txt
+
+### a long write runs the transaction out
+--- old
+        if (done > 0u && ext4_j_low(fs)) {
++++ new
+        if (0 && done > 0u && ext4_j_low(fs)) {
