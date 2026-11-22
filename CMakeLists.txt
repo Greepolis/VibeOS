@@ -1352,6 +1352,18 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         add_dependencies(vibeos_boot_image vibeos_win)
     endif()
     
+    # The image script copies whichever guest programs exist when it runs, so one
+    # built later is silently absent. A parallel build finished vsh after the
+    # image in the nightly of 2026-11-22, and the boot could not find it.
+    get_property(VIBEOS_ALL_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(VIBEOS_GUEST_TARGET IN LISTS VIBEOS_ALL_TARGETS)
+        if(VIBEOS_GUEST_TARGET MATCHES "^vibeos_musl_" OR
+           VIBEOS_GUEST_TARGET STREQUAL "vibeos_login" OR
+           VIBEOS_GUEST_TARGET STREQUAL "vibeos_vsh_static")
+            add_dependencies(vibeos_boot_image ${VIBEOS_GUEST_TARGET})
+        endif()
+    endforeach()
+
     # Consolidated target: build all boot artifacts
     add_custom_target(vibeos_image ALL DEPENDS vibeos_boot_image vibeos_kernel_elf vibeos_bootloader_efi)
 
