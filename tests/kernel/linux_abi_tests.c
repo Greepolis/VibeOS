@@ -7841,6 +7841,35 @@ static void t_credentials(void) {
     expect(kf_lock_imbalance() == 0, "the credential calls released every lock they took");
 }
 
+/* bash's `<(command)` is a path to one end of a pipe. */
+static void t_open_own_pipe(void) {
+    uint64_t pair, buf;
+    int32_t *fds;
+    char name[48];
+    long a, b;
+
+    fresh(162);
+    pair = kf_ualloc(8);
+    buf = kf_ualloc(8);
+    fds = (int32_t *)kf_uptr(pair);
+    expect(SYS1(22, pair) == 0, "a pipe for /dev/fd");
+    snprintf(name, sizeof(name), "/dev/fd/%d", fds[0]);
+    a = SYS2(2, ustr(name), 0);
+    snprintf(name, sizeof(name), "/proc/self/fd/%d", fds[1]);
+    b = SYS2(2, ustr(name), 1);
+    expect(a >= 3 && b >= 3, "either end of a pipe opens through its descriptor's path");
+    if (a >= 3 && b >= 3) {
+        memcpy(kf_uptr(buf), "hi", 2);
+        expect(SYS3(1, (uint64_t)b, buf, 2) == 2, "written through the opened end");
+        memset(kf_uptr(buf), 0, 2);
+        expect(SYS3(0, (uint64_t)a, buf, 2) == 2 && memcmp(kf_uptr(buf), "hi", 2) == 0,
+               "and read through the other");
+    }
+    snprintf(name, sizeof(name), "/dev/fd/%d", fds[0]);
+    expect(SYS2(2, ustr(name), 1) == -VIBEOS_EACCES, "the read end does not open for writing");
+    expect(SYS2(2, ustr("/dev/fd/999"), 0) < 0, "a descriptor nobody has does not open");
+}
+
 static void (*const g_handler_groups[])(void) = {
     t_identity,
     t_arch_prctl_gs,
@@ -7916,6 +7945,7 @@ static void (*const g_handler_groups[])(void) = {
     t_mq_len_unsigned,
     t_fork_snapshot_and_groups,
     t_procfs,
+    t_open_own_pipe,
     t_sa_restart,
     t_signals_l2,
     t_timers,

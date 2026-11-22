@@ -795,6 +795,78 @@ void linux_own_new(const vibeos_path_t *w) {
     linux_own_node(w, 0);
 }
 
+/* The descriptor a path names through /dev/fd or /proc/<self>/fd, or -1. */
+static long linux_own_fd_path(const char *p) {
+    static const char dev[] = "/dev/fd/", self[] = "/proc/self/fd/", proc[] = "/proc/";
+    uint32_t i = 0;
+    uint64_t v = 0;
+
+    while (dev[i] && p[i] == dev[i]) {
+        i++;
+    }
+    if (dev[i]) {
+        i = 0;
+        while (self[i] && p[i] == self[i]) {
+            i++;
+        }
+    }
+    if (dev[i < sizeof(dev) ? i : 0] && self[i < sizeof(self) ? i : 0]) {
+        uint64_t pid = 0;
+
+        for (i = 0; proc[i]; i++) {
+            if (p[i] != proc[i]) {
+                return -1;
+            }
+        }
+        if (p[i] < '0' || p[i] > '9') {
+            return -1;
+        }
+        while (p[i] >= '0' && p[i] <= '9' && pid <= 0xFFFFFFFFull) {
+            pid = pid * 10u + (uint64_t)(p[i++] - '0');
+        }
+        if (pid != ks_id(ks_current())->tgid || p[i] != '/' || p[i + 1u] != 'f' || p[i + 2u] != 'd' ||
+            p[i + 3u] != '/') {
+            return -1;
+        }
+        i += 4u;
+    }
+    if (p[i] < '0' || p[i] > '9') {
+        return -1;
+    }
+    while (p[i] >= '0' && p[i] <= '9' && v <= 0xFFFFFu) {
+        v = v * 10u + (uint64_t)(p[i++] - '0');
+    }
+    return p[i] == 0 && v <= 0xFFFFFu ? (long)v : -1;
+}
+
+/* A pipe has no name for its link to lead to, so opening /dev/fd/N has to be
+ * answered here: it is how bash hands a program `<(command)`. The new descriptor
+ * shares the description, which for a pipe differs from Linux's new one only in
+ * O_NONBLOCK. 1 with *out set if this was such an open, 0 to walk as usual. */
+static int linux_open_own_pipe(uint64_t path_uptr, uint64_t flags, long *out) {
+    char p[40];
+    long fd;
+    vibeos_file_t *f;
+
+    if (ks_copy_user_string(path_uptr, p, (int)sizeof(p)) != 0 || (fd = linux_own_fd_path(p)) < 0) {
+        return 0;
+    }
+    if (!(f = linux_file_get((uint64_t)fd))) {
+        return 0;
+    }
+    if (f->ops != &vibeos_fops_pipe) {
+        vibeos_file_put(f);
+        return 0;
+    }
+    if ((f->flags & VIBEOS_O_ACCMODE) != ((uint32_t)flags & VIBEOS_O_ACCMODE)) {
+        vibeos_file_put(f);
+        *out = -VIBEOS_EACCES;
+        return 1;
+    }
+    *out = linux_fd_install(f, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
+    return 1;
+}
+
 long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode) {
     vibeos_path_t w;
     vibeos_file_t *f;
@@ -808,6 +880,9 @@ long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64
      * search permission is all an O_PATH open needs (issue #179). */
     if (flags & VIBEOS_O_PATH) {
         flags &= VIBEOS_O_PATH | VIBEOS_O_CLOEXEC | VIBEOS_O_DIRECTORY | VIBEOS_O_NOFOLLOW;
+    }
+    if (!(flags & VIBEOS_O_PATH) && linux_open_own_pipe(path_uptr, flags, &err)) {
+        return err;
     }
     err = linux_walk_at(dirfd, path_uptr, vibeos_open_walk_flags((uint32_t)flags), &w);
     if (err != 0) {
