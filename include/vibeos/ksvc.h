@@ -362,6 +362,7 @@ int ks_pgrp_orphaned(uint32_t pgid);
 void ks_con_lock(void);
 void ks_con_unlock(void);
 void ks_con_puts(const char *s);
+void ks_con_log_only(const char *s);   /* the serial log, not the screen */
 void ks_con_putc(char c);
 void ks_con_hex(uint64_t v);
 void ks_log(vibeos_log_level_t level, uint32_t code, uint64_t a0, uint64_t a1,

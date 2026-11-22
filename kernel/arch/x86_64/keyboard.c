@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* PS/2 keyboard driver (IRQ1) with a small input ring buffer (image-only).
  *
- * Translates set-1 scancodes to ASCII and buffers keystrokes so a blocking
- * read() on stdin can consume them. This is the input half of a real console.
+ * Scan codes become terminal input in kernel/io/vt.c; this buffers them so a
+ * blocking read() on stdin can consume them. This is the input half of a real console.
  */
 
 #include <stdint.h>
@@ -10,6 +10,7 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/device.h"
 #include "vibeos/tty.h"
+#include "vibeos/vt.h"
 #include "arch_hw_internal.h"   /* g_timer_ticks, VIBEOS_HW_TIMER_HZ */
 
 #define KBD_DATA 0x60u
@@ -19,14 +20,6 @@ static inline uint8_t kbd_inb(uint16_t p) {
     __asm__ __volatile__("inb %1,%0" : "=a"(v) : "Nd"(p));
     return v;
 }
-
-/* US set-1 scancode -> ASCII (unshifted), for make codes 0x00..0x39. */
-static const char g_map[0x3A] = {
-    0,   27,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b','\t',
-    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', 0,  'a', 's',
-    'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'','`', 0,   '\\','z', 'x', 'c', 'v',
-    'b', 'n', 'm', ',', '.', '/', 0,   '*', 0,   ' '
-};
 
 /* Large enough for the whole boot self-test script, which is injected in one
  * go before anything reads it. Sized at 512 once, and the script outgrew it -
@@ -40,11 +33,9 @@ static volatile uint32_t g_head; /* producer (IRQ) */
 static volatile uint32_t g_tail; /* consumer (read) */
 
 
-/* Control is a modifier, so it has to be tracked across keystrokes: the scan
- * code for C is the same whether or not Control is down, and the difference is
- * entirely in what arrived before it. */
-static int g_ctrl_down;
-#define KBD_SC_LCTRL 0x1Du
+/* The modifiers, which have to be tracked across keystrokes: the scan code for
+ * C is the same whether or not Control is down. */
+static vibeos_kbd_t g_keys;
 
 /* Two ways a keystroke disappears here, and they are not the same harm.
  *
@@ -81,47 +72,32 @@ static inline void kbd_outb(uint16_t p, uint8_t v) {
 
 static int kbd_irq(void) {
     uint8_t sc = kbd_inb(KBD_DATA);
+    char out[VIBEOS_KBD_MAX];
+    uint32_t n, i, room;
 
     g_irqs++;
-    char c;
-    uint32_t next;
-
-    if (sc & 0x80u) {
-        if ((sc & 0x7Fu) == KBD_SC_LCTRL) {
-            g_ctrl_down = 0;
-        }
-        return VIBEOS_DEV_IRQ_INPUT; /* break code (key release) */
-    }
-    if (sc == KBD_SC_LCTRL) {
-        g_ctrl_down = 1;
-        return VIBEOS_DEV_IRQ_INPUT;
-    }
-    if (sc >= 0x3Au) {
-        return VIBEOS_DEV_IRQ_INPUT; /* outside the simple map */
-    }
-    c = g_map[sc];
-    if (c == 0) {
+    n = vibeos_kbd_key(&g_keys, sc, out);
+    if (n == 0u) {
         return VIBEOS_DEV_IRQ_INPUT;
     }
     /* Control and a letter is a control character. Whether it is a signal is
      * the terminal's to say, and said here, at the interrupt: a program that
      * is computing and reading nothing has to be reachable by Ctrl+C. With
      * ISIG clear it is a byte like any other, for the program to read. */
-    if (g_ctrl_down) {
-        char ctl = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 1) : c == '\\' ? (char)28 : 0;
-        if (ctl != 0) {
-            if (vibeos_tty_control((uint8_t)ctl)) {
-                return VIBEOS_DEV_IRQ_INPUT;
-            }
-            c = ctl;
-        }
+    if (n == 1u && vibeos_kbd_ctrl(&g_keys) && (unsigned char)out[0] < 0x20u &&
+        vibeos_tty_control((uint8_t)out[0])) {
+        return VIBEOS_DEV_IRQ_INPUT;
     }
-    next = (g_head + 1u) % KBD_RING;
-    if (next != g_tail) {
-        g_ring[g_head] = c;
-        g_head = next;
-    } else {
-        g_dropped++; /* the ring was full; the keystroke is gone */
+    /* A key goes in whole or not at all: the front half of an arrow's sequence
+     * alone is an Esc and some letters typed at whatever is reading. */
+    room = (g_tail + KBD_RING - g_head - 1u) % KBD_RING;
+    if (room < n) {
+        g_dropped++;
+        return VIBEOS_DEV_IRQ_INPUT;
+    }
+    for (i = 0; i < n; i++) {
+        g_ring[g_head] = out[i];
+        g_head = (g_head + 1u) % KBD_RING;
     }
     return VIBEOS_DEV_IRQ_INPUT;
 }

@@ -90,6 +90,7 @@ typedef struct {
 typedef struct {
     void (*putc)(char c);
     void (*tick)(void);
+    void (*size)(uint32_t *rows, uint32_t *cols);   /* optional */
 } vibeos_display_ops_t;
 
 /* A disk: sectors of 512 bytes. What vibeos_x86_64_blk_bind takes, gathered so
@@ -215,6 +216,8 @@ const vibeos_net_ops_t *vibeos_net_device(void);
  * default, and the timer called its repaint by name (C7). No display: nothing
  * happens, and vibeos_display_present() says so. */
 int vibeos_display_present(void);
+/* Its text grid as a program may use it; -1 if it does not say. */
+int vibeos_display_size(uint32_t *rows, uint32_t *cols);
 void vibeos_display_putc(char c);
 void vibeos_display_tick(void);
 

@@ -32,11 +32,11 @@
 
 ### every newline counts as a refused grid write
 --- old
-    if (c == '\n') {
+    } else if (c == '\n') {
         g_term_col = 0;
         g_term_row++;
 +++ new
-    if (c == '\n') {
+    } else if (c == '\n') {
         g_stats.term_overrun++;
         g_term_col = 0;
         g_term_row++;

@@ -10330,6 +10330,7 @@ int test_klog(void);
 int test_crash(void);
 int test_device(void);
 int test_gui(void);
+int test_vt(void);
 int test_runq(void);
 int test_lifetime(void);
 int test_loader(void);
@@ -10708,6 +10709,7 @@ int main(void) {
     RUN_TEST(test_crash);
     RUN_TEST(test_device);
     RUN_TEST(test_gui);
+    RUN_TEST(test_vt);
     RUN_TEST(test_runq);
     RUN_TEST(test_lifetime);
     RUN_TEST(test_loader);

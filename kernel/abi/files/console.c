@@ -170,7 +170,7 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
      * faults resumes at its recovery point before the trap handler prints
      * anything, so the fault path never asks for the lock this core holds. */
     ks_con_lock();
-    ks_con_puts("[HW][SYS] write(ring3): ");
+    ks_con_log_only("[HW][SYS] write(ring3): ");
     for (i = 0; i < len; ) {
         char chunk[128];
         uint64_t n = len - i, k;

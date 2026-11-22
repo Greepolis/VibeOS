@@ -24,6 +24,7 @@ int vibeos_x86_64_validate_boot_environment(uint32_t feature_flags);
 int vibeos_x86_64_serial_init(void);
 void vibeos_x86_64_serial_putc(char c);
 void vibeos_x86_64_serial_puts(const char *s);
+void vibeos_x86_64_serial_log_only(const char *s);
 void vibeos_x86_64_serial_print_hex(uint64_t value);
 /* Bracket a multi-part message so other CPUs cannot split it. Recursive. */
 void vibeos_x86_64_serial_lock(void);

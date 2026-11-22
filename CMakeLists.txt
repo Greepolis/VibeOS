@@ -248,6 +248,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/crash_tests.c
         tests/kernel/device_tests.c
         tests/kernel/gui_tests.c
+        tests/kernel/vt_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c
         tests/kernel/loader_tests.c

@@ -234,6 +234,16 @@ void vibeos_display_putc(char c) {
     }
 }
 
+int vibeos_display_size(uint32_t *rows, uint32_t *cols) {
+    const vibeos_display_ops_t *op = display_ops();
+
+    if (!op || !op->size) {
+        return -1;
+    }
+    op->size(rows, cols);
+    return 0;
+}
+
 void vibeos_display_tick(void) {
     const vibeos_display_ops_t *op = display_ops();
     if (op) {

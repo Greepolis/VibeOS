@@ -3499,7 +3499,10 @@ def main():
                 # and find, which trusts the type in the entry, counts one link.
                 # Since step 7 the two names are on one line: ls found a
                 # terminal, asked how wide it is, and laid them out in columns.
-                if (not re.search(r"write\(ring3\): a file name longer than fifteen bytes +dangling\r?\n", text) or
+                # Since S4 step 4 the console says its true 71 columns, where
+                # two columns of that long name do not fit: one under the other.
+                if (not re.search(r"write\(ring3\): a file name longer than fifteen bytes"
+                                  r"(?: +|\s*\r?\n[^\n]*write\(ring3\): )dangling\r?\n", text) or
                         not re.search(r"write\(ring3\): DIRS_4_1\r?\n", text)):
                     problems.append("directory_listing_failed")
 

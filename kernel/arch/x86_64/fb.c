@@ -11,6 +11,7 @@
 
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/font8x8.h"
+#include "vibeos/vt.h"
 
 #define FB_FONT_W VIBEOS_FONT8X8_WIDTH
 #define FB_FONT_H VIBEOS_FONT8X8_HEIGHT
@@ -18,6 +19,7 @@
 static uint32_t *g_fb;
 static uint32_t g_w, g_h, g_cols, g_rows, g_cx, g_cy;
 static int g_ready;
+static vibeos_vt_t g_vt;
 
 #define FB_FG 0x00CFE8FFu
 #define FB_BG 0x00101418u
@@ -82,8 +84,60 @@ static void fb_draw_glyph(char c, uint32_t cx, uint32_t cy) {
     }
 }
 
+static void fb_erase_row(uint32_t row, uint32_t from) {
+    uint32_t k;
+
+    for (k = from; k < g_cols; k++) {
+        fb_draw_glyph(' ', k, row);
+    }
+}
+
+/* Numbers come from whatever a program printed: compared before they are used. */
+static void fb_op(vibeos_vt_op_t op, uint32_t n, uint32_t m) {
+    uint32_t r;
+
+    switch (op) {
+        case VIBEOS_VT_UP: g_cy = n < g_cy ? g_cy - n : 0u; break;
+        case VIBEOS_VT_DOWN: g_cy = n < g_rows - g_cy ? g_cy + n : g_rows - 1u; break;
+        case VIBEOS_VT_RIGHT: g_cx = n < g_cols - g_cx ? g_cx + n : g_cols - 1u; break;
+        case VIBEOS_VT_LEFT: g_cx = n < g_cx ? g_cx - n : 0u; break;
+        case VIBEOS_VT_GOTO:
+            g_cy = n < g_rows ? n : g_rows - 1u;
+            g_cx = m < g_cols ? m : g_cols - 1u;
+            break;
+        case VIBEOS_VT_ERASE_LINE: fb_erase_row(g_cy, g_cx); break;
+        case VIBEOS_VT_ERASE_BELOW:
+            fb_erase_row(g_cy, g_cx);
+            for (r = g_cy + 1u; r < g_rows; r++) {
+                fb_erase_row(r, 0u);
+            }
+            break;
+        case VIBEOS_VT_ERASE_ALL:
+            for (r = 0; r < g_rows; r++) {
+                fb_erase_row(r, 0u);
+            }
+            break;
+        default: break;
+    }
+}
+
+/* This console wraps on writing the last column, with no held cursor: a width
+ * one less keeps a line editor's arithmetic true. */
+void vibeos_x86_64_fb_size(uint32_t *rows, uint32_t *cols) {
+    *rows = g_rows;
+    *cols = g_cols > 1u ? g_cols - 1u : g_cols;
+}
+
 void vibeos_x86_64_fb_putc(char c) {
+    vibeos_vt_op_t op;
+    uint32_t vn, vm;
+
     if (!g_ready) {
+        return;
+    }
+    op = vibeos_vt_feed(&g_vt, c, &vn, &vm);
+    if (op != VIBEOS_VT_PRINT) {
+        fb_op(op, vn, vm);
         return;
     }
     if (c == '\r') {

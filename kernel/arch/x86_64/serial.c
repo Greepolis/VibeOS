@@ -65,6 +65,9 @@ int vibeos_x86_64_serial_init(void) {
     return 0;
 }
 
+/* Set, under the console lock, while a line is for the serial log alone. */
+static int g_serial_log_only;
+
 void vibeos_x86_64_serial_putc(char c) {
     /* Everything the system says on the serial line also appears in the
      * on-screen terminal, so a machine with a monitor and no serial cable
@@ -75,7 +78,9 @@ void vibeos_x86_64_serial_putc(char c) {
      * default, which resolved only because the two happened to be linked
      * together - and with no display at all it is the registry that says so,
      * not a stub. */
-    vibeos_display_putc(c);
+    if (!g_serial_log_only) {
+        vibeos_display_putc(c);
+    }
 
     if (!vibeos_x86_64_serial_can_io()) {
         return;
@@ -229,6 +234,19 @@ void vibeos_x86_64_serial_unlock(void) {
 
 #define serial_lock() vibeos_x86_64_serial_lock()
 #define serial_unlock() vibeos_x86_64_serial_unlock()
+
+void vibeos_x86_64_serial_puts(const char *s);
+
+/* The gate reads a program's output by the tag in front of it. On the screen
+ * that tag landed in front of every write, so a line editor's redraw printed
+ * `[HW][SYS] write(ring3): ` in the middle of the line being edited. */
+void vibeos_x86_64_serial_log_only(const char *s) {
+    serial_lock();
+    g_serial_log_only = 1;
+    vibeos_x86_64_serial_puts(s);
+    g_serial_log_only = 0;
+    serial_unlock();
+}
 
 void vibeos_x86_64_serial_puts(const char *s) {
     if (!s) {

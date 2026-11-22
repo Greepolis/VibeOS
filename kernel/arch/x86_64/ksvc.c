@@ -907,6 +907,7 @@ int ks_pgrp_orphaned(uint32_t pgid) { return hw_pgrp_is_orphaned(pgid); }
 void ks_con_lock(void) { vibeos_x86_64_serial_lock(); }
 void ks_con_unlock(void) { vibeos_x86_64_serial_unlock(); }
 void ks_con_puts(const char *s) { vibeos_x86_64_serial_puts(s); }
+void ks_con_log_only(const char *s) { vibeos_x86_64_serial_log_only(s); }
 void ks_con_putc(char c) { vibeos_x86_64_serial_putc(c); }
 void ks_con_hex(uint64_t v) { vibeos_x86_64_serial_print_hex(v); }
 void ks_log(vibeos_log_level_t level, uint32_t code, uint64_t a0, uint64_t a1,

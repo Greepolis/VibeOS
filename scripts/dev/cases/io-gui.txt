@@ -67,6 +67,14 @@
 
 ### putc before init is accepted into the grid
 --- old
-    if (!vibeos_gui_active() || c == '\r') {
+    if (!vibeos_gui_active()) {
+        return;
+    }
+    if (!gui_lock()) {
+        __atomic_fetch_add
 +++ new
-    if (c == '\r') {
+    if (0) {
+        return;
+    }
+    if (!gui_lock()) {
+        __atomic_fetch_add

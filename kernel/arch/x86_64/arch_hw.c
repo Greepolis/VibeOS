@@ -546,6 +546,7 @@ uint64_t g_gui_back_lost;
  * (vibeos/linux_exports.h); this file prints them. */
 extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);
 extern int vibeos_x86_64_fb_ready(void);
+extern void vibeos_x86_64_fb_size(uint32_t *rows, uint32_t *cols);
 extern void vibeos_x86_64_fb_puts(const char *s);
 
 /* Init program read from the on-disk filesystem, if present. */
@@ -1917,6 +1918,23 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_fb_puts("VibeOS console\n");
     } else {
         vibeos_x86_64_serial_puts("[FB] no framebuffer; console is serial-only\n");
+    }
+    /* What the console answers TIOCGWINSZ with. It said 80 by 25 on a 71-column
+     * window, and a line editor counts its wrapped rows from that. */
+    {
+        uint32_t rows = 0, cols = 0;
+
+        if (vibeos_display_size(&rows, &cols) != 0 && vibeos_x86_64_fb_ready()) {
+            vibeos_x86_64_fb_size(&rows, &cols);
+        }
+        if (rows != 0u && cols != 0u) {
+            vibeos_tty_size_t size;
+
+            vibeos_tty_get_size(&size);
+            size.rows = (uint16_t)rows;
+            size.cols = (uint16_t)cols;
+            vibeos_tty_set_size(&size);
+        }
     }
 
     /* Real storage: find a disk, mount the FAT filesystem, and load the init

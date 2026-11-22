@@ -45,6 +45,7 @@
 #include "vibeos/device.h"
 #include "vibeos/font8x8.h"
 #include "vibeos/gui.h"
+#include "vibeos/vt.h"
 
 #define TERM_COLS VIBEOS_GUI_TERM_COLS
 #define TERM_ROWS VIBEOS_GUI_TERM_ROWS
@@ -78,6 +79,7 @@ static vibeos_dev_lock_t g_lock = VIBEOS_DEV_LOCK("gui");
 
 static char g_term[TERM_ROWS][TERM_COLS];
 static uint32_t g_term_col, g_term_row;
+static vibeos_vt_t g_vt;
 static int g_term_dirty;
 static vibeos_gui_stats_t g_stats;
 /* Outside the lock by definition - it counts the writes that could not take it -
@@ -88,6 +90,7 @@ static uint64_t g_reentered;
 
 static volatile int g_ticking;
 static char g_snap[TERM_ROWS][TERM_COLS];
+static uint32_t g_snap_col, g_snap_row;
 static int32_t g_last_cx = -1, g_last_cy = -1;
 
 /* ---- set once by init, before g_active; read-only after ------------------------ */
@@ -238,6 +241,15 @@ static void compose_terminal(char grid[TERM_ROWS][TERM_COLS]) {
             draw_char(g_back, g_win_x + 8u + col * 8u, y, c, COL_TEXT);
         }
     }
+    /* Where typing goes: a line editor is unusable without it. On the row
+     * between two lines of text, so it hides no character. */
+    if (g_snap_row < TERM_ROWS && g_snap_col < TERM_COLS) {
+        uint32_t y = g_win_y + 24u + g_snap_row * 9u;
+
+        if (y + 9u <= g_win_y + g_win_h - 2u) {
+            fill_rect(g_back, g_win_x + 8u + g_snap_col * 8u, y + 8u, 8u, 1u, COL_TEXT);
+        }
+    }
 }
 
 static void compose_desktop(void) {
@@ -306,18 +318,96 @@ static void term_set(uint32_t row, uint32_t col, char c) {
     g_term[row][col] = c;
 }
 
+/* The cursor moved, by a sequence. A row ends at its first NUL, so a row the
+ * cursor is now past the end of gets spaces up to it; otherwise what is written
+ * there is beyond the end and never shows. */
+static void term_moved(uint32_t row, uint32_t col) {
+    uint32_t k;
+
+    g_term_row = row < TERM_ROWS ? row : TERM_ROWS - 1u;
+    /* TERM_COLS - 1 is where the terminal wraps, never where it writes. */
+    g_term_col = col < TERM_COLS - 1u ? col : TERM_COLS - 2u;
+    for (k = 0; k < g_term_col; k++) {
+        if (g_term[g_term_row][k] == 0) {
+            term_set(g_term_row, k, ' ');
+        }
+    }
+}
+
+static void term_erase(uint32_t row, uint32_t from) {
+    uint32_t k;
+
+    for (k = from; k < TERM_COLS; k++) {
+        term_set(row, k, 0);
+    }
+}
+
+/* What a sequence asks of the grid. Every number is compared before it is used:
+ * they come from whatever a program printed. */
+static void term_op(vibeos_vt_op_t op, uint32_t n, uint32_t m) {
+    uint32_t r;
+
+    switch (op) {
+        case VIBEOS_VT_UP:
+            term_moved(n < g_term_row ? g_term_row - n : 0u, g_term_col);
+            break;
+        case VIBEOS_VT_DOWN:
+            term_moved(n < TERM_ROWS - g_term_row ? g_term_row + n : TERM_ROWS - 1u, g_term_col);
+            break;
+        case VIBEOS_VT_RIGHT:
+            term_moved(g_term_row, n < TERM_COLS ? g_term_col + n : TERM_COLS);
+            break;
+        case VIBEOS_VT_LEFT:
+            term_moved(g_term_row, n < g_term_col ? g_term_col - n : 0u);
+            break;
+        case VIBEOS_VT_GOTO:
+            term_moved(n, m);
+            break;
+        case VIBEOS_VT_ERASE_LINE:
+            term_erase(g_term_row, g_term_col);
+            break;
+        case VIBEOS_VT_ERASE_BELOW:
+            term_erase(g_term_row, g_term_col);
+            for (r = g_term_row + 1u; r < TERM_ROWS; r++) {
+                term_erase(r, 0u);
+            }
+            break;
+        case VIBEOS_VT_ERASE_ALL:
+            for (r = 0; r < TERM_ROWS; r++) {
+                term_erase(r, 0u);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
 /* One character into the terminal grid. Called from the console write path, so
  * it does the least possible work: it only marks the window dirty, and the
  * repaint happens on the timer where a full recompose is affordable. */
 void vibeos_gui_putc(char c) {
-    if (!vibeos_gui_active() || c == '\r') {
+    vibeos_vt_op_t op;
+    uint32_t vn, vm;
+
+    if (!vibeos_gui_active()) {
         return;
     }
     if (!gui_lock()) {
         __atomic_fetch_add(&g_reentered, 1u, __ATOMIC_RELAXED);
         return;
     }
-    if (c == '\n') {
+    op = vibeos_vt_feed(&g_vt, c, &vn, &vm);
+    if (op != VIBEOS_VT_PRINT) {
+        if (op != VIBEOS_VT_NONE) {
+            term_op(op, vn, vm);
+            g_term_dirty = 1;
+        }
+        gui_unlock();
+        return;
+    }
+    if (c == '\r') {
+        g_term_col = 0;
+    } else if (c == '\n') {
         g_term_col = 0;
         g_term_row++;
     } else if (c == '\b') {
@@ -434,6 +524,8 @@ void vibeos_gui_tick(void) {
                     g_snap[r][c] = g_term[r][c];
                 }
             }
+            g_snap_col = g_term_col;
+            g_snap_row = g_term_row;
             g_term_dirty = 0;
             took = 1;
         }
@@ -569,6 +661,8 @@ void vibeos_gui_reset(void) {
         }
     }
     g_term_col = g_term_row = 0;
+    g_snap_col = g_snap_row = 0;
+    g_vt = (vibeos_vt_t){ 0 };
     g_term_dirty = 0;
     g_stats = (vibeos_gui_stats_t){ 0 };
     g_reentered = 0;
@@ -629,8 +723,15 @@ static int gui_probe(const vibeos_dev_env_t *env) {
                            env->fb_back, env->fb_back_bytes);
 }
 
+/* The last column is where the grid wraps and never where it writes. */
+static void gui_size(uint32_t *rows, uint32_t *cols) {
+    *rows = TERM_ROWS;
+    *cols = TERM_COLS - 1u;
+}
+
 static const vibeos_display_ops_t g_gui_ops = {
     .putc = vibeos_gui_putc,
+    .size = gui_size,
     .tick = vibeos_gui_tick,
 };
 

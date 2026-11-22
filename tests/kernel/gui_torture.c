@@ -325,8 +325,12 @@ static char random_char(void) {
     if (k < 70u) { return (char)(0x20 + below(95u)); }
     if (k < 82u) { return '\n'; }
     if (k < 88u) { return '\b'; }
-    if (k < 92u) { return '\r'; }
-    if (k < 97u) { return (char)(1u + below(31u)); }   /* control: stored, not drawn */
+    if (k < 97u) {
+        /* control: stored, not drawn. Not CR or ESC, which move the cursor
+         * (tests/kernel/vt_tests.c); this model has no cursor to move. */
+        char c = (char)(1u + below(31u));
+        return (c == '\r' || c == 27) ? 'x' : c;
+    }
     if (k < 99u) { return (char)(0x80u + below(128u)); }
     return 0;                                          /* a NUL, rarely */
 }
