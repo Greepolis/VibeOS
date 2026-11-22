@@ -139,10 +139,10 @@ int main(void) {
     NEED(until(m, "Password: "), "no password prompt for the real login");
     type(m, "vibeos\n");
     NEED(until(m, "$ "), "the user's shell did not start");
-    type(m, "echo U_$(id -u)_G_$(id -g)_P_$(pwd)_H_${HOME}_L_${LEAK:-clean}; cat /etc/shadow 2>/dev/null; echo SHADOW_RC_$?; echo DONE_$((3*3))\n");
+    type(m, "echo U_$(id -u)_G_$(id -g)_P_$(pwd)_H_${HOME}_L_%LEAK%; cat /etc/shadow 2>/dev/null; echo SHADOW_RC_$?; echo DONE_$((3*3))\n");
     NEED(until(m, "DONE_9"), "the session did not run the command");
     NEED(strstr(g_seen, "U_1000_G_1000_P_/home/vibe"), "the wrong ids or directory");
-    NEED(strstr(g_seen, "_L_clean"), "the caller's environment reached the session");
+    NEED(strstr(g_seen, "_L_%LEAK%\r"), "the caller's environment reached the session");
     NEED(strstr(g_seen, "SHADOW_RC_1"), "a user could read /etc/shadow");
     NEED(!strstr(g_seen, "$6$"), "a password hash reached a user");
     type(m, "exit\n");

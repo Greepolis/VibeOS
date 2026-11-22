@@ -1360,13 +1360,14 @@ static int b_kill(int argc, char **argv) {
 }
 
 static int b_type(int argc, char **argv);
+int vsh_history_cmd(int argc, char **argv);
 
 static const struct {
     const char *name;
     int (*fn)(int argc, char **argv);
 } g_builtins[] = {
     {"alias", b_alias}, {"bg", b_bg},       {"cd", b_cd},           {"echo", b_echo},
-    {"exit", b_exit},   {"false", b_false}, {"fg", b_fg},           {"jobs", b_jobs},
+    {"exit", b_exit},   {"false", b_false}, {"fg", b_fg},           {"history", vsh_history_cmd}, {"jobs", b_jobs},
     {"kill", b_kill},   {"pwd", b_pwd},     {"source", b_source},   {"true", b_true},
     {"type", b_type},   {"unalias", b_unalias}, {"unset", b_unset}, {"wait", b_wait},
 };
@@ -1380,6 +1381,11 @@ static int (*find_builtin(const char *name))(int, char **) {
         }
     }
     return 0;
+}
+
+/* For the line editor's Tab. 0 past the last. */
+const char *vsh_builtin_name(size_t i) {
+    return i < sizeof(g_builtins) / sizeof(g_builtins[0]) ? g_builtins[i].name : 0;
 }
 
 static func_t *find_func(const char *name) {

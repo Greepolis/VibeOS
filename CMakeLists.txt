@@ -338,10 +338,21 @@ if(VIBEOS_BUILD_TESTS)
     target_compile_options(vibeos_vsh_tests PRIVATE -Wall -Wextra
         $<$<NOT:$<PLATFORM_ID:Windows>>:-Werror>)
     add_test(NAME vibeos-vsh-host COMMAND vibeos_vsh_tests)
+    # The line editor, key by key against a model of a screen.
+    add_executable(vibeos_vsh_edit_tests
+        tests/vsh/vsh_edit_tests.c
+        user/vsh/vsh_edit.c
+        user/vsh/vsh_parse.c)
+    target_include_directories(vibeos_vsh_edit_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/user/vsh)
+    target_compile_options(vibeos_vsh_edit_tests PRIVATE -Wall -Wextra
+        $<$<NOT:$<PLATFORM_ID:Windows>>:-Werror>)
+    add_test(NAME vibeos-vsh-edit COMMAND vibeos_vsh_edit_tests)
     # vsh itself on the host, running the script the boot runs in the guest.
     if(NOT WIN32)
         add_executable(vibeos_vsh
             user/vsh/vsh_main.c
+            user/vsh/vsh_edit.c
             user/vsh/vsh_exec.c
             user/vsh/vsh_parse.c
             user/vsh/vsh_expand.c)
@@ -750,6 +761,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         # vsh (docs/shell/s4.md), the native shell.
         set(VIBEOS_VSH_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_main.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_edit.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_exec.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_parse.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_expand.c")
@@ -759,6 +771,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 "-I${CMAKE_CURRENT_SOURCE_DIR}/user/vsh"
                     -o "${VIBEOS_VSH_BIN}" ${VIBEOS_VSH_SRC}
             DEPENDS ${VIBEOS_VSH_SRC} "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh.h"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/user/vsh/vsh_edit.h"
             COMMENT "Building vsh as a static Linux binary"
             VERBATIM
         )

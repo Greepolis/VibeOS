@@ -24,12 +24,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PROMPT "vsh$ "
-
 static int g_m = -1;
 static pid_t g_shell = -1;
 static char g_buf[65536];
 static size_t g_len, g_at;
+static const char *g_prompt = "vsh$ ";    /* root's ends in # */
 
 static void fail(const char *what) {
     char line[160];
@@ -119,7 +118,7 @@ static void expect(const char *word, const char *what) {
 }
 
 static void prompt(const char *what) {
-    expect(PROMPT, what);
+    expect(g_prompt, what);
 }
 
 /* A keystroke meant for a program goes after the program has the terminal;
@@ -287,7 +286,7 @@ static void survives_ctrl_c(void) {
 }
 
 int main(int argc, char **argv) {
-    char *const env[] = {(char *)"PATH=/usr/bin:/bin", (char *)"TERM=dumb", (char *)"HOME=/", 0};
+    char *const env[] = {(char *)"PATH=/usr/bin:/bin", (char *)"TERM=linux", 0};
     char *cargv[2];
     int st = 0;
     long end;
@@ -295,6 +294,9 @@ int main(int argc, char **argv) {
 
     if (argc != 2) {
         fail("usage: VSHJOBS.ELF path-of-vsh");
+    }
+    if (geteuid() == 0) {
+        g_prompt = "vsh# ";
     }
     signal(SIGPIPE, SIG_IGN);
     g_m = posix_openpt(O_RDWR | O_NOCTTY);

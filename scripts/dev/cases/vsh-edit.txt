@@ -1,0 +1,89 @@
+# vsh's line editor, key by key against a model of a screen
+# (tests/vsh/vsh_edit_tests.c).
+#
+# Target source: user/vsh/vsh_edit.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-vsh.sh build-gcc-Release" python3 scripts/dev/sabotage.py user/vsh/vsh_edit.c scripts/dev/cases/vsh-edit.txt
+
+### a line exactly at the margin does not wrap
+--- old
+    if (total > 0u && total % e->cols == 0u) {
++++ new
+    if (0 && total > 0u && total % e->cols == 0u) {
+
+### a character is counted in bytes
+--- old
+        w += !is_cont(s[i]);
++++ new
+        w += !is_cont(s[i]) || 1;
+
+### Left stops inside a character
+--- old
+        while (p > 0u && is_cont(e->b[p])) {
++++ new
+        while (0 && p > 0u && is_cont(e->b[p])) {
+
+### Ctrl+Left does not skip the gap first
+--- old
+    while (p > 0u && !in_word(e->b[p - 1u])) {
++++ new
+    while (0 && p > 0u && !in_word(e->b[p - 1u])) {
+
+### Ctrl+Right does not skip the gap first
+--- old
+    while (p < e->len && !in_word(e->b[p])) {
++++ new
+    while (0 && p < e->len && !in_word(e->b[p])) {
+
+### an accented letter ends a word
+--- old
+    return u >= 0x80u || u == '_' ||
++++ new
+    return u == '_' ||
+
+### Ctrl is ignored on the right arrow
+--- old
+        case 'C': if (mod == 5 || mod == 3) { key_word_right(e); } else { key_right(e); } break;
++++ new
+        case 'C': key_right(e); break;
+
+### F1 on the Linux console is read as Up
+--- old
+    if (e->seq[1] == '[') {
++++ new
+    if (0 && e->seq[1] == '[') {
+
+### history forgets what was being typed
+--- old
+    set_text(e, at == e->hist->n ? (e->draft ? e->draft : "") : e->hist->items[at]);
++++ new
+    set_text(e, at == e->hist->n ? "" : e->hist->items[at]);
+
+### a repeated line is kept twice
+--- old
+    if (!line[0] || (h->n > 0u && strcmp(h->items[h->n - 1u], line) == 0)) {
++++ new
+    if (!line[0]) {
+
+### Ctrl+R again finds the same entry
+--- old
+        search_from(e, e->found < e->hist->n ? e->found : e->hist->n);
++++ new
+        search_from(e, e->hist->n);
+
+### a name with a space is not quoted
+--- old
+    if (!strpbrk(name, " \t'\"$\\;|&()<>*?[]{}%#~=")) {
++++ new
+    if (1) {
+
+### a space inside quotes starts a new word
+--- old
+            quote = c == quote ? 0 : quote;
++++ new
+            quote = 0;
+
+### a second word is completed as a program
+--- old
+    *first = !cmd_seen;
++++ new
+    *first = 1;

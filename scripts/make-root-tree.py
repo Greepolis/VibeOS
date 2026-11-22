@@ -116,8 +116,8 @@ USER_ID = 1000
 def write_accounts(out, production):
     h = FIRST_BOOT_HASH if production else DEV_PASSWORD_HASH
     with open(os.path.join(out, "etc", "passwd"), "w", newline="\n") as f:
-        f.write("root:x:0:0:root:/root:/usr/bin/sh\n")
-        f.write("%s:x:%d:%d:VibeOS user:/home/%s:/usr/bin/sh\n" % (USER_NAME, USER_ID, USER_ID, USER_NAME))
+        f.write("root:x:0:0:root:/root:/usr/bin/vsh\n")
+        f.write("%s:x:%d:%d:VibeOS user:/home/%s:/usr/bin/vsh\n" % (USER_NAME, USER_ID, USER_ID, USER_NAME))
     with open(os.path.join(out, "etc", "group"), "w", newline="\n") as f:
         f.write("root:x:0:\n%s:x:%d:\n" % (USER_NAME, USER_ID))
     with open(os.path.join(out, "etc", "shadow"), "w", newline="\n") as f:
