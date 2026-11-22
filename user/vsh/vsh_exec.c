@@ -1441,8 +1441,7 @@ static int b_type(int argc, char **argv) {
 /* ---- commands -------------------------------------------------------------- */
 
 static int call_func(const func_t *f, int argc, char **argv) {
-    frame_t frame_store;
-    frame_t *frame = &frame_store;
+    frame_t *frame;
     frame_t *caller = G.top;
     const vsh_word_t *p;
     int i = 1, loops = G.loops;
@@ -1451,9 +1450,12 @@ static int call_func(const func_t *f, int argc, char **argv) {
         say_err(f->name, "function calls nested too deeply");
         return 1;
     }
-    /* On the stack, bounded by VSH_MAX_CALLS. G.top holds its address only
-     * until the one way out below puts the caller back. */
-    memset(frame, 0, sizeof(*frame));
+    /* On the heap: G.top must never hold the address of a local. */
+    frame = (frame_t *)calloc(1u, sizeof(*frame));
+    if (!frame) {
+        say_err(f->name, "out of memory");
+        return 1;
+    }
     for (p = f->node->words; p; p = p->next, i++) {
         set_scalar(frame, p->parts->text, i < argc ? argv[i] : "");
     }
@@ -1470,6 +1472,7 @@ static int call_func(const func_t *f, int argc, char **argv) {
     G.calls--;
     G.top = caller;
     frame_free(frame);
+    free(frame);
     return G.status;
 }
 
