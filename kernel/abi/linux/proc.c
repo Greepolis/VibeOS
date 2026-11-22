@@ -212,6 +212,7 @@ static long linux_fork_body(const ks_regs_t *frame, uint32_t exit_sig, uint64_t 
     child->pgid = parent->pgid;
     child->sid = parent->sid;
     child->signal_stopped = 0;
+    child->sleep_req = 0;
     child->stop_sig = 0;
     child->stop_report = 0;
     child->is_thread = 0;
@@ -464,6 +465,7 @@ static long linux_clone_body(const ks_regs_t *frame,
     child->pgid = parent->pgid;
     child->sid = parent->sid;
     child->signal_stopped = 0;
+    child->sleep_req = 0;
     child->stop_sig = 0;
     child->stop_report = 0;
     child->is_thread = 1;

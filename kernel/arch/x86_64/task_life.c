@@ -1360,6 +1360,7 @@ int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     g_tasks[i].id.pgid = g_tasks[i].id.pid;
     g_tasks[i].id.sid = g_tasks[i].id.pid;
     g_tasks[i].id.signal_stopped = 0;
+    g_tasks[i].id.sleep_req = 0;
     return i;
 }
 

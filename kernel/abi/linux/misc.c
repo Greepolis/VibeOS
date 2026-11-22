@@ -81,7 +81,12 @@ static long linux_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
  * rounded up to whole ticks plus the rest of the current one. A signal that
  * needs acting on ends it early with EINTR and, for a relative sleep, the time
  * that was left. That EINTR is the program's whatever SA_RESTART says, as on
- * Linux: run again from the start it would sleep the whole time over. */
+ * Linux: run again from the start it would sleep the whole time over.
+ *
+ * A stop is different: no handler runs and the program never knows. Ctrl+Z on
+ * a `sleep 30` and a `bg` used to end the sleep there and then, because the
+ * stop was an EINTR like any other (M-147). The call is issued again once the
+ * process is continued, and a relative one finds the deadline it had. */
 
 /* A timespec as ticks, rounded up. -1 if it is not a time. */
 int64_t linux_ticks_of(const linux_timespec_t *ts) {
@@ -110,6 +115,46 @@ static long linux_sleep_until(uint64_t clk, uint64_t deadline, uint64_t *left) {
         }
         ks_wait_tick();
     }
+}
+
+/* 1 if what cut the sleep short is a stop and nothing with a handler: the
+ * program will not be told, so it must not see EINTR. */
+static int linux_only_a_stop(void) {
+    int me = ks_current();
+    const vibeos_task_t *t = ks_id(me);
+    vibeos_procstate_t *ps = ks_ps(me);
+    uint64_t ready = t->sig_pending & ~t->sig_blocked;
+    uint32_t sig;
+    int stops = 0;
+
+    if (t->sig_pending & (1ull << VIBEOS_SIGSTOP)) {
+        ready |= 1ull << VIBEOS_SIGSTOP;
+    }
+    if (!ps || (t->sig_pending & (1ull << VIBEOS_SIGKILL))) {
+        return 0;
+    }
+    for (sig = 1; sig < 64u; sig++) {
+        uint64_t handler;
+
+        if (!(ready & (1ull << sig))) {
+            continue;
+        }
+        if (sig == VIBEOS_SIGSTOP) {
+            stops = 1;
+            continue;
+        }
+        ks_lock(&ps->files_lock, __func__);
+        handler = ps->sig_handler[sig];
+        ks_unlock(&ps->files_lock);
+        if (handler == SIG_IGN_ADDR) {
+            continue;
+        }
+        if (handler != SIG_DFL_ADDR || !ks_signal_default_stops(sig)) {
+            return 0;
+        }
+        stops = 1;
+    }
+    return stops;
 }
 
 static long linux_sleep(uint64_t clk, uint64_t flags, uint64_t req_uptr, uint64_t rem_uptr) {
@@ -162,8 +207,23 @@ static long linux_sleep(uint64_t clk, uint64_t flags, uint64_t req_uptr, uint64_
         return 0;
     } else {
         deadline = (uint64_t)linux_clock_read(clk) + (uint64_t)ticks + 1u;
+        if (ks_current() >= 0) {
+            vibeos_task_t *t = ks_id(ks_current());
+
+            if (t->sleep_req == req_uptr) {
+                deadline = t->sleep_deadline;    /* the same sleep, continued */
+            }
+            t->sleep_req = 0;
+        }
     }
     r = linux_sleep_until(clk, deadline, &left);
+    if (r == -VIBEOS_EINTR && linux_only_a_stop()) {
+        if (!(flags & LINUX_TIMER_ABSTIME)) {
+            ks_id(ks_current())->sleep_req = req_uptr;
+            ks_id(ks_current())->sleep_deadline = deadline;
+        }
+        return -VIBEOS_RESTART_CALL;
+    }
     if (r == -VIBEOS_EINTR && rem_uptr != 0u && !(flags & LINUX_TIMER_ABSTIME)) {
         rem.tv_sec = (int64_t)(left / ks_hz());
         rem.tv_nsec = (int64_t)((left % ks_hz()) * (1000000000ull / ks_hz()));

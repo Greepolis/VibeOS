@@ -36,6 +36,11 @@ typedef struct vibeos_task {
     int is_idle;         /* per-CPU idle task: only run when nothing else is ready */
     int wait_input;      /* blocked in read() on stdin */
     uint8_t signal_stopped;   /* stopped by SIGSTOP until SIGCONT */
+    /* A relative sleep cut short by a stop: the request it was, and when it
+     * ends. The call is issued again once continued and finds its deadline
+     * here (M-147). 0: none. */
+    uint64_t sleep_req;
+    uint64_t sleep_deadline;
     /* On a process's leader (docs/shell/s1.md step 1): the signal that
      * stopped the process, 0 while it runs, and what its parent has yet to
      * be told by wait - VIBEOS_STOP_REPORT_*, each told once. */
