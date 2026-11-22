@@ -1,0 +1,17 @@
+# A script run by execve on the machine (docs/shell/s5.md). Read by SCRIPTT.ELF;
+# expects script_exec_failed.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/exec-script-boot.txt
+
+### the script's path is left out of the interpreter's arguments
+--- old
+    first[nfirst++] = script;
++++ new
+    (void)script;
+
+### the table is not asked
+--- old
+        if (t <= 0 || !vibeos_binfmt_find(g_binfmt, (size_t)t, path, interp, sizeof(interp))) {
++++ new
+        if (1 || t <= 0 || !vibeos_binfmt_find(g_binfmt, (size_t)t, path, interp, sizeof(interp))) {

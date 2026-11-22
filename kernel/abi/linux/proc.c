@@ -12,6 +12,7 @@
  * Lifted out of arch_hw.c (C4 stage 3), moved as it was. */
 
 #include "linux_internal.h"
+#include "vibeos/script.h"
 
 static vibeos_lock_t g_exec_lock;
 
@@ -1017,6 +1018,137 @@ static long linux_copy_user_argv(uint64_t uvec, linux_argv_t *out) {
     return (long)count;
 }
 
+/* The file at `path` in the shared staging buffer, or what the read said. */
+static long linux_exec_stage(const char *path, uint8_t *elf, uint32_t elf_cap) {
+    long n;
+
+    if (linux_exec_cache_hit(path)) {
+        return g_exec_cached_len;   /* already staged, byte for byte */
+    }
+    linux_exec_cache_drop();
+    n = ks_read_file_cached(path, elf, elf_cap, &g_exec_cached_id);
+    if (n > 0) {
+        uint32_t i;
+        for (i = 0; i < sizeof(g_exec_cached) - 1u && path[i]; i++) {
+            g_exec_cached[i] = path[i];
+        }
+        g_exec_cached[i] = 0;
+        g_exec_cached_len = n;
+        /* Clear whatever the previous program left beyond this one.
+         *
+         * The staging buffer is shared by every exec, so a read that
+         * stops short leaves the tail of the last image in place - and
+         * the result is not obviously broken, it is a plausible ELF made
+         * of two programs. That parses far enough to fail somewhere
+         * confusing. Zeroing costs one pass over memory on a path that
+         * already read the file, and turns a subtle corruption into a
+         * clean parse failure. */
+        {
+            uint32_t z;
+            for (z = (uint32_t)n; z < elf_cap; z++) {
+                elf[z] = 0;
+            }
+        }
+    }
+    return n;
+}
+
+/* The new argv of a script: the interpreter, its argument, the script, and the
+ * caller's arguments after its argv[0]. */
+static long linux_script_argv(linux_argv_t *out, const char *interp, const char *arg,
+                              const char *script, const char *const *old) {
+    uint32_t count = 0, used = 0, i;
+    const char *first[3];
+    uint32_t nfirst = 0;
+
+    first[nfirst++] = interp;
+    if (arg[0]) {
+        first[nfirst++] = arg;
+    }
+    first[nfirst++] = script;
+    for (i = 0; i < nfirst || (old[0] && old[i - nfirst + 1u]); i++) {
+        const char *from = i < nfirst ? first[i] : old[i - nfirst + 1u];
+        uint32_t len = 0;
+
+        while (from[len]) {
+            len++;
+        }
+        if (count == LINUX_MAX_ARGV || len + 1u > LINUX_ARG_BYTES - used) {
+            return -VIBEOS_E2BIG;
+        }
+        out->slot[count++] = &out->store[used];
+        for (len = 0; from[len]; len++) {
+            out->store[used++] = from[len];
+        }
+        out->store[used++] = 0;
+    }
+    out->slot[count] = 0;
+    return 0;
+}
+
+/* Under g_exec_lock, with the file staged. 0: it is a program, load it.
+ * 1: it is a script, and `path` and `argv` now name its interpreter.
+ * Negative: what execve returns. */
+static long linux_exec_script(char *path, const char *name, const char *const **argv,
+                              const char *image, size_t n, uint32_t depth) {
+    /* Two, because a nested script's new argv is built from the last one. */
+    static linux_argv_t g_script_argv[2];
+    static char g_binfmt[1024];
+    static char interp[VIBEOS_SCRIPT_LINE], arg[VIBEOS_SCRIPT_LINE];
+    static vibeos_path_t w;
+    uint32_t id = 0, i;
+    long r;
+    int how;
+
+    if (n >= 4u && image[0] == 0x7f && image[1] == 'E' && image[2] == 'L' && image[3] == 'F') {
+        return 0;
+    }
+    if (n >= 2u && image[0] == 'M' && image[1] == 'Z') {
+        return 0;
+    }
+    arg[0] = 0;
+    how = vibeos_script_parse(image, n, interp, sizeof(interp), arg, sizeof(arg));
+    if (how < 0) {
+        return -VIBEOS_ENOEXEC;
+    }
+    if (how == 0) {
+        long t = ks_read_file_cached("/etc/vibeos/binfmt", g_binfmt, sizeof(g_binfmt), &id);
+
+        if (t <= 0 || !vibeos_binfmt_find(g_binfmt, (size_t)t, path, interp, sizeof(interp))) {
+            return -VIBEOS_ENOEXEC;
+        }
+    }
+    if (depth >= VIBEOS_SCRIPT_DEPTH) {
+        return -VIBEOS_ELOOP;
+    }
+    r = linux_walk_as_caller(interp, &w);
+    if (r == 0 && !w.exists) {
+        r = -VIBEOS_ENOENT;
+    }
+    if (r != 0) {
+        if (r == -VIBEOS_ENOENT) {
+            (void)ks_exec_refuse(VIBEOS_EXEC_NOT_FOUND, interp, "interpreter");
+        }
+        return r;
+    }
+    /* The questions a program is asked, asked of what will actually run. */
+    if (w.node.is_dir || linux_may(&w.node, VIBEOS_MAY_EXEC) != 0 ||
+        (vibeos_fs_flags(w.mnt) & VIBEOS_MNT_NOEXEC)) {
+        return -VIBEOS_EACCES;
+    }
+    r = linux_script_argv(&g_script_argv[depth & 1u], interp, arg,
+                          (depth == 0u && name[0]) ? name : path, *argv);
+    if (r != 0) {
+        return r;
+    }
+    *argv = g_script_argv[depth & 1u].slot;
+    for (i = 0; i + 1u < VIBEOS_PATH_MAX && w.path[i]; i++) {
+        path[i] = w.path[i];
+    }
+    path[i] = 0;
+    return 1;
+}
+
 static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_uptr,
                           uint64_t argv_uptr, uint64_t envp_uptr, uint64_t atflags) {
     char name[128];                 /* as the caller wrote it: argv[0] if none   */
@@ -1219,33 +1351,21 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
          * what BusyBox uses to decide which applet it is. */
         argv = (na > 0) ? g_exec_argv.slot : (const char *const *)fallback_argv;
     }
-    if (linux_exec_cache_hit(path)) {
-        n = g_exec_cached_len;   /* already staged, byte for byte */
-    } else {
-        linux_exec_cache_drop();
-        n = ks_read_file_cached(path, elf, elf_cap, &g_exec_cached_id);
-        if (n > 0) {
-            uint32_t i;
-            for (i = 0; i < sizeof(g_exec_cached) - 1u && path[i]; i++) {
-                g_exec_cached[i] = path[i];
-            }
-            g_exec_cached[i] = 0;
-            g_exec_cached_len = n;
-            /* Clear whatever the previous program left beyond this one.
-             *
-             * The staging buffer is shared by every exec, so a read that
-             * stops short leaves the tail of the last image in place - and
-             * the result is not obviously broken, it is a plausible ELF made
-             * of two programs. That parses far enough to fail somewhere
-             * confusing. Zeroing costs one pass over memory on a path that
-             * already read the file, and turns a subtle corruption into a
-             * clean parse failure. */
-            {
-                uint32_t z;
-                for (z = (uint32_t)n; z < elf_cap; z++) {
-                    elf[z] = 0;
-                }
-            }
+    /* A script names what runs it, and that is read in its place. */
+    for (k = 0;; k++) {
+        long next;
+
+        n = linux_exec_stage(path, elf, elf_cap);
+        if (n <= 0) {
+            break;
+        }
+        next = linux_exec_script(path, name, &argv, (const char *)elf, (size_t)n, k);
+        if (next == 0) {
+            break;
+        }
+        if (next < 0) {
+            ks_unlock_preemptible(&g_exec_lock);
+            return next;
         }
     }
     if (n <= 0) {

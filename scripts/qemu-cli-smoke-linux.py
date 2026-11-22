@@ -3525,6 +3525,11 @@ def main():
                     m = re.search(r"VSHJOBS_FAIL: ([^\r\n]*)", text)
                     problems.append("vsh_jobs_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
 
+            if os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "SCRIPTT.ELF")) and disk_img:
+                if not re.search(r"write\(ring3\): SCRIPT_OK: ", text):
+                    m = re.search(r"SCRIPT_FAIL: ([^\r\n]*)", text)
+                    problems.append("script_exec_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
+
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):
                 if "SIG_OK" not in text:

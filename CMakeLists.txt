@@ -249,6 +249,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/device_tests.c
         tests/kernel/gui_tests.c
         tests/kernel/vt_tests.c
+        tests/kernel/script_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c
         tests/kernel/loader_tests.c
@@ -796,6 +797,16 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_musl_login ALL DEPENDS "${VIBEOS_LOGINT_BIN}")
+        set(VIBEOS_SCRIPTT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_script.c")
+        set(VIBEOS_SCRIPTT_BIN "${CMAKE_BINARY_DIR}/musl_script")
+        add_custom_command(
+            OUTPUT "${VIBEOS_SCRIPTT_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_SCRIPTT_BIN}" "${VIBEOS_SCRIPTT_SRC}"
+            DEPENDS "${VIBEOS_SCRIPTT_SRC}"
+            COMMENT "Building the script test as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_script ALL DEPENDS "${VIBEOS_SCRIPTT_BIN}")
 
         # The event loops (docs/abi/ L4), one program grown a step at a time as
         # the signal test was for L2.

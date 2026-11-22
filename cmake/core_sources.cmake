@@ -39,6 +39,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/sched/account.c
     kernel/sched/sched_policy.c
     kernel/sched/forkguard.c
+    kernel/exec/script.c
     kernel/exec/stats.c
     kernel/exec/view.c
     kernel/mm/usage.c

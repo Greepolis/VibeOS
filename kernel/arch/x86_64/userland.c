@@ -201,6 +201,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "/usr/bin/vsh /usr/lib/vibeos/test/EXEC.VSH /usr/bin/vsh\n"
                                   /* And its job control, at a pseudo-terminal. */
                                   "/usr/lib/vibeos/test/VSHJOBS.ELF /usr/bin/vsh\n"
+                                  /* A script's interpreter (docs/shell/s5.md). */
+                                  "/usr/lib/vibeos/test/SCRIPTT.ELF\n"
                                   /* The NT personality's first program
                                    * (docs/abi/windows.md W1): a PE image,
                                    * exec'd by this Linux-ABI shell like any

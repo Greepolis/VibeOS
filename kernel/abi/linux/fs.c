@@ -271,6 +271,22 @@ long linux_walk_at(uint64_t dirfd, uint64_t upath, uint32_t flags, vibeos_path_t
     return r;
 }
 
+/* A path the kernel holds rather than the caller's memory - a script's
+ * interpreter - walked as the caller, from its root and working directory. */
+long linux_walk_as_caller(const char *path, vibeos_path_t *w) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    char base[VIBEOS_PATH_MAX], root[VIBEOS_PATH_MAX];
+    vibeos_cred_t c;
+
+    if (!ps) {
+        return -VIBEOS_EINVAL;
+    }
+    linux_ps_path(ps, 1, root);
+    linux_ps_path(ps, 0, base);
+    linux_cred(&c);
+    return vibeos_path_walk_as(root, base, path, 0u, &c, w);
+}
+
 /* The file a descriptor names, walked again from the path its description
  * remembers - what fchmod, fchown, futimens, fstatfs and every AT_EMPTY_PATH
  * work on. The last component is not followed: the description was opened on

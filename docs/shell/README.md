@@ -10,6 +10,7 @@ decided with the project's owner on 2026-11-19.
 | [s2.md](s2.md) | S2: login - the accounts, first boot, the session |
 | [s3.md](s3.md) | S3: the names in `/usr/bin` |
 | [s4.md](s4.md) | S4: `vsh` - the grammar agreed before the parser, its rules and its status |
+| [s5.md](s5.md) | S5: scripts run by `#!` or by their extension, and bash |
 
 The phases, each with its own file once it starts:
 

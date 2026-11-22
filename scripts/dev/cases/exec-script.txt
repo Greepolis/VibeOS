@@ -1,0 +1,57 @@
+# What runs a script (vibeos/script.h). Read by test_script.
+#
+# Target source: kernel/exec/script.c
+# Not a case: dropping the length comparison of an extension goes NOT RED because
+# the byte comparison after it refuses the same entries; it only saves the walk.
+#
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/exec/script.c scripts/dev/cases/exec-script.txt
+
+### a name cut by the limit is run as a shorter path
+--- old
+    if (k == 0u || (i == end && !whole)) {
++++ new
+    if (k == 0u) {
+
+### the argument is split at its first blank
+--- old
+    last = end;
+    while (last > i && (is_blank(head[last - 1u]) || head[last - 1u] == '\r')) {
++++ new
+    last = i;
+    while (last < end && !is_blank(head[last])) {
+        last++;
+    }
+    while (last > i && (is_blank(head[last - 1u]) || head[last - 1u] == '\r')) {
+
+### a Windows line ending stays in the interpreter's name
+--- old
+    if (k > 0u && interp[k - 1u] == '\r') {
++++ new
+    if (0 && k > 0u && interp[k - 1u] == '\r') {
+
+### a hidden file counts as an extension
+--- old
+        } else if (*p == '.' && p > path && p[-1] != '/') {
++++ new
+        } else if (*p == '.') {
+
+### a directory's dot is taken for the file's
+--- old
+        if (*p == '/') {
+            ext = 0;
+        } else if
++++ new
+        if (*p == '/') {
+        } else if
+
+### the extension's case matters
+--- old
+        while (k < elen && lower(table[line + k]) == lower(ext[k])) {
++++ new
+        while (k < elen && table[line + k] == ext[k]) {
+
+### a path that does not fit is written anyway
+--- old
+        if (w == end || end - w + 1u > icap) {
++++ new
+        if (w == end) {

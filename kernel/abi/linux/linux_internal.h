@@ -139,6 +139,7 @@ long linux_fd_withdraw(uint64_t fd, const vibeos_file_t *f, uint32_t gen);
  * `dirfd` names, or the working directory for LINUX_AT_FDCWD, never above the root,
  * symbolic links followed as `flags` (VIBEOS_PATH_*) says. 0, or a negated errno. */
 long linux_walk_at(uint64_t dirfd, uint64_t upath, uint32_t flags, vibeos_path_t *w);
+long linux_walk_as_caller(const char *path, vibeos_path_t *w);
 
 /* The file a descriptor names, walked from the path its description remembers
  * (AT_FDCWD: the working directory), and a path that may be empty under
