@@ -1,0 +1,37 @@
+B:array 3 due tre due tre quattro
+B:assoc 2 x,y,
+B:param hello, world HELLO, WORLD Hello, bash World Hello 12 Wor
+B:default d set
+B:arith 3 24
+B:regex abc 123
+B:pattern ok
+B:brace a1 a2 b1 b2 1 2 3
+B:func arg inner 2
+B:after 7 outer global
+B:case c
+B:for 012
+B:while 1
+B:printf 03.14|ff|ab  |a\ b
+B:subst inner nested
+B:read two one
+B:here line 2
+B:herestr SHOUT
+B:pipestatus 1 0 3
+B:subshell /
+B:back same
+B:file 2 second
+B:fd first
+B:stderr rc=1 captured
+B:glob d/a.c d/b.c
+B:nullglob
+B:process-subst from-fd
+B:mapfile 2 q
+B:coproc got-ping
+B:trap usr1
+B:wait 143
+B:bgstatus 42
+B:exit trap
+B:self caught
+B:shebang arg
+B:no-shebang ran
+B:done

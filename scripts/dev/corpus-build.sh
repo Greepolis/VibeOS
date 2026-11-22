@@ -98,6 +98,25 @@ else
     rc=1
 fi
 
+# ---- bash (docs/shell/s5.md step 2): the real one, static against musl ----
+if f=$(fetch bash); then
+    rm -rf "$SRC/bash" && mkdir -p "$SRC/bash"
+    tar xzf "$f" -C "$SRC/bash"
+    d=$(find "$SRC/bash" -maxdepth 1 -type d -name 'bash-*' | head -1)
+    # Its own malloc assumes things about sbrk that musl's static binary does
+    # not promise, and no curses: readline falls back on its termcap stand-in.
+    if (cd "$d" && CC=musl-gcc CFLAGS='-O2 -std=gnu17' LDFLAGS=-static ./configure \
+            --without-bash-malloc --disable-nls --enable-static-link --without-curses &&
+            make -j"$(nproc)") > "$OUT/bash.log" 2>&1; then
+        cp "$d/bash" "$OUT/bash" && strip "$OUT/bash"
+        echo "corpus-build: bash ok"
+    else
+        echo "corpus-build: bash FAILED (see $OUT/bash.log)"; rc=1
+    fi
+else
+    rc=1
+fi
+
 # ---- the thread pool (docs/abi/ L6 step 4): this project's own program ----
 # tests/corpus/threadpool.c, against musl statically and against glibc
 # dynamically, like the two above: two C libraries' threads - their condition

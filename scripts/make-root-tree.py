@@ -67,6 +67,7 @@ SYSTEM_PROGRAMS = {
     "BUSYBOX.ELF": "usr/bin/busybox",
     "LOGIN.ELF": "usr/bin/login",
     "VSH.ELF": "usr/bin/vsh",
+    "BASH.ELF": "usr/bin/bash",
     "INIT.ELF": "usr/lib/vibeos/init",
 }
 TEST_DIR = "usr/lib/vibeos/test"
@@ -126,7 +127,8 @@ def write_accounts(out, production):
     os.makedirs(os.path.join(out, "home", USER_NAME), exist_ok=True)
     # What runs a script with no #! (docs/shell/s5.md).
     with open(os.path.join(out, "etc", "vibeos", "binfmt"), "w", newline="\n") as f:
-        f.write("# .extension interpreter\n.vsh /usr/bin/vsh\n.sh /bin/sh\n")
+        sh = "/usr/bin/bash" if os.path.exists(os.path.join(out, "usr", "bin", "bash")) else "/bin/sh"
+        f.write("# .extension interpreter\n.vsh /usr/bin/vsh\n.sh %s\n" % sh)
 
 
 def make(efi_root, out, marker, production):
