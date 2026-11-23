@@ -68,7 +68,8 @@ the order above when its prerequisites are close.
 - **Selectable desktop environments** (GNOME, KDE Plasma, Xfce) -
   [#153](https://github.com/Greepolis/VibeOS/discussions/153). Follows the GUI
   (item 4): the same DRM/KMS and evdev, plus epoll, eventfd, timerfd, inotify,
-  `SCM_RIGHTS` and memfd at the Linux ABI.
+  `SCM_RIGHTS` and memfd at the Linux ABI. Proposed plan:
+  [desktop-environments.md](ui-design/desktop-environments.md).
 - **ARM64 (AArch64)** - [#154](https://github.com/Greepolis/VibeOS/discussions/154).
   A second architecture, and the test of `kernel/arch`'s boundary.
 - **A native JDK** - [#155](https://github.com/Greepolis/VibeOS/discussions/155).
