@@ -41,6 +41,7 @@ import os
 import random
 import shutil
 import stat
+import re
 import subprocess
 import sys
 import struct
@@ -806,7 +807,14 @@ def one_seed(args):
                 other, err = walk(ex, theirs)
                 if other is None:
                     return failed("e2fsck_replay_unreadable", "n=%d %s" % (n, err))
-                if mine != other and "Truncating orphaned inode" in e2out and "Already cleared" in e2out:
+                # The same fallback for a second e2fsck behaviour: truncating an
+                # orphan that still has links, it also dropped the file's
+                # external xattr block, and then corrected i_blocks to 0. A
+                # truncate does not remove xattrs (nightly seed 1000019016,
+                # 2026-11-23: /f1 at size 0 lost user.* in e2fsck's copy only).
+                if mine != other and "Truncating orphaned inode" in e2out and \
+                        ("Already cleared" in e2out or
+                         re.search(r"Inode \d+, i_blocks is \d+, should be 0\.", e2out)):
                     # e2fsck 1.47 gives up truncating an orphan to zero
                     # through a two-level extent tree ("Already cleared ...
                     # block found in orphaned inode") and then mends the
