@@ -1173,6 +1173,21 @@ static void test_cmd_wide(uint64_t seed) {
     split_is("", "", "", "", "");
 }
 
+/* Appends within the buffer: snprintf answers what it would have written, so
+ * adding that to an offset can pass the end. */
+static size_t append_text(char *b, size_t cap, size_t at, const char *fmt, unsigned v) {
+    int n;
+
+    if (at >= cap) {
+        return at;
+    }
+    n = snprintf(b + at, cap - at, fmt, v);
+    if (n < 0) {
+        return at;
+    }
+    return (size_t)n < cap - at ? at + (size_t)n : cap - 1u;
+}
+
 /* Lines as units in hex, from what Wine's msvcrt answered the same bytes with
  * through fgetws(b, 6, f), and whether end of file was set after each. */
 static void wtext_is(const char *bytes, size_t n, const char *want) {
@@ -1187,11 +1202,11 @@ static void wtext_is(const char *bytes, size_t n, const char *want) {
 
         got[k++] = '[';
         for (p = b; *p; p++) {
-            k += (size_t)snprintf(got + k, sizeof got - k, "%x ", (unsigned)*p);
+            k = append_text(got, sizeof got, k, "%x ", *p);
         }
-        k += (size_t)snprintf(got + k, sizeof got - k, "]%d", t.eof);
+        k = append_text(got, sizeof got, k, "]%u", (unsigned)t.eof);
     }
-    snprintf(got + k, sizeof got - k, " end%d", t.eof);
+    k = append_text(got, sizeof got, k, " end%u", (unsigned)t.eof);
     CHECK(strcmp(got, want) == 0, "text stream: got %s, wanted %s", got, want);
 }
 

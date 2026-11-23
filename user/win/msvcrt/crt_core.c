@@ -575,6 +575,14 @@ void vc_wtext_open(vc_wtext *t, const uint8_t *b, size_t n) {
     }
 }
 
+/* An overlong form, a surrogate, or past Unicode. */
+static int utf8_invalid(uint32_t c, uint32_t need) {
+    if (need == 2u) {
+        return c < 0x800u || (c >= 0xD800u && c < 0xE000u);
+    }
+    return need == 3u && (c < 0x10000u || c > 0x10FFFFu);
+}
+
 /* The next UTF-16 unit before any text-mode rule, or -1 at the end. */
 static int wtext_raw(vc_wtext *t) {
     uint32_t c, need, i;
@@ -615,8 +623,7 @@ static int wtext_raw(vc_wtext *t) {
         }
         c = (c << 6) | (t->b[t->at++] & 0x3Fu);
     }
-    if ((need == 2u && (c < 0x800u || (c >= 0xD800u && c < 0xE000u))) ||
-        (need == 3u && (c < 0x10000u || c > 0x10FFFFu))) {
+    if (utf8_invalid(c, need)) {
         return 0xFFFD;
     }
     if (c >= 0x10000u) {
