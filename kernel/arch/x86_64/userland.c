@@ -211,6 +211,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * other, which speaks NT from its first
                                    * instruction. */
                                   "/win/hello.exe\n"
+                                  /* Wine's cmd, if this image has it (S6). */
+                                  "/usr/lib/windows/system32/cmd.exe /c C:\\Windows\\System32\\cmdcheck.bat\n"
                                   /* A call into a function nobody wrote:
                                    * named, and the program ended (W2). */
                                   "/win/stubcall.exe\n"

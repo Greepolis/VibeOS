@@ -206,6 +206,12 @@ foreach(WIN_TEST hello.exe stubcall.exe)
         file(COPY_FILE "${CMAKE_BINARY_DIR}/win/${WIN_TEST}" "${EFI_ROOT_DIR}/win/${WIN_TEST}" ONLY_IF_DIFFERENT)
     endif()
 endforeach()
+# Wine's cmd, when scripts/dev/corpus-build.sh has built it (docs/shell/s6.md).
+if(EXISTS "${CMAKE_BINARY_DIR}/corpus/cmd.exe")
+    file(MAKE_DIRECTORY "${WIN_SYS_DIR}")
+    file(COPY_FILE "${CMAKE_BINARY_DIR}/corpus/cmd.exe" "${WIN_SYS_DIR}/cmd.exe" ONLY_IF_DIFFERENT)
+    file(COPY_FILE "${CMAKE_CURRENT_LIST_DIR}/../tests/corpus/cmd-check.bat" "${WIN_SYS_DIR}/cmdcheck.bat" ONLY_IF_DIFFERENT)
+endif()
 # A DLL left in /win by a build from before the move would be found by nothing
 # and shipped by everything: take them off.
 file(GLOB WIN_STALE_DLLS "${EFI_ROOT_DIR}/win/*.dll")

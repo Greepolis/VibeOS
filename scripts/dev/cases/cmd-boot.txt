@@ -1,0 +1,14 @@
+# Wine's cmd at boot, against what it printed under Wine (docs/shell/s6.md step 6).
+# Needs scripts/dev/corpus-build.sh; expects cmd_script_differs.
+#
+# Not a case, because this boot cannot tell: WriteConsoleW writing nothing. It went
+# NOT RED on 2026-11-23, so cmd's output at boot does not depend on that path.
+#
+# Target source: user/win/kernel32/cmd_api.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py user/win/kernel32/cmd_api.c scripts/dev/cases/cmd-boot.txt
+
+### two equal strings do not compare equal
+--- old
+    return na == nb ? 2 : (na < nb ? 1 : 3);
++++ new
+    return na == nb ? 1 : (na < nb ? 1 : 3);

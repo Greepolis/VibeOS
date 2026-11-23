@@ -1,0 +1,40 @@
+W:echo Hello World
+W:arith 42
+W:arith2 10
+W:substr cde
+W:replace abXYefgh
+W:if-equal
+W:if-compare
+W:if-nocase
+W:if-defined
+W:if-undefined
+W:for one
+W:for two
+W:for three
+W:forl 1
+W:forl 3
+W:forl 5
+W:delayed 10
+W:goto
+W:sub first second
+W:after-call 7
+W:forf one
+W:forf two
+W:line line one
+W:line line two
+W:exists
+W:missing
+W:copied
+W:renamed
+W:moved
+W:deleted
+W:nested
+W:glob a.txt
+W:glob b.txt
+W:tree-removed
+W:pipe-done
+W:child 3
+W:ver 3
+W:back
+W:cleaned
+W:done

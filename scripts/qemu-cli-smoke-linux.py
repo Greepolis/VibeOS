@@ -1082,6 +1082,21 @@ def bash_script_differs(serial_text):
     return "extra line: " + got[len(want)] if len(got) > len(want) else None
 
 
+def cmd_script_differs(serial_text):
+    """The first line Wine's cmd got wrong here against what it printed under Wine."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "tests", "corpus", "cmd-expected.txt"), encoding="utf-8") as f:
+        want = [ln.rstrip() for ln in f if ln.strip()]
+    # cmd writes a line and its CR LF separately, so the log's next tag can follow it.
+    got = [m.rstrip() for m in re.findall(r"write\(ring3\): (W:[^\r\n\[]*)", serial_text)]
+    for i, line in enumerate(want):
+        if i >= len(got):
+            return "ended before: " + line
+        if got[i] != line:
+            return "wanted %r, got %r" % (line, got[i])
+    return "extra line: " + got[len(want)] if len(got) > len(want) else None
+
+
 def corpus_problems(serial_text):
     """What the guest answered the corpus with, against what Linux answered."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -3546,6 +3561,13 @@ def main():
                     print(f"[QEMU-CLI] bash: {differs[:200]}")
             elif disk_img and CORPUS_MODE == "require":
                 problems.append("corpus_program_absent:bash")
+            if disk_img and os.path.exists(os.path.join(efi_root, "usr", "lib", "windows", "system32", "cmd.exe")):
+                differs = cmd_script_differs(text)
+                if differs:
+                    problems.append("cmd_script_differs")
+                    print(f"[QEMU-CLI] cmd: {differs[:200]}")
+            elif disk_img and CORPUS_MODE == "require":
+                problems.append("corpus_program_absent:cmd")
             if os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "SCRIPTT.ELF")) and disk_img:
                 if not re.search(r"write\(ring3\): SCRIPT_OK: ", text):
                     m = re.search(r"SCRIPT_FAIL: ([^\r\n]*)", text)

@@ -130,34 +130,42 @@ static uint32_t delete_tree(uint16_t *path, uint32_t len, int depth) {
         if (depth >= MAX_DEPTH || len + 3u >= PATH_UNITS) {
             return 206u;    /* ERROR_FILENAME_EXCED_RANGE */
         }
-        path[len] = '\\';
-        path[len + 1u] = '*';
-        path[len + 2u] = 0;
-        h = FindFirstFileW(path, data);
-        path[len] = 0;
-        if (h != INVALID_H) {
-            do {
-                const uint16_t *name = (const uint16_t *)(const void *)(data + 44);
-                uint32_t n = wl(name), i;
+        /* The listing is asked again after each removal: it is kept by position
+         * here, so going on with it after deleting an entry skips the next one
+         * (WO-107), and the directory is then not empty. */
+        for (;;) {
+            const uint16_t *name = (const uint16_t *)(const void *)(data + 44);
+            uint32_t n = 0, i;
+            int found = 0;
 
-                if ((n == 1u && name[0] == '.') || (n == 2u && name[0] == '.' && name[1] == '.')) {
-                    continue;
-                }
-                if (len + 1u + n >= PATH_UNITS) {
-                    rc = 206u;
-                    break;
-                }
-                path[len] = '\\';
-                for (i = 0; i <= n; i++) {
-                    path[len + 1u + i] = name[i];
-                }
-                rc = delete_tree(path, len + 1u + n, depth + 1);
-                path[len] = 0;
-                if (rc) {
+            path[len] = '\\';
+            path[len + 1u] = '*';
+            path[len + 2u] = 0;
+            h = FindFirstFileW(path, data);
+            path[len] = 0;
+            if (h == INVALID_H) {
+                break;
+            }
+            do {
+                n = wl(name);
+                if (!((n == 1u && name[0] == '.') || (n == 2u && name[0] == '.' && name[1] == '.'))) {
+                    found = 1;
                     break;
                 }
             } while (FindNextFileW(h, data));
             (void)FindClose(h);
+            if (!found) {
+                break;
+            }
+            if (len + 1u + n >= PATH_UNITS) {
+                return 206u;
+            }
+            path[len] = '\\';
+            for (i = 0; i <= n; i++) {
+                path[len + 1u + i] = name[i];
+            }
+            rc = delete_tree(path, len + 1u + n, depth + 1);
+            path[len] = 0;
             if (rc) {
                 return rc;
             }

@@ -117,6 +117,54 @@ else
     rc=1
 fi
 
+# ---- cmd.exe (docs/shell/s6.md): Wine's, from its pinned source ----
+# With our own entry point and no mingw runtime, so that what it imports is what
+# our DLLs export. wine/debug.h is the one Wine header it needs, and tracing is
+# all that header does.
+if command -v x86_64-w64-mingw32-gcc > /dev/null && f=$(fetch wine); then
+    rm -rf "$SRC/cmd" && mkdir -p "$SRC/cmd/stub/wine"
+    tar xJf "$f" -C "$SRC/cmd" --strip-components=3 wine-9.0/programs/cmd
+    cat > "$SRC/cmd/stub/wine/debug.h" <<'STUB'
+#ifndef STUB_WINE_DEBUG_H
+#define STUB_WINE_DEBUG_H
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define WINE_DEFAULT_DEBUG_CHANNEL(x) extern int wine_no_channel
+#define WINE_TRACE(...) ((void)0)
+#define WINE_FIXME(...) ((void)0)
+#define WINE_WARN(...) ((void)0)
+#define WINE_ERR(...) ((void)0)
+#define TRACE WINE_TRACE
+#define FIXME WINE_FIXME
+#define WARN WINE_WARN
+#define ERR WINE_ERR
+#define wine_dbgstr_w(x) ""
+#define wine_dbgstr_a(x) ""
+#define wine_dbgstr_an(x, n) ""
+#define wine_dbgstr_wn(x, n) ""
+#define debugstr_w(x) ""
+#define debugstr_a(x) ""
+#define debugstr_wn(x, n) ""
+#endif
+STUB
+    if (cd "$SRC/cmd" &&
+        for c in batch builtins directory wcmdmain; do
+            x86_64-w64-mingw32-gcc -O1 -municode -DUNICODE -D_UNICODE -DWINE_UNICODE_NATIVE -D__WINESRC__ \
+                -D__USE_MINGW_ANSI_STDIO=0 -D_WIN32_WINNT=0x0A00 '-D__WINE_ALLOC_SIZE(...)=' \
+                '-D__WINE_DEALLOC(...)=' -D__WINE_MALLOC= -Istub -fno-stack-protector -c $c.c -o $c.o || exit 1
+        done &&
+        x86_64-w64-mingw32-gcc -O1 -c "$ROOT/user/win/cmd/entry.c" -o entry.o &&
+        x86_64-w64-mingw32-windres -I. -Istub -c 65001 cmd.rc -O coff -o cmd_res.o &&
+        x86_64-w64-mingw32-gcc -nostdlib -e vibeos_cmd_start -mconsole -o "$OUT/cmd.exe" entry.o batch.o \
+            builtins.o directory.o wcmdmain.o cmd_res.o -lshlwapi -lshell32 -luser32 -ladvapi32 -lntdll \
+            -lkernel32 -lmsvcrt -lgcc) > "$OUT/cmd.log" 2>&1; then
+        echo "corpus-build: cmd.exe ok"
+    else
+        echo "corpus-build: cmd.exe FAILED (see $OUT/cmd.log)"; rc=1
+    fi
+else
+    echo "corpus-build: cmd.exe skipped (needs mingw-w64 and the wine source)"
+fi
+
 # ---- the thread pool (docs/abi/ L6 step 4): this project's own program ----
 # tests/corpus/threadpool.c, against musl statically and against glibc
 # dynamically, like the two above: two C libraries' threads - their condition
