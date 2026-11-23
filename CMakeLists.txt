@@ -1244,10 +1244,12 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             OUTPUT "${VIBEOS_WIN_DIR}/kernel32.dll"
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
                     -o "${VIBEOS_WIN_DIR}/kernel32.dll"
-                    "${VIBEOS_WIN_SRC}/kernel32/kernel32.c" "${VIBEOS_WIN_SRC}/kernel32/kernel32.def"
+                    "${VIBEOS_WIN_SRC}/kernel32/kernel32.c" "${VIBEOS_WIN_SRC}/kernel32/cmd_api.c"
+                    "${VIBEOS_WIN_SRC}/kernel32/kernel32.def"
                     -e vibeos_kernel32_main -Wl,--image-base=0x8006000000
                     -L${VIBEOS_WIN_DIR} -lntdll
-            DEPENDS "${VIBEOS_WIN_SRC}/kernel32/kernel32.c" "${VIBEOS_WIN_SRC}/kernel32/kernel32.def"
+            DEPENDS "${VIBEOS_WIN_SRC}/kernel32/kernel32.c" "${VIBEOS_WIN_SRC}/kernel32/cmd_api.c"
+                    "${VIBEOS_WIN_SRC}/kernel32/kernel32.def"
                     "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h" "${VIBEOS_WIN_DIR}/libntdll.a"
                     "${CMAKE_CURRENT_SOURCE_DIR}/include/vibeos/nt_layout.h"
             COMMENT "Building our kernel32.dll with mingw-w64"
