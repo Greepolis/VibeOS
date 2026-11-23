@@ -25,9 +25,9 @@
 
 ### a Windows line ending stays in the interpreter's name
 --- old
-    if (k > 0u && interp[k - 1u] == '\r') {
+    if (interp[k - 1u] == '\r') {
 +++ new
-    if (0 && k > 0u && interp[k - 1u] == '\r') {
+    if (0 && interp[k - 1u] == '\r') {
 
 ### a hidden file counts as an extension
 --- old

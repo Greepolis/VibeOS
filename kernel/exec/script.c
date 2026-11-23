@@ -48,7 +48,7 @@ int vibeos_script_parse(const char *head, size_t n, char *interp, size_t icap,
         last--;
     }
     /* A file saved on Windows: the CR is not part of the interpreter's name. */
-    if (k > 0u && interp[k - 1u] == '\r') {
+    if (interp[k - 1u] == '\r') {
         interp[k - 1u] = 0;
         if (k == 1u) {
             return -1;
