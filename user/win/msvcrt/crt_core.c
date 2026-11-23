@@ -29,6 +29,8 @@ int vc_toupper(int c) { return (c >= 'a' && c <= 'z') ? c - ('a' - 'A') : c; }
  * 0x7f, and the locale of a process that never called setlocale is "C". */
 uint16_t vc_towlower(uint16_t c) { return (c >= 'A' && c <= 'Z') ? (uint16_t)(c + ('a' - 'A')) : c; }
 
+uint16_t vc_towupper(uint16_t c) { return (c >= 'a' && c <= 'z') ? (uint16_t)(c - ('a' - 'A')) : c; }
+
 void *vc_memset(void *d, int c, size_t n) {
     volatile uint8_t *p = d;
     while (n--) {
@@ -443,6 +445,155 @@ int32_t vc_atoi(const char *s) {
         s++;
     }
     return (int32_t)(neg ? 0u - v : v);
+}
+
+/* The wide form of parse_magnitude: a character above 0x7f is no digit. */
+static int wdigit(uint16_t c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'z') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'Z') {
+        return c - 'A' + 10;
+    }
+    return 99;
+}
+
+static uint32_t wparse(const uint16_t *s, const uint16_t **end, int base, int *neg, int *ovf) {
+    const uint16_t *p = s, *first;
+    uint32_t v = 0;
+
+    *neg = 0;
+    *ovf = 0;
+    *end = s;
+    if (base < 0 || base == 1 || base > 36) {
+        return 0;
+    }
+    while (*p == ' ' || (*p >= 9 && *p <= 13)) {
+        p++;
+    }
+    if (*p == '+' || *p == '-') {
+        *neg = *p == '-';
+        p++;
+    }
+    /* "0x" with no hex digit after it is the number 0, ending at the x. */
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X') && wdigit(p[2]) < 16) {
+        p += 2;
+        base = 16;
+    } else if (base == 0) {
+        base = p[0] == '0' ? 8 : 10;
+    }
+    first = p;
+    while (wdigit(*p) < base) {
+        uint32_t d = (uint32_t)wdigit(*p);
+
+        if (v > (0xFFFFFFFFu - d) / (uint32_t)base) {
+            *ovf = 1;
+        } else {
+            v = v * (uint32_t)base + d;
+        }
+        p++;
+    }
+    if (p != first) {
+        *end = p;
+    }
+    return v;
+}
+
+int32_t vc_wcstol(const uint16_t *s, uint16_t **end, int base) {
+    const uint16_t *e;
+    int neg, ovf;
+    uint32_t m = wparse(s, &e, base, &neg, &ovf);
+
+    if (end) {
+        *end = (uint16_t *)(uintptr_t)e;
+    }
+    if (neg) {
+        return (ovf || m > 0x80000000u) ? INT32_MIN : (int32_t)(0u - m);
+    }
+    return (ovf || m > 0x7FFFFFFFu) ? INT32_MAX : (int32_t)m;
+}
+
+uint32_t vc_wcstoul(const uint16_t *s, uint16_t **end, int base) {
+    const uint16_t *e;
+    int neg, ovf;
+    uint32_t m = wparse(s, &e, base, &neg, &ovf);
+
+    if (end) {
+        *end = (uint16_t *)(uintptr_t)e;
+    }
+    return ovf ? 0xFFFFFFFFu : neg ? 0u - m : m;
+}
+
+uint16_t *vc_wcsupr(uint16_t *s) {
+    uint16_t *p;
+
+    for (p = s; *p; p++) {
+        *p = vc_towupper(*p);
+    }
+    return s;
+}
+
+uint16_t *vc_wcslwr(uint16_t *s) {
+    uint16_t *p;
+
+    for (p = s; *p; p++) {
+        *p = vc_towlower(*p);
+    }
+    return s;
+}
+
+uint16_t *vc_wcsrev(uint16_t *s) {
+    size_t n = vc_wcslen(s), i;
+
+    for (i = 0; i < n / 2u; i++) {
+        uint16_t t = s[i];
+
+        s[i] = s[n - 1u - i];
+        s[n - 1u - i] = t;
+    }
+    return s;
+}
+
+size_t vc_wcscspn(const uint16_t *s, const uint16_t *reject) {
+    size_t n = 0;
+
+    while (s[n] && !vc_wcschr(reject, s[n])) {
+        n++;
+    }
+    return n;
+}
+
+static void wput(uint16_t *out, const uint16_t *from, const uint16_t *to) {
+    if (out) {
+        while (from < to) {
+            *out++ = *from++;
+        }
+        *out = 0;
+    }
+}
+
+void vc_wsplitpath(const uint16_t *path, uint16_t *drive, uint16_t *dir, uint16_t *name, uint16_t *ext) {
+    const uint16_t *p = path, *base, *dot = 0, *q;
+
+    if (path[0] && path[1] == ':') {
+        p = path + 2;
+    }
+    wput(drive, path, p);
+    base = p;
+    for (q = p; *q; q++) {
+        if (*q == '/' || *q == '\\') {
+            base = q + 1;
+            dot = 0;
+        } else if (*q == '.') {
+            dot = q;
+        }
+    }
+    wput(dir, p, base);
+    wput(name, base, dot ? dot : q);
+    wput(ext, dot ? dot : q, q);
 }
 
 int32_t vc_strtol(const char *s, char **end, int base) {

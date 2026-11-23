@@ -436,6 +436,18 @@ wchar16 *wcspbrk(const wchar16 *s, const wchar16 *a) { return vc_wcspbrk(s, a); 
 static wchar16 *g_wcstok_state;
 wchar16 *wcstok(wchar16 *s, const wchar16 *delim) { return vc_wcstok(s, delim, &g_wcstok_state); }
 
+/* What Wine's cmd asks for (docs/shell/s6.md). */
+wchar16 towupper(wchar16 c) { return vc_towupper(c); }
+wchar16 *_wcsupr(wchar16 *s) { return vc_wcsupr(s); }
+wchar16 *_wcslwr(wchar16 *s) { return vc_wcslwr(s); }
+wchar16 *_wcsrev(wchar16 *s) { return vc_wcsrev(s); }
+size_t wcscspn(const wchar16 *s, const wchar16 *reject) { return vc_wcscspn(s, reject); }
+int32_t wcstol(const wchar16 *s, wchar16 **end, int base) { return vc_wcstol(s, end, base); }
+uint32_t wcstoul(const wchar16 *s, wchar16 **end, int base) { return vc_wcstoul(s, end, base); }
+void _wsplitpath(const wchar16 *path, wchar16 *drive, wchar16 *dir, wchar16 *name, wchar16 *ext) {
+    vc_wsplitpath(path, drive, dir, name, ext);
+}
+
 /* ---- entry --------------------------------------------------------------- */
 
 /* The DLL has no per-process setup: the heap starts on first use. A loader that

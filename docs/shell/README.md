@@ -11,6 +11,7 @@ decided with the project's owner on 2026-11-19.
 | [s3.md](s3.md) | S3: the names in `/usr/bin` |
 | [s4.md](s4.md) | S4: `vsh` - the grammar agreed before the parser, its rules and its status |
 | [s5.md](s5.md) | S5: scripts run by `#!` or by their extension, and bash |
+| [s6.md](s6.md) | S6: Wine's cmd on the NT personality, its steps and what it still needs |
 
 The phases, each with its own file once it starts:
 

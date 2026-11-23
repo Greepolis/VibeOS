@@ -79,3 +79,11 @@ vsprintf
 wcschr
 wcsncmp
 wcstok
+towupper
+_wcsupr
+_wcslwr
+_wcsrev
+wcscspn
+wcstol
+wcstoul
+_wsplitpath

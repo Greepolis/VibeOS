@@ -1069,6 +1069,109 @@ static void on_signal(int sig) {
         fn;              \
     } while (0)
 
+static void to_wide(uint16_t *o, const char *s) {
+    while ((*o++ = (uint8_t)*s++) != 0) {
+    }
+}
+
+static int wide_is(const uint16_t *w, const char *s) {
+    while (*s && *w == (uint8_t)*s) {
+        w++;
+        s++;
+    }
+    return *w == 0 && *s == 0;
+}
+
+static void split_is(const char *path, const char *d, const char *dir, const char *n, const char *e) {
+    uint16_t p[64], a[64], b[64], c[64], x[64];
+
+    to_wide(p, path);
+    vc_wsplitpath(p, a, b, c, x);
+    CHECK(wide_is(a, d) && wide_is(b, dir) && wide_is(c, n) && wide_is(x, e), "_wsplitpath %s", path);
+    vc_wsplitpath(p, 0, 0, 0, 0);    /* every output may be absent */
+}
+
+/* Against glibc: msvcrt's long is 32 bits, so the 64-bit answer is clamped. */
+static void test_cmd_wide(uint64_t seed) {
+    static const char pool[] = "0123456789abcdefxXzZ";
+    static const int bases[] = {0, 2, 8, 10, 16, 36};
+    uint16_t w[48], *we;
+    int i;
+
+    for (i = 0; i < 20000; i++) {
+        char t[32], *ge;
+        int len = (int)(rnd(&seed) % 14u), k = 0, j, base = bases[rnd(&seed) % 6u], neg = 0;
+        long long gl;
+        unsigned long long gu;
+        int32_t want;
+
+        if (rnd(&seed) % 4u == 0u) {
+            t[k++] = ' ';
+        }
+        if (rnd(&seed) % 3u == 0u) {
+            neg = rnd(&seed) & 1u;
+            t[k++] = neg ? '-' : '+';
+        }
+        for (j = 0; j < len; j++) {
+            t[k++] = pool[rnd(&seed) % (sizeof(pool) - 1u)];
+        }
+        t[k] = 0;
+        /* C23's 0b prefix, which a recent glibc reads and msvcrt does not. */
+        {
+            const char *d = t + strspn(t, " +-");
+
+            if ((base == 0 || base == 2) && d[0] == '0' && d[1] == 'b') {
+                continue;
+            }
+        }
+        to_wide(w, t);
+        gl = strtoll(t, &ge, base);
+        want = gl > INT32_MAX ? INT32_MAX : gl < INT32_MIN ? INT32_MIN : (int32_t)gl;
+        CHECK(vc_wcstol(w, &we, base) == want && we - w == ge - t, "wcstol '%s' base %d", t, base);
+        gu = strtoull(t, &ge, base);
+        {
+            unsigned long long mag = neg ? 0ull - gu : gu;
+            uint32_t wu = mag > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)gu;
+
+            CHECK(vc_wcstoul(w, &we, base) == wu && we - w == ge - t, "wcstoul '%s' base %d", t, base);
+        }
+    }
+    to_wide(w, "x");
+    CHECK(vc_wcstol(w, &we, 1) == 0 && we == w, "a base of 1 reads nothing");
+    w[0] = '1';
+    w[1] = 0x0661;   /* an Arabic digit is not one of msvcrt's C-locale digits */
+    w[2] = 0;
+    CHECK(vc_wcstol(w, &we, 10) == 1 && we == w + 1, "stops at a non-ASCII character");
+
+    to_wide(w, "aZ9.e");
+    CHECK(wide_is(vc_wcsupr(w), "AZ9.E"), "_wcsupr");
+    CHECK(wide_is(vc_wcslwr(w), "az9.e"), "_wcslwr");
+    CHECK(wide_is(vc_wcsrev(w), "e.9za"), "_wcsrev odd");
+    to_wide(w, "abcd");
+    CHECK(wide_is(vc_wcsrev(w), "dcba"), "_wcsrev even");
+    to_wide(w, "");
+    CHECK(wide_is(vc_wcsrev(w), ""), "_wcsrev empty");
+    {
+        uint16_t r[4];
+
+        to_wide(w, "abc;d");
+        to_wide(r, ";,");
+        CHECK(vc_wcscspn(w, r) == 3u, "wcscspn");
+        to_wide(r, "z");
+        CHECK(vc_wcscspn(w, r) == 5u, "wcscspn, none");
+    }
+    CHECK(vc_towupper('a') == 'A' && vc_towupper('A') == 'A' && vc_towupper(0xE9) == 0xE9, "towupper, C locale");
+
+    split_is("C:\\dir\\sub\\file.tar.gz", "C:", "\\dir\\sub\\", "file.tar", ".gz");
+    split_is("C:file.txt", "C:", "", "file", ".txt");
+    split_is("/a/b", "", "/a/", "b", "");
+    split_is("a.b\\c", "", "a.b\\", "c", "");
+    split_is(".hidden", "", "", "", ".hidden");
+    split_is("name.", "", "", "name", ".");
+    split_is("dir\\", "", "dir\\", "", "");
+    split_is("", "", "", "", "");
+}
+
 int main(int argc, char **argv) {
     uint64_t seed = g_seed;
 
@@ -1100,6 +1203,7 @@ int main(int argc, char **argv) {
     RUN(test_time());
     RUN(test_fp_control());
     RUN(test_cmdline());
+    RUN(test_cmd_wide(seed ^ 0x6666));
 
     printf("vibeos_msvcrt_tests: checks=%d failed=%d glibc_printf_compared=%d ties_skipped=%d seed=0x%" PRIx64 "\n",
            g_checks, g_failed, g_glibc_compared, g_glibc_ties, seed);

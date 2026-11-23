@@ -54,6 +54,16 @@ uint16_t *vc_wcsstr(const uint16_t *s, const uint16_t *needle);
 uint16_t *vc_wcspbrk(const uint16_t *s, const uint16_t *accept);
 uint16_t *vc_wcstok(uint16_t *s, const uint16_t *delim, uint16_t **state);
 uint16_t vc_towlower(uint16_t c);
+/* What Wine's cmd asks of the wide strings (docs/shell/s6.md). */
+uint16_t vc_towupper(uint16_t c);
+uint16_t *vc_wcsupr(uint16_t *s);
+uint16_t *vc_wcslwr(uint16_t *s);
+uint16_t *vc_wcsrev(uint16_t *s);
+size_t vc_wcscspn(const uint16_t *s, const uint16_t *reject);
+int32_t vc_wcstol(const uint16_t *s, uint16_t **end, int base);
+uint32_t vc_wcstoul(const uint16_t *s, uint16_t **end, int base);
+/* Any output may be null. Sizes are the caller's, as _wsplitpath's contract. */
+void vc_wsplitpath(const uint16_t *path, uint16_t *drive, uint16_t *dir, uint16_t *name, uint16_t *ext);
 
 /* ---- numbers ------------------------------------------------------------- */
 

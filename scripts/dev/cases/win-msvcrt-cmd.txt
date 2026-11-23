@@ -1,0 +1,57 @@
+# The wide-string calls Wine's cmd needs from msvcrt (docs/shell/s6.md).
+#
+# Target source: user/win/msvcrt/crt_core.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-msvcrt.sh build-msvcrt" python3 scripts/dev/sabotage.py user/win/msvcrt/crt_core.c scripts/dev/cases/win-msvcrt-cmd.txt
+
+### wcstol wraps instead of clamping
+--- old
+    return (ovf || m > 0x7FFFFFFFu) ? INT32_MAX : (int32_t)m;
+}
+
+uint32_t vc_wcstoul
++++ new
+    return (int32_t)m;
+}
+
+uint32_t vc_wcstoul
+
+### wcstoul does not negate
+--- old
+    return ovf ? 0xFFFFFFFFu : neg ? 0u - m : m;
++++ new
+    return ovf ? 0xFFFFFFFFu : m;
+
+### "0x" alone is read past the x
+--- old
+(p[1] == 'x' || p[1] == 'X') && wdigit(p[2]) < 16) {
++++ new
+(p[1] == 'x' || p[1] == 'X')) {
+
+### a string with no digits says it ended after them
+--- old
+    if (p != first) {
+        *end = p;
+    }
++++ new
+    *end = p;
+
+### _wsplitpath takes a dot in a directory for the extension
+--- old
+            base = q + 1;
+            dot = 0;
++++ new
+            base = q + 1;
+
+### _wsplitpath takes the first dot
+--- old
+        } else if (*q == '.') {
+            dot = q;
++++ new
+        } else if (*q == '.' && !dot) {
+            dot = q;
+
+### _wcsrev swaps past the middle
+--- old
+    for (i = 0; i < n / 2u; i++) {
++++ new
+    for (i = 0; i < n; i++) {
