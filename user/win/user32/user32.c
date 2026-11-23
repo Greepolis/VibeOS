@@ -490,13 +490,75 @@ int32_t LoadStringA(uint64_t inst, uint32_t id, char *buf, int32_t size) {
     return 0;
 }
 
+/* One level of a PE resource directory: the entry for `id`, or the first if
+ * `id` is ~0 (a language, when any will do). 0 if there is none. */
+static uint32_t res_entry(const uint8_t *root, uint32_t dir, uint32_t id) {
+    const uint8_t *d = root + dir;
+    uint32_t named = *(const uint16_t *)(const void *)(d + 12);
+    uint32_t ids = *(const uint16_t *)(const void *)(d + 14), i;
+
+    for (i = named; i < named + ids; i++) {
+        const uint32_t *e = (const uint32_t *)(const void *)(d + 16u + i * 8u);
+
+        if (id == 0xFFFFFFFFu || e[0] == id) {
+            return e[1];
+        }
+    }
+    return 0;
+}
+
+/* A string out of the module's own RT_STRING resources: blocks of sixteen, each
+ * string counted. With size 0 the caller gets a pointer to it, as Windows does. */
 int32_t LoadStringW(uint64_t inst, uint32_t id, uint16_t *buf, int32_t size) {
-    (void)inst, (void)id;
+    uint64_t peb = vibeos_nt_rd64(vibeos_nt_teb() + VIBEOS_TEB_PEB);
+    const uint8_t *image = (const uint8_t *)(uintptr_t)(inst ? inst : vibeos_nt_rd64(peb + VIBEOS_PEB_IMAGE_BASE));
+    uint32_t pe = *(const uint32_t *)(const void *)(image + 0x3C);
+    uint32_t rva = *(const uint32_t *)(const void *)(image + pe + 24u + 128u), e, i, len;
+    const uint8_t *root = image + rva;
+    const uint16_t *s;
+
     if (buf && size > 0) {
         buf[0] = 0;
     }
-    set_error(ERROR_CALL_NOT_IMPLEMENTED);
-    return 0;
+    if (!buf || size < 0 || rva == 0u) {
+        set_error(rva == 0u ? 1814u /* ERROR_RESOURCE_DATA_NOT_FOUND */ : ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    e = res_entry(root, 0, 6u);                                 /* RT_STRING */
+    e = (e & 0x80000000u) ? res_entry(root, e & 0x7FFFFFFFu, id / 16u + 1u) : 0u;
+    e = (e & 0x80000000u) ? res_entry(root, e & 0x7FFFFFFFu, 0xFFFFFFFFu) : 0u;
+    if (e == 0u || (e & 0x80000000u)) {
+        set_error(1814u);
+        return 0;
+    }
+    s = (const uint16_t *)(const void *)(image + *(const uint32_t *)(const void *)(root + e));
+    for (i = 0; i < (id & 15u); i++) {
+        s += 1u + *s;
+    }
+    len = *s++;
+    if (size == 0) {
+        *(const uint16_t **)(void *)buf = s;
+        return (int32_t)len;
+    }
+    if (len > (uint32_t)size - 1u) {
+        len = (uint32_t)size - 1u;
+    }
+    for (i = 0; i < len; i++) {
+        buf[i] = s[i];
+    }
+    buf[len] = 0;
+    return (int32_t)len;
+}
+
+char *CharNextExA(uint16_t codepage, const char *p, uint32_t flags) {
+    (void)codepage, (void)flags;
+    return (char *)(uintptr_t)(*p ? p + 1 : p);
+}
+
+/* Latin-1's letters too, without its two signs (U+00D7 and U+00F7). */
+BOOL32 IsCharAlphaNumericW(uint16_t c) {
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+           (c >= 0xC0u && c <= 0xFFu && c != 0xD7u && c != 0xF7u) || c == 0xAAu || c == 0xB5u || c == 0xBAu;
 }
 
 uint64_t LoadCursorA(uint64_t inst, const char *name) { (void)inst, (void)name; return no_windows(); }

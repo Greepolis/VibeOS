@@ -156,6 +156,28 @@ static const uint32_t g_dos_errors[][2] = {
     { 0xC0000235u, 6u },      /* HANDLE_NOT_CLOSABLE: ERROR_INVALID_HANDLE */
 };
 
+/* RTL_OSVERSIONINFOW is 276 bytes and the EX form 284, the numbers the ones the
+ * kernel puts in the PEB. Anything else is STATUS_INVALID_PARAMETER. */
+vibeos_ntstatus_t RtlGetVersion(void *info) {
+    uint8_t *b = (uint8_t *)info;
+    uint32_t size = *(const uint32_t *)info, i;
+
+    if (size != 276u && size != 284u) {
+        return (vibeos_ntstatus_t)0xC000000Du;
+    }
+    for (i = 4; i < size; i++) {
+        b[i] = 0;
+    }
+    ((uint32_t *)info)[1] = 10u;
+    ((uint32_t *)info)[2] = 0u;
+    ((uint32_t *)info)[3] = 19045u;
+    ((uint32_t *)info)[4] = 2u;     /* VER_PLATFORM_WIN32_NT */
+    if (size == 284u) {
+        b[282] = 1u;                /* wProductType: VER_NT_WORKSTATION */
+    }
+    return 0;
+}
+
 uint32_t RtlNtStatusToDosError(vibeos_ntstatus_t status) {
     uint32_t s = (uint32_t)status, i;
 

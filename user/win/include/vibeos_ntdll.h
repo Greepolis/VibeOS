@@ -234,6 +234,7 @@ RTL_API size_t RtlCompareMemoryUlong(const void *src, size_t length, uint32_t pa
 RTL_API uint32_t RtlComputeCrc32(uint32_t initial, const uint8_t *buf, int32_t length);
 RTL_API uint32_t RtlRandom(uint32_t *seed);
 RTL_API uint32_t RtlNtStatusToDosError(vibeos_ntstatus_t status);
+RTL_API vibeos_ntstatus_t RtlGetVersion(void *info);
 /* The loader's answers to GetModuleHandle and GetProcAddress (ntdll/start.c). */
 RTL_API NTSTATUS_T LdrGetDllHandle(const uint16_t *path, const uint32_t *flags,
                                    const vibeos_ustring_t *name, void **handle);

@@ -45,3 +45,5 @@ EXPORTS
     wsprintfW
     wvsprintfA
     wvsprintfW
+    CharNextExA
+    IsCharAlphaNumericW

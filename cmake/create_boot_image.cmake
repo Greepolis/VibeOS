@@ -193,7 +193,7 @@ endif()
 # same paths on the ESP as on the root, so a disk without a root (the .iso)
 # finds them too.
 set(WIN_SYS_DIR "${EFI_ROOT_DIR}/usr/lib/windows/system32")
-foreach(WIN_DLL ntdll.dll msvcrt.dll kernel32.dll user32.dll advapi32.dll gdi32.dll hid.dll
+foreach(WIN_DLL ntdll.dll msvcrt.dll kernel32.dll user32.dll advapi32.dll shell32.dll gdi32.dll hid.dll
                 imm32.dll setupapi.dll)
     if(EXISTS "${CMAKE_BINARY_DIR}/win/${WIN_DLL}")
         file(MAKE_DIRECTORY "${WIN_SYS_DIR}")

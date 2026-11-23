@@ -1,0 +1,6 @@
+; What our shell32.dll exports: the three calls Wine's cmd makes (docs/shell/s6.md).
+LIBRARY shell32.dll
+EXPORTS
+    FindExecutableW
+    SHFileOperationW
+    SHGetFileInfoW

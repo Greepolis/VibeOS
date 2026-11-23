@@ -1570,6 +1570,32 @@ BOOL32 AdjustTokenPrivileges(uint64_t token, BOOL32 disable_all, const void *sta
     return 0;
 }
 
+/* A file's owner (docs/shell/s6.md step 5). Files here have no security
+ * descriptor to hand out yet: cmd's DIR /Q shows no owner when these refuse. */
+static BOOL32 no_security(void) {
+    __asm__ __volatile__("movl %0, %%gs:%c1" : : "r"(50u), "i"(VIBEOS_TEB_LAST_ERROR) : "memory");
+    return 0;
+}
+
+BOOL32 GetFileSecurityW(const uint16_t *name, uint32_t what, void *sd, uint32_t len, uint32_t *needed) {
+    (void)name, (void)what, (void)sd, (void)len;
+    if (needed) {
+        *needed = 0;
+    }
+    return no_security();
+}
+
+BOOL32 GetSecurityDescriptorOwner(void *sd, void **owner, BOOL32 *defaulted) {
+    (void)sd, (void)owner, (void)defaulted;
+    return no_security();
+}
+
+BOOL32 LookupAccountSidW(const uint16_t *system, void *sid, uint16_t *name, uint32_t *nlen, uint16_t *domain,
+                         uint32_t *dlen, uint32_t *use) {
+    (void)system, (void)sid, (void)name, (void)nlen, (void)domain, (void)dlen, (void)use;
+    return no_security();
+}
+
 int vibeos_advapi32_main(uint64_t instance, uint32_t reason, void *reserved) {
     (void)instance;
     (void)reason;

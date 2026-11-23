@@ -64,3 +64,6 @@ RegSetValueExW
 RegSetValueW
 RegUnLoadKeyA
 SetSecurityDescriptorDacl
+GetFileSecurityW
+GetSecurityDescriptorOwner
+LookupAccountSidW

@@ -1330,8 +1330,22 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMENT "Building stubcall.exe with mingw-w64"
             VERBATIM
         )
+        # shell32.dll (docs/shell/s6.md step 5): the three calls Wine's cmd makes.
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/shell32.dll"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
+                    -o "${VIBEOS_WIN_DIR}/shell32.dll"
+                    "${VIBEOS_WIN_SRC}/shell32/shell32.c" "${VIBEOS_WIN_SRC}/shell32/shell32.def"
+                    -e vibeos_shell32_main -Wl,--image-base=0x800A000000
+                    -L${VIBEOS_WIN_DIR} -l:libkernel32.a
+            DEPENDS "${VIBEOS_WIN_SRC}/shell32/shell32.c" "${VIBEOS_WIN_SRC}/shell32/shell32.def"
+                    "${VIBEOS_WIN_DIR}/kernel32.dll"
+            COMMENT "Building our shell32.dll with mingw-w64"
+            VERBATIM
+        )
         add_custom_target(vibeos_win ALL
-            DEPENDS "${VIBEOS_WIN_DIR}/ntdll.dll" "${VIBEOS_WIN_DIR}/msvcrt.dll"
+            DEPENDS "${VIBEOS_WIN_DIR}/shell32.dll"
+                    "${VIBEOS_WIN_DIR}/ntdll.dll" "${VIBEOS_WIN_DIR}/msvcrt.dll"
                     "${VIBEOS_WIN_DIR}/hello.exe" "${VIBEOS_WIN_DIR}/stubcall.exe"
                     "${VIBEOS_WIN_DIR}/kernel32.dll" "${VIBEOS_WIN_DIR}/user32.dll"
                     "${VIBEOS_WIN_DIR}/gdi32.dll" "${VIBEOS_WIN_DIR}/hid.dll"
