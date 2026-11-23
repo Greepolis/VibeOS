@@ -55,3 +55,54 @@ uint32_t vc_wcstoul
     for (i = 0; i < n / 2u; i++) {
 +++ new
     for (i = 0; i < n; i++) {
+
+### CR LF stays two characters
+--- old
+        if (wtext_raw(&peek) == '\n') {
++++ new
+        if (0 && wtext_raw(&peek) == '\n') {
+
+### Ctrl+Z is a character
+--- old
+    if (c < 0 || c == 0x1A) {
++++ new
+    if (c < 0) {
+
+### a UTF-8 BOM is text
+--- old
+    if (n >= 3u && b[0] == 0xEFu && b[1] == 0xBBu && b[2] == 0xBFu) {
++++ new
+    if (0 && n >= 3u && b[0] == 0xEFu && b[1] == 0xBBu && b[2] == 0xBFu) {
+
+### a line that fills the buffer sets end of file
+--- old
+    out[k] = 0;
+    return k > 0;
++++ new
+    out[k] = 0;
+    t->eof = k + 1 == cap;
+    return k > 0;
+
+### the ANSI page is Latin-1
+--- old
+        return (u >= 0x80u && u < 0xA0u) ? g_cp1252[u - 0x80u] : u;
++++ new
+        return u;
+
+### half a UTF-16 unit is a character
+--- old
+        if (t->n - t->at < 2u) {
+            t->at = t->n;       /* half a unit is not a character */
+            return -1;
+        }
++++ new
+        if (t->at >= t->n) {
+            return -1;
+        }
+
+### a broken UTF-8 sequence swallows the byte that broke it
+--- old
+            return 0xFFFD;      /* the byte that broke it is read again as itself */
++++ new
+            t->at++;
+            return 0xFFFD;

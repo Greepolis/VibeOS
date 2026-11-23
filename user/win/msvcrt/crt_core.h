@@ -65,6 +65,25 @@ uint32_t vc_wcstoul(const uint16_t *s, uint16_t **end, int base);
 /* Any output may be null. Sizes are the caller's, as _wsplitpath's contract. */
 void vc_wsplitpath(const uint16_t *path, uint16_t *drive, uint16_t *dir, uint16_t *name, uint16_t *ext);
 
+/* iswctype's masks are msvcrt's: _UPPER 1, _LOWER 2, _DIGIT 4, _SPACE 8, _PUNCT
+ * 0x10, _CONTROL 0x20, _BLANK 0x40, _HEX 0x80, _ALPHA 0x100. */
+int vc_iswctype(uint16_t c, uint16_t mask);
+
+/* A file read whole, as a text stream of UTF-16 opened with ccs=unicode. What it
+ * does was asked of Wine's msvcrt: a BOM says UTF-8 or UTF-16, none says the ANSI
+ * code page; CR LF is LF, and Ctrl+Z is the end. */
+typedef struct {
+    const uint8_t *b;
+    size_t n, at;
+    int enc;           /* 0 ANSI, 1 UTF-8, 2 UTF-16 */
+    int eof;
+    uint16_t low;      /* the second half of a surrogate pair, waiting */
+} vc_wtext;
+
+void vc_wtext_open(vc_wtext *t, const uint8_t *b, size_t n);
+/* fgetws: at most cap - 1 units, through a newline. 0 if there was nothing. */
+int vc_wtext_gets(vc_wtext *t, uint16_t *out, int cap);
+
 /* ---- numbers ------------------------------------------------------------- */
 
 /* msvcrt's `long` is 32 bits: these clamp at the 32-bit limits. */

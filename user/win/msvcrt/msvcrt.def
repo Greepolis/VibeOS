@@ -87,3 +87,8 @@ wcscspn
 wcstol
 wcstoul
 _wsplitpath
+_wfopen
+fgetws
+feof
+iswctype
+sprintf

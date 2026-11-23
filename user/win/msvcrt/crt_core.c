@@ -527,6 +527,149 @@ uint32_t vc_wcstoul(const uint16_t *s, uint16_t **end, int base) {
     return ovf ? 0xFFFFFFFFu : neg ? 0u - m : m;
 }
 
+int vc_iswctype(uint16_t c, uint16_t mask) {
+    uint16_t k = 0;
+
+    if (c == 0xA0u) {
+        k = 8u | 0x40u;     /* no-break space */
+    } else if (c < 0x80u) {
+        if (c >= 'A' && c <= 'Z') {
+            k = 1u | 0x100u | (c <= 'F' ? 0x80u : 0u);
+        } else if (c >= 'a' && c <= 'z') {
+            k = 2u | 0x100u | (c <= 'f' ? 0x80u : 0u);
+        } else if (c >= '0' && c <= '9') {
+            k = 4u | 0x80u;
+        } else if (c == ' ') {
+            k = 8u | 0x40u;
+        } else if (c >= 9u && c <= 13u) {
+            k = 8u | 0x20u | (c == 9u ? 0x40u : 0u);
+        } else if (c < 0x20u || c == 0x7Fu) {
+            k = 0x20u;
+        } else {
+            k = 0x10u;
+        }
+    }
+    return k & mask;
+}
+
+/* Windows-1252's bytes 0x80 to 0x9F; the rest of it is Latin-1. */
+static const uint16_t g_cp1252[32] = {
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152,
+    0x008D, 0x017D, 0x008F, 0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122,
+    0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+};
+
+void vc_wtext_open(vc_wtext *t, const uint8_t *b, size_t n) {
+    t->b = b;
+    t->n = n;
+    t->at = 0;
+    t->enc = 0;
+    t->eof = 0;
+    t->low = 0;
+    if (n >= 3u && b[0] == 0xEFu && b[1] == 0xBBu && b[2] == 0xBFu) {
+        t->enc = 1;
+        t->at = 3;
+    } else if (n >= 2u && b[0] == 0xFFu && b[1] == 0xFEu) {
+        t->enc = 2;
+        t->at = 2;
+    }
+}
+
+/* The next UTF-16 unit before any text-mode rule, or -1 at the end. */
+static int wtext_raw(vc_wtext *t) {
+    uint32_t c, need, i;
+    uint8_t u;
+
+    if (t->low) {
+        c = t->low;
+        t->low = 0;
+        return (int)c;
+    }
+    if (t->enc == 2) {
+        if (t->n - t->at < 2u) {
+            t->at = t->n;       /* half a unit is not a character */
+            return -1;
+        }
+        c = (uint32_t)t->b[t->at] | ((uint32_t)t->b[t->at + 1u] << 8);
+        t->at += 2u;
+        return (int)c;
+    }
+    if (t->at >= t->n) {
+        return -1;
+    }
+    u = t->b[t->at++];
+    if (t->enc == 0) {
+        return (u >= 0x80u && u < 0xA0u) ? g_cp1252[u - 0x80u] : u;
+    }
+    if (u < 0x80u) {
+        return u;
+    }
+    need = u >= 0xF0u && u < 0xF5u ? 3u : u >= 0xE0u && u < 0xF0u ? 2u : u >= 0xC2u && u < 0xE0u ? 1u : 0u;
+    if (need == 0u) {
+        return 0xFFFD;
+    }
+    c = u & (0x3Fu >> need);
+    for (i = 0; i < need; i++) {
+        if (t->at >= t->n || (t->b[t->at] & 0xC0u) != 0x80u) {
+            return 0xFFFD;      /* the byte that broke it is read again as itself */
+        }
+        c = (c << 6) | (t->b[t->at++] & 0x3Fu);
+    }
+    if ((need == 2u && (c < 0x800u || (c >= 0xD800u && c < 0xE000u))) ||
+        (need == 3u && (c < 0x10000u || c > 0x10FFFFu))) {
+        return 0xFFFD;
+    }
+    if (c >= 0x10000u) {
+        c -= 0x10000u;
+        t->low = (uint16_t)(0xDC00u + (c & 0x3FFu));
+        return (int)(0xD800u + (c >> 10));
+    }
+    return (int)c;
+}
+
+static int wtext_getc(vc_wtext *t) {
+    int c;
+
+    if (t->eof) {
+        return -1;
+    }
+    c = wtext_raw(t);
+    if (c == '\r') {
+        vc_wtext peek = *t;
+
+        if (wtext_raw(&peek) == '\n') {
+            *t = peek;
+            c = '\n';
+        }
+    }
+    if (c < 0 || c == 0x1A) {
+        t->eof = 1;
+        return -1;
+    }
+    return c;
+}
+
+int vc_wtext_gets(vc_wtext *t, uint16_t *out, int cap) {
+    int k = 0;
+
+    if (cap <= 0) {
+        return 0;
+    }
+    while (k + 1 < cap) {
+        int c = wtext_getc(t);
+
+        if (c < 0) {
+            break;
+        }
+        out[k++] = (uint16_t)c;
+        if (c == '\n') {
+            break;
+        }
+    }
+    out[k] = 0;
+    return k > 0;
+}
+
 uint16_t *vc_wcsupr(uint16_t *s) {
     uint16_t *p;
 

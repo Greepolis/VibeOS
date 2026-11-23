@@ -10,8 +10,8 @@
  *
  * What the kernel does not provide yet, and this runtime therefore answers
  * the way a runtime with nothing behind it would:
- *  - no files (W4): fopen fails, fgets finds nothing, fclose of anything but
- *    a standard stream fails;
+ *  - files only as _wfopen's read-only text streams (docs/shell/s6.md): fopen
+ *    fails and fgets finds nothing;
  *  - no environment block: getenv finds nothing, envp is empty;
  *  - no second thread (W5): the heap, strtok's position and the generator's
  *    seed are plain statics. Each of them is a decision to revisit with the
@@ -104,6 +104,23 @@ int setvbuf(FILE *f, char *buf, int mode, size_t size) {
     return 0;
 }
 
+/* A text stream _wfopen made: its FILE first, so the pointer is both. Its
+ * descriptor is -1, which keeps it out of every path that writes. */
+#define WSTREAM_FLAG 0x10000001
+typedef struct {
+    FILE f;
+    vc_wtext text;
+    uint8_t *data;
+} wstream;
+
+void *malloc(size_t n);
+void *realloc(void *p, size_t n);
+void free(void *p);
+
+static int is_wstream(const FILE *f) {
+    return f && !(f >= g_iob && f < g_iob + 3) && f->_flag == WSTREAM_FLAG;
+}
+
 int fflush(FILE *f) {
     (void)f;
     return 0;
@@ -111,14 +128,110 @@ int fflush(FILE *f) {
 
 int fclose(FILE *f) {
     /* A standard stream is the process's, not the program's; closing it succeeds
-     * and changes nothing. Any other FILE cannot exist yet. */
-    return (f >= g_iob && f < g_iob + 3) ? 0 : -1;
+     * and changes nothing. */
+    if (f >= g_iob && f < g_iob + 3) {
+        return 0;
+    }
+    if (!is_wstream(f)) {
+        return -1;
+    }
+    f->_flag = 0;
+    free(((wstream *)f)->data);
+    free(f);
+    return 0;
 }
 
 FILE *fopen(const char *name, const char *mode) {
     (void)name;
     (void)mode;
     return NULL;
+}
+
+/* The whole file, into memory: cmd reads its FOR /F files from end to end. */
+static uint8_t *read_all(uint64_t h, size_t *len) {
+    size_t cap = 4096u, n = 0;
+    uint8_t *b = malloc(cap);
+
+    while (b) {
+        vibeos_nt_iosb_t iosb;
+        uint32_t chunk = cap - n > 0x10000u ? 0x10000u : (uint32_t)(cap - n);
+        NTSTATUS_T st = NtReadFile(h, 0, 0, 0, &iosb, b + n, chunk, 0, 0);
+
+        if (st == VIBEOS_STATUS_END_OF_FILE || (st == NT_STATUS_SUCCESS && iosb.information == 0)) {
+            *len = n;
+            return b;
+        }
+        if (st != NT_STATUS_SUCCESS || iosb.information > chunk) {
+            break;
+        }
+        n += iosb.information;
+        if (n == cap) {
+            uint8_t *more = cap > (size_t)-1 / 2u ? NULL : realloc(b, cap * 2u);
+
+            if (!more) {
+                break;
+            }
+            b = more;
+            cap *= 2u;
+        }
+    }
+    free(b);
+    return NULL;
+}
+
+/* Read-only text with ccs=unicode is the one mode there is. Any other is
+ * refused, rather than opened and then behaving like something else. */
+FILE *_wfopen(const wchar16 *name, const wchar16 *mode) {
+    static const wchar16 want[] = {'r', 't', ',', 'c', 'c', 's', '=', 'u', 'n', 'i', 'c', 'o', 'd', 'e', 0};
+    uint8_t oa[VIBEOS_OA_SIZE];
+    vibeos_ustring_t nt;
+    vibeos_nt_iosb_t iosb;
+    uint64_t h = 0;
+    wstream *w;
+    size_t len = 0, i;
+    uint8_t *data;
+    NTSTATUS_T st;
+
+    if (!name || !mode || vc_wcsicmp(mode, want) != 0 || !RtlDosPathNameToNtPathName_U(name, &nt, 0, 0)) {
+        return NULL;
+    }
+    for (i = 0; i < sizeof oa; i++) {
+        oa[i] = 0;
+    }
+    *(uint32_t *)(oa + VIBEOS_OA_LENGTH) = VIBEOS_OA_SIZE;
+    *(uint64_t *)(oa + VIBEOS_OA_OBJECT_NAME) = (uint64_t)(uintptr_t)&nt;
+    *(uint32_t *)(oa + VIBEOS_OA_ATTRIBUTES) = VIBEOS_OBJ_CASE_INSENSITIVE;
+    /* GENERIC_READ | SYNCHRONIZE; share read and write; FILE_OPEN;
+     * FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT. */
+    st = NtCreateFile(&h, 0x80000000u | VIBEOS_SYNCHRONIZE, oa, &iosb, 0, 0, 3u, 1u, 0x60u, 0, 0);
+    RtlFreeUnicodeString(&nt);
+    if (st != NT_STATUS_SUCCESS) {
+        return NULL;
+    }
+    data = read_all(h, &len);
+    (void)NtClose(h);
+    if (!data) {
+        return NULL;
+    }
+    w = malloc(sizeof(*w));
+    if (!w) {
+        free(data);
+        return NULL;
+    }
+    vc_memset(&w->f, 0, sizeof(w->f));
+    w->f._flag = WSTREAM_FLAG;
+    w->f._file = -1;
+    w->data = data;
+    vc_wtext_open(&w->text, data, len);
+    return &w->f;
+}
+
+wchar16 *fgetws(wchar16 *s, int n, FILE *f) {
+    return is_wstream(f) && vc_wtext_gets(&((wstream *)f)->text, s, n) ? s : NULL;
+}
+
+int feof(FILE *f) {
+    return is_wstream(f) ? ((wstream *)f)->text.eof : 0;
 }
 
 char *fgets(char *s, int n, FILE *f) {
@@ -227,6 +340,16 @@ int _vsnwprintf(wchar16 *buf, size_t count, const wchar16 *fmt, va_list ap) {
     return vc_vsnwprintf(buf, count, fmt, ap);
 }
 int vsprintf(char *buf, const char *fmt, va_list ap) { return vc_vsprintf(buf, fmt, ap); }
+
+int sprintf(char *buf, const char *fmt, ...) {
+    va_list ap;
+    int r;
+
+    va_start(ap, fmt);
+    r = vc_vsprintf(buf, fmt, ap);
+    va_end(ap);
+    return r;
+}
 
 int sscanf(const char *s, const char *fmt, ...) {
     va_list ap;
@@ -438,6 +561,7 @@ wchar16 *wcstok(wchar16 *s, const wchar16 *delim) { return vc_wcstok(s, delim, &
 
 /* What Wine's cmd asks for (docs/shell/s6.md). */
 wchar16 towupper(wchar16 c) { return vc_towupper(c); }
+int iswctype(wchar16 c, wchar16 mask) { return vc_iswctype(c, mask); }
 wchar16 *_wcsupr(wchar16 *s) { return vc_wcsupr(s); }
 wchar16 *_wcslwr(wchar16 *s) { return vc_wcslwr(s); }
 wchar16 *_wcsrev(wchar16 *s) { return vc_wcsrev(s); }

@@ -19,6 +19,7 @@
  * Usage: vibeos_msvcrt_tests [seed]. A failure prints the seed in the summary. */
 
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <fenv.h>
 #include <inttypes.h>
 #include <math.h>
@@ -1172,6 +1173,79 @@ static void test_cmd_wide(uint64_t seed) {
     split_is("", "", "", "", "");
 }
 
+/* Lines as units in hex, from what Wine's msvcrt answered the same bytes with
+ * through fgetws(b, 6, f), and whether end of file was set after each. */
+static void wtext_is(const char *bytes, size_t n, const char *want) {
+    vc_wtext t;
+    uint16_t b[6];
+    char got[400];
+    size_t k = 0;
+
+    vc_wtext_open(&t, (const uint8_t *)bytes, n);
+    while (vc_wtext_gets(&t, b, 6) && k < 300u) {
+        const uint16_t *p;
+
+        got[k++] = '[';
+        for (p = b; *p; p++) {
+            k += (size_t)snprintf(got + k, sizeof got - k, "%x ", (unsigned)*p);
+        }
+        k += (size_t)snprintf(got + k, sizeof got - k, "]%d", t.eof);
+    }
+    snprintf(got + k, sizeof got - k, " end%d", t.eof);
+    CHECK(strcmp(got, want) == 0, "text stream: got %s, wanted %s", got, want);
+}
+
+static void test_wtext(uint64_t seed) {
+    int i;
+
+    wtext_is("ab\r\ncd\nlonger line\nx", 21,
+             "[61 62 a ]0[63 64 a ]0[6c 6f 6e 67 65 ]0[72 20 6c 69 6e ]0[65 a ]0[78 ]1 end1");
+    wtext_is("\xe9z\n", 3, "[e9 7a a ]0 end1");
+    wtext_is("\xef\xbb\xbf" "a\xc3\xa9\r\nb", 8, "[61 e9 a ]0 end1");
+    wtext_is("\xff\xfe" "a\0\r\0\n\0\xe9\0", 10, "[61 a ]0[e9 ]1 end1");
+    wtext_is("", 0, " end1");
+    wtext_is("a\x1a" "b\n", 4, "[61 ]1 end1");
+    wtext_is("\x80\n", 2, "[20ac a ]0 end1");
+    wtext_is("\xef\xbb\xbf\xf0\x9f\x98\x80", 7, "[d83d de00 ]1 end1");
+    wtext_is("\xef\xbb\xbf\xc3z", 5, "[fffd 7a ]1 end1");
+    wtext_is("\xff\xfe" "a\0b", 5, "[61 ]1 end1");
+    /* Whatever the bytes: bounded, terminated, and it ends. */
+    for (i = 0; i < 3000; i++) {
+        uint8_t b[64];
+        uint16_t out[9];
+        size_t n = rnd(&seed) % sizeof b, k;
+        vc_wtext t;
+        int rounds = 0;
+
+        for (k = 0; k < n; k++) {
+            b[k] = (uint8_t)rnd(&seed);
+        }
+        if (n >= 3u && (rnd(&seed) & 1u)) {
+            b[0] = 0xEF;
+            b[1] = 0xBB;
+            b[2] = 0xBF;
+        }
+        vc_wtext_open(&t, b, n);
+        while (vc_wtext_gets(&t, out, 9)) {
+            CHECK(vc_wcslen(out) < 9u, "a line past its buffer");
+            CHECK(++rounds <= 128, "a stream that does not end");
+            if (rounds > 128) {
+                break;
+            }
+        }
+    }
+    for (i = 0; i < 128; i++) {
+        CHECK(!!vc_iswctype((uint16_t)i, 8) == !!isspace(i), "iswctype space %d", i);
+        CHECK(!!vc_iswctype((uint16_t)i, 4) == !!isdigit(i), "iswctype digit %d", i);
+        CHECK(!!vc_iswctype((uint16_t)i, 0x100) == !!isalpha(i), "iswctype alpha %d", i);
+        CHECK(!!vc_iswctype((uint16_t)i, 1) == !!isupper(i), "iswctype upper %d", i);
+        CHECK(!!vc_iswctype((uint16_t)i, 2) == !!islower(i), "iswctype lower %d", i);
+        CHECK(!!vc_iswctype((uint16_t)i, 0x10) == !!ispunct(i), "iswctype punct %d", i);
+        CHECK(!!vc_iswctype((uint16_t)i, 0x20) == !!iscntrl(i), "iswctype control %d", i);
+        CHECK(!!vc_iswctype((uint16_t)i, 0x80) == !!isxdigit(i), "iswctype hex %d", i);
+    }
+}
+
 int main(int argc, char **argv) {
     uint64_t seed = g_seed;
 
@@ -1204,6 +1278,7 @@ int main(int argc, char **argv) {
     RUN(test_fp_control());
     RUN(test_cmdline());
     RUN(test_cmd_wide(seed ^ 0x6666));
+    RUN(test_wtext(seed ^ 0x7777));
 
     printf("vibeos_msvcrt_tests: checks=%d failed=%d glibc_printf_compared=%d ties_skipped=%d seed=0x%" PRIx64 "\n",
            g_checks, g_failed, g_glibc_compared, g_glibc_ties, seed);
