@@ -370,6 +370,15 @@ BOOL32 DuplicateHandle(uint64_t src_process, uint64_t src, uint64_t dst_process,
     return failed(st) ? fail(st) : 1;
 }
 
+/* The command line as the process parameters hold it. Their string is counted
+ * and the kernel's copy is terminated, which is what a caller of this expects. */
+const uint16_t *GetCommandLineW(void) {
+    uint64_t peb = vibeos_nt_rd64(vibeos_nt_teb() + VIBEOS_TEB_PEB);
+    uint64_t params = vibeos_nt_rd64(peb + VIBEOS_PEB_PROCESS_PARAMS);
+
+    return (const uint16_t *)(uintptr_t)vibeos_nt_rd64(params + VIBEOS_RUPP_COMMAND_LINE + VIBEOS_USTR_BUFFER);
+}
+
 /* STD_INPUT_HANDLE (-10), STD_OUTPUT_HANDLE (-11), STD_ERROR_HANDLE (-12):
  * the process parameters' three handles. */
 uint64_t GetStdHandle(uint32_t which) {

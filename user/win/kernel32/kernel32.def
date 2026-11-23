@@ -43,6 +43,7 @@ FlsGetValue
 FlsSetValue
 FlushFileBuffers
 FreeLibrary
+GetCommandLineW
 GetCurrentDirectoryA
 GetCurrentDirectoryW
 GetCurrentProcess
