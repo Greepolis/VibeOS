@@ -1151,7 +1151,12 @@ jobs:
           key: corpus-sources-${{ hashFiles('tests/corpus/sources.txt') }}
 
       - name: Build the third-party corpus
-        run: bash scripts/dev/corpus-build.sh build --no-ltp
+        # The image copies bash when it is made, so it is made again now that
+        # bash exists: the Build step above ran before it did.
+        run: |
+          set -euo pipefail
+          bash scripts/dev/corpus-build.sh build --no-ltp
+          cmake --build build --target vibeos_image
 
       - name: Measure the corpus
         run: |
