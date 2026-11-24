@@ -1263,12 +1263,16 @@ static const char *g_swap_freed_by[VIBEOS_HW_SWAP_SLOTS];
  * still named. */
 static uint32_t g_swap_freed_pid[VIBEOS_HW_SWAP_SLOTS];
 static uint32_t g_swap_frees[VIBEOS_HW_SWAP_SLOTS];
+/* And the page-table word each release took the slot from: the same word twice
+ * is one entry released twice, two words are two entries that named the slot
+ * (M-070, whose captures could not tell those apart). */
+static uint64_t g_swap_freed_entry[VIBEOS_HW_SWAP_SLOTS];
 
 static uint32_t hw_swap_pid_now(void) {
     return g_current_task >= 0 ? (uint32_t)hw_task_pid_of(&g_tasks[g_current_task]) : 0u;
 }
 
-static void hw_swap_release(uint32_t slot) {
+static void hw_swap_release(uint32_t slot, const volatile uint64_t *entry) {
     const char *op = vibeos_vmspace_current_op();
 
     if (slot < VIBEOS_HW_SWAP_SLOTS && !vibeos_swap_is_allocated(slot)) {
@@ -1290,6 +1294,10 @@ static void hw_swap_release(uint32_t slot) {
         vibeos_x86_64_serial_print_hex(g_swap_writes[slot]);
         vibeos_x86_64_serial_puts(" frees=0x");
         vibeos_x86_64_serial_print_hex(g_swap_frees[slot]);
+        vibeos_x86_64_serial_puts(" entry=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(uintptr_t)entry);
+        vibeos_x86_64_serial_puts(" before_entry=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_freed_entry[slot]);
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
     }
@@ -1297,6 +1305,7 @@ static void hw_swap_release(uint32_t slot) {
         g_swap_freed_by[slot] = op;
         g_swap_freed_pid[slot] = hw_swap_pid_now();
         g_swap_frees[slot]++;
+        g_swap_freed_entry[slot] = (uint64_t)(uintptr_t)entry;
     }
     (void)vibeos_swap_free(slot);
 }

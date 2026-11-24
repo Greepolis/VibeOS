@@ -14,7 +14,7 @@
 ### teardown forgets the slot of a page in swap
 --- old
             if (g_be.swap_release) {
-                g_be.swap_release(slot);
+                g_be.swap_release(slot, &pt[i]);
             }
 +++ new
 
@@ -70,7 +70,7 @@
 ### the page-in keeps the slot it consumed
 --- old
     if (g_be.swap_release) {
-        g_be.swap_release(slot);
+        g_be.swap_release(slot, pte);
     }
     (void)vibeos_rmap_add(frame, as->root_phys, va);
 +++ new

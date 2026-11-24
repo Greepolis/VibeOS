@@ -335,7 +335,7 @@ static void release_pt(uint64_t *pt) {
 
             pt[i] = 0;
             if (g_be.swap_release) {
-                g_be.swap_release(slot);
+                g_be.swap_release(slot, &pt[i]);
             }
             vibeos_mm_stats()->swap_dropped++;
         }
@@ -653,7 +653,7 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
             return 0;   /* brought back in, or unmapped, by somebody else */
         }
         if (g_be.swap_release) {
-            g_be.swap_release((uint32_t)((entry & PTE_ADDR_MASK) >> 12));
+            g_be.swap_release((uint32_t)((entry & PTE_ADDR_MASK) >> 12), pte);
         }
         vibeos_mm_stats()->swap_dropped++;
         return 1;
@@ -1695,7 +1695,7 @@ int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame) {
      * under load, M-063). Nobody outside knows which slot this was; nobody
      * outside frees it. */
     if (g_be.swap_release) {
-        g_be.swap_release(slot);
+        g_be.swap_release(slot, pte);
     }
     (void)vibeos_rmap_add(frame, as->root_phys, va);
     if (g_be.invlpg) {

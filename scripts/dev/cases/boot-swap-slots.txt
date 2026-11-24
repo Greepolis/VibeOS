@@ -17,6 +17,6 @@
 ### teardown and munmap forget pages in swap
 --- old
             if (g_be.swap_release) {
-                g_be.swap_release(slot);
+                g_be.swap_release(slot, &pt[i]);
             }
 +++ new

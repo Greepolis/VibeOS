@@ -189,8 +189,11 @@ typedef struct vibeos_vmspace_backend {
      * torn down - and nothing will read its slot again. This layer cannot free
      * a slot itself (it must not depend on the swap map), so it says so here.
      * Null means nothing is told, and the slot leaks: which is what happened to
-     * every swapped page of every process that exited, until M-063. */
-    void (*swap_release)(uint32_t slot);
+     * every swapped page of every process that exited, until M-063.
+     * `entry` is where the slot was named - the page-table word that held it -
+     * so that a slot given back twice says whether one entry was released
+     * twice or two entries named it (M-070). */
+    void (*swap_release)(uint32_t slot, const volatile uint64_t *entry);
 
     /* Bring a swapped-out page back in, for an operation that needs it
      * resident - fork, which shares frames and has no frame to share for a page

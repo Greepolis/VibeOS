@@ -102,7 +102,8 @@ static void cp_shootdown(uint64_t root_phys) {
 
 /* The two hooks a swapped-out entry needs from outside vmspace (M-063), as the
  * kernel supplies them: a slot back to the map, and a page brought back in. */
-static void cp_swap_release(uint32_t slot) {
+static void cp_swap_release(uint32_t slot, const volatile uint64_t *entry) {
+    (void)entry;
     (void)vibeos_swap_free(slot);
 }
 
