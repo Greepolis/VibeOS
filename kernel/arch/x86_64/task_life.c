@@ -2380,6 +2380,7 @@ uint32_t hw_fault_signal(uint64_t vector) {
  * has none, or blocks or ignores the signal, and the fault goes on to be
  * reported and kill, as before. #BP is the trap model's to continue. */
 int hw_fault_to_handler(vibeos_x86_64_isr_frame_t *frame, uint64_t fault_address) {
+    uint64_t fault_rip;
     vibeos_siginfo_t why;
     uint32_t fsig, i;
 
@@ -2410,7 +2411,9 @@ int hw_fault_to_handler(vibeos_x86_64_isr_frame_t *frame, uint64_t fault_address
         }
     }
     /* The personality the program speaks decides what a fault is to it: a
-     * Linux program's signal, a Windows program's exception (W5 step 5). */
+     * Linux program's signal, a Windows program's exception (W5 step 5).
+     * Where it happened is read first: delivering it moves the saved rip. */
+    fault_rip = frame->rip;
     if (hw_personality_of_abi(g_tasks[g_current_task].abi)) {
         if (!hw_personality_of_abi(g_tasks[g_current_task].abi)->fault((struct ks_regs *)frame, &why)) {
             return 0;
@@ -2428,6 +2431,8 @@ int hw_fault_to_handler(vibeos_x86_64_isr_frame_t *frame, uint64_t fault_address
     vibeos_x86_64_serial_print_hex(fsig);
     vibeos_x86_64_serial_puts(" addr=0x");
     vibeos_x86_64_serial_print_hex(why.addr);
+    vibeos_x86_64_serial_puts(" rip=0x");
+    vibeos_x86_64_serial_print_hex(fault_rip);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
     return 1;

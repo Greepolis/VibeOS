@@ -1,3 +1,6 @@
 [submodule "third_party/mbedtls"]
 	path = third_party/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "third_party/FinalCommander"]
+	path = third_party/FinalCommander
+	url = https://github.com/matteobaccan/FinalCommander.git
