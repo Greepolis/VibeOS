@@ -347,7 +347,19 @@ class Gen:
             to = r.choice([0, size // 2, max(0, size - 1), size + r.randrange(1, 9000), r.randrange(0, 300000)])
             if to > size and room < to - size + 8192:
                 return
+            # A shrink is recorded as a write is: the bytes it removes stay on
+            # the disk until its commit, so a later write over the kept part
+            # can land in place while the truncate itself is still uncommitted.
+            # The cut then shows the old size, the old tail, and the new bytes
+            # (nightly seed 1000019193, 2026-11-24).
+            with open(self.host(p), "rb") as f:
+                before = f.read()
+            names = [q for q, k in self.entries() if k == "f" and os.path.samefile(self.host(q), self.host(p))]
+            at = len(self.lines)
             self.emit(["truncate", p, to], lambda: os.truncate(self.host(p), to))
+            if to < size and len(self.lines) > at:
+                with open(self.host(p), "rb") as f:
+                    self.mix[at] = (names, before, f.read())
         elif op == "mkdir":
             p = self.fresh()
             # 0755, the mode the driver's mkdir makes (the umask here is 0).

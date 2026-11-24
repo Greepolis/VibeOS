@@ -442,12 +442,20 @@ jobs:
           python3 scripts/dev/ext4-torture.py build "$first" 150 --cuts 10 --keep /tmp/ext4-fail | tee /tmp/c.log
           tail -1 /tmp/c.log | grep -q '^ext4_torture=ok'
 
+      # Packed first: the kept model tree holds symbolic links, loops among
+      # them, and upload-artifact follows them - it stopped on ELOOP and kept
+      # nothing of nightly seed 1000019193 (2026-11-24).
+      - name: Pack a failing seed
+        if: failure()
+        run: |
+          if [ -d /tmp/ext4-fail ]; then tar -czf /tmp/ext4-fail.tar.gz -C /tmp ext4-fail; fi
+
       - name: Keep a failing seed
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ext4-torture-failures
-          path: /tmp/ext4-fail
+          path: /tmp/ext4-fail.tar.gz
           if-no-files-found: ignore
 
   registry-torture:
