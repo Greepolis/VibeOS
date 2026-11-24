@@ -51,7 +51,7 @@ switching and a root that can hold a desktop.
 ```text
  session chooser: /usr/share/wayland-sessions/*.desktop
  ------------------------------------------------------
- VibeOS desktop | labwc | Xfce | KDE Plasma | GNOME
+ VibeOS desktop | Xfce | KDE Plasma | GNOME
  ------------------------------------------------------
  Xwayland (X11 programs)       D-Bus, session services
  libwayland, libinput, libseat, libdrm, libudev
@@ -120,6 +120,9 @@ A drawn console is still needed for a machine with no serial port.
 - Installed sessions are the `.desktop` files in
   `/usr/share/wayland-sessions`. A desktop's normal packaging already provides
   them.
+- The VibeOS desktop is item 4's compositor with our panel and shell as its
+  clients. That compositor alone is a session for bring-up and tests, not one
+  offered to users.
 - The system default is in `/etc/vibeos/session`; a user's choice is in
   `~/.config/vibeos/session` and wins over it.
 - `login` stays as [the shell's design](../shell/design.md) has it. A graphical
@@ -153,7 +156,7 @@ item 4, and belong to its plan once that is written.
 |---|---|---|
 | **DE0** Display and input | `/dev/dri/card0` with one connector, one CRTC and dumb buffers over the GOP framebuffer; evdev for PS/2 keyboard and mouse | A test program in the guest sets a mode, flips two dumb buffers and reads injected key and pointer events; the same program passes on Linux |
 | **DE1** First compositor | Minimal `/sys`, libudev-zero, libseat, cage and then labwc under pixman | A Wayland client commits a known pattern and it is read back; killing the client leaves the compositor running |
-| **DE2** Session selection | Session files, defaults, the failure path, Xwayland | Each of `text` and labwc starts from its setting; a session made to crash reaches the text console; an X11 client displays |
+| **DE2** Session selection | Session files, defaults, the failure path, Xwayland | Each of `text` and a bare labwc session starts from its setting; a session made to crash reaches the text console; an X11 client displays |
 | **DE3** Xfce | D-Bus, session services, the desktop on the F3 root | The session starts, a terminal opens and runs a command, the session logs out and returns cleanly |
 | **DE4** KDE Plasma | elogind, Mesa llvmpipe, Qt | The same scenario as DE3 |
 | **DE5** GNOME | Whatever DE4 left open, and its service dependencies | The same scenario as DE3, or a written decision not to support it |
