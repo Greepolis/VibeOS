@@ -1,14 +1,24 @@
 # The console's portable halves (vibeos/vt.h): output sequences and scan codes.
 # Read by test_vt in the host tests.
 #
+# S7 (docs/shell/s7.md) added what a full-screen program needs, and four cases
+# for it, each expecting a test in test_output:
+#   - an OSC is text: "a title, ended by BEL, prints nothing";
+#   - UTF-8 is read as bytes: "a three-byte character is one code point";
+#   - an escape inside a UTF-8 character is lost: "a character cut short by an
+#     escape keeps the escape";
+#   - an SGR keeps two numbers: "an SGR keeps every number".
+#
 # Target source: kernel/io/vt.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/io/vt.c scripts/dev/cases/io-vt.txt
 
 ### a position is taken as counted from zero
 --- old
             *n = a ? a - 1u : 0u;
+            *m = b ? b - 1u : 0u;
 +++ new
             *n = a;
+            *m = b ? b - 1u : 0u;
 
 ### a large number wraps instead of saturating
 --- old
@@ -18,13 +28,13 @@
 
 ### a colour falls through as text
 --- old
-    if (u < 0x40u || u > 0x7eu) {
+    if (u >= 0x3Cu && u <= 0x3Fu) {
 +++ new
     if (u == '?') {
         vt->state = VT_TEXT;
         return VIBEOS_VT_PRINT;
     }
-    if (u < 0x40u || u > 0x7eu) {
+    if (u >= 0x3Cu && u <= 0x3Fu) {
 
 ### Print Screen's false Shift is believed
 --- old
@@ -55,3 +65,34 @@
         if (k->caps && base >= 'a' && base <= 'z') {
 +++ new
         if (k->caps) {
+
+### an OSC is text
+--- old
+        case ']':
+        case 'P':
++++ new
+        case 'P':
+
+### UTF-8 is read as bytes
+--- old
+    if (u < 0x80u) {
+        *n = u;
++++ new
+    if (1) {
+        *n = u;
+
+### an escape inside a UTF-8 character is lost
+--- old
+        vt->state = u == 0x1bu ? VT_ESC : VT_TEXT;
+        *n = VIBEOS_VT_REPLACEMENT;
++++ new
+        vt->state = VT_TEXT;
+        *n = VIBEOS_VT_REPLACEMENT;
+
+### an SGR keeps two numbers
+--- old
+        if (vt->count < VIBEOS_VT_PARAMS) {
+            uint32_t v
++++ new
+        if (vt->count < 2u) {
+            uint32_t v

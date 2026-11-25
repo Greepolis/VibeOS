@@ -25,9 +25,14 @@
 #include <stdint.h>
 
 /* The terminal's grid. Public because the torture's model has to agree with it,
- * not because anything should size a buffer from it. */
-#define VIBEOS_GUI_TERM_COLS 72u
-#define VIBEOS_GUI_TERM_ROWS 24u
+ * not because anything should size a buffer from it. A program sees one column
+ * fewer (the last is where the grid wraps). 72 by 24 was a line editor's
+ * size; FinalCommander lays two panels out side by side and laid them over
+ * each other in 71 columns (S7), so it is 120 by 36 now - 976 by 356 pixels
+ * with the window's border, which still fits the 1024 by 768 every UEFI
+ * offers. A smaller screen clips the window, as it always did. */
+#define VIBEOS_GUI_TERM_COLS 121u
+#define VIBEOS_GUI_TERM_ROWS 36u
 
 /* The largest screen the back buffer is sized for, and the smallest the layout
  * can be drawn on. The window and its text area are computed by subtraction
@@ -109,6 +114,15 @@ void vibeos_gui_stats(vibeos_gui_stats_t *out);
  * VIBEOS_GUI_TERM_COLS + 1 bytes). For the torture's model and for nothing
  * that draws. Returns the number of characters, or -1 for a bad row. */
 int vibeos_gui_term_row(uint32_t row, char *out);
+
+/* One cell of the terminal: its code point (0 for an empty one) and its
+ * colours as 0x00RRGGBB, with the underline as bit 24 of the foreground. For
+ * the host tests, which ask what a sequence did to a cell. Returns -1 outside
+ * the grid. */
+int vibeos_gui_term_cell(uint32_t row, uint32_t col, uint32_t *cp, uint32_t *fg, uint32_t *bg);
+
+/* Whether the cursor is shown, and whether the alternate screen is up. */
+void vibeos_gui_term_modes(int *cursor_on, int *alt);
 
 /* Forget everything. For tests. */
 void vibeos_gui_reset(void);

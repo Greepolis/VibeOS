@@ -61,7 +61,9 @@ static void gui_unlock(void) {
 
 ### a scroll is not counted
 --- old
-    g_term_col = 0;
+        term_erase(r, 0u);
+    }
     g_stats.scrolls++;
 +++ new
-    g_term_col = 0;
+        term_erase(r, 0u);
+    }

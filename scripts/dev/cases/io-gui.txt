@@ -17,6 +17,18 @@
 #     own core;
 #  6. putc before init is accepted into the grid: expect the "ignored" test.
 #
+# S7's terminal (docs/shell/s7.md), each expecting a test in vt_tests.c's
+# test_screen_full:
+#  7. an empty cell ends the row on screen, as before S7: "a character past an
+#     erased cell is drawn, the erased cell is not";
+#  8. erasing ignores the pen: "erasing leaves the pen's background";
+#  9. a newline ignores the scroll region: "a newline at the region's bottom
+#     scrolls the region";
+# 10. the alternate screen does not keep the main one: "and the main screen
+#     back, as it was";
+# 11. a 24-bit colour is read one place off: "a 24-bit foreground on a
+#     256-colour background".
+#
 # Not a case, and why: reverting clip() to the old `x + w > g_w` clamp goes
 # NOT RED here, because init now refuses every geometry on which the
 # subtraction underflows. The two are defences in depth for the same defect;
@@ -49,14 +61,15 @@
 
 ### the wrap on the last row writes before it scrolls
 --- old
-            if (g_term_row >= TERM_ROWS) {
-                term_scroll();
-            }
+            g_term_col = 0;
+            term_line_down();
         }
-        term_set(g_term_row, g_term_col, c);
+        term_put(g_term_row, g_term_col, pen_cell(vn));
 +++ new
+            g_term_col = 0;
+            g_term_row++;
         }
-        term_set(g_term_row, g_term_col, c);
+        term_put(g_term_row, g_term_col, pen_cell(vn));
 
 ### a lock the caller already holds is treated as taken
 --- old
@@ -78,3 +91,38 @@
     }
     if (!gui_lock()) {
         __atomic_fetch_add
+
+### an empty cell ends the row on screen
+--- old
+            if (c->bg != COL_WINDOW) {
++++ new
+            if (c->cp == 0u) {
+                break;
+            }
+            if (c->bg != COL_WINDOW) {
+
+### erasing ignores the pen
+--- old
+    term_cell_t c = pen_cell(0u);
+
+    c.fg &= CELL_RGB;
++++ new
+    term_cell_t c = { 0, COL_TEXT, COL_WINDOW };
+
+### a newline ignores the scroll region
+--- old
+    if (g_term_row == g_bottom) {
++++ new
+    if (g_term_row == TERM_ROWS - 1u) {
+
+### the alternate screen does not keep the main one
+--- old
+                        g_main[r][cc] = g_term[r][cc];
++++ new
+                        (void)0;
+
+### a 24-bit colour is read one place off
+--- old
+                colour = ((uint32_t)(vt->param[i + 2u] & 0xFFu) << 16) |
++++ new
+                colour = ((uint32_t)(vt->param[i + 1u] & 0xFFu) << 16) |

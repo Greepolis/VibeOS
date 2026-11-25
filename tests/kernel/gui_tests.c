@@ -215,18 +215,28 @@ int test_gui(void) {
     memset(line, 'w', VIBEOS_GUI_TERM_COLS - 1u);
     line[VIBEOS_GUI_TERM_COLS - 1u] = 0;
     ok &= expect(row_is(2, line) && row_is(3, "y"),
-                 "a row holds 71 characters and the 72nd starts the next");
+                 "a row holds COLS - 1 characters and the next starts the next row");
     vibeos_gui_reset();
     vibeos_gui_init((uint64_t)(uintptr_t)fb.p, W, H, back.p, back_bytes);
-    for (i = 0; i < 30u; i++) {
+    /* Six lines more than the grid has rows: seven scrolls, since the cursor
+     * row after the last newline is the seventh. Counted from the grid's size,
+     * which S7 raised from 24 rows. */
+    for (i = 0; i < VIBEOS_GUI_TERM_ROWS + 6u; i++) {
         char l[8];
         snprintf(l, sizeof(l), "L%02u\n", i);
         write_str(l);
     }
     vibeos_gui_stats(&st);
-    ok &= expect(st.scrolls == 7u && row_is(0, "L07") && row_is(22, "L29") && row_is(23, ""),
-                 "thirty lines scroll seven times and keep the last twenty-three plus the cursor row");
-    ok &= expect(st.chars == 90u && st.term_chars == 69u,
+    {
+        char last[8];
+
+        snprintf(last, sizeof(last), "L%02u", VIBEOS_GUI_TERM_ROWS + 5u);
+        ok &= expect(st.scrolls == 7u && row_is(0, "L07") && row_is(VIBEOS_GUI_TERM_ROWS - 2u, last) &&
+                         row_is(VIBEOS_GUI_TERM_ROWS - 1u, ""),
+                     "six lines past the grid scroll seven times and keep the last rows plus the cursor row");
+    }
+    ok &= expect(st.chars == (VIBEOS_GUI_TERM_ROWS + 6u) * 3u &&
+                     st.term_chars == (VIBEOS_GUI_TERM_ROWS - 1u) * 3u,
                  "chars counts what arrived, term_chars what is on screen");
     /* Wrapping on the last row scrolls before it writes. The version before C7
      * wrapped, found the row past the end, skipped the write and scrolled
@@ -235,7 +245,7 @@ int test_gui(void) {
         vibeos_gui_putc('q');
     }
     memset(line, 'q', VIBEOS_GUI_TERM_COLS - 1u);
-    ok &= expect(row_is(22, line) && row_is(23, "q"),
+    ok &= expect(row_is(VIBEOS_GUI_TERM_ROWS - 2u, line) && row_is(VIBEOS_GUI_TERM_ROWS - 1u, "q"),
                  "the character that wraps the last row is written, not lost");
 
     /* ---- the repaint -------------------------------------------------------------- */
@@ -289,7 +299,7 @@ int test_gui(void) {
     vibeos_gui_stats(&st);
     ok &= expect(st.reentered == 1u && g_refused == 1 && !g_nested,
                  "a putc by the lock's own holder is dropped and counted, not a wait on itself");
-    ok &= expect(row_is(23, "qk"), "and only the holder's character reached the grid");
+    ok &= expect(row_is(VIBEOS_GUI_TERM_ROWS - 1u, "qk"), "and only the holder's character reached the grid");
 
     ok &= expect(!g_nested && g_depth == 0 && !g_bad_name && g_locks > 0,
                  "every call took the GUI's own lock once and released it");

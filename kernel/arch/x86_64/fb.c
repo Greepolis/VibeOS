@@ -140,6 +140,9 @@ void vibeos_x86_64_fb_putc(char c) {
         fb_op(op, vn, vm);
         return;
     }
+    /* The character is the parser's: a UTF-8 one arrives with its last byte,
+     * which is not the character. This console has only the ASCII font. */
+    c = vn < 0x80u ? (char)vn : '?';
     if (c == '\r') {
         g_cx = 0;
         return;

@@ -131,6 +131,11 @@ static void model_putc(char c) {
         }
         return;
     }
+    /* A stray UTF-8 continuation byte is one replacement character, which
+     * the row as text shows as '?'. */
+    if ((unsigned char)c >= 0x80u) {
+        c = '?';
+    }
     /* A row holds one fewer than the grid is wide: the last column is where
      * the terminal wraps, never where it writes. */
     if (model_cur()->len >= COLS - 1u) {
@@ -331,7 +336,11 @@ static char random_char(void) {
         char c = (char)(1u + below(31u));
         return (c == '\r' || c == 27) ? 'x' : c;
     }
-    if (k < 99u) { return (char)(0x80u + below(128u)); }
+    /* A byte past ASCII. Since S7 the terminal decodes UTF-8, so a lead byte
+     * would swallow what follows it; a continuation byte on its own is always
+     * one replacement character, which this model can say without decoding
+     * anything. Whole UTF-8 is tests/kernel/vt_tests.c's. */
+    if (k < 99u) { return (char)(0x80u + below(64u)); }
     return 0;                                          /* a NUL, rarely */
 }
 
