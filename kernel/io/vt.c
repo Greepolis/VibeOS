@@ -285,6 +285,57 @@ int vibeos_kbd_ctrl(const vibeos_kbd_t *k) {
     return k->ctrl_l || k->ctrl_r;
 }
 
+/* The Italian layout's symbol keys, as Linux's "it" keymap has them: plain,
+ * Shift, AltGr, AltGr and Shift. UTF-8. A key not here is a letter or a key
+ * both layouts share, and is the common path's. */
+typedef struct {
+    uint8_t code;
+    const char *k[4];
+} it_key_t;
+
+static const it_key_t g_it[] = {
+    { 0x29u, { "\\", "|", "\xc2\xac", "\xc2\xa6" } },
+    { 0x02u, { "1", "!", "\xc2\xb9", "\xc2\xa1" } },
+    { 0x03u, { "2", "\"", "\xc2\xb2", "" } },
+    { 0x04u, { "3", "\xc2\xa3", "\xc2\xb3", "" } },
+    { 0x05u, { "4", "$", "\xc2\xbc", "" } },
+    { 0x06u, { "5", "%", "\xc2\xbd", "" } },
+    { 0x07u, { "6", "&", "\xc2\xac", "" } },
+    { 0x08u, { "7", "/", "{", "" } },
+    { 0x09u, { "8", "(", "[", "" } },
+    { 0x0Au, { "9", ")", "]", "" } },
+    { 0x0Bu, { "0", "=", "}", "" } },
+    { 0x0Cu, { "'", "?", "`", "" } },
+    { 0x0Du, { "\xc3\xac", "^", "~", "" } },
+    { 0x12u, { "e", "E", "\xe2\x82\xac", "" } },
+    { 0x1Au, { "\xc3\xa8", "\xc3\xa9", "[", "{" } },
+    { 0x1Bu, { "+", "*", "]", "}" } },
+    { 0x27u, { "\xc3\xb2", "\xc3\xa7", "@", "" } },
+    { 0x28u, { "\xc3\xa0", "\xc2\xb0", "#", "" } },
+    { 0x2Bu, { "\xc3\xb9", "\xc2\xa7", "`", "" } },
+    { 0x33u, { ",", ";", "", "" } },
+    { 0x34u, { ".", ":", "", "" } },
+    { 0x35u, { "-", "_", "", "" } },
+    { 0x56u, { "<", ">", "\xc2\xab", "\xc2\xbb" } },
+};
+
+static const char *it_key(const vibeos_kbd_t *k, uint8_t code) {
+    uint32_t i;
+    int shifted = k->shift_l || k->shift_r;
+
+    for (i = 0; i < sizeof(g_it) / sizeof(g_it[0]); i++) {
+        if (g_it[i].code == code) {
+            /* E without AltGr is a letter: Caps Lock and the rest are the
+             * common path's. */
+            if (code == 0x12u && !k->altgr) {
+                return 0;
+            }
+            return g_it[i].k[(k->altgr ? 2 : 0) + (shifted ? 1 : 0)];
+        }
+    }
+    return 0;
+}
+
 /* xterm's numbering: 1, plus 1 for Shift, 2 for Alt, 4 for Control. */
 static uint32_t modifier(const vibeos_kbd_t *k) {
     return 1u + ((k->shift_l || k->shift_r) ? 1u : 0u) + (k->alt ? 2u : 0u) +
@@ -365,9 +416,11 @@ uint32_t vibeos_kbd_key(vibeos_kbd_t *k, uint8_t sc, char out[VIBEOS_KBD_MAX]) {
         return 0;
     }
     if (code == SC_ALT) {
-        /* The right one is AltGr, which this US map has no use for. */
+        /* The right one is AltGr: the third character on an Italian key. */
         if (!extended) {
             k->alt = !release;
+        } else {
+            k->altgr = !release;
         }
         return 0;
     }
@@ -401,6 +454,47 @@ uint32_t vibeos_kbd_key(vibeos_kbd_t *k, uint8_t sc, char out[VIBEOS_KBD_MAX]) {
             return 1;
         }
         return 0;
+    }
+    /* F1 to F12, as xterm sends them. Before S7 they sent nothing at all, and
+     * FinalCommander is driven by them. */
+    if ((code >= 0x3Bu && code <= 0x44u) || code == 0x57u || code == 0x58u) {
+        static const char *const fkey[12] = { "OP", "OQ", "OR", "OS", "15", "17", "18", "19", "20", "21", "23", "24" };
+        uint32_t f = code <= 0x44u ? code - 0x3Bu : code - 0x57u + 10u;
+        const char *s = fkey[f];
+
+        uint32_t mod = modifier(k);
+
+        out[n++] = 27;
+        if (s[0] == 'O') {      /* F1 to F4: SS3, no modifier form here */
+            out[n++] = 'O';
+            out[n++] = s[1];
+            return n;
+        }
+        out[n++] = '[';
+        out[n++] = s[0];
+        out[n++] = s[1];
+        if (mod > 1u) {
+            out[n++] = ';';
+            out[n++] = (char)('0' + mod);
+        }
+        out[n++] = '~';
+        return n;
+    }
+    /* The Italian layout's symbol keys. Letters, digits' positions, space,
+     * Enter and Control stay with the common path below, which already knows
+     * Caps Lock and control characters. */
+    if (k->layout == VIBEOS_KBD_IT && !vibeos_kbd_ctrl(k)) {
+        const char *s = it_key(k, code);
+
+        if (s) {
+            if (k->alt && *s) {
+                out[n++] = 27;
+            }
+            while (*s && n < VIBEOS_KBD_MAX) {
+                out[n++] = *s++;
+            }
+            return n;   /* "" is a key with nothing in this state */
+        }
     }
     if (code >= 0x3Au) {
         return 0;

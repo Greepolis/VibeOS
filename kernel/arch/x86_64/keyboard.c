@@ -35,7 +35,9 @@ static volatile uint32_t g_tail; /* consumer (read) */
 
 /* The modifiers, which have to be tracked across keystrokes: the scan code for
  * C is the same whether or not Control is down. */
-static vibeos_kbd_t g_keys;
+/* Italian key caps: the machine this runs on in front of a person has them
+ * (S7). Another layout is a field away; a setting for it is the installer's. */
+static vibeos_kbd_t g_keys = { .layout = VIBEOS_KBD_IT };
 
 /* Two ways a keystroke disappears here, and they are not the same harm.
  *

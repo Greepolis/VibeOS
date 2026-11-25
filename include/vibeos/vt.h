@@ -79,14 +79,21 @@ vibeos_vt_op_t vibeos_vt_feed(vibeos_vt_t *vt, char c, uint32_t *n, uint32_t *m)
 /* The longest a key can be as input: ESC [ 1 ; 8 D, and a little. */
 #define VIBEOS_KBD_MAX 8u
 
+/* Which key caps the keyboard has. A zeroed vibeos_kbd_t is US. */
+#define VIBEOS_KBD_US 0u
+#define VIBEOS_KBD_IT 1u
+
 typedef struct {
     uint8_t e0;           /* the last byte was the extended prefix */
     uint8_t skip;         /* bytes left of Pause, which is six long */
     uint8_t shift_l, shift_r, ctrl_l, ctrl_r, alt, caps;
+    uint8_t altgr;        /* the right Alt, which the Italian layout uses */
+    uint8_t layout;       /* VIBEOS_KBD_US or VIBEOS_KBD_IT */
 } vibeos_kbd_t;
 
 /* One scan code; returns how many bytes of input it makes (0 for a release or a
- * modifier), written to `out`. US layout. */
+ * modifier), written to `out`. A character outside ASCII - è, à, £ on the
+ * Italian layout - is its UTF-8 bytes. F1 to F12 are xterm's sequences. */
 uint32_t vibeos_kbd_key(vibeos_kbd_t *k, uint8_t sc, char out[VIBEOS_KBD_MAX]);
 
 /* Whether Control is held, for the driver's question to the terminal. */
