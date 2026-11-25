@@ -3237,6 +3237,12 @@ def main():
             dm = re.search(r"pages_deferred=0x([0-9a-f]+)", text)
             if dm is None or int(dm.group(1), 16) == 0:
                 problems.append("exec_deferred_no_bss")
+            # An image's file pages left to the fault (S7 step 2): some must be
+            # deferred - every native program is in the high window - and some
+            # must then be faulted in, or nothing ran that way.
+            fm = re.search(r"pages_file_deferred=0x([0-9a-f]+) pages_file_faulted=0x([0-9a-f]+)", text)
+            if fm is None or int(fm.group(1), 16) == 0 or int(fm.group(2), 16) == 0:
+                problems.append("exec_file_pages_not_deferred")
 
             # Every resident cache page still holds what its file holds.
             #

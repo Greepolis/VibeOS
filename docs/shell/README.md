@@ -12,6 +12,7 @@ decided with the project's owner on 2026-11-19.
 | [s4.md](s4.md) | S4: `vsh` - the grammar agreed before the parser, its rules and its status |
 | [s5.md](s5.md) | S5: scripts run by `#!` or by their extension, and bash |
 | [s6.md](s6.md) | S6: Wine's cmd on the NT personality, its steps and what it still needs |
+| [s7.md](s7.md) | S7: FinalCommander, a full-screen terminal program, at boot |
 
 The phases, each with its own file once it starts:
 

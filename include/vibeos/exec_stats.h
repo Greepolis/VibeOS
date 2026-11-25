@@ -66,6 +66,13 @@ typedef struct vibeos_exec_stats {
      * mapped nor copied at exec, made when first touched. A boot that defers
      * none has lost the mechanism, and the gate says so. */
     uint64_t pages_deferred;
+    /* Pages of an image's file left to the page fault (S7 step 2), and how
+     * many of those a fault then mapped from the cache - counted in
+     * pages_from_cache too, since that is what they are. Deferred and never
+     * faulted is the mechanism lost: every program would die on its first
+     * instruction, and the gate says which. */
+    uint64_t pages_file_deferred;
+    uint64_t pages_file_faulted;
 
     /* Resident cache pages compared against the file they came from, and how
      * many no longer matched. Once image pages are shared rather than copied,

@@ -306,11 +306,14 @@ long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
      * needed the bytes contiguously, but because this function would not
      * proceed without room for all of them.
      *
-     * The loop still walks every page, because that is what populates the
-     * cache, and the cache is what the page fill and the interpreter path read
-     * through. What changed is that the copy stops at the caller's window and
-     * the return value keeps describing the file. */
-    for (off = 0; off < size; off += 4096ull) {
+     * The loop used to walk every page, to populate the cache. It stops at the
+     * caller's window now: every reader of an image asks the cache by page and
+     * a miss reads that page (vibeos_cache_get_ref), and since exec leaves a
+     * high-window program's file pages to the fault (docs/shell/s7.md step 2)
+     * reading them all here was most of the cost. FinalCommander's 6,300 pages,
+     * read one by one, held its exec for half a minute and silenced the boot
+     * long enough for the gate to call it wedged. */
+    for (off = 0; off < size && off < (uint64_t)cap; off += 4096ull) {
         uint64_t phys = 0;
         uint64_t take = size - off < 4096ull ? size - off : 4096ull;
         const uint8_t *src;

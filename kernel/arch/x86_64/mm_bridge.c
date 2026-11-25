@@ -1954,6 +1954,28 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
             uint64_t foff = 0;
             uint64_t phys = 0;
 
+            /* In the high window, not read now: a region whose page the fault
+             * takes from the cache on first touch (docs/shell/s7.md step 2).
+             * FinalCommander is 25 MiB, and mapping it here read all 6,300 of
+             * its pages - a minute - before a line of it ran. The low window
+             * cannot: it lies over the kernel's identity map, where a page
+             * nobody mapped is present for ring 0 (see the zero tail below). */
+            if (vmas && va >= VIBEOS_HW_IDENTITY_LIMIT && vibeos_elf_page_file_offset(img, va, &foff)) {
+                vibeos_vma_t like;
+
+                __builtin_memset(&like, 0, sizeof(like));
+                like.prot = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER |
+                                            ((flags & VIBEOS_ELF_X) ? VIBEOS_PROT_EXEC : 0u));
+                like.backing = VIBEOS_BACKING_FILE;
+                like.backing_id = file_id;
+                like.backing_offset = foff;
+                like.state = VIBEOS_VMA_DEMAND;
+                if (vibeos_vma_insert_like(vmas, va, 4096ull, &like) != 0) {
+                    return -1;
+                }
+                vibeos_exec_stats()->pages_file_deferred++;
+                continue;
+            }
             if (vibeos_elf_page_file_offset(img, va, &foff) &&
                 vibeos_cache_get_ref(file_id, foff, &phys) == 0) {
                 int rc = (va < VIBEOS_HW_IDENTITY_LIMIT)
@@ -2723,6 +2745,24 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
     entry = vibeos_vmspace_entry(&sv, page_va);
     if (entry && *entry != 0ull) {
         done = 1;   /* mapped while this waited for the lock */
+    } else if (region && region->backing == VIBEOS_BACKING_FILE && region->state == VIBEOS_VMA_DEMAND &&
+               (region->prot & VIBEOS_PROT_USER) && !stack) {
+        /* A page of a program's image deferred at exec: the page cache's own,
+         * read-only, as exec used to map it - only later (S7 step 2). */
+        uint64_t phys = 0, leaf = PTE_PRESENT | PTE_USER;
+
+        if (!(region->prot & VIBEOS_PROT_EXEC)) {
+            leaf |= PTE_NX;
+        }
+        if (vibeos_cache_get_ref(region->backing_id, region->backing_offset + (page_va - region->base),
+                                 &phys) == 0) {
+            if (hw_map_page(&t->proc.as, page_va, phys, leaf) == 0) {
+                vibeos_exec_stats()->pages_file_faulted++;
+                vibeos_exec_stats()->pages_from_cache++;
+                done = 1;
+            }
+            (void)vibeos_frame_put(phys);   /* the mapping holds its own */
+        }
     } else if (region && region->backing == VIBEOS_BACKING_ANON &&
                (region->prot & VIBEOS_PROT_USER) && region->state != VIBEOS_VMA_RESERVED &&
                (region->state == VIBEOS_VMA_DEMAND || (stack && (region->prot & VIBEOS_PROT_WRITE))) &&

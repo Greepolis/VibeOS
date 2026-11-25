@@ -25,6 +25,10 @@ void vibeos_exec_print_stats(void) {
     vibeos_x86_64_serial_print_hex(s->pages_copied);
     vibeos_x86_64_serial_puts(" pages_deferred=0x");
     vibeos_x86_64_serial_print_hex(s->pages_deferred);
+    vibeos_x86_64_serial_puts(" pages_file_deferred=0x");
+    vibeos_x86_64_serial_print_hex(s->pages_file_deferred);
+    vibeos_x86_64_serial_puts(" pages_file_faulted=0x");
+    vibeos_x86_64_serial_print_hex(s->pages_file_faulted);
     vibeos_x86_64_serial_puts(" cache_audit_checked=0x");
     vibeos_x86_64_serial_print_hex(s->cache_audit_checked);
     /* MUSTBEZERO, and carrying the word on purpose.
