@@ -26,15 +26,17 @@
 # 11. only the chain below counts. Expect "a chain of five epolls is built; a
 #     sixth, above or below, is ELOOP" (LTP's epoll_ctl04 found it: a sixth
 #     on top was let in).
+# 12. an edge is only a rise. Expect "a second write into the readable eventfd
+#     is reported again" (FinalCommander's workers slept for good, S7).
 #
 # Target source: kernel/abi/linux/epoll.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/epoll.c scripts/dev/cases/abi-epoll.txt
 
 ### an edge-triggered entry reports every look
 --- old
-    return (s->events & LINUX_EPOLLET) ? (got & ~s->seen) : got;
+    rep = got & ~s->seen;
 +++ new
-    return got;
+    rep = got;
 
 ### an edge remembers only what it reported
 --- old
@@ -83,7 +85,7 @@
 
 ### an epoll is always readable to poll
 --- old
-            if (r == 0 && ep_judge(&s[i], &now) != 0) {
+            if (r == 0 && ep_judge(&s[i], &now, &heard) != 0) {
 +++ new
             if (r == 0) {
 
@@ -98,3 +100,9 @@
     return ep_down(inner, outer, 0) + ep_up(outer, 0) > EP_DEPTH;
 +++ new
     return ep_down(inner, outer, 0) + 1u > EP_DEPTH;
+
+### an edge is only a rise
+--- old
+    if (h != s->heard) {
++++ new
+    if (0 && h != s->heard) {

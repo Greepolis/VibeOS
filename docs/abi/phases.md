@@ -1963,6 +1963,19 @@ events, each a file type with a `ready` and a pipe's way of waiting, so `poll`,
   is the most a state can say. A program that reads until EAGAIN before it
   waits again - which is what edge-triggered requires of it on Linux too -
   sees no difference.
+
+  *2026-11-25, S7:* a program that does not read is the one that sees it.
+  tokio-style runtimes wake a worker parked in `epoll_wait` by writing an
+  eventfd they never read, so from the second wake on it is readable already,
+  nothing rises, and the worker sleeps for good - FinalCommander's panel stayed
+  on "reading" (docs/shell/s7.md). A description now counts arrivals
+  (`happened` in `vibeos_file_t`), and an edge-triggered entry reports its
+  input again when the count has moved since its last look. Only eventfd
+  counts so far; a pipe or a socket is still a rise. Host test "a second write
+  into the readable eventfd is reported again", sabotage case 12 of
+  `abi-epoll.txt`. The same run found case 4 ("an entry outlives its
+  description") NOT RED on the parent commit as well: the check it names no
+  longer catches it, and that is open.
 - **Nested**: an epoll is readable while one of its entries would be reported,
   so it can be in another's set or in poll's; a cycle, or nesting deeper than
   Linux's five, is ELOOP. A look never asks a `ready` under epoll's lock, so

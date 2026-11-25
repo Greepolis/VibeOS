@@ -3052,6 +3052,29 @@ static void t_epoll(void) {
      * made, and the entry watches that instead. */
     expect(SYS2(290, 1, 0) >= 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,
            "a readable description made in the freed slot is not reported");
+    {
+        /* After the freed-slot check, which counts on which slot comes next.
+         * Edge-triggered is "something happened", not only a rise: a write
+         * into an eventfd that is already readable is reported again. A
+         * runtime that wakes its workers this way and never reads the count -
+         * tokio's, FinalCommander's - left them asleep for good, with the
+         * panel on "reading" (docs/shell/s7.md). */
+        long efd = SYS2(290, 0, 0);
+        uint64_t one = kf_ualloc(8);
+        uint64_t v = 1;
+
+        memcpy((void *)(uintptr_t)one, &v, sizeof(v));
+        expect(efd >= 0 && CTL(1, efd, 1u | 0x80000000u /* EPOLLET */, 7) == 0 &&
+                   SYS3(1, (uint64_t)efd, one, 8) == 8,
+               "an eventfd added edge-triggered, and written");
+        expect(SYS4(232, (uint64_t)ep, evu, 8, 0) >= 1 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,
+               "eventfd: reported once, then not while nothing happens");
+        expect(SYS3(1, (uint64_t)efd, one, 8) == 8 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 1 && ev[0].data == 7,
+               "a second write into the readable eventfd is reported again");
+        expect(SYS4(232, (uint64_t)ep, evu, 8, 0) == 0, "and only once");
+        (void)CTL(2, efd, 0, 0);
+        (void)SYS1(3, (uint64_t)efd);
+    }
 
     /* Waiting. */
     t0 = ks_ticks();

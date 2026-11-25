@@ -206,6 +206,13 @@ struct vibeos_file {
      * numbering; and an inotify instance, by its index in inotify.c's table. */
     uint64_t event_count;
     uint32_t event_flags;
+    /* Moves each time something arrives that a reader should hear of, whether
+     * or not the description was already readable: what an edge-triggered
+     * epoll entry reports beside a rise (epoll.c). A runtime that wakes its
+     * workers by writing an eventfd it never reads - tokio's, FinalCommander's
+     * - writes into one that is readable already, and a rise alone never
+     * woke them again. Only compared for change; wrapping is harmless. */
+    volatile uint32_t happened;
     int32_t tfd_clock;
     uint64_t tfd_next;
     uint64_t tfd_interval;

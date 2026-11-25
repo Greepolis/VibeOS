@@ -68,6 +68,7 @@ static long event_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
                                              __ATOMIC_ACQUIRE)) {
                 continue;
             }
+            __atomic_add_fetch(&f->happened, 1u, __ATOMIC_ACQ_REL);   /* for an edge (file.h) */
             ks_wake_waiters();   /* a reader may have something now */
             return 8;
         }

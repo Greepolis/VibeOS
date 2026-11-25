@@ -15,11 +15,14 @@
  *    entry, and the last reference going takes it away. That is the release
  *    hook (vibeos_file_on_release), which runs before the slot can be handed
  *    out again - so a pointer here never names a slot's next tenant.
- *  - Edge-triggered means a rise: what `ready` says now that it did not say at
- *    the last look. Linux's is "something happened", which also reports a pipe
- *    that was readable and got more; here there is no event to report, only a
- *    state, and a rise is the most a state can say. The difference is written
- *    down in phases.md.
+ *  - Edge-triggered is Linux's "something happened": what `ready` says now that
+ *    it did not say at the last look, and the input again when the description
+ *    counted an arrival since (`happened`, file.h). It used to be the rise
+ *    alone, and a runtime that wakes its workers by writing an eventfd it never
+ *    reads - tokio's - wrote into one already readable and woke nobody: S7's
+ *    FinalCommander sat on "reading" for good. Only eventfd counts arrivals so
+ *    far; a pipe or socket that was readable and got more is still a rise
+ *    (phases.md).
  *  - An epoll can be in another's set, or in poll's; a cycle is ELOOP. A look
  *    therefore calls `ready` on descriptions that may be epolls themselves, so
  *    it never does that under this file's lock: it takes what it needs - a
@@ -41,7 +44,8 @@ typedef struct {
     uint32_t events;        /* asked, with EPOLLET / EPOLLONESHOT */
     uint64_t data;
     uint32_t seen;          /* what `ready` said at the last look, for an edge */
-    uint32_t gen;           /* moves on every change, so a look's update is refused */
+    uint32_t heard;         /* the description's `happened` at the last look */
+    uint32_t gen;          /* moves on every change, so a look's update is refused */
     uint8_t armed;          /* 0 once a one-shot entry has fired, until EPOLL_CTL_MOD */
 } linux_ep_entry_t;
 
@@ -62,6 +66,7 @@ typedef struct {
     uint32_t events;
     uint64_t data;
     uint32_t seen;
+    uint32_t heard;
 } linux_ep_snap_t;
 
 /* How many entries one look takes; more stay for the next look, in pool order.
@@ -99,6 +104,7 @@ static uint32_t ep_snapshot(vibeos_file_t *ep, uint32_t from, linux_ep_snap_t *o
         out[n].events = e->events;
         out[n].data = e->data;
         out[n].seen = e->seen;
+        out[n].heard = e->heard;
         n++;
     }
     ks_unlock(&g_ep_lock);
@@ -107,23 +113,36 @@ static uint32_t ep_snapshot(vibeos_file_t *ep, uint32_t from, linux_ep_snap_t *o
 }
 
 /* What an entry reports now: its events as poll would say them, the hangup and
- * the error always - and for an edge-triggered one only what has risen. */
-static uint32_t ep_judge(const linux_ep_snap_t *s, uint32_t *now) {
+ * the error always - and for an edge-triggered one what has risen, and the
+ * input again if something arrived since the last look (`happened`, file.h).
+ * The count is read before the state, so an arrival between the two is heard
+ * at the next look rather than lost. */
+static uint32_t ep_judge(const linux_ep_snap_t *s, uint32_t *now, uint32_t *heard) {
+    uint32_t h = __atomic_load_n(&s->file->happened, __ATOMIC_ACQUIRE);
     uint32_t got = linux_revents(s->file, s->events & ~(uint32_t)EP_FLAGS);
+    uint32_t rep;
 
     *now = got;
-    return (s->events & LINUX_EPOLLET) ? (got & ~s->seen) : got;
+    *heard = h;
+    if (!(s->events & LINUX_EPOLLET)) {
+        return got;
+    }
+    rep = got & ~s->seen;
+    if (h != s->heard) {
+        rep |= got & (uint32_t)(LINUX_POLLIN | LINUX_POLLRDNORM);
+    }
+    return rep;
 }
 
 /* An epoll is readable while one of its entries would be reported. */
 static uint32_t ep_ready(vibeos_file_t *ep) {
     linux_ep_snap_t s[EP_READY_LOOK];
-    uint32_t from = 0, n, i, now, r = 0;
+    uint32_t from = 0, n, i, now, heard, r = 0;
 
     while (from < EP_MAX && r == 0) {
         n = ep_snapshot(ep, from, s, EP_READY_LOOK, &from);
         for (i = 0; i < n; i++) {
-            if (r == 0 && ep_judge(&s[i], &now) != 0) {
+            if (r == 0 && ep_judge(&s[i], &now, &heard) != 0) {
                 r = VIBEOS_READY_IN;
             }
             vibeos_file_put(s[i].file);
@@ -285,6 +304,7 @@ static long ep_ctl_locked(vibeos_file_t *ep, uint64_t op, vibeos_file_t *f, int3
             g_ep[i].events = ev->events;
             g_ep[i].data = ev->data;
             g_ep[i].seen = 0;
+            g_ep[i].heard = __atomic_load_n(&f->happened, __ATOMIC_ACQUIRE);
             g_ep[i].armed = 1;
             g_ep[i].gen++;
             g_ep[i].owner = ep;
@@ -378,11 +398,11 @@ static long ep_look(void *ctx) {
     while (from < EP_MAX && got < w->max) {
         n = ep_snapshot(w->ep, from, s, EP_LOOK, &from);
         for (i = 0; i < n; i++) {
-            uint32_t now = 0, rep = 0;
+            uint32_t now = 0, heard = 0, rep = 0;
             int fired = 0, judged = got < w->max;
 
             if (judged) {
-                rep = ep_judge(&s[i], &now);
+                rep = ep_judge(&s[i], &now, &heard);
             }
 
             if (rep != 0u && fault == 0) {
@@ -406,6 +426,7 @@ static long ep_look(void *ctx) {
                 if (g_ep[s[i].at].gen == s[i].gen) {
                     if (s[i].events & LINUX_EPOLLET) {
                         g_ep[s[i].at].seen = now;
+                        g_ep[s[i].at].heard = heard;
                     }
                     if (fired && (s[i].events & LINUX_EPOLLONESHOT)) {
                         g_ep[s[i].at].armed = 0;
