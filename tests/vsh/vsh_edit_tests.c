@@ -372,9 +372,8 @@ static void test_completion(void) {
     keys(&r, "a\t");
     line_is(&r, "al", 2, "as far as they agree");
     keys(&r, "\t");
-    line_is(&r, "al", 2, "first Tab with nothing to add");
-    keys(&r, "\t");
-    check(r.s.row > 0, "second Tab lists", 0);
+    /* Since S7 the first Tab with nothing to add lists at once. */
+    check(r.s.row > 0, "a Tab with nothing to add lists", 0);
     line_is(&r, "al", 2, "a list leaves the line");
     screen_agrees(&r, "the line comes back under the list");
     vsh_edit_end(&r.e);

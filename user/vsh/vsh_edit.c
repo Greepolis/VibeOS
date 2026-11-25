@@ -454,10 +454,12 @@ static void complete_word(vsh_edit_t *e) {
         if (common > strlen(prefix)) {
             l.items[0][common] = 0;
             replace_word(e, start, l.items[0], 0);
-        } else if (again) {
-            list_names(e, &l);
         } else {
-            e->tabbed = 1;
+            /* At once, not at the second Tab as bash has it: a first Tab that
+             * printed nothing read as a shell that had stopped (S7, in the
+             * VM). */
+            (void)again;
+            list_names(e, &l);
         }
     }
     free(prefix);
