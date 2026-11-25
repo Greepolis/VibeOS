@@ -9,6 +9,10 @@ lua | https://www.lua.org/ftp/lua-5.4.9.tar.gz | 2335b6c582a52654f94612bf10d2f46
 ltp | https://github.com/linux-test-project/ltp/releases/download/20260529/ltp-full-20260529.tar.xz | 685d83c6e370ac09201fb79593412f868fe031ee2890e204b5727fedcf51fb47
 # bash, the shell of S5 (docs/shell/s5.md). Pinned on first use, 2026-11-22.
 bash | https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz | 0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba
+# FinalCommander's release binaries, S7's workload (docs/shell/s7.md): its sums
+# are the ones the release publishes (SHA256SUMS), checked 2026-11-24.
+fcmd-linux | https://github.com/matteobaccan/FinalCommander/releases/download/v0.46.1/FinalCommander-linux-x86_64-static-0.46.1.tar.gz | 0f1d12bbb741c9a905a9782a2ffc0a240adce67125fb4859ba2cafde5fdbf6c1
+fcmd-windows | https://github.com/matteobaccan/FinalCommander/releases/download/v0.46.1/FinalCommander-windows-x86_64-0.46.1.zip | 7d47d2c50f65e83470c321bfeae7b5bc1b412d690e45ffa9d4eab12dc8d6c3cb
 # Wine's conformance tests, the NT personality's oracle (docs/abi/windows.md). 9.0 is
 # what Ubuntu 24.04 packages as wine64, the reference that answers them. Pinned on
 # first use, 2026-10-13: WineHQ signs with PGP and publishes no digest.

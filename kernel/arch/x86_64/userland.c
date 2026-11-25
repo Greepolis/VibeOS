@@ -203,6 +203,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "/usr/lib/vibeos/test/VSHJOBS.ELF /usr/bin/vsh\n"
                                   /* A script's interpreter (docs/shell/s5.md). */
                                   "/usr/lib/vibeos/test/SCRIPTT.ELF\n"
+                                  /* FinalCommander at a pseudo-terminal (S7). */
+                                  "/usr/lib/vibeos/test/FCMDT.ELF /usr/bin/fcmd\n"
                                   /* bash, if this image was built with it. */
                                   "/usr/bin/bash /usr/lib/vibeos/test/BASHT.SH\n"
                                   /* The NT personality's first program

@@ -729,6 +729,13 @@ typedef struct {
  * requires those to be at any particular address. */
 #define VIBEOS_HW_LOW_USER_BASE  0x00400000ull
 #define VIBEOS_HW_LOW_USER_LIMIT 0x00C00000ull   /* 8 MiB */
+/* Where a position-independent Linux program too large for the low window is
+ * placed: in the high window, far above the stack (+0), the break (+8 MiB) and
+ * the mmap area (+64 MiB, growing up), and below its end at +512 GiB. A PIE
+ * runs wherever it is put; the low window is preferred only because it is where
+ * an ET_EXEC links itself. FinalCommander is 25 MiB (docs/shell/s7.md). */
+#define VIBEOS_HW_BIG_PIE_BASE  (VIBEOS_HW_USER_BASE + 0x4000000000ull)   /* +256 GiB */
+#define VIBEOS_HW_BIG_PIE_SPAN  0x1000000000ull                           /* 64 GiB   */
 /* Place one parsed image into an address space, a page at a time.
  *
  * A page at a time is what makes a page shared between two segments come out

@@ -117,6 +117,23 @@ else
     rc=1
 fi
 
+# ---- FinalCommander (docs/shell/s7.md): the release binaries, not built here ----
+# Rust, and no Rust toolchain is assumed; the source is the submodule
+# third_party/FinalCommander, at the same tag, to read them against.
+rm -f "$OUT/fcmd" "$OUT/fcmd.exe"
+if f=$(fetch fcmd-linux); then
+    tar xzf "$f" -C "$OUT" ./fcmd && chmod 755 "$OUT/fcmd" && echo "corpus-build: fcmd ok" ||
+        { echo "corpus-build: fcmd FAILED"; rc=1; }
+else
+    rc=1
+fi
+if f=$(fetch fcmd-windows); then
+    python3 -c 'import sys, zipfile; open(sys.argv[2], "wb").write(zipfile.ZipFile(sys.argv[1]).read("fcmd.exe"))' \
+        "$f" "$OUT/fcmd.exe" && echo "corpus-build: fcmd.exe ok" || { echo "corpus-build: fcmd.exe FAILED"; rc=1; }
+else
+    rc=1
+fi
+
 # ---- cmd.exe (docs/shell/s6.md): Wine's, from its pinned source ----
 # With our own entry point and no mingw runtime, so that what it imports is what
 # our DLLs export. wine/debug.h is the one Wine header it needs, and tracing is

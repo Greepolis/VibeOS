@@ -3554,6 +3554,12 @@ def main():
                     m = re.search(r"VSHJOBS_FAIL: ([^\r\n]*)", text)
                     problems.append("vsh_jobs_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
 
+            if disk_img and os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "FCMD.ELF")):
+                if not re.search(r"write\(ring3\): FCMD_OK: ", text):
+                    m = re.search(r"FCMD_FAIL: ([^\r\n]*)", text)
+                    problems.append("fcmd_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
+            elif disk_img and CORPUS_MODE == "require":
+                problems.append("corpus_program_absent:fcmd")
             if disk_img and os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "BASH.ELF")):
                 differs = bash_script_differs(text)
                 if differs:

@@ -807,6 +807,16 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_musl_script ALL DEPENDS "${VIBEOS_SCRIPTT_BIN}")
+        set(VIBEOS_FCMDT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_fcmd.c")
+        set(VIBEOS_FCMDT_BIN "${CMAKE_BINARY_DIR}/musl_fcmd")
+        add_custom_command(
+            OUTPUT "${VIBEOS_FCMDT_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_FCMDT_BIN}" "${VIBEOS_FCMDT_SRC}"
+            DEPENDS "${VIBEOS_FCMDT_SRC}"
+            COMMENT "Building the FinalCommander test as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_fcmd ALL DEPENDS "${VIBEOS_FCMDT_BIN}")
 
         # The event loops (docs/abi/ L4), one program grown a step at a time as
         # the signal test was for L2.

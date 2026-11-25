@@ -68,6 +68,7 @@ SYSTEM_PROGRAMS = {
     "LOGIN.ELF": "usr/bin/login",
     "VSH.ELF": "usr/bin/vsh",
     "BASH.ELF": "usr/bin/bash",
+    "FCMD.ELF": "usr/bin/fcmd",
     "INIT.ELF": "usr/lib/vibeos/init",
 }
 TEST_DIR = "usr/lib/vibeos/test"

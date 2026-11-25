@@ -549,12 +549,18 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
              * would need the whole two-window address policy re-argued. */
             bias = VIBEOS_HW_LOW_USER_BASE;
             if (img.image_span > VIBEOS_HW_LOW_USER_LIMIT - bias) {
-                /* Would not fit in the window it is offered. */
-                { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pie_span"); goto fail; }
+                /* Too large for the low window: the high window's place for
+                 * it. Refused only past that. */
+                bias = VIBEOS_HW_BIG_PIE_BASE;
+                if (img.image_span > VIBEOS_HW_BIG_PIE_SPAN) {
+                    { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pie_span"); goto fail; }
+                }
             }
             parse_rc = vibeos_elf_parse_read(elf, len, bias,
-                                     VIBEOS_HW_LOW_USER_BASE,
-                                     VIBEOS_HW_USER_STACK_TOP,
+                                     bias,
+                                     bias == VIBEOS_HW_BIG_PIE_BASE
+                                         ? VIBEOS_HW_BIG_PIE_BASE + VIBEOS_HW_BIG_PIE_SPAN
+                                         : VIBEOS_HW_USER_STACK_TOP,
                                      VIBEOS_ELF_ALLOW_DYN |
                                      VIBEOS_ELF_ALLOW_INTERP,
                                      file_id ? hw_elf_read_cached : 0,
