@@ -1801,6 +1801,8 @@ void ks_con_puts(const char *s) {
     g_con[g_con_len] = 0;
 }
 void ks_con_log_only(const char *s) { ks_con_puts(s); }
+void ks_con_screen_users(void) {}
+void ks_con_user_bytes(int on) { (void)on; }
 void ks_con_putc(char c) {
     char s[2];
     s[0] = c;

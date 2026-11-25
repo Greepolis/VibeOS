@@ -20,10 +20,13 @@
 static void con_echo(void *ctx, char c) {
     (void)ctx;
     ks_con_lock();
+    /* The terminal's echo is the person's own typing: theirs on the screen. */
+    ks_con_user_bytes(1);
     if (c == '\n') {
         ks_con_putc('\r');
     }
     ks_con_putc(c);
+    ks_con_user_bytes(0);
     ks_con_unlock();
     ks_console_echo(c);
 }
@@ -31,7 +34,9 @@ static void con_echo(void *ctx, char c) {
 static void con_rub(void *ctx) {
     (void)ctx;
     ks_con_lock();
+    ks_con_user_bytes(1);
     ks_con_puts("\b \b");
+    ks_con_user_bytes(0);
     ks_con_unlock();
     ks_console_echo('\b');
 }
@@ -171,6 +176,7 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
      * anything, so the fault path never asks for the lock this core holds. */
     ks_con_lock();
     ks_con_log_only("[HW][SYS] write(ring3): ");
+    ks_con_user_bytes(1);
     for (i = 0; i < len; ) {
         char chunk[128];
         uint64_t n = len - i, k;
@@ -178,6 +184,7 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
             n = sizeof(chunk);
         }
         if (vibeos_uaccess_copy(chunk, (const void *)(uintptr_t)(buf + i), n) != 0) {
+            ks_con_user_bytes(0);
             ks_con_puts("\n");
             ks_con_unlock();
             return (i > 0u) ? (long)i : -VIBEOS_EFAULT;
@@ -192,11 +199,15 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
         }
         i += n;
     }
+    ks_con_user_bytes(0);
     ks_con_unlock();
     return (long)len;
 }
 
 static long console_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
+    /* A program reading the console is somebody at the terminal: the screen
+     * is theirs from now (ks_con_screen_users). */
+    ks_con_screen_users();
     return vibeos_term_read(&g_console, buf, len, (f->flags & VIBEOS_O_NONBLOCK) != 0u);
 }
 

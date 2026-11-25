@@ -68,6 +68,23 @@ int vibeos_x86_64_serial_init(void) {
 /* Set, under the console lock, while a line is for the serial log alone. */
 static int g_serial_log_only;
 
+/* Once somebody is at the terminal - a program has read the console - the
+ * screen is theirs: it shows what programs write and nothing the kernel logs.
+ * Before S7 every `[SCHED] task exited` landed in the middle of whatever a
+ * full-screen program had drawn, FinalCommander's panels among them. The
+ * serial log keeps everything; a panic takes the screen back (hw_panic). */
+static volatile int g_screen_is_users;
+/* Under the console lock: the bytes being written are a program's. */
+static int g_serial_user_bytes;
+
+void vibeos_x86_64_console_screen_users(int on) {
+    __atomic_store_n(&g_screen_is_users, on, __ATOMIC_RELEASE);
+}
+
+void vibeos_x86_64_console_user_bytes(int on) {
+    g_serial_user_bytes = on;
+}
+
 void vibeos_x86_64_serial_putc(char c) {
     /* Everything the system says on the serial line also appears in the
      * on-screen terminal, so a machine with a monitor and no serial cable
@@ -78,7 +95,8 @@ void vibeos_x86_64_serial_putc(char c) {
      * default, which resolved only because the two happened to be linked
      * together - and with no display at all it is the registry that says so,
      * not a stub. */
-    if (!g_serial_log_only) {
+    if (!g_serial_log_only &&
+        (g_serial_user_bytes || !__atomic_load_n(&g_screen_is_users, __ATOMIC_ACQUIRE))) {
         vibeos_display_putc(c);
     }
 

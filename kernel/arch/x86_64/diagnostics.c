@@ -312,6 +312,9 @@ void hw_panic(const char *why) {
      * because every line after it is one more chance to stop before reaching
      * the disk. */
     vibeos_klog_panic(why);
+    /* The screen is everybody's again: a panic is the one kernel message the
+     * person at the terminal must see (serial.c, g_screen_is_users). */
+    vibeos_x86_64_console_screen_users(0);
 
     uint64_t rbp;
     uint64_t rip;

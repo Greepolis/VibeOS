@@ -47,8 +47,15 @@
 #include "vibeos/gui.h"
 #include "vibeos/vt.h"
 
-#define TERM_COLS VIBEOS_GUI_TERM_COLS
-#define TERM_ROWS VIBEOS_GUI_TERM_ROWS
+#define TERM_MAX_COLS VIBEOS_GUI_TERM_MAX_COLS
+#define TERM_MAX_ROWS VIBEOS_GUI_TERM_MAX_ROWS
+
+/* The grid's size, decided by init from the screen: the window fills it below
+ * the panel (S7). The arrays are the largest size; these are the part in use.
+ * Set once by init, before g_active, and read-only after. */
+static uint32_t g_cols = 2u, g_rows = 2u;
+#define TERM_COLS g_cols
+#define TERM_ROWS g_rows
 #define GUARD_WORDS (VIBEOS_GUI_GUARD_BYTES / 8u)
 
 /* Not the frame layer's poison, and not the value the arch used for this canary
@@ -106,18 +113,24 @@ typedef struct {
     term_pen_t pen;
 } term_saved_t;
 
-static term_cell_t g_term[TERM_ROWS][TERM_COLS];   /* quota: none - the screen, not a pool */
+static term_cell_t g_term[TERM_MAX_ROWS][TERM_MAX_COLS];   /* quota: none - the screen, not a pool */
 static uint32_t g_term_col, g_term_row;
 static vibeos_vt_t g_vt;
 #define PEN_DEFAULT ((term_pen_t){ COL_TEXT, COL_WINDOW, -1, 0, 0, 0 })
 static term_pen_t g_pen = { COL_TEXT, COL_WINDOW, -1, 0, 0, 0 };
-static uint32_t g_top, g_bottom = TERM_ROWS - 1u;   /* the scroll region, rows inclusive */
+static uint32_t g_top, g_bottom = 1u;   /* the scroll region, rows inclusive */
 static term_saved_t g_saved;
 static int g_cursor_on = 1;
 /* The main screen while a program has the alternate one (?1049h). */
-static term_cell_t g_main[TERM_ROWS][TERM_COLS];   /* quota: none - the screen, not a pool */
+static term_cell_t g_main[TERM_MAX_ROWS][TERM_MAX_COLS];   /* quota: none - the screen, not a pool */
 static term_saved_t g_main_cursor;
 static int g_alt;
+/* Rows changed since the repaint last copied them. The repaint used to compose
+ * and copy the whole window on every change; with a cell's background drawn
+ * for every cell (S7) that was ten thousand cells and a megabyte of
+ * write-combining memory per typed character, on the timer, and the machine
+ * crawled. */
+static uint8_t g_row_dirty[TERM_MAX_ROWS];   /* quota: none - the screen, not a pool */
 static int g_term_dirty;
 static vibeos_gui_stats_t g_stats;
 /* Outside the lock by definition - it counts the writes that could not take it -
@@ -127,9 +140,11 @@ static uint64_t g_reentered;
 /* ---- state owned by the repaint (g_ticking) ------------------------------------ */
 
 static volatile int g_ticking;
-static term_cell_t g_snap[TERM_ROWS][TERM_COLS];   /* quota: none - the screen, not a pool */
+static term_cell_t g_snap[TERM_MAX_ROWS][TERM_MAX_COLS];   /* quota: none - the screen, not a pool */
 static uint32_t g_snap_col, g_snap_row;
 static int g_snap_cursor_on = 1;
+/* Rows of the copy the next compose draws; all of them when 0 is passed. */
+static uint8_t g_snap_rows[TERM_MAX_ROWS];   /* quota: none - the screen, not a pool */
 static int32_t g_last_cx = -1, g_last_cy = -1;
 
 /* ---- set once by init, before g_active; read-only after ------------------------ */
@@ -454,17 +469,25 @@ static void draw_glyph(uint32_t x, uint32_t y, uint32_t cp, uint32_t colour) {
  * least the minimum screen's worth of pixels (vibeos_gui_init refuses smaller),
  * so none of these subtractions can go below zero. Every cell is drawn,
  * background first: an empty one is a background, not the end of the row. */
-static void compose_terminal(term_cell_t grid[TERM_ROWS][TERM_COLS]) {
+static void compose_terminal(term_cell_t grid[TERM_MAX_ROWS][TERM_MAX_COLS], const uint8_t *rows) {
     uint32_t row;
     uint32_t right = g_win_x + g_win_w - 4u, bottom = g_win_y + g_win_h - 2u;
 
-    fill_rect(g_back, g_win_x + 4u, g_win_y + 22u,
-              g_win_w - 8u, g_win_h - 26u, COL_WINDOW);
+    if (!rows) {
+        fill_rect(g_back, g_win_x + 4u, g_win_y + 22u,
+                  g_win_w - 8u, g_win_h - 26u, COL_WINDOW);
+    }
     for (row = 0; row < TERM_ROWS; row++) {
         uint32_t col;
         uint32_t y = g_win_y + 24u + row * CELL_H;
         if (y + CELL_H > bottom) {
             break;
+        }
+        if (rows && !rows[row]) {
+            continue;
+        }
+        if (rows) {
+            fill_rect(g_back, g_win_x + 4u, y, g_win_w - 8u, CELL_H, COL_WINDOW);
         }
         for (col = 0; col < TERM_COLS; col++) {
             const term_cell_t *c = &grid[row][col];
@@ -489,7 +512,8 @@ static void compose_terminal(term_cell_t grid[TERM_ROWS][TERM_COLS]) {
      * between two lines of text, so it hides no character - in the colour of
      * the text under it, so it shows on whatever background a program set.
      * A program that hides the cursor (?25l) draws its own. */
-    if (g_snap_cursor_on && g_snap_row < TERM_ROWS && g_snap_col < TERM_COLS) {
+    if (g_snap_cursor_on && g_snap_row < TERM_ROWS && g_snap_col < TERM_COLS &&
+        (!rows || rows[g_snap_row])) {
         uint32_t y = g_win_y + 24u + g_snap_row * CELL_H;
         uint32_t x = g_win_x + 8u + g_snap_col * CELL_W;
 
@@ -500,12 +524,13 @@ static void compose_terminal(term_cell_t grid[TERM_ROWS][TERM_COLS]) {
 }
 
 static void compose_desktop(void) {
+    /* The whole screen below the panel (S7): the grid was sized to fit it by
+     * init, so the window is the grid's size, at the panel's edge - and on a
+     * screen larger than the largest grid, centred. */
     g_win_w = TERM_COLS * CELL_W + 16u;
     g_win_h = TERM_ROWS * CELL_H + 32u;
-    /* Centred where it fits, below the panel; at an eighth and a sixth of the
-     * screen as before where it does not, and clipped by the lines below. */
-    g_win_x = g_w > g_win_w ? (g_w - g_win_w) / 2u : g_w / 8u;
-    g_win_y = g_h > g_win_h + 32u ? 24u + (g_h - 24u - g_win_h) / 3u : g_h / 6u;
+    g_win_x = g_w > g_win_w ? (g_w - g_win_w) / 2u : 0u;
+    g_win_y = g_h > 24u + g_win_h ? 24u + (g_h - 24u - g_win_h) / 2u : 24u;
     if (g_win_w > g_w - g_win_x) {
         g_win_w = g_w - g_win_x;
     }
@@ -520,7 +545,7 @@ static void compose_desktop(void) {
     fill_rect(g_back, g_win_x, g_win_y, g_win_w, g_win_h, COL_WINDOW);
     fill_rect(g_back, g_win_x, g_win_y, g_win_w, 20u, COL_TITLE);
     draw_text(g_back, g_win_x + 6u, g_win_y + 6u, "console", COL_TITLETXT);
-    compose_terminal(g_snap);
+    compose_terminal(g_snap, 0);
 }
 
 /* How many canary words are wrong. Read by the repaint, which owns nothing the
@@ -603,6 +628,7 @@ static void term_put(uint32_t row, uint32_t col, term_cell_t c) {
         return;
     }
     g_term[row][col] = c;
+    g_row_dirty[row] = 1;
 }
 
 static void term_erase_cells(uint32_t row, uint32_t from, uint32_t to) {
@@ -624,6 +650,7 @@ static void term_copy_row(uint32_t to, uint32_t from) {
     for (cc = 0; cc < TERM_COLS; cc++) {
         g_term[to][cc] = g_term[from][cc];
     }
+    g_row_dirty[to] = 1;
 }
 
 /* The rows `top` to `bottom` moved up by n, the bottom n left blank. Counted
@@ -937,6 +964,7 @@ static void term_op(vibeos_vt_op_t op, uint32_t n, uint32_t m) {
                     for (cc = 0; cc < TERM_COLS; cc++) {
                         g_term[r][cc] = g_main[r][cc];
                     }
+                    g_row_dirty[r] = 1;
                 }
                 g_alt = 0;
                 g_top = 0;
@@ -1046,6 +1074,25 @@ int vibeos_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
     }
     g_w = width;
     g_h = height;
+    /* As many cells as fit below the panel, inside the window's border and
+     * title, and no more than the arrays hold. The smallest screen init
+     * accepts still gives several of each. */
+    g_cols = (width - 16u) / CELL_W;
+    g_rows = height > 24u + 32u + CELL_H ? (height - 24u - 32u) / CELL_H : 2u;
+    if (g_cols > TERM_MAX_COLS) {
+        g_cols = TERM_MAX_COLS;
+    }
+    if (g_rows > TERM_MAX_ROWS) {
+        g_rows = TERM_MAX_ROWS;
+    }
+    if (g_cols < 2u) {
+        g_cols = 2u;
+    }
+    if (g_rows < 2u) {
+        g_rows = 2u;
+    }
+    g_top = 0;
+    g_bottom = g_rows - 1u;
 
     /* A cell of zeros is black on black now that a cell has colours: the grid
      * starts as empty cells in the window's own, which is what it showed. */
@@ -1104,9 +1151,25 @@ void vibeos_gui_tick(void) {
     if (gui_lock()) {
         if (g_term_dirty) {
             uint32_t r, c;
+
+            /* Only the rows that changed, and the rows the cursor left and
+             * reached: its underline is drawn with the row. */
             for (r = 0; r < TERM_ROWS; r++) {
+                if (!g_row_dirty[r]) {
+                    continue;
+                }
                 for (c = 0; c < TERM_COLS; c++) {
                     g_snap[r][c] = g_term[r][c];
+                }
+                g_row_dirty[r] = 0;
+                g_snap_rows[r] = 1;
+            }
+            if (g_snap_row != g_term_row || g_snap_col != g_term_col || g_snap_cursor_on != g_cursor_on) {
+                if (g_snap_row < TERM_ROWS) {
+                    g_snap_rows[g_snap_row] = 1;
+                }
+                if (g_term_row < TERM_ROWS) {
+                    g_snap_rows[g_term_row] = 1;
                 }
             }
             g_snap_col = g_term_col;
@@ -1122,8 +1185,15 @@ void vibeos_gui_tick(void) {
      * a pointer: before C7 a machine with no mouse returned first and never
      * showed any console text at all. */
     if (took) {
-        compose_terminal(g_snap);
-        blit_rect(g_win_x, g_win_y, g_win_w, g_win_h);
+        uint32_t r;
+
+        compose_terminal(g_snap, g_snap_rows);
+        for (r = 0; r < TERM_ROWS; r++) {
+            if (g_snap_rows[r]) {
+                blit_rect(g_win_x, g_win_y + 24u + r * CELL_H, g_win_w, CELL_H);
+                g_snap_rows[r] = 0;
+            }
+        }
     }
 
     /* Whichever input device provides a pointer; the display does not know or
@@ -1256,6 +1326,15 @@ int vibeos_gui_term_cell(uint32_t row, uint32_t col, uint32_t *cp, uint32_t *fg,
     return 0;
 }
 
+void vibeos_gui_term_size(uint32_t *rows, uint32_t *cols) {
+    if (rows) {
+        *rows = g_rows;
+    }
+    if (cols) {
+        *cols = g_cols;
+    }
+}
+
 void vibeos_gui_term_modes(int *cursor_on, int *alt) {
     if (!gui_lock()) {
         return;
@@ -1272,8 +1351,8 @@ void vibeos_gui_term_modes(int *cursor_on, int *alt) {
 void vibeos_gui_reset(void) {
     uint32_t r, c;
 
-    for (r = 0; r < TERM_ROWS; r++) {
-        for (c = 0; c < TERM_COLS; c++) {
+    for (r = 0; r < TERM_MAX_ROWS; r++) {
+        for (c = 0; c < TERM_MAX_COLS; c++) {
             g_term[r][c] = (term_cell_t){ 0, COL_TEXT, COL_WINDOW };
             g_snap[r][c] = g_term[r][c];
             g_main[r][c] = g_term[r][c];
@@ -1283,13 +1362,22 @@ void vibeos_gui_reset(void) {
     g_snap_col = g_snap_row = 0;
     g_vt = (vibeos_vt_t){ 0 };
     g_pen = PEN_DEFAULT;
+    g_cols = g_rows = 2u;
     g_top = 0;
-    g_bottom = TERM_ROWS - 1u;
+    g_bottom = 1u;
     g_saved = (term_saved_t){ 0, 0, PEN_DEFAULT };
     g_main_cursor = g_saved;
     g_cursor_on = 1;
     g_snap_cursor_on = 1;
     g_alt = 0;
+    {
+        uint32_t k;
+
+        for (k = 0; k < TERM_MAX_ROWS; k++) {
+            g_row_dirty[k] = 0;
+            g_snap_rows[k] = 0;
+        }
+    }
     g_term_dirty = 0;
     g_stats = (vibeos_gui_stats_t){ 0 };
     g_reentered = 0;

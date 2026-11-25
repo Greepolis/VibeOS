@@ -12,6 +12,21 @@
 
 int test_vt(void);
 
+/* The grid's size as init decided it from the screen (S7). */
+static uint32_t term_cols(void) {
+    uint32_t r, c;
+
+    vibeos_gui_term_size(&r, &c);
+    return c;
+}
+
+static uint32_t term_rows(void) {
+    uint32_t r, c;
+
+    vibeos_gui_term_size(&r, &c);
+    return r;
+}
+
 #define NEED(cond, what)                 \
     do {                                 \
         if (!(cond)) {                   \
@@ -220,6 +235,34 @@ static int test_input(void) {
     NEED(!vibeos_kbd_ctrl(&k), "Control is still held");
     KEY("\n", 0xE0, 0x1C, 0xE0, 0x9C);
     KEY("/", 0xE0, 0x35, 0xE0, 0xB5);
+
+    /* F1 to F12, which sent nothing before S7. */
+    KEY("\x1bOP", 0x3B, 0xBB);
+    KEY("\x1b[18~", 0x41, 0xC1);                  /* F7 */
+    KEY("\x1b[21~", 0x44, 0xC4);                  /* F10 */
+    KEY("\x1b[24~", 0x58, 0xD8);                  /* F12 */
+    KEY("\x1b[21;2~", 0x2A, 0x44, 0xC4, 0xAA);    /* Shift+F10 */
+
+    /* The Italian layout: the symbol keys move, the letters do not. */
+    memset(&k, 0, sizeof(k));
+    k.layout = VIBEOS_KBD_IT;
+    KEY("a", 0x1E, 0x9E);
+    KEY("\x03", 0x1D, 0x2E, 0xAE, 0x9D);           /* Control+C is still ^C */
+    KEY("\xc3\xa8", 0x1A, 0x9A);                  /* è */
+    KEY("\xc3\xa9", 0x2A, 0x1A, 0x9A, 0xAA);      /* é */
+    KEY("[", 0xE0, 0x38, 0x1A, 0x9A, 0xE0, 0xB8); /* AltGr+è */
+    KEY("{", 0xE0, 0x38, 0x2A, 0x1A, 0x9A, 0xAA, 0xE0, 0xB8);
+    KEY("@", 0xE0, 0x38, 0x27, 0xA7, 0xE0, 0xB8); /* AltGr+ò */
+    KEY("#", 0xE0, 0x38, 0x28, 0xA8, 0xE0, 0xB8); /* AltGr+à */
+    KEY("/", 0x2A, 0x08, 0x88, 0xAA);             /* Shift+7 */
+    KEY("\"", 0x2A, 0x03, 0x83, 0xAA);            /* Shift+2 */
+    KEY("-", 0x35, 0xB5);
+    KEY("_", 0x2A, 0x35, 0xB5, 0xAA);
+    KEY("<", 0x56, 0xD6);
+    KEY("|", 0x2A, 0x29, 0xA9, 0xAA);
+    KEY("\xe2\x82\xac", 0xE0, 0x38, 0x12, 0x92, 0xE0, 0xB8);  /* AltGr+E */
+    KEY("E", 0x2A, 0x12, 0x92, 0xAA);             /* and E is still a letter */
+    KEY("~", 0xE0, 0x38, 0x0D, 0x8D, 0xE0, 0xB8); /* AltGr+ì */
     return 0;
 }
 
@@ -232,7 +275,7 @@ static void put(const char *s) {
 }
 
 static int row_is(uint32_t r, const char *want) {
-    char b[VIBEOS_GUI_TERM_COLS + 1u];
+    char b[VIBEOS_GUI_TERM_MAX_COLS + 1u];
 
     return vibeos_gui_term_row(r, b) >= 0 && strcmp(b, want) == 0;
 }
@@ -287,7 +330,7 @@ static int test_screen_full(void) {
     NEED(cell_is(0, 3, 'D', dbg, 0xCD0000u), "reverse swaps them");
     NEED(cell_is(0, 4, 'E', dfg | 0x01000000u, dbg), "underline");
     put("\x1b[44m\x1b[2K");
-    NEED(cell_is(0, 0, 0u, dfg, 0x0000EEu) && cell_bg(0, VIBEOS_GUI_TERM_COLS - 1u) == 0x0000EEu,
+    NEED(cell_is(0, 0, 0u, dfg, 0x0000EEu) && cell_bg(0, term_cols() - 1u) == 0x0000EEu,
          "erasing leaves the pen's background");
     put("\x1b[0m");
 
@@ -299,11 +342,12 @@ static int test_screen_full(void) {
         /* And on the screen: the 'E' beyond the gap is drawn. Until S7 a row
          * was drawn up to its first empty cell, and FinalCommander's panels
          * lost everything a program wrote past an erase. The window's place is
-         * compose_desktop's for a 640 by 480 screen: wider than the screen, so
-         * at an eighth across; centred below the panel down. Text starts 8 in
-         * and 24 down; a cell is 8 by 9. */
-        uint32_t win_h = VIBEOS_GUI_TERM_ROWS * 9u + 32u;
-        uint32_t x0 = 640u / 8u + 8u, y0 = 24u + (480u - 24u - win_h) / 3u + 24u;
+         * compose_desktop's: the grid's size, centred below the panel where
+         * the screen has room to spare. Text starts 8 in and 24 down; a cell
+         * is 8 by 9. */
+        uint32_t win_w = term_cols() * 8u + 16u, win_h = term_rows() * 9u + 32u;
+        uint32_t x0 = (640u > win_w ? (640u - win_w) / 2u : 0u) + 8u;
+        uint32_t y0 = (480u > 24u + win_h ? 24u + (480u - 24u - win_h) / 2u : 24u) + 24u;
         uint32_t xx, yy, lit_e = 0, lit_gap = 0, lit_box = 0;
 
         vibeos_gui_tick();
@@ -383,7 +427,7 @@ static int test_screen_full(void) {
 static int test_screen(void) {
     static uint32_t fb[320 * 200];
     static uint64_t back[(320u * 200u * 4u + VIBEOS_GUI_GUARD_BYTES + 16u) / 8u + 1u];
-    char b[VIBEOS_GUI_TERM_COLS + 1u];
+    char b[VIBEOS_GUI_TERM_MAX_COLS + 1u];
     uint32_t i;
 
     vibeos_gui_reset();
@@ -411,7 +455,7 @@ static int test_screen(void) {
 
     /* Past every edge: refused by clamping, never written outside the grid. */
     put("\x1b[999A\x1b[999D@\x1b[999B\x1b[999C#\x1b[999;999H$\x1b[65535C%");
-    for (i = 0; i < VIBEOS_GUI_TERM_ROWS; i++) {
+    for (i = 0; i < term_rows(); i++) {
         NEED(vibeos_gui_term_row(i, b) >= 0, "a row");
     }
     {

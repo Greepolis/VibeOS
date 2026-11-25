@@ -363,6 +363,11 @@ void ks_con_lock(void);
 void ks_con_unlock(void);
 void ks_con_puts(const char *s);
 void ks_con_log_only(const char *s);   /* the serial log, not the screen */
+/* Somebody is at the terminal: from now the screen shows programs' output and
+ * not the kernel's log (docs/shell/s7.md step 4). */
+void ks_con_screen_users(void);
+/* Under ks_con_lock: the bytes that follow are a program's (1) or not (0). */
+void ks_con_user_bytes(int on);
 void ks_con_putc(char c);
 void ks_con_hex(uint64_t v);
 void ks_log(vibeos_log_level_t level, uint32_t code, uint64_t a0, uint64_t a1,

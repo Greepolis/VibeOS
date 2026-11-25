@@ -25,6 +25,10 @@ int vibeos_x86_64_serial_init(void);
 void vibeos_x86_64_serial_putc(char c);
 void vibeos_x86_64_serial_puts(const char *s);
 void vibeos_x86_64_serial_log_only(const char *s);
+/* The screen shows only programs' output from now (1), or everything (0). */
+void vibeos_x86_64_console_screen_users(int on);
+/* Under the console lock: what follows is a program's output. */
+void vibeos_x86_64_console_user_bytes(int on);
 void vibeos_x86_64_serial_print_hex(uint64_t value);
 /* Bracket a multi-part message so other CPUs cannot split it. Recursive. */
 void vibeos_x86_64_serial_lock(void);

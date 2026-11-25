@@ -24,15 +24,15 @@
 
 #include <stdint.h>
 
-/* The terminal's grid. Public because the torture's model has to agree with it,
- * not because anything should size a buffer from it. A program sees one column
- * fewer (the last is where the grid wraps). 72 by 24 was a line editor's
- * size; FinalCommander lays two panels out side by side and laid them over
- * each other in 71 columns (S7), so it is 120 by 36 now - 976 by 356 pixels
- * with the window's border, which still fits the 1024 by 768 every UEFI
- * offers. A smaller screen clips the window, as it always did. */
-#define VIBEOS_GUI_TERM_COLS 121u
-#define VIBEOS_GUI_TERM_ROWS 36u
+/* The terminal's grid, at its largest. Its size is decided by init from the
+ * screen - the window fills the screen below the panel - and is
+ * vibeos_gui_term_size's to say; a program sees one column fewer (the last is
+ * where the grid wraps). It was 72 by 24 and fixed, a line editor's size;
+ * FinalCommander lays two panels out side by side, and a fixed grid in a
+ * window in the middle of the screen was the wrong shape for it (S7). 160 by
+ * 100 is 1296 by 932 pixels: a larger screen centres the window. */
+#define VIBEOS_GUI_TERM_MAX_COLS 160u
+#define VIBEOS_GUI_TERM_MAX_ROWS 100u
 
 /* The largest screen the back buffer is sized for, and the smallest the layout
  * can be drawn on. The window and its text area are computed by subtraction
@@ -123,6 +123,9 @@ int vibeos_gui_term_cell(uint32_t row, uint32_t col, uint32_t *cp, uint32_t *fg,
 
 /* Whether the cursor is shown, and whether the alternate screen is up. */
 void vibeos_gui_term_modes(int *cursor_on, int *alt);
+
+/* The grid in use, as init sized it from the screen. */
+void vibeos_gui_term_size(uint32_t *rows, uint32_t *cols);
 
 /* Forget everything. For tests. */
 void vibeos_gui_reset(void);

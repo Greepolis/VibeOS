@@ -56,8 +56,20 @@
 #include "vibeos/device.h"
 #include "vibeos/gui.h"
 
-#define COLS VIBEOS_GUI_TERM_COLS
-#define ROWS VIBEOS_GUI_TERM_ROWS
+/* The grid's size is init's to decide from the screen (S7): the model asks it
+ * when it compares, and holds the largest. */
+#define MAXC VIBEOS_GUI_TERM_MAX_COLS
+#define MAXR VIBEOS_GUI_TERM_MAX_ROWS
+
+static uint32_t size_now(int cols) {
+    uint32_t r, c;
+
+    vibeos_gui_term_size(&r, &c);
+    return cols ? c : r;
+}
+
+#define COLS size_now(1)
+#define ROWS size_now(0)
 #define CUR_W 9u    /* the pointer's rectangle: 8 pixels and its outline */
 #define CUR_H 12u
 
@@ -86,11 +98,11 @@ static void fail(const char *what, uint32_t round) {
 /* ---- the model: a list of lines --------------------------------------------- */
 
 typedef struct {
-    char text[COLS];
+    char text[MAXC];
     uint32_t len;
 } mline_t;
 
-static mline_t m_lines[ROWS];
+static mline_t m_lines[MAXR];
 static uint32_t m_count;           /* lines that exist, the current one included */
 static uint64_t m_chars, m_scrolls, m_reentered;
 
@@ -292,7 +304,7 @@ static uint32_t pick_dim(uint32_t min, uint32_t max, uint32_t cap_small) {
 
 static void check_terminal(uint32_t round) {
     vibeos_gui_stats_t st;
-    char got[COLS + 1u], want[COLS + 1u];
+    char got[MAXC + 1u], want[MAXC + 1u];
     uint32_t r;
 
     for (r = 0; r < ROWS; r++) {
@@ -572,7 +584,7 @@ static void threaded(uint32_t nthreads) {
     uint64_t expect_chars = 0;
     vibeos_gui_stats_t st;
     uint32_t i, r;
-    char row[COLS + 1u];
+    char row[MAXC + 1u];
 
     if (nthreads > 16u) {
         nthreads = 16u;
