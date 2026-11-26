@@ -1,0 +1,17 @@
+# An unmount syncs the volume before detaching it (M-156): a detached volume
+# stays mounted where the scan made it but nothing reaches it again, so its
+# journal and cache were never written. The boot's BusyBox umount of /mnt has
+# to say [IO] UMOUNT_SYNC at=/mnt rc=0; the gate fails umount_did_not_sync.
+#
+#  1. the unmount does not sync. Expect umount_did_not_sync.
+#
+# Target source: kernel/arch/x86_64/io_bringup.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/io_bringup.c scripts/dev/cases/io-umount-sync-boot.txt
+
+### the unmount does not sync
+--- old
+    if (vibeos_fs_resolve(path, &mnt, &tail) == 0 && *tail == 0 && mnt) {
+        int sr = vibeos_fs_sync(mnt);
++++ new
+    if (0 && vibeos_fs_resolve(path, &mnt, &tail) == 0 && *tail == 0 && mnt) {
+        int sr = vibeos_fs_sync(mnt);

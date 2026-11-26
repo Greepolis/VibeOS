@@ -3489,6 +3489,10 @@ def main():
                     problems.append("mount_syscall_failed")
                 elif not re.search(r"write\(ring3\): UMNT_9\r?\n", text):
                     problems.append("umount_syscall_failed")
+                # An unmount syncs the volume before detaching it (M-156): a
+                # detached volume's journal and cache were never written again.
+                elif not re.search(r"\[IO\] UMOUNT_SYNC at=/mnt rc=0\r?\n", text):
+                    problems.append("umount_did_not_sync")
                 # Job control (docs/shell/s1.md step 1): a background sleep
                 # stopped by SIGTSTP, which ash's jobs calls Stopped - plain,
                 # not "Stopped (signal)", which is SIGSTOP's - then continued

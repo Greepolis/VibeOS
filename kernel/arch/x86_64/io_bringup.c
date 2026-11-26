@@ -1879,6 +1879,24 @@ int hw_umount_one(const char *path) {
     uint32_t k;
     int r;
 
+    /* What the volume holds goes to it first (M-156): it stays mounted where
+     * the scan made it but nothing reaches it once it is detached, so the
+     * shutdown's sync never wrote its journal or its cache again. Before the
+     * lock, which masks interrupts: a sync is disk I/O. A write landing
+     * between the two is synced by the volume's own commit, as any other. */
+    if (vibeos_fs_resolve(path, &mnt, &tail) == 0 && *tail == 0 && mnt) {
+        int sr = vibeos_fs_sync(mnt);
+
+        /* Said, so that the boot gate can ask that it happened. */
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[IO] UMOUNT_SYNC at=");
+        vibeos_x86_64_serial_puts(path);
+        vibeos_x86_64_serial_puts(sr == 0 ? " rc=0\n" : " rc=failed\n");
+        vibeos_x86_64_serial_unlock();
+    }
+    mnt = 0;
+    tail = 0;
+
     hw_spin_lock(&g_mount_op_lock);
     if (vibeos_fs_resolve(path, &mnt, &tail) != 0 || *tail != 0) {
         mnt = 0;
