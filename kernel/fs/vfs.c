@@ -23,6 +23,7 @@ void vibeos_fs_set_mount_lock(void (*lock)(volatile uint32_t *word), void (*unlo
 }
 
 static void fs_enter(vibeos_fsmount_t *mnt) {
+    __atomic_add_fetch(&mnt->inflight, 1u, __ATOMIC_ACQ_REL);
     if (mnt->ops->serialize && g_mlock) {
         g_mlock(&mnt->lock_word);
     }
@@ -32,6 +33,7 @@ static void fs_leave(vibeos_fsmount_t *mnt) {
     if (mnt->ops->serialize && g_munlock) {
         g_munlock(&mnt->lock_word);
     }
+    __atomic_sub_fetch(&mnt->inflight, 1u, __ATOMIC_ACQ_REL);
 }
 
 /* Mounted read-only (hierarchy F2 step 4): every writing operation is EROFS
@@ -1044,7 +1046,12 @@ int vibeos_fs_umount(const char *path) {
             return -VIBEOS_EBUSY;
         }
     }
-    if (g_busy_query && g_busy_query(g_mounts[at].mnt)) {
+    /* Open descriptions, and operations inside the driver now (M-161): the
+     * second were not asked, and an unmount of a tmpfs during a stat on it
+     * took the driver's state away from under the stat. What is still open is
+     * an operation that has found this mount and not yet entered it. */
+    if ((g_busy_query && g_busy_query(g_mounts[at].mnt)) ||
+        __atomic_load_n(&g_mounts[at].mnt->inflight, __ATOMIC_ACQUIRE) != 0u) {
         mt_unlock();
         return -VIBEOS_EBUSY;
     }

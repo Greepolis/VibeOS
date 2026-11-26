@@ -1356,9 +1356,21 @@ static const char *hw_mount_entry(const vibeos_mounttab_entry_t *e, int root, in
          * table gets the mount the machine is running from, not a second FAT
          * over the same sectors with a cache of its own. */
         mnt = idx == boot ? &g_bootfs : &g_storage.volume[idx].mount;
-        vibeos_fs_set_flags(mnt, e->options);
-        vibeos_fs_set_umask(mnt, e->umask);
-        return vibeos_fs_attach(e->at, mnt) == 0 ? 0 : "attach";
+        /* The volume's mount may be live elsewhere: a mount that fails puts
+         * its options back, or a repeated or refused one changed the live
+         * mount's (M-161). */
+        {
+            uint32_t old_flags = mnt->flags, old_umask = mnt->umask;
+
+            vibeos_fs_set_flags(mnt, e->options);
+            vibeos_fs_set_umask(mnt, e->umask);
+            if (vibeos_fs_attach(e->at, mnt) != 0) {
+                vibeos_fs_set_flags(mnt, old_flags);
+                vibeos_fs_set_umask(mnt, old_umask);
+                return "attach";
+            }
+            return 0;
+        }
     }
     if (hw_streq(e->type, "tmpfs")) {
         uint64_t pages = e->size_kib ? (e->size_kib + 3u) / 4u : HW_TMPFS_PAGES;

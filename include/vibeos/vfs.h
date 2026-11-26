@@ -258,6 +258,9 @@ typedef struct {
      * umask= (M-152), for a filesystem with no owners of its own: the ESP's
      * FAT made the swap file 0755 and readable by everyone. */
     uint32_t umask;
+    /* Operations inside the driver now (M-161): an unmount with any is
+     * EBUSY, or it could take a tmpfs away from under one. */
+    volatile uint32_t inflight;
 } vibeos_fsmount_t;
 
 /* Mount options (hierarchy F2 step 4), as the manifest names them. ro is

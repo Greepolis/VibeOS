@@ -1172,6 +1172,16 @@ static long linux_exec_script(char *path, const char *name, const char *const **
     if (how == 0) {
         long t = ks_read_file_cached("/etc/vibeos/binfmt", g_binfmt, sizeof(g_binfmt), &id);
 
+        /* The reader answers the file's size, which can be past the buffer
+         * (M-161): read as the table's length it walked off the end. Only
+         * what is here is the table, and a line cut by the buffer's end is
+         * not part of it. */
+        if (t > (long)sizeof(g_binfmt)) {
+            t = (long)sizeof(g_binfmt);
+            while (t > 0 && g_binfmt[t - 1] != '\n') {
+                t--;
+            }
+        }
         if (t <= 0 || !vibeos_binfmt_find(g_binfmt, (size_t)t, path, interp, sizeof(interp))) {
             return -VIBEOS_ENOEXEC;
         }
