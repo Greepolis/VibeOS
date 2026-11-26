@@ -1344,6 +1344,7 @@ static const char *hw_mount_entry(const vibeos_mounttab_entry_t *e, int root, in
          * over the same sectors with a cache of its own. */
         mnt = idx == boot ? &g_bootfs : &g_storage.volume[idx].mount;
         vibeos_fs_set_flags(mnt, e->options);
+        vibeos_fs_set_umask(mnt, e->umask);
         return vibeos_fs_attach(e->at, mnt) == 0 ? 0 : "attach";
     }
     if (hw_streq(e->type, "tmpfs")) {

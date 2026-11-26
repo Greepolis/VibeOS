@@ -152,7 +152,9 @@ def write_manifest(esp, tree):
     with open(os.path.join(tree, "etc", "vibeos", "mounts"), "w", newline="\n") as f:
         f.write("vibeos-mounts 1\n"
                 "# what          where      type      options                          policy\n"
-                "UUID=%-9s  /boot/efi  vfat      rw                               required\n"
+                # umask=0077 (M-152): FAT has no owners, so every file was
+                # 0755 and root's - the swap file there readable by anyone.
+                "UUID=%-9s  /boot/efi  vfat      rw,umask=0077                    required\n"
                 "tmpfs           /tmp       tmpfs     nosuid,nodev,mode=1777           required\n"
                 "proc            /proc      proc      nosuid,nodev,noexec              required\n"
                 "devtmpfs        /dev       devtmpfs  nosuid                           required\n"

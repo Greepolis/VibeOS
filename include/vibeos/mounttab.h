@@ -37,6 +37,7 @@ typedef struct {
     uint32_t options;
     uint32_t mode;       /* mode=<octal> for a tmpfs root; 0 when not given */
     uint32_t size_kib;   /* size=<n>k or <n>m for a tmpfs; 0 when not given */
+    uint32_t umask;      /* umask=<octal>: bits a volume's nodes lose (M-152); 0 when not given */
     uint8_t required;
     uint8_t is_volume;   /* what is UUID= or LABEL=, not a pseudo filesystem */
 } vibeos_mounttab_entry_t;

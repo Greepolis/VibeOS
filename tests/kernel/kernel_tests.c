@@ -10233,6 +10233,15 @@ static int test_mounttab_parse(void)
     ok &= t.entry[2].options == (VIBEOS_MNT_NOSUID | VIBEOS_MNT_NODEV) && t.entry[2].mode == 0755u &&
           t.entry[2].size_kib == 4096u && t.entry[2].is_volume == 0;
     ok &= t.entry[3].size_kib == 512u && t.entry[3].mode == 0u;
+    /* umask= (M-152): a FAT volume's nodes lose these bits. */
+    {
+        const char *um = "vibeos-mounts 1\nUUID=1A2B-3C4D /boot/efi vfat rw,umask=0077 required\n";
+
+        ok &= vibeos_mounttab_parse(um, (long)strlen(um), &t, &bad) == VIBEOS_MOUNTTAB_OK &&
+              t.entry[0].umask == 077u && t.entry[0].options == 0u;
+    }
+    ok &= mt_refuses("vibeos-mounts 1\nUUID=ab /x vfat umask=0778 required\n", VIBEOS_MOUNTTAB_OPTION, 2u);
+    ok &= mt_refuses("vibeos-mounts 1\nUUID=ab /x vfat umask=1777 required\n", VIBEOS_MOUNTTAB_OPTION, 2u);
     ok &= vibeos_mounttab_parse(vibeos_mounttab_default(), (long)strlen(vibeos_mounttab_default()), &t, &bad) ==
               VIBEOS_MOUNTTAB_OK &&
           t.count == 6u;

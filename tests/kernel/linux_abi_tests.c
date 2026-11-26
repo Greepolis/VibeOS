@@ -1118,6 +1118,19 @@ static void t_mount_options(void) {
     vibeos_fs_set_flags(m, VIBEOS_MNT_NOSUID | VIBEOS_MNT_NODEV | VIBEOS_MNT_NOEXEC);
     expect(SYS2(137, ustr("/tmp/keep"), ufs) == 0 && sf->f_flags == (2 | 4 | 8), "statfs says ST_NOSUID|ST_NODEV|ST_NOEXEC");
     vibeos_fs_set_flags(m, 0);
+
+    /* umask= on a mount (M-152): every node it reports loses those bits, so
+     * the ESP's swap file stops being readable by everyone. */
+    {
+        linux_stat_t ks;
+
+        (void)SYS2(90, ustr("/tmp/keep"), 0644);
+        vibeos_fs_set_umask(m, 077u);
+        expect(tmp_stat("/tmp/keep", 1, &ks) == 0 && (ks.st_mode & 0777u) == 0600u,
+               "a mount's umask takes its bits off what stat says");
+        vibeos_fs_set_umask(m, 0u);
+        expect(tmp_stat("/tmp/keep", 1, &ks) == 0 && (ks.st_mode & 0777u) == 0644u, "and only while it is set");
+    }
     expect(SYS2(137, ustr("/tmp/keep"), ufs) == 0 && sf->f_flags == 0, "and nothing once they are gone");
 }
 

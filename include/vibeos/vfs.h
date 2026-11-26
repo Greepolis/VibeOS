@@ -250,6 +250,10 @@ typedef struct {
     int mounted;
     volatile uint32_t lock_word;   /* the mount's lock, when its ops ask to be serialised */
     uint32_t flags;       /* VIBEOS_MNT_*: set by whoever attaches it, 0 at mount */
+    /* Permission bits taken away from every node it reports - the manifest's
+     * umask= (M-152), for a filesystem with no owners of its own: the ESP's
+     * FAT made the swap file 0755 and readable by everyone. */
+    uint32_t umask;
 } vibeos_fsmount_t;
 
 /* Mount options (hierarchy F2 step 4), as the manifest names them. ro is
@@ -261,6 +265,7 @@ typedef struct {
 #define VIBEOS_MNT_NOSUID 0x8u
 uint32_t vibeos_fs_flags(const vibeos_fsmount_t *mnt);
 void vibeos_fs_set_flags(vibeos_fsmount_t *mnt, uint32_t flags);
+void vibeos_fs_set_umask(vibeos_fsmount_t *mnt, uint32_t umask);
 
 /* There is one volume. A mount table with paths belongs with partition support
  * (stage four), and adding it before there is a second filesystem to mount

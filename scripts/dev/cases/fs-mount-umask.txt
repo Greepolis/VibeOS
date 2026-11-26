@@ -1,0 +1,20 @@
+# A mount's umask= takes bits off every node it reports (M-152): the ESP's
+# FAT has no owners, so every file there was 0755 and root's, and the swap
+# file was readable by everyone. /boot/efi is mounted umask=0077 now, in the
+# default manifest and in the one make-boot-disk ships.
+#
+#  1. the umask is not applied. Expect "a mount's umask takes its bits off
+#     what stat says" (linux_abi_tests.c).
+#  2. umask= is not read. Expect test_mounttab_parse (kernel_tests.c).
+#
+# Target sources: kernel/fs/vfs.c (1), kernel/fs/mounttab.c (2). The tool
+# takes one target, so the second is fs-mount-umask-parse.txt.
+#
+# Target source: kernel/fs/vfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/vfs.c scripts/dev/cases/fs-mount-umask.txt
+
+### the umask is not applied
+--- old
+    n->mode &= ~(mnt->umask & 0777u);
++++ new
+    (void)mnt;

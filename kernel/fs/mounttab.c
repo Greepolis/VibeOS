@@ -51,6 +51,19 @@ static int mt_number_option(const char *s, long n, vibeos_mounttab_entry_t *e) {
         e->mode = (uint32_t)v;
         return 0;
     }
+    if (n > 6 && memcmp(s, "umask=", 6) == 0) {
+        for (k = 6; k < n; k++) {
+            if (s[k] < '0' || s[k] > '7' || k > 10) {
+                return -1;
+            }
+            v = v * 8u + (uint64_t)(s[k] - '0');
+        }
+        if (v > 0777u) {
+            return -1;
+        }
+        e->umask = (uint32_t)v;
+        return 0;
+    }
     if (n > 6 && memcmp(s, "size=", 5) == 0) {
         char unit = s[n - 1];
         for (k = 5; k < n - 1; k++) {
@@ -284,7 +297,7 @@ const char *vibeos_mounttab_why(int why) {
  * at /boot/efi. */
 const char *vibeos_mounttab_default(void) {
     return "vibeos-mounts 1\n"
-           "boot      /boot/efi  vfat      rw                          optional\n"
+           "boot      /boot/efi  vfat      rw,umask=0077               optional\n"
            "tmpfs     /tmp       tmpfs     nosuid,nodev,mode=1777      required\n"
            "proc      /proc      proc      nosuid,nodev,noexec         required\n"
            "devtmpfs  /dev       devtmpfs  nosuid                      required\n"

@@ -87,13 +87,14 @@ static void fs_node_clear(vibeos_fs_node_t *n) {
     }
 }
 
-static void fs_node_complete(vibeos_fs_node_t *n) {
+static void fs_node_complete(const vibeos_fsmount_t *mnt, vibeos_fs_node_t *n) {
     if ((n->mode & VIBEOS_S_IFMT) == 0u) {
         n->mode |= n->is_dir ? VIBEOS_S_IFDIR : VIBEOS_S_IFREG;
         if ((n->mode & 07777u) == 0u) {
             n->mode |= n->is_dir ? 0755u : 0644u;
         }
     }
+    n->mode &= ~(mnt->umask & 0777u);
     n->is_dir = (n->mode & VIBEOS_S_IFMT) == VIBEOS_S_IFDIR;
     if (n->nlink == 0u && !n->unlinked) {
         n->nlink = 1u;
@@ -112,7 +113,7 @@ int vibeos_fs_lookup(vibeos_fsmount_t *mnt, const char *path,
     r = mnt->ops->lookup(mnt->fs, path, out);
     fs_leave(mnt);
     if (r == 0) {
-        fs_node_complete(out);
+        fs_node_complete(mnt, out);
     }
     return r;
 }
@@ -423,6 +424,12 @@ void vibeos_fs_set_flags(vibeos_fsmount_t *mnt, uint32_t flags) {
     }
 }
 
+void vibeos_fs_set_umask(vibeos_fsmount_t *mnt, uint32_t umask) {
+    if (vibeos_fs_is_mounted(mnt)) {
+        mnt->umask = umask & 0777u;
+    }
+}
+
 /* What a missing operation means: a filesystem that writes nothing is
  * read-only, one that writes but lacks this cannot represent it. */
 static int fs_missing(const vibeos_fsmount_t *mnt) {
@@ -506,7 +513,7 @@ int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
     r = mnt->ops->create(mnt->fs, path, mode, out);
     fs_leave(mnt);
     if (r == 0) {
-        fs_node_complete(out);
+        fs_node_complete(mnt, out);
         vibeos_fs_notify(mnt, path, out->id, VIBEOS_FSN_CREATE, 0, out->is_dir);
     }
     return r;
@@ -529,7 +536,7 @@ int vibeos_fs_mknod(vibeos_fsmount_t *mnt, const char *path, uint32_t mode, vibe
     r = mnt->ops->mknod(mnt->fs, path, mode, out);
     fs_leave(mnt);
     if (r == 0) {
-        fs_node_complete(out);
+        fs_node_complete(mnt, out);
         vibeos_fs_notify(mnt, path, out->id, VIBEOS_FSN_CREATE, 0, 0);
     }
     return r;
@@ -694,7 +701,7 @@ int vibeos_fs_getattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, vibeo
     r = mnt->ops->getattr(mnt->fs, node, out);
     fs_leave(mnt);
     if (r == 0) {
-        fs_node_complete(out);
+        fs_node_complete(mnt, out);
     }
     return r;
 }

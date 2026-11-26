@@ -1,0 +1,12 @@
+# The manifest's umask= is read (M-152); see fs-mount-umask.txt.
+#
+#  1. umask= is not read. Expect test_mounttab_parse.
+#
+# Target source: kernel/fs/mounttab.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/mounttab.c scripts/dev/cases/fs-mount-umask-parse.txt
+
+### umask= is not read
+--- old
+        e->umask = (uint32_t)v;
++++ new
+        (void)v;
