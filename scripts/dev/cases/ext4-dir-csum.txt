@@ -9,13 +9,9 @@
 ### a directory leaf is read without its checksum
 --- old
         if (dir_block_ok(fs, dir_ino, dir, phys) != 0) {
-            return 0;
+            return EXT2_DIR_ERROR;
         }
-        while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
-            if (ino != 0u && (nlen == name_len || fs->casefold) && nlen <= sizeof(got)) {
 +++ new
         if (0) {
-            return 0;
+            return EXT2_DIR_ERROR;
         }
-        while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
-            if (ino != 0u && (nlen == name_len || fs->casefold) && nlen <= sizeof(got)) {

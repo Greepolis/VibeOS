@@ -3074,9 +3074,9 @@ static void t_epoll(void) {
          * panel on "reading" (docs/shell/s7.md). */
         long efd = SYS2(290, 0, 0);
         uint64_t one = kf_ualloc(8);
-        uint64_t v = 1;
+        uint64_t add = 1;
 
-        memcpy((void *)(uintptr_t)one, &v, sizeof(v));
+        memcpy((void *)(uintptr_t)one, &add, sizeof(add));
         expect(efd >= 0 && CTL(1, efd, 1u | 0x80000000u /* EPOLLET */, 7) == 0 &&
                    SYS3(1, (uint64_t)efd, one, 8) == 8,
                "an eventfd added edge-triggered, and written");
@@ -7935,7 +7935,7 @@ static void t_credentials(void) {
      * kernel's authority, so before the fix this went on to load it. */
     {
         uint8_t elf[200];
-        uint64_t u = kf_ualloc(sizeof(elf));
+        uint64_t uelf = kf_ualloc(sizeof(elf));
         long fd;
 
         memset(elf, 0, sizeof(elf));
@@ -7957,10 +7957,10 @@ static void t_credentials(void) {
         elf[120] = 1; elf[124] = 5;
         elf[152] = 200; elf[160] = 200; elf[169] = 0x10;
         memcpy(elf + 176, "/tmp/c/ld", 10);
-        memcpy(kf_uptr(u), elf, sizeof(elf));
+        memcpy(kf_uptr(uelf), elf, sizeof(elf));
         kf_set_current(root);
         fd = tmp_open("/tmp/c/dyn", 0x241, 0755);
-        expect(fd >= 0 && SYS3(1, (uint64_t)fd, u, sizeof(elf)) == (long)sizeof(elf), "a dynamic program written");
+        expect(fd >= 0 && SYS3(1, (uint64_t)fd, uelf, sizeof(elf)) == (long)sizeof(elf), "a dynamic program written");
         (void)SYS1(3, (uint64_t)fd);
         (void)SYS2(90, ustr("/tmp/c/dyn"), 0755);
         tmp_put("/tmp/c/ld", "root's own loader");
@@ -7971,10 +7971,10 @@ static void t_credentials(void) {
         /* security.* is changed by the superuser only (M-155), as Linux's
          * cap_inode_setxattr has it with no module; the question comes
          * before the filesystem, whose answer for root is EOPNOTSUPP here. */
-        expect(sys(188, ustr("/tmp/c/dyn"), ustr("security.selinux"), u, 4, 0, 0, 0) == -VIBEOS_EPERM,
+        expect(sys(188, ustr("/tmp/c/dyn"), ustr("security.selinux"), uelf, 4, 0, 0, 0) == -VIBEOS_EPERM,
                "a user may not set a security.* attribute");
         kf_set_current(root);
-        expect(sys(188, ustr("/tmp/c/dyn"), ustr("security.selinux"), u, 4, 0, 0, 0) != -VIBEOS_EPERM,
+        expect(sys(188, ustr("/tmp/c/dyn"), ustr("security.selinux"), uelf, 4, 0, 0, 0) != -VIBEOS_EPERM,
                "the superuser is asked nothing more");
     }
 

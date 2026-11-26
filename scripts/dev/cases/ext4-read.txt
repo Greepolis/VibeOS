@@ -7,13 +7,13 @@
 
 ### an index node always descends into its first child
 --- old
-            if (rd32(e) > n) {
-                break;
-            }
+                if (rd32(e) > n) {
+                    break;
+                }
 +++ new
-            if (rd32(e) > n || 1) {
-                break;
-            }
+                if (rd32(e) > n || 1) {
+                    break;
+                }
 
 ### a block inside an extent is read at the extent's start
 --- old

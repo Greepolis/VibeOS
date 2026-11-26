@@ -723,8 +723,9 @@ static void term_moved(uint32_t row, uint32_t col) {
 static void term_sgr(const vibeos_vt_t *vt) {
     uint32_t i, count = (uint32_t)vt->count + 1u;
 
-    for (i = 0; i < count && i < VIBEOS_VT_PARAMS; i++) {
-        uint32_t p = vt->param[i];
+    i = 0;
+    while (i < count && i < VIBEOS_VT_PARAMS) {
+        uint32_t p = vt->param[i], used = 1u;   /* parameters this one takes */
 
         if (p == 0u) {
             g_pen = PEN_DEFAULT;
@@ -760,11 +761,11 @@ static void term_sgr(const vibeos_vt_t *vt) {
 
             if (i + 2u < count && vt->param[i + 1u] == 5u) {
                 colour = colour_256(vt->param[i + 2u]);
-                i += 2u;
+                used = 3u;
             } else if (i + 4u < count && vt->param[i + 1u] == 2u) {
                 colour = ((uint32_t)(vt->param[i + 2u] & 0xFFu) << 16) |
                          ((uint32_t)(vt->param[i + 3u] & 0xFFu) << 8) | (vt->param[i + 4u] & 0xFFu);
-                i += 4u;
+                used = 5u;
             } else {
                 break;   /* malformed: the rest cannot be read in step */
             }
@@ -776,6 +777,7 @@ static void term_sgr(const vibeos_vt_t *vt) {
             }
         }
         /* Italic, blink, strike-through and the rest: nothing to draw them with. */
+        i += used;
     }
 }
 
@@ -1078,7 +1080,8 @@ int vibeos_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
      * title, and no more than the arrays hold. The smallest screen init
      * accepts still gives several of each. */
     g_cols = (width - 16u) / CELL_W;
-    g_rows = height > 24u + 32u + CELL_H ? (height - 24u - 32u) / CELL_H : 2u;
+    _Static_assert(VIBEOS_GUI_MIN_H > 24u + 32u + CELL_H, "init's minimum leaves a row below the panel");
+    g_rows = (height - 24u - 32u) / CELL_H;
     if (g_cols > TERM_MAX_COLS) {
         g_cols = TERM_MAX_COLS;
     }
