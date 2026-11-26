@@ -108,6 +108,10 @@ typedef struct {
     uint32_t block_size;
     uint64_t blocks;
     uint64_t blocks_free;
+    /* What an unprivileged writer may still take: blocks_free less what the
+     * volume keeps for the superuser (M-159). A driver that keeps nothing
+     * leaves it at blocks_free. */
+    uint64_t blocks_avail;
     uint64_t files;
     uint64_t files_free;
     uint32_t name_max;
@@ -340,6 +344,13 @@ int vibeos_fs_tick(vibeos_fsmount_t *mnt);
  * registration, not a weak symbol (CLAUDE.md). Uptime until the kernel has a
  * wall clock (L2); 0 before one is registered. */
 void vibeos_fs_set_clock(uint64_t (*now_ns)(void));
+
+/* Whether whoever is asking is the superuser, for a driver that keeps
+ * something back for it - ext4's reserved blocks (M-159). The machine
+ * registers its answer; with none registered, everybody is (the host tests,
+ * the kernel's own writes). */
+void vibeos_fs_set_privileged(int (*privileged)(void));
+int vibeos_fs_privileged(void);
 
 /* What happened to a file, said once where every filesystem's operation passes
  * (docs/abi/ L4 step 6): here for the operations on names, and in the regular

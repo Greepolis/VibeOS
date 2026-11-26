@@ -400,6 +400,10 @@ static int run_line(char *line) {
     return run(a, n);
 }
 
+static int say_no(void) {
+    return 0;
+}
+
 static int run(char **a, int n) {
     vibeos_fs_node_t node;
     vibeos_fs_attr_t at;
@@ -757,6 +761,26 @@ static int run(char **a, int n) {
         at.atime_ns = strtoull(a[2], NULL, 10) * 1000000000ull;
         at.mtime_ns = strtoull(a[3], NULL, 10) * 1000000000ull;
         return vibeos_fs_setattr(&g_mnt, a[1], &at);
+    }
+    if ((strcmp(c, "unprivileged") == 0 || strcmp(c, "privileged") == 0) && n == 1) {
+        /* Who the writer is, for the blocks the volume keeps for root
+         * (M-159): what the machine registers from the caller's fsuid. */
+        vibeos_fs_set_privileged(strcmp(c, "privileged") == 0 ? 0 : say_no);
+        return 0;
+    }
+    if (strcmp(c, "avail") == 0 && n == 2) {
+        /* statfs's f_bavail-to-be: less what is kept for root. */
+        vibeos_fs_statfs_t s;
+
+        if (vibeos_fs_statfs(&g_mnt, &s) != 0) {
+            return -VIBEOS_EIO;
+        }
+        if ((strcmp(a[1], "zero") == 0) != (s.blocks_avail == 0u)) {
+            fprintf(stderr, "FAIL:ext4_exercise avail=%llu free=%llu, wanted %s\n",
+                    (unsigned long long)s.blocks_avail, (unsigned long long)s.blocks_free, a[1]);
+            return -1;
+        }
+        return 0;
     }
     if (strcmp(c, "fillup") == 0 && n == 3) {
         /* Write until the volume says no: the refusal must be ENOSPC, the file

@@ -1006,6 +1006,19 @@ static uint64_t hw_fs_clock_ns(void) {
     return (g_timer_ticks + g_wall_base_ticks) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
 }
 
+/* The superuser, for what a volume keeps back for it (M-159): a user task
+ * with fsuid 0, or the kernel writing for itself. */
+static int hw_fs_privileged(void) {
+    int me = ks_current();
+    const vibeos_procstate_t *ps;
+
+    if (me < 0 || !ks_id(me)->is_user) {
+        return 1;
+    }
+    ps = ks_ps(me);
+    return !ps || __atomic_load_n(&ps->cred.fsuid, __ATOMIC_RELAXED) == 0u;
+}
+
 /* /proc (docs/abi/ L3 step 3): what a program reads before it does anything
  * else. The numbers are the frame layer's and the swap map's, in kibibytes;
  * "available" is what is free, because what reclaim could add to it is not
@@ -1485,6 +1498,7 @@ void hw_volumes_bringup(void) {
         long len = root >= 0 ? vibeos_fs_read_file(&g_rootfs, "etc/vibeos/mounts", text, sizeof(text) - 1u) : -1;
 
         vibeos_fs_set_clock(hw_fs_clock_ns);
+        vibeos_fs_set_privileged(hw_fs_privileged);
         hw_procfs_prepare();
         if (len >= (long)sizeof(text) - 1) {
             source = "refused";

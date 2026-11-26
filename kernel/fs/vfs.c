@@ -744,11 +744,15 @@ int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out) {
     if (mnt->ops->statfs) {
         int r;
 
+        out->blocks_avail = ~(uint64_t)0;
         fs_enter(mnt);
         r = mnt->ops->statfs(mnt->fs, out);
         fs_leave(mnt);
         if (r != 0) {
             return r;
+        }
+        if (out->blocks_avail == ~(uint64_t)0 || out->blocks_avail > out->blocks_free) {
+            out->blocks_avail = out->blocks_free;   /* a driver that keeps nothing back */
         }
     }
     /* After the driver, which answers for the volume: these are the mount's,
@@ -829,6 +833,16 @@ static uint64_t (*g_now_ns)(void);
 
 void vibeos_fs_set_clock(uint64_t (*now_ns)(void)) {
     g_now_ns = now_ns;
+}
+
+static int (*g_privileged)(void);
+
+void vibeos_fs_set_privileged(int (*privileged)(void)) {
+    g_privileged = privileged;
+}
+
+int vibeos_fs_privileged(void) {
+    return g_privileged ? g_privileged() : 1;
 }
 
 uint64_t vibeos_fs_now_ns(void) {

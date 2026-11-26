@@ -2590,7 +2590,15 @@ static long linux_sys_mkdirat(uint64_t dirfd, uint64_t path_uptr, uint64_t mode)
     }
     attr.valid = VIBEOS_ATTR_MODE;
     attr.mode = (uint32_t)mode & 01777u & ~linux_umask();
-    (void)vibeos_fs_setattr(w.mnt, w.tail, &attr);
+    /* A filesystem that keeps modes and could not set this one leaves a
+     * directory everybody may read where 0700 was asked for (M-159): taken
+     * away again, and the error said. One with no modes - FAT - has no
+     * setattr, and its directory is what it always is. */
+    r = vibeos_fs_setattr(w.mnt, w.tail, &attr);
+    if (r != 0 && w.mnt->ops->setattr) {
+        (void)vibeos_fs_rmdir(w.mnt, w.tail);
+        return r;
+    }
     linux_own_new(&w);
     return 0;
 }

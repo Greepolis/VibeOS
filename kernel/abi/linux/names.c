@@ -808,7 +808,7 @@ static long linux_statfs_mnt(vibeos_fsmount_t *mnt, uint64_t ubuf) {
     k.f_frsize = (int64_t)s.block_size;
     k.f_blocks = (int64_t)s.blocks;
     k.f_bfree = (int64_t)s.blocks_free;
-    k.f_bavail = (int64_t)s.blocks_free;   /* nothing is held back for root */
+    k.f_bavail = (int64_t)s.blocks_avail;   /* less what the volume keeps for root (M-159) */
     k.f_files = (int64_t)s.files;
     k.f_ffree = (int64_t)s.files_free;
     k.f_fsid[0] = (int32_t)linux_dev_of(mnt);

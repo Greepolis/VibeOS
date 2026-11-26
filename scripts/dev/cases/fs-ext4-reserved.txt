@@ -1,0 +1,23 @@
+# The blocks an ext4 volume keeps for the superuser (M-159), proved by
+# scripts/dev/verify-ext4-reserved.sh: an unprivileged writer fills the volume
+# to ENOSPC with the reserve left, statfs says nothing is available to it, and
+# root still writes.
+#
+#  1. the reserve is handed to anybody. Expect apply_failed: root's write is
+#     refused, the unprivileged fill having taken everything.
+#  2. statfs says the reserve is available. Expect apply_failed: avail zero.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="cmake --build build-gcc-Release --target vibeos_ext4_exercise >/dev/null && bash scripts/dev/verify-ext4-reserved.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/fs-ext4-reserved.txt
+
+### the reserve is handed to anybody
+--- old
+        (sb_free_blocks(fs) <= sb_reserved_blocks(fs) && !vibeos_fs_privileged())) {
++++ new
+        (0 && !vibeos_fs_privileged())) {
+
+### statfs says the reserve is available
+--- old
+    out->blocks_avail = sb_free_blocks(fs) > sb_reserved_blocks(fs) ? sb_free_blocks(fs) - sb_reserved_blocks(fs) : 0u;
++++ new
+    out->blocks_avail = sb_free_blocks(fs);

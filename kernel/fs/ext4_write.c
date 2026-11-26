@@ -572,10 +572,23 @@ static int balloc_group(vibeos_ext2_t *fs, uint32_t g, uint32_t start_bit, uint3
  * goal from the goal on, then the groups after it, then the start of its own.
  * A file's next block is asked for at the end of its last, so an append that
  * can extend the extent does. */
+/* The blocks the volume keeps for the superuser (s_r_blocks_count, M-159),
+ * so that a user who fills it leaves room for root to repair it - mkfs keeps
+ * five percent. They were handed to anybody. */
+static uint64_t sb_reserved_blocks(const vibeos_ext2_t *fs) {
+    uint64_t r = le32(fs->sb + 0x08u);
+
+    if ((fs->incompat & INCOMPAT_64BIT) != 0u) {
+        r |= (uint64_t)le32(fs->sb + 0x154u) << 32;
+    }
+    return r;
+}
+
 static int balloc(vibeos_ext2_t *fs, uint64_t goal, uint32_t want, uint64_t *start, uint32_t *got) {
     uint32_t g0, b0, k;
 
-    if (sb_free_blocks(fs) == 0u) {
+    if (sb_free_blocks(fs) == 0u ||
+        (sb_free_blocks(fs) <= sb_reserved_blocks(fs) && !vibeos_fs_privileged())) {
         return -VIBEOS_ENOSPC;
     }
     if (want == 0u || want > 32768u) {
@@ -3645,6 +3658,7 @@ static int w_statfs(void *fsv, vibeos_fs_statfs_t *out) {
     out->block_size = fs->block_size;
     out->blocks = fs->blocks_count;
     out->blocks_free = sb_free_blocks(fs);
+    out->blocks_avail = sb_free_blocks(fs) > sb_reserved_blocks(fs) ? sb_free_blocks(fs) - sb_reserved_blocks(fs) : 0u;
     out->files = le32(fs->sb);
     out->files_free = le32(fs->sb + 0x10u);
     out->name_max = 255u;

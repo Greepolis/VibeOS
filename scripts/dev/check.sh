@@ -119,6 +119,11 @@ do_tests() {
     pc="$(bash scripts/dev/verify-ext4-powercut.sh "$d" 23 | tail -1)"
     echo "$pc"
     case "$pc" in ext4_powercut=ok*|ext4_powercut=skip*) ;; *) t=1 ;; esac
+    # The blocks kept for root (review v10, M-159).
+    local rs
+    rs="$(bash scripts/dev/verify-ext4-reserved.sh "$d" | tail -1)"
+    echo "$rs"
+    case "$rs" in ext4_reserved=ok*|ext4_reserved=skip*) ;; *) t=1 ;; esac
     # Random operations against Linux (ext4.md step 5): sixty seeds and twelve
     # with power cuts here, thousands in the nightly.
     local et
