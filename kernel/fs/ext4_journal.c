@@ -87,7 +87,17 @@
 
 #define JSB_CRC32C 4u
 #define J_HOME_MAX 384u
-#define J_REVOKE_MAX 1000u
+/* Revoke records a replay can hold (M-158): 1000 refused a legitimate Linux
+ * volume that had revoked more in the transactions left to replay. Beyond
+ * this a replay is still refused rather than half done. In a table of its
+ * own, hashed: the lookup was linear, once per logged block. */
+#define J_REVOKE_MAX 8192u
+#define J_REVOKE_SLOTS 16384u
+/* The longest journal looked at (M-158): its blocks are mapped one by one at
+ * mount, through ext3's block map when there is no extent tree, and a
+ * superblock claiming 2^30 of them was a mount that did not end. mkfs makes
+ * journals of at most 2^18 blocks; this is sixteen times that. */
+#define J_MAXLEN_MAX (1u << 22)
 
 static uint64_t g_commits, g_replayed, g_log_full, g_bad_tags, g_flushes, g_checkpoints, g_ops;
 
@@ -407,6 +417,15 @@ static int j_geometry(vibeos_ext2_t *fs) {
         fs->j.first == 0u || fs->j.first >= fs->j.maxlen) {
         return -1;
     }
+    /* No longer than the file that holds it, and than any journal mkfs makes
+     * by far (M-158): checked before the walk below, which is that long. */
+    {
+        uint64_t isize = le32(inode + 4u) | ((uint64_t)le32(inode + 0x6Cu) << 32);
+
+        if (fs->j.maxlen > J_MAXLEN_MAX || fs->j.maxlen > isize / fs->block_size) {
+            return -1;
+        }
+    }
     for (i = 0; i < fs->j.maxlen; i++) {   /* every block of the log must be somewhere */
         if (j_phys(fs, i) == 0u) {
             return -1;
@@ -430,9 +449,22 @@ static int j_geometry(vibeos_ext2_t *fs) {
     fs->j.seed = vibeos_ext2_crc32c(~0u, b + 0x30u, 16u);
     fs->j.tag_bytes = fs->j.csum3 ? 16u : (fs->j.is64 ? 12u : 8u);
     fs->j.tags_per_desc = (fs->block_size - 12u - 16u - (fs->j.csum3 ? 4u : 0u)) / fs->j.tag_bytes;
-    /* The cap leaves room for its descriptors and the commit block. */
-    fs->j.cap = fs->j.maxlen - fs->j.first;
-    fs->j.cap -= fs->j.cap / (fs->j.tags_per_desc + 1u) + 2u;
+    /* The cap leaves room for its descriptors and the commit block - asked
+     * before it is taken away (M-158): a log of one or two blocks wrapped the
+     * subtraction to four billion, the clamp below made that J_HOME_MAX, and
+     * the "too small" check let it through. */
+    if (fs->j.tags_per_desc == 0u) {
+        return -1;
+    }
+    {
+        uint32_t room = fs->j.maxlen - fs->j.first;
+        uint32_t overhead = room / (fs->j.tags_per_desc + 1u) + 2u;
+
+        if (overhead >= room) {
+            return -1;
+        }
+        fs->j.cap = room - overhead;
+    }
     if (fs->j.cap > J_HOME_MAX) {
         fs->j.cap = J_HOME_MAX;
     }
@@ -941,30 +973,42 @@ static int j_commit(vibeos_ext2_t *fs) {
 
 /* ---- replay --------------------------------------------------------------- */
 
-/* The revoke records of the transactions being replayed, kept in the
- * writer's extent list, which is idle at mount: a block and the newest
- * transaction that revoked it. */
+/* The revoke records of the transactions being replayed: a block and the
+ * newest transaction that revoked it, open-addressed by block. One table for
+ * every volume, so one replay at a time: a second finds it taken and is
+ * refused (g_revoke_busy) - mounts are made one after another, so it is
+ * never expected. */
 typedef struct {
     uint64_t block;
     uint32_t seq;
+    uint32_t used;
 } revoke_t;
 
-static revoke_t *revokes(vibeos_ext2_t *fs) {
-    return (revoke_t *)(void *)fs->ext;
-}
+static revoke_t g_revoke[J_REVOKE_SLOTS];   /* quota: none - a replay's scratch, one at a time */
+static volatile uint32_t g_revoke_busy;
 
-_Static_assert(sizeof(((vibeos_ext2_t *)0)->ext) >= J_REVOKE_MAX * sizeof(revoke_t),
-               "the revoke table is kept in the extent list");
+static revoke_t *revoke_slot(uint64_t block) {
+    uint32_t h = (uint32_t)((block * 0x9E3779B97F4A7C15ull) >> 50) & (J_REVOKE_SLOTS - 1u), k;
 
-static int revoked(vibeos_ext2_t *fs, uint32_t nrev, uint64_t block, uint32_t seq) {
-    uint32_t i;
+    for (k = 0; k < J_REVOKE_SLOTS; k++) {
+        revoke_t *r = &g_revoke[(h + k) & (J_REVOKE_SLOTS - 1u)];
 
-    for (i = 0; i < nrev; i++) {
-        if (revokes(fs)[i].block == block && (int32_t)(revokes(fs)[i].seq - seq) >= 0) {
-            return 1;
+        if (!r->used || r->block == block) {
+            return r;
         }
     }
     return 0;
+}
+
+static int revoked(vibeos_ext2_t *fs, uint32_t nrev, uint64_t block, uint32_t seq) {
+    const revoke_t *r;
+
+    (void)fs;
+    if (nrev == 0u) {
+        return 0;
+    }
+    r = revoke_slot(block);
+    return r && r->used && (int32_t)(r->seq - seq) >= 0;
 }
 
 /* A tag at `at` of the descriptor in wbuf: its home and flags. */
@@ -1068,17 +1112,22 @@ static int j_pass(vibeos_ext2_t *fs, int pass, uint32_t start, uint32_t seq0, ui
                     uint64_t blk = rs == 8u ? ((uint64_t)be32(b + at) << 32) | be32(b + at + 4u) : be32(b + at);
                     uint32_t i;
 
-                    for (i = 0; i < *nrev && revokes(fs)[i].block != blk; i++) {
+                    revoke_t *r = revoke_slot(blk);
+
+                    (void)i;
+                    if (!r) {
+                        return -1;
                     }
-                    if (i == *nrev) {
+                    if (!r->used) {
                         if (*nrev >= J_REVOKE_MAX) {
                             return -1;
                         }
                         (*nrev)++;
-                        revokes(fs)[i].block = blk;
-                        revokes(fs)[i].seq = seq;
-                    } else if ((int32_t)(seq - revokes(fs)[i].seq) > 0) {
-                        revokes(fs)[i].seq = seq;
+                        r->used = 1;
+                        r->block = blk;
+                        r->seq = seq;
+                    } else if ((int32_t)(seq - r->seq) > 0) {
+                        r->seq = seq;
                     }
                 }
             }
@@ -1104,13 +1153,21 @@ int ext4_j_recover(vibeos_ext2_t *fs) {
     start = be32(fs->wbuf + 0x1Cu);
     seq0 = be32(fs->wbuf + 0x18u);
     if (start != 0u) {
+        int bad;
+
         if (start < fs->j.first || start >= fs->j.maxlen) {
             return -1;
         }
+        if (__atomic_exchange_n(&g_revoke_busy, 1u, __ATOMIC_ACQUIRE) != 0u) {
+            return -1;   /* another volume is being replayed */
+        }
+        memset(g_revoke, 0, sizeof(g_revoke));
         n = j_pass(fs, 0, start, seq0, 0u, &nrev);
-        if (n < 0 || (n > 0 && (j_pass(fs, 1, start, seq0, seq0 + (uint32_t)n, &nrev) != 0 ||
-                                j_pass(fs, 2, start, seq0, seq0 + (uint32_t)n, &nrev) != 0 ||
-                                j_pass(fs, 3, start, seq0, seq0 + (uint32_t)n, &nrev) != 0))) {
+        bad = n < 0 || (n > 0 && (j_pass(fs, 1, start, seq0, seq0 + (uint32_t)n, &nrev) != 0 ||
+                                  j_pass(fs, 2, start, seq0, seq0 + (uint32_t)n, &nrev) != 0 ||
+                                  j_pass(fs, 3, start, seq0, seq0 + (uint32_t)n, &nrev) != 0));
+        __atomic_store_n(&g_revoke_busy, 0u, __ATOMIC_RELEASE);
+        if (bad) {
             return -1;
         }
         __atomic_add_fetch(&g_replayed, (uint64_t)n, __ATOMIC_RELAXED);
