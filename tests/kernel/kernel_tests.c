@@ -21,6 +21,7 @@
 #include "vibeos/fat_chain.h"
 #include "vibeos/blockdev.h"
 #include "vibeos/partition.h"
+#include "vibeos/acl.h"
 #include "vibeos/ext2.h"
 #include "vibeos/mbz.h"
 #include "vibeos/ceildiv.h"
@@ -10208,6 +10209,48 @@ static int mt_refuses(const char *text, int why, uint32_t line)
     return got == why && bad == line && t.count == 0u;
 }
 
+/* The mode an access list stands for, as Linux writes it: with a mask, the
+ * group bits are the mask (posix_acl_equiv_mode / posix_acl_update_mode), on
+ * disk too, which is what the ext4 torture compares against. Linux then
+ * judges the owning group by group_obj & mask from the list; nothing here
+ * judges by the list yet, so the owning group gets the mask (M-154, open
+ * with ACL enforcement in the security milestone, E4-011). This pins the
+ * mode, so that fixing M-154 in the mode instead of in the check - which was
+ * tried, and breaks interchange with Linux - goes red here. */
+static void acl_entry(uint8_t *e, uint16_t tag, uint16_t perm, uint32_t id) {
+    e[0] = (uint8_t)tag;
+    e[1] = (uint8_t)(tag >> 8);
+    e[2] = (uint8_t)perm;
+    e[3] = (uint8_t)(perm >> 8);
+    e[4] = (uint8_t)id;
+    e[5] = (uint8_t)(id >> 8);
+    e[6] = (uint8_t)(id >> 16);
+    e[7] = (uint8_t)(id >> 24);
+}
+
+static int test_acl_mode_mask(void) {
+    uint8_t v[VIBEOS_ACL_HDR + 5u * VIBEOS_ACL_ENTRY];
+    uint32_t perm = 0;
+
+    memset(v, 0, sizeof(v));
+    v[0] = (uint8_t)VIBEOS_ACL_VERSION;
+    acl_entry(v + 4, VIBEOS_ACL_USER_OBJ, 6, VIBEOS_ACL_UNDEFINED_ID);
+    acl_entry(v + 12, VIBEOS_ACL_USER, 6, 1000u);
+    acl_entry(v + 20, VIBEOS_ACL_GROUP_OBJ, 4, VIBEOS_ACL_UNDEFINED_ID);
+    acl_entry(v + 28, VIBEOS_ACL_MASK, 6, VIBEOS_ACL_UNDEFINED_ID);
+    acl_entry(v + 36, VIBEOS_ACL_OTHER, 0, VIBEOS_ACL_UNDEFINED_ID);
+    if (vibeos_acl_valid(v, sizeof(v)) != 0) {
+        printf("FAIL:acl the test's own list is not valid\n");
+        return -1;
+    }
+    (void)vibeos_acl_mode(v, sizeof(v), &perm);
+    if (perm != 0660u) {
+        printf("FAIL:acl u:bob:rw g::r-- mask::rw- gave group bits %o, not the mask's 6\n", (perm >> 3) & 7u);
+        return -1;
+    }
+    return 0;
+}
+
 static int test_mounttab_parse(void)
 {
     static vibeos_mounttab_t t;
@@ -10808,6 +10851,7 @@ int main(void) {
     RUN_TEST(test_storage_claims_nothing);
     RUN_TEST(test_storage_pick_root);
     RUN_TEST(test_mounttab_parse);
+    RUN_TEST(test_acl_mode_mask);
     RUN_TEST(test_storage_find_label);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
