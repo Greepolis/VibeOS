@@ -713,7 +713,17 @@ typedef struct {
     char path[64];
     vibeos_fs_node_t node;
     uint64_t used;      /* when it was last looked up, on hw_file_id's clock */
+    uint16_t gen;       /* moves each time the identity is given to another
+                         * file, so a region holding an older one can tell
+                         * (M-151) */
 } hw_cached_file_t;
+
+/* An identity with its generation, for a region that faults its pages in
+ * through it later (S7 step 2): the identity in the low 16 bits, the
+ * generation above. And the identity such a tag still names, or 0 if it has
+ * been given to another file since. */
+uint32_t hw_file_id_tag(uint32_t id);
+uint32_t hw_file_id_untag(uint32_t tag);
 /* A second, much smaller user window down in the first GiB.
  *
  * This exists for one reason: a Linux executable is linked at 0x400000 and

@@ -73,6 +73,9 @@ typedef struct vibeos_exec_stats {
      * instruction, and the gate says which. */
     uint64_t pages_file_deferred;
     uint64_t pages_file_faulted;
+    /* Faults on a deferred page whose file identity had been given to
+     * another file since (M-151): nothing mapped, the program stopped. */
+    uint64_t pages_file_stale;
 
     /* Resident cache pages compared against the file they came from, and how
      * many no longer matched. Once image pages are shared rather than copied,

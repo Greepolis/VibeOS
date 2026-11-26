@@ -59,10 +59,13 @@ static int hw_streq_n(const char *a, const char *b) {
  *  - It never gave an identity back, so the 513th distinct program of a boot
  *    was read uncached, and one larger than the staging buffer did not start.
  *    The least recently looked-up identity is reused now. What still names an
- *    old identity after that is harmless: an image's pages are mapped when it
- *    is loaded and hold their own frame references, nothing faults a page in
- *    through a region's backing_id, and the regions use it only to decide
- *    whether two neighbours can merge. What is not harmless is reusing one a
+ *    old identity after that was harmless while an image's pages were all
+ *    mapped at load. Since S7 step 2 a high-window image's pages are faulted
+ *    in through the region's identity, so a reused or replaced identity would
+ *    have mapped another file's page (M-151): an identity carries a
+ *    generation, the region holds both (hw_file_id_tag), and the fault maps
+ *    nothing for a region whose identity has moved on. What is not harmless
+ *    either is reusing one a
  *    load is still reading, so an identity looked up among the last
  *    HW_FILE_ID_RECENT is never taken: a load looks up at most two (program and
  *    interpreter) before it has mapped them.
@@ -125,6 +128,7 @@ static uint32_t hw_file_id_node(const char *path, const vibeos_fs_node_t *nodep)
     if (id != 0u) {
         if (!hw_same_file(&g_cached_files[id - 1u].node, &node)) {
             g_cached_files[id - 1u].node = node;
+            g_cached_files[id - 1u].gen++;
             stale = 1;
             vibeos_exec_stats()->file_ids_replaced++;
         }
@@ -141,6 +145,7 @@ static uint32_t hw_file_id_node(const char *path, const vibeos_fs_node_t *nodep)
         }
         if (g_file_id_clock - g_cached_files[victim].used >= HW_FILE_ID_RECENT) {
             hw_file_id_fill(victim, path, &node);
+            g_cached_files[victim].gen++;
             id = victim + 1u;
             stale = 1;
             vibeos_exec_stats()->file_ids_reused++;
@@ -165,6 +170,34 @@ static uint32_t hw_file_id_node(const char *path, const vibeos_fs_node_t *nodep)
                "(a0 = identities)");
     }
     return id;
+}
+
+_Static_assert(VIBEOS_HW_CACHE_FILES < 0x10000u, "a tag keeps the identity in 16 bits");
+
+uint32_t hw_file_id_tag(uint32_t id) {
+    uint32_t tag = 0;
+
+    if (id == 0u || id > VIBEOS_HW_CACHE_FILES) {
+        return 0;
+    }
+    hw_spin_lock_named(&g_file_id_lock, __func__);
+    tag = id | ((uint32_t)g_cached_files[id - 1u].gen << 16);
+    hw_spin_unlock(&g_file_id_lock);
+    return tag;
+}
+
+/* A 16-bit generation wraps after 65,536 reassignments of one identity, and a
+ * region asleep that long would match again: written down, not handled. */
+uint32_t hw_file_id_untag(uint32_t tag) {
+    uint32_t id = tag & 0xFFFFu, ok;
+
+    if (id == 0u || id > VIBEOS_HW_CACHE_FILES) {
+        return 0;
+    }
+    hw_spin_lock_named(&g_file_id_lock, __func__);
+    ok = g_cached_files[id - 1u].gen == (uint16_t)(tag >> 16);
+    hw_spin_unlock(&g_file_id_lock);
+    return ok ? id : 0u;
 }
 
 static uint32_t hw_file_id(const char *path) {

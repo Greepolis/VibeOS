@@ -1967,7 +1967,9 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
                 like.prot = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER |
                                             ((flags & VIBEOS_ELF_X) ? VIBEOS_PROT_EXEC : 0u));
                 like.backing = VIBEOS_BACKING_FILE;
-                like.backing_id = file_id;
+                /* With its generation: the fault maps nothing through an
+                 * identity given to another file since (M-151). */
+                like.backing_id = hw_file_id_tag(file_id);
                 like.backing_offset = foff;
                 like.state = VIBEOS_VMA_DEMAND;
                 if (vibeos_vma_insert_like(vmas, va, 4096ull, &like) != 0) {
@@ -2754,8 +2756,16 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
         if (!(region->prot & VIBEOS_PROT_EXEC)) {
             leaf |= PTE_NX;
         }
-        if (vibeos_cache_get_ref(region->backing_id, region->backing_offset + (page_va - region->base),
-                                 &phys) == 0) {
+        /* The identity the region was given, if it still names that file
+         * (M-151): a reused or replaced one would map another file's page.
+         * Nothing is mapped otherwise, and the program is told as Linux tells
+         * one whose mapped file went away: a bus error. */
+        uint32_t fid = hw_file_id_untag(region->backing_id);
+
+        if (fid == 0u) {
+            vibeos_exec_stats()->pages_file_stale++;
+        } else if (vibeos_cache_get_ref(fid, region->backing_offset + (page_va - region->base),
+                                        &phys) == 0) {
             if (hw_map_page(&t->proc.as, page_va, phys, leaf) == 0) {
                 vibeos_exec_stats()->pages_file_faulted++;
                 vibeos_exec_stats()->pages_from_cache++;
