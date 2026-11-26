@@ -12,15 +12,14 @@
 
 ### an erase erases nothing
 --- old
-            if (t->len > t->ready) {
-                t->len--;
-                if (echo && (lf & VIBEOS_TTY_ECHOE)) {
-                    tty_rub_out(t);
-                }
-            }
+            tty_erase_one(t, echo && (lf & VIBEOS_TTY_ECHOE));
             continue;
+        }
+        if (t->m.cc[VIBEOS_TTY_VKILL] != 0u
 +++ new
             continue;
+        }
+        if (t->m.cc[VIBEOS_TTY_VKILL] != 0u
 
 ### half a line can be read
 --- old
@@ -36,9 +35,9 @@
 
 ### ECHO off still echoes
 --- old
-        if (echo || (c == '\n' && (lf & VIBEOS_TTY_ECHONL))) {
+        } else if (echo || (c == '\n' && (lf & VIBEOS_TTY_ECHONL))) {
 +++ new
-        if (1) {
+        } else if (1) {
 
 ### the terminal is always canonical
 --- old
@@ -56,13 +55,13 @@
 
 ### the end-of-file character is a byte
 --- old
-        if (c == (int)t->m.cc[VIBEOS_TTY_VEOF]) {
+        if (t->m.cc[VIBEOS_TTY_VEOF] != 0u && c == (int)t->m.cc[VIBEOS_TTY_VEOF]) {
 +++ new
         if (0) {
 
 ### the kill character is a byte
 --- old
-        if (c == (int)t->m.cc[VIBEOS_TTY_VKILL]) {
+        if (t->m.cc[VIBEOS_TTY_VKILL] != 0u && c == (int)t->m.cc[VIBEOS_TTY_VKILL]) {
 +++ new
         if (0) {
 

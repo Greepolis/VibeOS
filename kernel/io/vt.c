@@ -288,9 +288,12 @@ int vibeos_kbd_ctrl(const vibeos_kbd_t *k) {
 /* The Italian layout's symbol keys, as Linux's "it" keymap has them: plain,
  * Shift, AltGr, AltGr and Shift. UTF-8. A key not here is a letter or a key
  * both layouts share, and is the common path's. */
+/* The strings in the table itself, not pointers to them: a table of pointers
+ * is relocated data, which the subsystem check rightly counts as state. Four
+ * bytes of UTF-8 and the end are enough for every key. */
 typedef struct {
     uint8_t code;
-    const char *k[4];
+    char k[4][5];
 } it_key_t;
 
 static const it_key_t g_it[] = {
@@ -458,7 +461,7 @@ uint32_t vibeos_kbd_key(vibeos_kbd_t *k, uint8_t sc, char out[VIBEOS_KBD_MAX]) {
     /* F1 to F12, as xterm sends them. Before S7 they sent nothing at all, and
      * FinalCommander is driven by them. */
     if ((code >= 0x3Bu && code <= 0x44u) || code == 0x57u || code == 0x58u) {
-        static const char *const fkey[12] = { "OP", "OQ", "OR", "OS", "15", "17", "18", "19", "20", "21", "23", "24" };
+        static const char fkey[12][3] = { "OP", "OQ", "OR", "OS", "15", "17", "18", "19", "20", "21", "23", "24" };
         uint32_t f = code <= 0x44u ? code - 0x3Bu : code - 0x57u + 10u;
         const char *s = fkey[f];
 

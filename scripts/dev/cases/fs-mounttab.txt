@@ -69,6 +69,12 @@
 
 ### mode= is read as decimal
 --- old
+            if (s[k] < '0' || s[k] > '7' || k > 9) {
+                return -1;
+            }
             v = v * 8u + (uint64_t)(s[k] - '0');
 +++ new
+            if (s[k] < '0' || s[k] > '7' || k > 9) {
+                return -1;
+            }
             v = v * 10u + (uint64_t)(s[k] - '0');

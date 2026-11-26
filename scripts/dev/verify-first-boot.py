@@ -21,7 +21,10 @@ import tempfile
 import time
 
 PASSWORD = "firstboot1"
-KEYS = {" ": "spc", "\n": "ret", "-": "minus"}
+# QEMU's sendkey names keys by where they are on a US keyboard, and the
+# machine's keyboard is Italian since 2026-11-25: '-' is the key a US
+# keyboard calls slash. Letters and digits are where they were.
+KEYS = {" ": "spc", "\n": "ret", "-": "slash"}
 
 
 def find(paths):

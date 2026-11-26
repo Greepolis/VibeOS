@@ -581,6 +581,7 @@ int test_linux_layout(void) {
     /* The terminal's modes are kept in Linux's numbering (vibeos/tty.h). */
     CONST(VIBEOS_TTY_NCC, NCCS);
     CONST(VIBEOS_TTY_ICRNL, ICRNL);
+    CONST(VIBEOS_TTY_IUTF8, IUTF8);
     CONST(VIBEOS_TTY_IXON, IXON);
     CONST(VIBEOS_TTY_OPOST, OPOST);
     CONST(VIBEOS_TTY_ONLCR, ONLCR);

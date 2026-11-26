@@ -21,6 +21,6 @@
 
 ### the ESP is not attached at /boot/efi
 --- old
-        return vibeos_fs_attach(e->at, mnt) == 0 ? 0 : "attach";
+            if (vibeos_fs_attach(e->at, mnt) != 0) {
 +++ new
-        return vibeos_fs_attach(e->at[1] == 'b' ? "/esp" : e->at, mnt) == 0 ? 0 : "attach";
+            if (vibeos_fs_attach(e->at[1] == 'b' ? "/esp" : e->at, mnt) != 0) {

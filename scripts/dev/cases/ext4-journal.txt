@@ -32,9 +32,9 @@
 
 ### a revoke record is ignored by the replay
 --- old
-        if (revokes(fs)[i].block == block && (int32_t)(revokes(fs)[i].seq - seq) >= 0) {
+    return r && r->used && (int32_t)(r->seq - seq) >= 0;
 +++ new
-        if (revokes(fs)[i].block == block && 0) {
+    return r && r->used && 0;
 
 ### a tag's checksum is wrong
 --- old

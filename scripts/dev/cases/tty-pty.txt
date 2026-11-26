@@ -23,8 +23,12 @@
 
 ### the master's close tells nobody
 --- old
-    vibeos_term_hangup(&p->term);   /* the terminal has gone from under its session */
+    vibeos_term_hangup(&p->term);
+    ks_lock(&p->lock, "pty");
+    p->masters--;
 +++ new
+    ks_lock(&p->lock, "pty");
+    p->masters--;
 
 ### a closed slave is not a hangup to the master
 --- old

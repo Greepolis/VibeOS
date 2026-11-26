@@ -7,9 +7,9 @@
 
 ### the open-file table is not asked
 --- old
-    if (g_busy_query && g_busy_query(g_mounts[at].mnt)) {
+    if ((g_busy_query && g_busy_query(g_mounts[at].mnt)) ||
 +++ new
-    if (0) {
+    if (0 ||
 
 ### a mount with others beneath it is taken out from under them
 --- old
@@ -23,14 +23,12 @@
 
 ### a refused unmount takes the entry out anyway
 --- old
-    if (g_busy_query && g_busy_query(g_mounts[at].mnt)) {
+        __atomic_load_n(&g_mounts[at].mnt->inflight, __ATOMIC_ACQUIRE) != 0u) {
         mt_unlock();
         return -VIBEOS_EBUSY;
-    }
 +++ new
-    if (g_busy_query && g_busy_query(g_mounts[at].mnt)) {
+        __atomic_load_n(&g_mounts[at].mnt->inflight, __ATOMIC_ACQUIRE) != 0u) {
         g_mounts[at] = g_mounts[g_mount_count - 1u];
         g_mount_count--;
         mt_unlock();
         return -VIBEOS_EBUSY;
-    }

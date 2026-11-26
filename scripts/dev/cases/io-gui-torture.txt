@@ -42,16 +42,10 @@ static void gui_unlock(void) {
 
 ### the pointer fragment, restored
 --- old
-    if (took) {
-        compose_terminal(g_snap);
-        blit_rect(g_win_x, g_win_y, g_win_w, g_win_h);
-    }
+        compose_terminal(g_snap, g_snap_rows);
 +++ new
-    if (took) {
-        compose_terminal(g_snap);
-        blit_rect(g_win_x, g_win_y, g_win_w, g_win_h);
+        compose_terminal(g_snap, g_snap_rows);
         g_last_cx = -1;
-    }
 
 ### the pointer is not redrawn after the text is
 --- old

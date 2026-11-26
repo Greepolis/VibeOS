@@ -24,8 +24,9 @@
 
 ### mkdir does not tell the filesystem the mode
 --- old
-    (void)vibeos_fs_setattr(w.mnt, w.tail, &attr);
+    r = vibeos_fs_setattr(w.mnt, w.tail, &attr);
 +++ new
+    r = 0;
 
 ### mkdir does not apply the umask
 --- old
