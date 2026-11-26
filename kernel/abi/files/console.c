@@ -84,7 +84,12 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     uint64_t i;
     vibeos_tty_modes_t modes;
     int onlcr;
-    (void)f;
+
+    /* Revoked by its session's end (H-045): a process a logout left behind
+     * prints no false prompt to whoever sits down next. */
+    if (__atomic_load_n(&f->revoked, __ATOMIC_ACQUIRE) != 0u) {
+        return -VIBEOS_EIO;
+    }
 
     /* A newline goes out as CR LF unless the program turned that off - which
      * one drawing the screen itself does, and then sends its own. */
@@ -204,7 +209,16 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     return (long)len;
 }
 
+/* A description its session's end revoked (H-045): end of file to a read,
+ * EIO to everything else, as Linux's vhangup leaves one. */
+static int console_revoked(const vibeos_file_t *f) {
+    return __atomic_load_n(&f->revoked, __ATOMIC_ACQUIRE) != 0u;
+}
+
 static long console_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
+    if (console_revoked(f)) {
+        return 0;
+    }
     /* A program reading the console is somebody at the terminal: the screen
      * is theirs from now (ks_con_screen_users). */
     ks_con_screen_users();
@@ -229,7 +243,9 @@ static int console_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
 }
 
 static long console_ioctl(vibeos_file_t *f, uint64_t req, uint64_t arg) {
-    (void)f;
+    if (console_revoked(f)) {
+        return -VIBEOS_EIO;
+    }
     return vibeos_term_ioctl(&g_console, req, arg);
 }
 

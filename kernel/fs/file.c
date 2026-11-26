@@ -54,6 +54,25 @@ static void file_clear(vibeos_file_t *f) {
  * the order is mount, then this table - and put never calls a driver holding
  * the table's lock. A description whose put is running (refs 0, ops still
  * set) no longer holds anything. */
+uint32_t vibeos_file_revoke_session(const vibeos_file_ops_t *ops, uint32_t sid) {
+    uint32_t i, n = 0;
+
+    if (sid == 0u) {
+        return 0;
+    }
+    lock();
+    for (i = 0; i < VIBEOS_FILE_MAX; i++) {
+        vibeos_file_t *f = &g_files[i];
+
+        if (f->ops == ops && __atomic_load_n(&f->refs, __ATOMIC_ACQUIRE) != 0u && f->tty_sid == sid) {
+            __atomic_store_n(&f->revoked, 1u, __ATOMIC_RELEASE);
+            n++;
+        }
+    }
+    unlock();
+    return n;
+}
+
 static int file_node_open(const void *fs, uint64_t id) {
     uint32_t i;
     int found = 0;

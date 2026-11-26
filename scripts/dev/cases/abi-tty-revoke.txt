@@ -1,0 +1,18 @@
+# The end of a session revokes the console descriptions it opened (H-045),
+# Linux's vhangup in the part that matters: a process a logout left behind -
+# `setsid cat &` - kept reading the console, the next Password: prompt
+# included. Proved by t_tty_jobs in tests/kernel/linux_abi_tests.c,
+# "its end revokes what it opened: end of file, EIO to a write and an ioctl".
+#
+#  1. a hangup revokes nothing. Expect that test.
+#
+# The checks in console.c and in the Linux ioctl are each a line of that test.
+#
+# Target source: kernel/abi/files/tty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/tty.c scripts/dev/cases/abi-tty-revoke.txt
+
+### a hangup revokes nothing
+--- old
+        (void)vibeos_file_revoke_session(&vibeos_fops_console, session);
++++ new
+        (void)0;

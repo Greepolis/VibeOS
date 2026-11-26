@@ -6253,6 +6253,25 @@ static void t_tty_jobs(void) {
            "TIOCNOTTY gives it up");
     (void)t_took(me, VIBEOS_SIGHUP);
     (void)t_took(me, VIBEOS_SIGCONT);
+
+    /* H-045: the end of a session revokes the console descriptions it opened,
+     * as Linux's vhangup does - and only those. A process left behind by a
+     * logout read the next Password: prompt. */
+    {
+        long mine = SYS2(2, ustr("/dev/console"), 2);
+        uint64_t b = kf_ualloc(4);
+
+        expect(mine >= 0 && SYS3(1, (uint64_t)mine, ustr("x"), 1) == 1, "the session opens the console");
+        vibeos_tty_set_session(ks_id(me)->sid);
+        vibeos_tty_session_ended(ks_id(me)->sid);
+        expect(SYS3(0, (uint64_t)mine, b, 1) == 0 && SYS3(1, (uint64_t)mine, ustr("x"), 1) == -VIBEOS_EIO &&
+                   SYS3(16, (uint64_t)mine, LINUX_TCGETS, kf_ualloc(64)) == -VIBEOS_EIO,
+               "its end revokes what it opened: end of file, EIO to a write and an ioctl");
+        expect(SYS3(1, 1, ustr("y"), 1) == 1, "and leaves the description the kernel opened at boot alone");
+        (void)SYS1(3, (uint64_t)mine);
+        (void)t_took(me, VIBEOS_SIGHUP);
+        (void)t_took(me, VIBEOS_SIGCONT);
+    }
     vibeos_tty_reset();
     ks_set_foreground_pgid(0);
 }

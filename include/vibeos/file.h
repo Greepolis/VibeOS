@@ -161,6 +161,13 @@ struct vibeos_file {
     int pipe_write;
     uint32_t proc_pid;            /* a pidfd: the process, and its slot's     */
     uint32_t proc_seq;            /* tenancy when the description was made    */
+    /* The console opened by a user process: the session it was opened in,
+     * and whether that session's end revoked it (H-045). A revoked
+     * description reads end of file and is refused a write, as Linux's
+     * vhangup leaves one - so a process left behind by a logout cannot read
+     * the next person's password or print a false prompt. */
+    uint32_t tty_sid;
+    volatile uint32_t revoked;
     uint32_t rdev;                /* a character device: which (devfs.h)      */
     /* socket: its index and the tenancy it was opened on (M-020) */
     int sock;
@@ -255,6 +262,11 @@ void vibeos_file_reset(void);   /* boot and tests: every description free */
 /* A new description with one reference, every type field in its empty state
  * (no pipe, no socket), or 0 when the pool is exhausted. */
 vibeos_file_t *vibeos_file_alloc(const vibeos_file_ops_t *ops, uint32_t flags);
+
+/* Revoke every live description of type `ops` opened in session `sid`
+ * (H-045): what a session's end does to the terminal it held. Returns how
+ * many. */
+uint32_t vibeos_file_revoke_session(const vibeos_file_ops_t *ops, uint32_t sid);
 
 /* One more reference - a descriptor duplicated, a table copied at fork. */
 void vibeos_file_get(vibeos_file_t *f);

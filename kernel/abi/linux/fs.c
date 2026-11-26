@@ -2391,6 +2391,15 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
     if (!f) {
         return -VIBEOS_EBADF;
     }
+    /* A console description its session's end revoked answers nothing but
+     * EIO (H-045), the terminal's requests included - which this layer
+     * serves itself, past the description's own ioctl. Close-on-exec and
+     * non-blocking stay the descriptor's own business, as on Linux. */
+    if (f->ops == &vibeos_fops_console && __atomic_load_n(&f->revoked, __ATOMIC_ACQUIRE) != 0u &&
+        r32 != LINUX_FIOCLEX && r32 != LINUX_FIONCLEX && r32 != LINUX_FIONBIO) {
+        vibeos_file_put(f);
+        return -VIBEOS_EIO;
+    }
     switch (r32) {
         case LINUX_FIOCLEX:
         case LINUX_FIONCLEX:

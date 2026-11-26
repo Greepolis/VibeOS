@@ -692,6 +692,14 @@ void vibeos_term_hangup(vibeos_term_t *t) {
     if (session == 0u) {
         return;
     }
+    /* The console's descriptions that session opened are its no longer
+     * (H-045): a process it left behind - `setsid cat &`, signals ignored -
+     * kept reading the console after the logout, the next Password: prompt
+     * included. Linux's vhangup; here only what the session itself opened,
+     * so init's and login's own descriptions stay theirs. */
+    if (t == vibeos_tty_console()) {
+        (void)vibeos_file_revoke_session(&vibeos_fops_console, session);
+    }
     ks_lock(ks_sched_lock(), __func__);
     fg = tty_fg(t);
     tty_send_group(fg, VIBEOS_SIGHUP);

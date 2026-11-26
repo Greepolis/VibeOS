@@ -24,6 +24,7 @@
 #include <sys/ioctl.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -367,7 +368,32 @@ static void become(const account_t *a) {
     char *argv[2], *none[1] = {0};
 
     set_signals(SIG_DFL);
-    if (setsid() < 0 || ioctl(0, TIOCSCTTY, 1) != 0) {
+    if (setsid() < 0) {
+        say("login: cannot give the session its terminal\n");
+        _exit(1);
+    }
+    /* The console's descriptions for the session, opened now that it is a
+     * session: its end revokes exactly these (H-045), so nothing it leaves
+     * behind can read the next login, and login's own stay usable. Only for
+     * the console, which is what the revocation covers, and asked by the
+     * device rather than by name: ttyname sent a pseudo-terminal's session to
+     * the console in the boot's LOGINT. */
+    {
+        struct stat st;
+
+        if (fstat(0, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == makedev(5, 1)) {
+            int fd = open("/dev/console", O_RDWR | O_NOCTTY);
+
+            if (fd < 0 || dup2(fd, 0) < 0 || dup2(fd, 1) < 0 || dup2(fd, 2) < 0) {
+                say("login: cannot open the terminal for the session\n");
+                _exit(1);
+            }
+            if (fd > 2) {
+                close(fd);
+            }
+        }
+    }
+    if (ioctl(0, TIOCSCTTY, 1) != 0) {
         say("login: cannot give the session its terminal\n");
         _exit(1);
     }
@@ -446,6 +472,10 @@ int main(void) {
             (void)tcsetattr(0, TCSAFLUSH, &g_sane);
         }
         say("vibeos login: ");
+        /* End of file ends login, as on Linux: a closed terminal is the end
+         * of it. Ctrl+D at the prompt is end of file too, and init starts
+         * login again (respawn, M-153) - before that it was the end of the
+         * console's logins. */
         if (!read_line(name, sizeof(name))) {
             return 0;
         }

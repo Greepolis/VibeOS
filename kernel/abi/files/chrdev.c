@@ -181,6 +181,12 @@ vibeos_file_t *vibeos_open_chrdev(uint32_t rdev, uint32_t flags, long *err) {
         return 0;
     }
     f->rdev = rdev;
+    /* The console, opened by a user process, belongs to that process's
+     * session: the session's end revokes it (H-045). One the kernel opened -
+     * init's, at boot - belongs to nobody's. */
+    if (ops == &vibeos_fops_console && ks_current() >= 0 && ks_id(ks_current())->is_user) {
+        f->tty_sid = ks_id(ks_current())->sid;
+    }
     *err = 0;
     return f;
 }
