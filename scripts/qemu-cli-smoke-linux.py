@@ -3238,11 +3238,15 @@ def main():
             if dm is None or int(dm.group(1), 16) == 0:
                 problems.append("exec_deferred_no_bss")
             # An image's file pages left to the fault (S7 step 2): some must be
-            # deferred - every native program is in the high window - and some
-            # must then be faulted in, or nothing ran that way.
+            # deferred and some then faulted in, or nothing ran that way. Only
+            # FinalCommander is a big PIE in the high window today, so this is
+            # asked where it is staged, as fcmd_failed is: the first version
+            # asked every boot, and every CI boot - which has no corpus - went
+            # red with a counter that had nothing to count.
             fm = re.search(r"pages_file_deferred=0x([0-9a-f]+) pages_file_faulted=0x([0-9a-f]+)", text)
-            if fm is None or int(fm.group(1), 16) == 0 or int(fm.group(2), 16) == 0:
-                problems.append("exec_file_pages_not_deferred")
+            if disk_img and os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "FCMD.ELF")):
+                if fm is None or int(fm.group(1), 16) == 0 or int(fm.group(2), 16) == 0:
+                    problems.append("exec_file_pages_not_deferred")
 
             # Every resident cache page still holds what its file holds.
             #
