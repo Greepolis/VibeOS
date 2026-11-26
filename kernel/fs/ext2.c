@@ -151,23 +151,41 @@ static void ext2_cache_put(uint32_t *seq, uint32_t *slot_key, uint32_t key, uint
 
 static int ext2_mount_once(vibeos_ext2_t *fs, vibeos_blockcache_t *cache, uint64_t part_lba, int *recover);
 
-int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
-                      uint64_t part_lba) {
+static int ext2_fits_partition(const vibeos_ext2_t *fs, uint64_t sectors);
+
+int vibeos_ext2_mount_within(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
+                             uint64_t part_lba, uint64_t sectors) {
     int recover = 0;
 
     if (ext2_mount_once(fs, cache, part_lba, &recover) != 0) {
+        return -1;
+    }
+    /* Before anything is written (H-043): the replay below writes the
+     * journal's blocks where its tags say, and is bounded only by the
+     * volume's own blocks_count. M-140 asked this after the mount, which was
+     * after the replay. */
+    if (!ext2_fits_partition(fs, sectors)) {
+        fs->mounted = 0;
         return -1;
     }
     if (!recover) {
         return 0;
     }
     /* Replayed, the volume is mounted again from its superblock as the
-     * journal left it; one that still says RECOVER after that is refused. */
-    if (ext4_j_recover(fs) != 0 || ext2_mount_once(fs, cache, part_lba, &recover) != 0 || recover) {
+     * journal left it; one that still says RECOVER after that is refused,
+     * and so is one that the replay made claim more than its partition. */
+    fs->replays++;
+    if (ext4_j_recover(fs) != 0 || ext2_mount_once(fs, cache, part_lba, &recover) != 0 || recover ||
+        !ext2_fits_partition(fs, sectors)) {
         fs->mounted = 0;
         return -1;
     }
     return 0;
+}
+
+int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
+                      uint64_t part_lba) {
+    return vibeos_ext2_mount_within(fs, cache, part_lba, 0u);
 }
 
 static int ext2_mount_once(vibeos_ext2_t *fs, vibeos_blockcache_t *cache, uint64_t part_lba, int *recover) {
@@ -1378,11 +1396,7 @@ static int ext2_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
 {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)state;
 
-    if (fs == 0 || vibeos_ext2_mount(fs, bc, first_lba) != 0) {
-        return -1;
-    }
-    if (!ext2_fits_partition(fs, sectors)) {
-        fs->mounted = 0;
+    if (fs == 0 || vibeos_ext2_mount_within(fs, bc, first_lba, sectors) != 0) {
         return -1;
     }
     /* Under its own name only: a volume with extents or 64-bit numbers is
@@ -1400,11 +1414,7 @@ static int ext4_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
 {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)state;
 
-    if (fs == 0 || vibeos_ext2_mount(fs, bc, first_lba) != 0) {
-        return -1;
-    }
-    if (!ext2_fits_partition(fs, sectors)) {
-        fs->mounted = 0;
+    if (fs == 0 || vibeos_ext2_mount_within(fs, bc, first_lba, sectors) != 0) {
         return -1;
     }
     /* The writer decides here, once, whether this volume is one it keeps true:

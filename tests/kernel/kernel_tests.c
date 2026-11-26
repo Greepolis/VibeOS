@@ -7580,6 +7580,30 @@ static int test_ext2_partition_bound(void) {
         printf("FAIL:ext2 a volume that fits its partition exactly was refused\n");
         return -1;
     }
+    /* H-043: a volume whose journal needs replaying is measured against its
+     * partition before the replay, which writes wherever the journal's tags
+     * say. Revision 1, so that it has feature words, with RECOVER set: one
+     * sector short, it is refused without a replay being begun. */
+    {
+        uint8_t *sb = g_e2 + E2_BLOCK;
+
+        e2_w32(sb + 76, 1u);          /* revision 1 */
+        e2_w16(sb + 88, 128u);        /* inode size */
+        e2_w32(sb + 0x60, 0x0004u);   /* INCOMPAT_RECOVER */
+        vibeos_blockcache_invalidate(&bc);
+        memset(&state, 0, sizeof(state));
+        if (vibeos_ext2_fs_driver()->mount(&mnt, &bc, 0, sectors - 1u, &state) == 0 || state.replays != 0u) {
+            printf("FAIL:ext2 a volume larger than its partition had its journal replayed (replays=%u)\n",
+                   state.replays);
+            return -1;
+        }
+        memset(&state, 0, sizeof(state));
+        (void)vibeos_ext2_fs_driver()->mount(&mnt, &bc, 0, sectors, &state);
+        if (state.replays != 1u) {
+            printf("FAIL:ext2 a volume that fits and says RECOVER was not replayed\n");
+            return -1;
+        }
+    }
     return 0;
 }
 

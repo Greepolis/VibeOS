@@ -1,0 +1,26 @@
+# A volume is measured against its partition before its journal is replayed
+# (H-043). The replay writes where the journal's tags say, bounded only by the
+# volume's own blocks_count, so a check made after it let a volume that claims
+# more than its partition write into the neighbour first. Proved by
+# test_ext2_partition_bound in tests/kernel/kernel_tests.c, which counts the
+# replays a refused mount began.
+#
+#  1. the partition is asked only after the replay. Expect "a volume larger
+#     than its partition had its journal replayed".
+#
+# Target source: kernel/fs/ext2.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/fs-ext2-replay-bound.txt
+
+### the partition is asked only after the replay
+--- old
+    if (!ext2_fits_partition(fs, sectors)) {
+        fs->mounted = 0;
+        return -1;
+    }
+    if (!recover) {
+        return 0;
+    }
++++ new
+    if (!recover) {
+        return !ext2_fits_partition(fs, sectors) ? (fs->mounted = 0, -1) : 0;
+    }

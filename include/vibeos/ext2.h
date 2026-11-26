@@ -56,6 +56,7 @@ typedef struct {
     uint32_t csum_seed;           /* metadata_csum's seed: crc32c of the uuid, or the stored seed */
     int csum;                     /* metadata_csum: every metadata read is checked */
     int mounted;
+    uint32_t replays;             /* journal replays a mount began (H-043's test) */
     /* What sequential reads ask for again and again (#108, #115): the inode of
      * the file being read - the regular-file layer reads 4 KiB at a time and
      * each call fetched it anew - and the last pointer block a block number
@@ -226,6 +227,14 @@ uint32_t vibeos_ext2_crc32c(uint32_t crc, const void *data, uint32_t len);
  * wrong place, which is worse than refusing to mount. */
 int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
                       uint64_t part_lba);
+
+/* The same, inside a partition of `sectors` sectors (0: not known). A volume
+ * that claims more than its partition is refused before its journal is
+ * replayed - the replay writes where the journal's tags say, bounded by the
+ * volume's own claim, so asking afterwards let a lying volume write into its
+ * neighbour first (H-043). */
+int vibeos_ext2_mount_within(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
+                             uint64_t part_lba, uint64_t sectors);
 
 /* The operations table, for vibeos_fs_mount. */
 const vibeos_fs_ops_t *vibeos_ext2_ops(void);
