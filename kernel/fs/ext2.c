@@ -423,8 +423,8 @@ int ext2_read_inode(vibeos_ext2_t *fs, uint32_t ino, uint8_t *out) {
     uint32_t group, index, offset, per_block, i;
     uint64_t table_block;
 
-    if (ino == 0u) {
-        return -1;   /* inode zero does not exist; it means "no entry" */
+    if (ino == 0u || ino == EXT2_DIR_ERROR) {
+        return -1;   /* inode zero does not exist; it means "no entry" - nor the search's error */
     }
     /* The whole buffer, a constant: the bytes past a 128-byte inode are zeros
      * the read below writes, so a hit returns exactly what a miss would. */
@@ -557,14 +557,26 @@ static int ext2_map_extent(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode
             return -1;
         }
         child = rd32(e + 4u) | ((uint64_t)rd16(e + 8u) << 32);
-        for (i = 1; i < entries; i++) {
-            if (extent_entry(fs, root, blk, i, e) != 0) {
-                return -1;
+        {
+            uint32_t prev = rd32(e);
+
+            for (i = 1; i < entries; i++) {
+                if (extent_entry(fs, root, blk, i, e) != 0) {
+                    return -1;
+                }
+                /* In order, each after the last, as Linux checks them
+                 * (ext4_valid_extent_entries): a search over an index out of
+                 * order finds the wrong child (M-144). */
+                if (rd32(e) <= prev) {
+                    vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, ino);
+                    return -1;
+                }
+                prev = rd32(e);
+                if (rd32(e) > n) {
+                    break;
+                }
+                child = rd32(e + 4u) | ((uint64_t)rd16(e + 8u) << 32);
             }
-            if (rd32(e) > n) {
-                break;
-            }
-            child = rd32(e + 4u) | ((uint64_t)rd16(e + 8u) << 32);
         }
         if (child == 0u || child >= fs->blocks_count || ext2_read_part(fs, child, 0u, hdr, 12u) != 0) {
             return -1;
@@ -581,6 +593,9 @@ static int ext2_map_extent(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode
             }
         }
     }
+    {
+        uint64_t prev_end = 0;
+
     for (i = 0; i < entries; i++) {
         uint32_t first, len;
 
@@ -589,6 +604,13 @@ static int ext2_map_extent(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode
         }
         first = rd32(e);
         len = rd16(e + 4u);
+        /* A leaf in order and without overlap (M-144): two extents claiming
+         * the same file block answered whichever came first. */
+        if ((uint64_t)first < prev_end) {
+            vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, ino);
+            return -1;
+        }
+        prev_end = (uint64_t)first + (len > 32768u ? len - 32768u : len);
         if (len > 32768u) {
             len -= 32768u;   /* uninitialised: allocated, and reads as zeros */
             if (n >= first && n - first < len) {
@@ -601,6 +623,7 @@ static int ext2_map_extent(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode
             *out = (((uint64_t)rd16(e + 6u) << 32) | rd32(e + 8u)) + (n - first);
             return 0;
         }
+    }
     }
     *out = 0;
     return 0;
@@ -735,6 +758,31 @@ uint32_t ext2_dir_nblocks(const vibeos_ext2_t *fs, uint64_t size) {
     return (uint32_t)n;
 }
 
+/* The blocks to scan of directory `inode`: what its size spans, and no more
+ * than it has been given (i_blocks, sectors of 512 bytes, or blocks with
+ * HUGE_FILE). A corrupt size past the blocks a directory owns describes only
+ * holes, and walking them cost a block lookup each - up to the volume's own
+ * block count, which with ext4 is 2^32 turns in ring 0 (M-141, M-098's
+ * class). A directory kept in its inode (inline data) has no blocks and is not
+ * bounded by them. */
+uint32_t ext2_dir_blocks(const vibeos_ext2_t *fs, const uint8_t *inode) {
+    uint32_t n = ext2_dir_nblocks(fs, ext2_inode_size(inode));
+    uint32_t flags = rd32(inode + 0x20u);
+    uint64_t sectors = rd32(inode + 0x1Cu) | ((uint64_t)rd16(inode + 0x74u) << 32);
+    uint64_t owned;
+
+    if (flags & 0x10000000u) {   /* EXT4_INLINE_DATA_FL */
+        return n;
+    }
+    owned = (flags & 0x40000u)   /* EXT4_HUGE_FILE_FL: counted in blocks */
+                ? sectors
+                : (sectors * VIBEOS_BLOCK_SIZE + fs->block_size - 1u) / fs->block_size;
+    if (owned == 0u) {
+        owned = 1u;   /* a directory always has its first block; a fixture may not count it */
+    }
+    return owned < (uint64_t)n ? (uint32_t)owned : n;
+}
+
 /* One block of directory `ino`, read and, with metadata_csum, checked. A leaf
  * block ends in a twelve-byte entry that names no inode (file type 0xDE) and
  * holds crc32c of everything before it; that entry is skipped by the scan like
@@ -752,8 +800,13 @@ int ext2_dir_block(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *dir, uint64_t
         return 0;
     }
     t = block + fs->block_size - 12u;
-    if (rd32(t) == 0u && rd16(t + 4u) == 12u && t[6] == 0u && t[7] == 0xDEu &&
-        vibeos_ext2_crc32c(ext2_inode_seed(fs, ino, dir), block, fs->block_size - 12u) != rd32(t + 8u)) {
+    if (!(rd32(t) == 0u && rd16(t + 4u) == 12u && t[6] == 0u && t[7] == 0xDEu)) {
+        /* No tail. An htree node has none - but only an indexed directory
+         * has htree nodes: in any other a leaf whose last entry covers the
+         * tail's place is a block whose checksum was never asked (M-144). */
+        return (rd32(dir + 0x20u) & 0x1000u) ? 0 : ext2_csum_bad(phys);
+    }
+    if (vibeos_ext2_crc32c(ext2_inode_seed(fs, ino, dir), block, fs->block_size - 12u) != rd32(t + 8u)) {
         return ext2_csum_bad(phys);
     }
     return 0;
@@ -777,7 +830,9 @@ static int dir_block_ok(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *dir, uin
         return -1;
     }
     if (!(rd32(tail) == 0u && rd16(tail + 4u) == 12u && tail[6] == 0u && tail[7] == 0xDEu)) {
-        return 0;   /* an htree node: its checksum is elsewhere (ext2_dir_block) */
+        /* An htree node, whose checksum is elsewhere (ext2_dir_block) - in an
+         * indexed directory. In any other, a leaf with no tail (M-144). */
+        return (rd32(dir + 0x20u) & 0x1000u) ? 0 : ext2_csum_bad(phys);
     }
     crc = ext2_inode_seed(fs, ino, dir);
     end = fs->block_size - 12u;
@@ -854,8 +909,7 @@ int ext2_name_match(const vibeos_ext2_t *fs, const uint8_t *dir, const uint8_t *
 uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
                               const char *name, uint32_t name_len) {
     uint8_t got[255];
-    uint64_t size = ext2_inode_size(dir);
-    uint32_t nblocks = ext2_dir_nblocks(fs, size);
+    uint32_t nblocks = ext2_dir_blocks(fs, dir);
     uint32_t bi, found;
 
     if (name_len == 0u || name_len > sizeof(got)) {
@@ -871,16 +925,21 @@ uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
         uint32_t off = 0, ino, reclen, nlen;
         int r;
 
-        if (ext2_map_block(fs, dir_ino, dir, bi, &phys) != 0 || phys == 0u) {
+        /* A hole is a block with nothing in it; a block that cannot be mapped
+         * or read is not "no such name" (M-144). */
+        if (ext2_map_block(fs, dir_ino, dir, bi, &phys) != 0) {
+            return EXT2_DIR_ERROR;
+        }
+        if (phys == 0u) {
             continue;
         }
         if (dir_block_ok(fs, dir_ino, dir, phys) != 0) {
-            return 0;
+            return EXT2_DIR_ERROR;
         }
         while ((r = dir_entry_at(fs, phys, off, &ino, &reclen, &nlen)) == 1) {
             if (ino != 0u && (nlen == name_len || fs->casefold) && nlen <= sizeof(got)) {
                 if (ext2_read_part(fs, phys, off + 8u, got, nlen) != 0) {
-                    return 0;
+                    return EXT2_DIR_ERROR;
                 }
                 if (ext2_name_match(fs, dir, got, nlen, name, name_len)) {
                     return ino;
@@ -889,7 +948,7 @@ uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir,
             off += reclen;
         }
         if (r < 0) {
-            return 0;
+            return EXT2_DIR_ERROR;
         }
     }
     return 0;
@@ -1308,7 +1367,6 @@ int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
                         uint32_t name_cap, uint64_t *out_size, int *out_is_dir) {
     vibeos_ext2_t *fs = (vibeos_ext2_t *)fsv;
     uint8_t dir[EXT2_MAX_INODE_SIZE];
-    uint64_t size;
     uint32_t nblocks, bi, seen = 0, dir_ino;
 
     if (!fs || !fs->mounted || name_cap == 0u || (dir_ino = ext2_resolve(fs, path, dir)) == 0u) {
@@ -1317,14 +1375,18 @@ int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
     if (!ext2_inode_is_dir(dir)) {
         return -1;
     }
-    size = ext2_inode_size(dir);
-    nblocks = ext2_dir_nblocks(fs, size);
+    nblocks = ext2_dir_blocks(fs, dir);
     for (bi = 0; bi < nblocks; bi++) {
         uint64_t phys = 0;
         uint32_t off = 0, ino, reclen, nlen;
         int r;
 
-        if (ext2_map_block(fs, dir_ino, dir, bi, &phys) != 0 || phys == 0u) {
+        /* An unmappable block ends the listing with an error rather than a
+         * shorter list that looks complete (M-144). */
+        if (ext2_map_block(fs, dir_ino, dir, bi, &phys) != 0) {
+            return -1;
+        }
+        if (phys == 0u) {
             continue;
         }
         if (dir_block_ok(fs, dir_ino, dir, phys) != 0) {

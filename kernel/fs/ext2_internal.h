@@ -55,6 +55,13 @@ int ext2_map_block(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint32
 uint64_t ext2_inode_size(const uint8_t *inode);
 int ext2_inode_is_dir(const uint8_t *inode);
 uint32_t ext2_dir_nblocks(const vibeos_ext2_t *fs, uint64_t size);
+uint32_t ext2_dir_blocks(const vibeos_ext2_t *fs, const uint8_t *inode);
+
+/* What ext2_dir_find answers when a block of the directory could not be read
+ * (M-144): not "no such name", which let a create make a second entry of a
+ * name that was there. Every caller takes it as "there", which is the
+ * careful side - EEXIST to a create, and no inode of this number reads. */
+#define EXT2_DIR_ERROR 0xFFFFFFFFu
 int ext2_dir_block(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *dir, uint64_t phys, uint8_t *block);
 uint32_t ext2_dir_find(vibeos_ext2_t *fs, uint32_t dir_ino, const uint8_t *dir, const char *name,
                        uint32_t name_len);

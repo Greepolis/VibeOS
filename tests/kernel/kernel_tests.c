@@ -7531,6 +7531,8 @@ static int test_ext2_group_fits_bitmap(void) {
 
 /* Review v9, points 1-3, on the ext2/ext4 reader. */
 uint32_t ext2_dir_nblocks(const vibeos_ext2_t *fs, uint64_t size);
+uint32_t ext2_dir_blocks(const vibeos_ext2_t *fs, const uint8_t *inode);
+int ext2_map_block(vibeos_ext2_t *fs, uint32_t ino, const uint8_t *inode, uint32_t n, uint64_t *out);
 const vibeos_fs_driver_t *vibeos_ext2_fs_driver(void);
 
 /* Point 1: an index past the triple-indirect tree is refused before anything
@@ -7623,8 +7625,42 @@ static int test_ext2_partition_bound(void) {
 
 /* Point 3: a directory count of 2^32 blocks, possible once blocks_count is
  * 64-bit, does not become 0 - a directory that scans as empty. */
+/* M-144: an extent leaf out of order or overlapping is refused, as Linux's
+ * ext4_valid_extent_entries refuses it: two extents claiming one file block
+ * answered whichever came first. [0,2) at block 5 and [1,2) at block 7 overlap;
+ * block 5 of the file, which neither covers, makes the search read both. */
+static int test_ext2_extent_overlap(void) {
+    vibeos_ext2_t fs;
+    uint8_t ino[256];
+    uint64_t out = 1;
+
+    memset(&fs, 0, sizeof(fs));
+    fs.block_size = 1024u;
+    fs.blocks_count = 1000u;
+    fs.incompat = 0x0040u;                                     /* extents */
+    memset(ino, 0, sizeof(ino));
+    ino[0] = 0xA4; ino[1] = 0x81;                              /* a regular file */
+    ino[0x20 + 2] = 0x08;                                      /* EXT4_EXTENTS_FL */
+    ino[40] = 0x0A; ino[41] = 0xF3;                            /* the header's magic */
+    ino[42] = 2;                                               /* two entries */
+    ino[44] = 4;                                               /* of four, depth 0 */
+    ino[52] = 0; ino[56] = 2; ino[60] = 5;                     /* [0,2) at 5 */
+    ino[64] = 1; ino[68] = 1; ino[72] = 7;                     /* [1,2) at 7 */
+    if (ext2_map_block(&fs, 11u, ino, 5u, &out) != -1) {
+        printf("FAIL:ext2 overlapping extents were read, block 5 mapped to %llu\n", (unsigned long long)out);
+        return -1;
+    }
+    ino[64] = 2;                                               /* [2,3): in order */
+    if (ext2_map_block(&fs, 11u, ino, 5u, &out) != 0 || out != 0u) {
+        printf("FAIL:ext2 extents in order were refused\n");
+        return -1;
+    }
+    return 0;
+}
+
 static int test_ext2_dir_nblocks_64(void) {
     vibeos_ext2_t fs;
+    uint8_t ino[256];
 
     memset(&fs, 0, sizeof(fs));
     fs.block_size = 1024u;
@@ -7632,6 +7668,18 @@ static int test_ext2_dir_nblocks_64(void) {
     if (ext2_dir_nblocks(&fs, (1ull << 32) * 1024u) != 0xFFFFFFFFu) {
         printf("FAIL:ext2 a directory of 2^32 blocks counted as %u\n",
                ext2_dir_nblocks(&fs, (1ull << 32) * 1024u));
+        return -1;
+    }
+    /* M-141: a directory whose size says 2^40 bytes and which owns two
+     * sectors - one 1 KiB block - is scanned for one block, not for the
+     * volume's 2^32: what its size says beyond what it owns is holes. */
+    memset(ino, 0, sizeof(ino));
+    ino[0] = 0xED;
+    ino[1] = 0x41;                  /* a directory */
+    ino[0x6C + 1] = 1;              /* i_size_high: 2^40 bytes */
+    ino[0x1C] = 2;                  /* i_blocks: two sectors */
+    if (ext2_dir_blocks(&fs, ino) != 1u) {
+        printf("FAIL:ext2 a directory owning one block is scanned for %u\n", ext2_dir_blocks(&fs, ino));
         return -1;
     }
     return 0;
@@ -10831,6 +10879,7 @@ int main(void) {
     RUN_TEST(test_ext2_group_fits_bitmap);
     RUN_TEST(test_ext2_partition_bound);
     RUN_TEST(test_ext2_dir_nblocks_64);
+    RUN_TEST(test_ext2_extent_overlap);
     RUN_TEST(test_ext2_block_pointer_outside_volume);
     RUN_TEST(test_iso_lookup_and_read);
     RUN_TEST(test_iso_dir_length_wrap);
