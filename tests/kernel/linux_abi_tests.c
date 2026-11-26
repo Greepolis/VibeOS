@@ -7917,7 +7917,14 @@ static void t_credentials(void) {
         user = become_child();
         expect(SYS3(117, 1000, 1000, 1000) == 0 && SYS3(59, ustr("/tmp/c/dyn"), 0, 0) == -VIBEOS_EACCES,
                "a program whose interpreter the user may not run is EACCES");
+        /* security.* is changed by the superuser only (M-155), as Linux's
+         * cap_inode_setxattr has it with no module; the question comes
+         * before the filesystem, whose answer for root is EOPNOTSUPP here. */
+        expect(sys(188, ustr("/tmp/c/dyn"), ustr("security.selinux"), u, 4, 0, 0, 0) == -VIBEOS_EPERM,
+               "a user may not set a security.* attribute");
         kf_set_current(root);
+        expect(sys(188, ustr("/tmp/c/dyn"), ustr("security.selinux"), u, 4, 0, 0, 0) != -VIBEOS_EPERM,
+               "the superuser is asked nothing more");
     }
 
     /* Borrowed privileges: real 1000, effective root, and the way back kept. */

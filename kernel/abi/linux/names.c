@@ -1004,6 +1004,13 @@ static long linux_xattr_may(const vibeos_fs_node_t *node, uint32_t index, int wr
         }
         return linux_may(node, write ? VIBEOS_MAY_WRITE : VIBEOS_MAY_READ);
     }
+    /* security.*: with no module, Linux's own rule (cap_inode_setxattr) -
+     * anybody reads it, and changing it takes CAP_SYS_ADMIN, which is the
+     * superuser here. It was let through to anybody (M-155): inert while
+     * nothing reads these names, and wrong the day something does. */
+    if (index == VIBEOS_XATTR_SECURITY && write && c.euid != 0u) {
+        return -VIBEOS_EPERM;
+    }
     return 0;
 }
 
