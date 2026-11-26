@@ -53,7 +53,10 @@ static vibeos_fs_node_t node_of(const vibeos_file_t *f) {
  *
  * A page, not a small stack buffer: the FAT reader walks the cluster chain from
  * the start on every call, so small chunks make a large read quadratic, and a
- * kernel stack here is 8 KiB or less. If no page is free the read still works,
+ * kernel stack is 16 KiB (VIBEOS_HW_KSTACK_PAGES). Measured with -fstack-usage
+ * on 2026-11-26 (M-142): this function's frame is 704 bytes, and the largest
+ * a filesystem below it adds is ext2_map_indirect's 4192 - about 7 KiB for the
+ * whole read. If no page is free the read still works,
  * 512 bytes at a time. */
 static long regular_pread(vibeos_file_t *f, uint64_t buf, uint64_t len, uint64_t off) {
     vibeos_fs_node_t node = node_of(f);

@@ -6,16 +6,15 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-65 open in 2 registers.
+64 open in 2 registers.
 
-## [Review findings tracker](implementation_progress/review_findings_tracker.md) - 5
+## [Review findings tracker](implementation_progress/review_findings_tracker.md) - 4
 
 | ID | What | Status |
 |---|---|---|
 | M-068 | The kernel announced "all user tasks retired" and sampled the frame accounting while svc-reclaim was still running - thrashing at the minimum with swap full, ... | open (internal) |
 | M-070 | One boot in 24 with the reclaim load: svc-reclaim - single-threaded, no fork - killed by a not-present read in a block it had not yet checked, with ... | open (internal) |
 | M-118 | (internal) The corpus workload bb-ps saw its parent - the shell, blocked in wait4 for `ps` - as `R` where Linux and every other boot say `S`: ... | open |
-| M-142 | Kernel stack depth (agent, uncertain): `ext2_read_inode` and `ext2_inode_table` each hold a 4 KiB block and nest - about 12.6 KB of locals on a 16 KiB stack ... | open: measure with `-fstack-usage` before changing anything |
 | M-146 | One boot of 3d735038 wedged on 2026-11-21 in `userland_running`, right after `svc-press` stopped, with a game loading the host: CPU 0 spinning in ... | open |
 
 ## [Windows personality: open items](implementation_progress/windows_open_items.md) - 60
