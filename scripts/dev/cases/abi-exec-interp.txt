@@ -1,0 +1,17 @@
+# An ELF's own interpreter (PT_INTERP) is asked what the program is (H-044):
+# found as the caller, executable by the caller, not on a noexec mount. Proved
+# by the host test "a program whose interpreter the user may not run is
+# EACCES" in tests/kernel/linux_abi_tests.c, which runs as uid 1000 a program
+# whose interpreter is root's 0700 file. Possible since the fake kernel reads a
+# program through the mount table, as the machine does.
+#
+#  1. the interpreter is not asked. Expect that test.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-exec-interp.txt
+
+### the interpreter is not asked
+--- old
+        if (probe.has_interp) {
++++ new
+        if (0 && probe.has_interp) {

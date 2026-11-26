@@ -7842,6 +7842,48 @@ static void t_credentials(void) {
     kf_set_current(root);
     expect(SYS2(62, (uint64_t)ks_id(user)->pid, 0) == 0, "root may signal anybody");
 
+    /* An ELF's own interpreter is asked what the program is (H-044): a
+     * program anybody may run, naming as its interpreter a file only root may
+     * run, does not run for a user. The loader reads the interpreter with the
+     * kernel's authority, so before the fix this went on to load it. */
+    {
+        uint8_t elf[200];
+        uint64_t u = kf_ualloc(sizeof(elf));
+        long fd;
+
+        memset(elf, 0, sizeof(elf));
+        elf[0] = 0x7f; elf[1] = 'E'; elf[2] = 'L'; elf[3] = 'F';
+        elf[4] = 2; elf[5] = 1; elf[6] = 1;
+        elf[16] = 3;                      /* ET_DYN */
+        elf[18] = 0x3E;                   /* x86-64 */
+        elf[20] = 1;
+        elf[24] = 0x10;                   /* entry 0x10, inside the one segment */
+        elf[32] = 64;                     /* phoff */
+        elf[52] = 64;                     /* ehsize */
+        elf[54] = 56;                     /* phentsize */
+        elf[56] = 2;                      /* phnum */
+        /* PT_INTERP, at 176, "/tmp/c/ld" */
+        elf[64] = 3; elf[68] = 4;
+        elf[72] = 176; elf[80] = 176; elf[88] = 176;
+        elf[96] = 10; elf[104] = 10; elf[112] = 1;
+        /* PT_LOAD of the whole file */
+        elf[120] = 1; elf[124] = 5;
+        elf[152] = 200; elf[160] = 200; elf[169] = 0x10;
+        memcpy(elf + 176, "/tmp/c/ld", 10);
+        memcpy(kf_uptr(u), elf, sizeof(elf));
+        kf_set_current(root);
+        fd = tmp_open("/tmp/c/dyn", 0x241, 0755);
+        expect(fd >= 0 && SYS3(1, (uint64_t)fd, u, sizeof(elf)) == (long)sizeof(elf), "a dynamic program written");
+        (void)SYS1(3, (uint64_t)fd);
+        (void)SYS2(90, ustr("/tmp/c/dyn"), 0755);
+        tmp_put("/tmp/c/ld", "root's own loader");
+        (void)SYS2(90, ustr("/tmp/c/ld"), 0700);
+        user = become_child();
+        expect(SYS3(117, 1000, 1000, 1000) == 0 && SYS3(59, ustr("/tmp/c/dyn"), 0, 0) == -VIBEOS_EACCES,
+               "a program whose interpreter the user may not run is EACCES");
+        kf_set_current(root);
+    }
+
     /* Borrowed privileges: real 1000, effective root, and the way back kept. */
     user = become_child();
     expect(SYS3(117, 1000, 1000, 0) == 0 && SYS0(102) == 1000 && SYS0(107) == 1000 &&

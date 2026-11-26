@@ -12,6 +12,7 @@
  * Lifted out of arch_hw.c (C4 stage 3), moved as it was. */
 
 #include "linux_internal.h"
+#include "vibeos/elf.h"
 #include "vibeos/script.h"
 
 static vibeos_lock_t g_exec_lock;
@@ -1086,6 +1087,26 @@ static long linux_script_argv(linux_argv_t *out, const char *interp, const char 
     return 0;
 }
 
+/* The staged part of a program, for the ELF parser's one read past the
+ * headers: the interpreter's path. */
+typedef struct {
+    const uint8_t *image;
+    uint64_t avail;
+} linux_staged_t;
+
+static int linux_staged_read(void *ctx, uint64_t off, uint32_t len, void *buf) {
+    const linux_staged_t *st = (const linux_staged_t *)ctx;
+    uint32_t i;
+
+    if (off > st->avail || (uint64_t)len > st->avail - off) {
+        return -1;
+    }
+    for (i = 0; i < len; i++) {
+        ((uint8_t *)buf)[i] = st->image[off + i];
+    }
+    return 0;
+}
+
 /* Under g_exec_lock, with the file staged. 0: it is a program, load it.
  * 1: it is a script, and `path` and `argv` now name its interpreter.
  * Negative: what execve returns. */
@@ -1101,6 +1122,43 @@ static long linux_exec_script(char *path, const char *name, const char *const **
     int how;
 
     if (n >= 4u && image[0] == 0x7f && image[1] == 'E' && image[2] == 'L' && image[3] == 'F') {
+        /* An ELF's own interpreter (PT_INTERP) is asked what the program and a
+         * #! interpreter are asked: found as the caller, executable by the
+         * caller, not on a noexec mount. The loader reads it with the kernel's
+         * authority, so a program naming a root 0700 file, or one on a noexec
+         * mount, as its interpreter had it mapped and run (H-044, M-105's
+         * class). The parse is the loader's own, with no window: only the
+         * path is wanted here, and a file whose headers cannot be read for it
+         * is refused rather than let through unasked. */
+        static vibeos_elf_image_t probe;
+        linux_staged_t st;
+        uint32_t cap = 0;
+        uint64_t ext = 0;
+
+        /* `n` is the file's size, and only the staging buffer's worth of it
+         * is here: the headers must lie inside that, and the interpreter's
+         * path is read through a reader that refuses past it. */
+        (void)ks_exec_buffer(&cap);
+        st.image = (const uint8_t *)image;
+        st.avail = n < cap ? n : cap;
+        if (vibeos_elf_header_extent(image, st.avail, &ext) != 0 || ext > st.avail ||
+            vibeos_elf_parse_read(image, n, 0u, 0u, ~(uint64_t)0,
+                                  VIBEOS_ELF_ALLOW_DYN | VIBEOS_ELF_ALLOW_INTERP,
+                                  linux_staged_read, &st, &probe) != VIBEOS_ELF_OK) {
+            return -VIBEOS_ENOEXEC;
+        }
+        if (probe.has_interp) {
+            r = linux_walk_as_caller(probe.interp, &w);
+            if (r == 0 && (!w.exists || w.node.is_dir)) {
+                r = -VIBEOS_ENOENT;
+            }
+            if (r != 0) {
+                return r == -VIBEOS_ENOENT ? -VIBEOS_ENOENT : r;
+            }
+            if (linux_may(&w.node, VIBEOS_MAY_EXEC) != 0 || (vibeos_fs_flags(w.mnt) & VIBEOS_MNT_NOEXEC)) {
+                return -VIBEOS_EACCES;
+            }
+        }
         return 0;
     }
     if (n >= 2u && image[0] == 'M' && image[1] == 'Z') {

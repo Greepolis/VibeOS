@@ -1592,7 +1592,20 @@ static uint8_t g_exec_buf[4096];
 uint8_t *ks_exec_buffer(uint32_t *cap) { *cap = sizeof(g_exec_buf); return g_exec_buf; }
 long ks_read_file_cached(const char *path, void *buf, uint32_t cap, uint32_t *out_id) {
     vibeos_fs_node_t n;
+    vibeos_fsmount_t *mnt = 0;
+    const char *tail = 0;
+
     *out_id = 0;
+    /* Through the mount table, as the machine's reader goes: until H-044 this
+     * read the fake's own volume only, so a program in /tmp could not be
+     * exec'd at all and an exec check there could not be tested. */
+    if (vibeos_fs_resolve(path, &mnt, &tail) == 0 && mnt && tail && path[0] == '/' && path[1] &&
+        vibeos_fs_lookup(mnt, tail, &n) == 0 && !n.is_dir) {
+        uint64_t size = n.size;
+        long got = vibeos_fs_read_at(mnt, &n, 0, buf, (uint32_t)(size < cap ? size : cap));
+
+        return got < 0 ? -1 : (long)size;
+    }
     if (kf_fs_lookup(0, path, &n) != 0) {
         return -1;
     }
