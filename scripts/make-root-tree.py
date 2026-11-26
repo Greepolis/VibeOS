@@ -102,7 +102,8 @@ def busybox_links(out):
 # no stage at which a shell runs as root because nobody asked who was there.
 PRODUCTION_SERVICES = """\
 # Services init starts (user/prog/init.c): <name> <path> <restart_limit> <oneshot> [<arg>]
-login /usr/bin/login 8 0
+# oneshot 2 is respawn: started again whenever it ends cleanly (M-153).
+login /usr/bin/login 8 2
 """
 
 # The accounts (docs/shell/s2.md). The development image's password is

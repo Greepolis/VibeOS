@@ -35,6 +35,7 @@
 #define SYS_execve 59
 #define SYS_exit   60
 #define SYS_wait4  61
+#define SYS_nanosleep 35
 
 static int64_t sys3(int64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
     int64_t ret;
@@ -142,6 +143,13 @@ typedef struct {
      * the soak then had no verdict. A daemon must not have this: it would
      * keep the machine from ever stopping. */
     int bounded;
+    /* Started again whenever it ends cleanly, as getty is (M-153): login
+     * exits zero at end of file - Ctrl+D at its prompt - and a clean stop was
+     * the end of it, leaving the console with no login and, with nothing
+     * else alive, PID 1 with nothing to do. The manifest's fourth field 2.
+     * Last, because the table above fills these by position: placed after
+     * oneshot it moved every field behind it by one. */
+    int respawn;
 } service_t;
 
 /* Each service is exec'd under its own name. argv[0] is chosen by whoever
@@ -155,18 +163,18 @@ static service_t services[] = {
     /* The bring-up workload: everything the boot gate checks runs inside this
      * one, and it ends by exec'ing the shell. A session - when the shell is
      * done, so is the machine. */
-    {"selftest", "/usr/lib/vibeos/test/SELFTEST.ELF", 0, 0, 1, 0, -1, SVC_STOPPED, 0},
+    {"selftest", "/usr/lib/vibeos/test/SELFTEST.ELF", 0, 0, 1, 0, -1, SVC_STOPPED, 0, 0},
     /* Exits zero: a clean stop, which must not be restarted. */
-    {"svc-ok", "/usr/lib/vibeos/test/SVC_OK.ELF", 0, 2, 0, 0, -1, SVC_STOPPED, 0},
+    {"svc-ok", "/usr/lib/vibeos/test/SVC_OK.ELF", 0, 2, 0, 0, -1, SVC_STOPPED, 0, 0},
     /* Fails every time: restarted twice, then marked FAILED and left alone. */
-    {"svc-flap", "/usr/lib/vibeos/test/SVC_FLAP.ELF", 0, 2, 0, 0, -1, SVC_STOPPED, 0},
+    {"svc-flap", "/usr/lib/vibeos/test/SVC_FLAP.ELF", 0, 2, 0, 0, -1, SVC_STOPPED, 0, 0},
     /* Faults instead of exiting. Not restarted: the point is not recovery but
      * that the supervisor is still running to report it, which is only true
      * because the kernel now kills the faulting task instead of halting. */
-    {"svc-crash", "/usr/lib/vibeos/test/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0},
+    {"svc-crash", "/usr/lib/vibeos/test/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0, 0},
     /* Randomised churn with a printed seed. A session, not a daemon: it runs a
      * bounded number of rounds and its exit status is the verdict. */
-    {"svc-stress", "/usr/lib/vibeos/test/SVC_STRS.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 1},
+    {"svc-stress", "/usr/lib/vibeos/test/SVC_STRS.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 1, 0},
     /* A fork storm, on purpose. What it proves is not its own output but that
      * everything after it still works: init can still start something and the
      * shell can still run a command once a program has taken everything it is
@@ -180,8 +188,8 @@ static service_t services[] = {
      * the TLB quarantine (M-061). Both are what a boot now gates by running it.
      * It does not reach the watermarks; svc-reclaim does, run last in the
      * boot's self-test rather than from here so that nothing runs beside it. */
-    {"svc-press", "/usr/lib/vibeos/test/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0},
-    {"svc-bomb", "/usr/lib/vibeos/test/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0},
+    {"svc-press", "/usr/lib/vibeos/test/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0, 0},
+    {"svc-bomb", "/usr/lib/vibeos/test/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED, 0, 0},
 };
 
 /* ---- the manifest on the root ------------------------------------------- */
@@ -280,7 +288,8 @@ static void load_manifest(void) {
         manifest[count].name = tok[0];
         manifest[count].path = tok[1];
         manifest[count].restart_limit = parse_num(tok[2]);
-        manifest[count].oneshot = parse_num(tok[3]) != 0;
+        manifest[count].oneshot = parse_num(tok[3]) == 1;
+        manifest[count].respawn = parse_num(tok[3]) == 2;
         manifest[count].arg = k == 5 ? tok[4] : 0;
         manifest[count].restarts = 0;
         manifest[count].pid = -1;
@@ -383,7 +392,18 @@ int vibeos_main(int argc, char **argv, char **envp) {
             say("SVC_EXIT", svc->name, gone, code);
         }
 
-        if (killed == 0 && (code == 0 || svc->oneshot)) {
+        if (killed == 0 && code == 0 && svc->respawn) {
+            /* A second first, so that one which ends at once - a terminal
+             * that answers nothing but end of file - is not a fork loop. */
+            static const struct {
+                int64_t sec;
+                int64_t nsec;
+            } pause_ts = {1, 0};
+
+            sys3(SYS_nanosleep, (uint64_t)(uintptr_t)&pause_ts, 0, 0);
+            say("SVC_RESPAWN", svc->name, -1, -1);
+            (void)start_service(svc);
+        } else if (killed == 0 && (code == 0 || svc->oneshot)) {
             svc->state = SVC_STOPPED;
             say("SVC_STOPPED", svc->name, -1, -1);
         } else if (svc->restarts < svc->restart_limit) {
