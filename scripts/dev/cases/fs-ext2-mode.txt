@@ -1,0 +1,22 @@
+# The ext2 driver reports what an inode says of who may do what with it
+# (M-143): mode, owners and links, as ext4's node_fill does. Left out, the
+# VFS made up 0644 or 0755 and root. Proved by the read test in
+# tests/kernel/kernel_tests.c, whose "small" is 0600 and 1000's.
+#
+#  1. the mode is not read. Expect "small has mode".
+#  2. the owners are not read. Expect "small has mode ... uid".
+#
+# Target source: kernel/fs/ext2.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/fs-ext2-mode.txt
+
+### the mode is not read
+--- old
+    out->mode = rd16(inode);
++++ new
+    out->mode = 0;
+
+### the owners are not read
+--- old
+    out->uid = rd16(inode + 0x02u) | ((uint32_t)rd16(inode + 0x78u) << 16);
++++ new
+    out->uid = 0;

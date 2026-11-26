@@ -1213,6 +1213,19 @@ int ext2_op_lookup(void *fsv, const char *path, vibeos_fs_node_t *out) {
     out->gen = ext2_inode_gen(inode);
     out->size = ext2_inode_size(inode);
     out->is_dir = ext2_inode_is_dir(inode);
+    /* What the inode says of who may do what with it, as ext4's node_fill
+     * reads it (M-143): left out, the VFS made up 0644 or 0755 and root, so
+     * a root 0600 file was everybody's to read and a FIFO or a symbolic link
+     * looked like a regular file. The high halves of the ids are Linux's
+     * (l_i_uid_high, l_i_gid_high). Times in whole seconds: ext2 keeps no
+     * more. */
+    out->mode = rd16(inode);
+    out->nlink = rd16(inode + 0x1Au);
+    out->uid = rd16(inode + 0x02u) | ((uint32_t)rd16(inode + 0x78u) << 16);
+    out->gid = rd16(inode + 0x18u) | ((uint32_t)rd16(inode + 0x7Au) << 16);
+    out->atime_ns = (uint64_t)rd32(inode + 0x08u) * 1000000000ull;
+    out->ctime_ns = (uint64_t)rd32(inode + 0x0Cu) * 1000000000ull;
+    out->mtime_ns = (uint64_t)rd32(inode + 0x10u) * 1000000000ull;
     return 0;
 }
 

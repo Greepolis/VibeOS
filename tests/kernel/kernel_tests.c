@@ -7066,7 +7066,12 @@ static void e2_build(void) {
 
     /* "small": 100 bytes in block 5. */
     ino = e2_inode(11);
-    e2_w16(ino + 0, 0x81A4u);     /* regular, 0644 */
+    /* 0600 and 1000's: neither what the VFS makes up for a node with no mode
+     * (0644, root's), so the test below can tell the driver read them (M-143). */
+    e2_w16(ino + 0, 0x8180u);     /* regular, 0600 */
+    e2_w16(ino + 2, 1000u);       /* uid */
+    e2_w16(ino + 0x18, 1000u);    /* gid */
+    e2_w16(ino + 0x1A, 1u);       /* links */
     e2_w32(ino + 4, 100u);
     e2_w32(ino + 40, 5u);
     for (i = 0; i < 100u; i++) {
@@ -7305,6 +7310,14 @@ static int test_ext2_read(void) {
 
     /* A short file out of one direct block. */
     if (vibeos_fs_lookup(&mnt, "small", &node) != 0) {
+        return -1;
+    }
+    /* Its mode and owners, from the inode (M-143): the driver filled neither
+     * and the VFS made up 0644 and root, so a root 0600 file on ext2 was
+     * everybody's to read. */
+    if (node.mode != (0100000u | 0600u) || node.uid != 1000u || node.gid != 1000u || node.nlink != 1u) {
+        printf("FAIL:ext2 small has mode %o uid %u gid %u nlink %u, not 100600 1000 1000 1\n", node.mode,
+               node.uid, node.gid, node.nlink);
         return -1;
     }
     n = vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf));
