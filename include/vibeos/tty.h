@@ -33,6 +33,13 @@
 
 /* input modes */
 #define VIBEOS_TTY_ICRNL  0x0100u   /* a carriage return typed is a newline read */
+#define VIBEOS_TTY_IUTF8  0x4000u   /* erase takes a whole UTF-8 character (M-160) */
+
+/* Pseudo-terminal pairs, in all and for one user but root (pty.c). 8 and 4
+ * were few for one person's desktop - a terminal window, a multiplexer and an
+ * editor's shell are three (M-160). */
+#define VIBEOS_PTY_MAX 32u
+#define VIBEOS_PTY_PER_USER 8u
 #define VIBEOS_TTY_IXON   0x0400u
 /* output modes */
 #define VIBEOS_TTY_OPOST  0x0001u   /* output is processed at all                 */

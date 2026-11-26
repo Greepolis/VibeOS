@@ -6300,8 +6300,16 @@ static const char *g_term_in;
 static char g_term_shown[32];
 static uint32_t g_term_n;
 
+/* Bytes left to give by count rather than to the string's end, so that a NUL
+ * can be typed; 0 for the string as it is. */
+static uint32_t g_term_left;
+
 static int term_getc(void *ctx) {
     (void)ctx;
+    if (g_term_left > 0u) {
+        g_term_left--;
+        return (uint8_t)*g_term_in++;
+    }
     return g_term_in && *g_term_in ? (uint8_t)*g_term_in++ : -1;
 }
 
@@ -6352,6 +6360,47 @@ static void t_term_instances(void) {
            "a line typed on it, edited, is read from it");
     expect(strcmp(g_term_shown, "hio\n") == 0, "and shown where its backend shows it");
     expect(vibeos_tty_pending() == 0u, "none of it reached the console");
+    g_term_in = 0;
+
+    /* M-160. IUTF8: an erase after "è" takes both of its bytes - it left 0xC3
+     * in the line, and a password with an accent hashed differently. */
+    vibeos_term_reset(&a);
+    g_term_n = 0;
+    g_term_shown[0] = 0;
+    g_term_in = "p\xc3\xa8\x7fw\n";
+    expect(vibeos_term_read(&a, buf, 16, 1) == 3 && memcmp(kf_uptr(buf), "pw\n", 3) == 0,
+           "IUTF8: an erase takes a whole UTF-8 character");
+    /* ECHOCTL: a control character typed is shown as ^X, not sent raw - an ESC
+     * echoed as itself starts a sequence on the screen - and an erase takes
+     * both cells back. */
+    vibeos_term_reset(&a);
+    g_term_n = 0;
+    g_term_shown[0] = 0;
+    g_term_in = "a\x1b\n";
+    expect(vibeos_term_read(&a, buf, 16, 1) == 3 && strcmp(g_term_shown, "a^[\n") == 0,
+           "ECHOCTL: an ESC typed is shown as ^[");
+    vibeos_term_reset(&a);
+    g_term_n = 0;
+    g_term_shown[0] = 0;
+    g_term_in = "a\x1b\x7f\n";
+    expect(vibeos_term_read(&a, buf, 16, 1) == 2 && strcmp(g_term_shown, "a\n") == 0,
+           "and an erase takes back both of its cells");
+    /* A special character set to 0 is disabled: a NUL typed is a byte, not
+     * the end of the file. */
+    {
+        vibeos_tty_modes_t mm;
+
+        vibeos_term_reset(&a);
+        vibeos_term_get(&a, &mm);
+        mm.cc[VIBEOS_TTY_VEOF] = 0;
+        vibeos_term_set(&a, &mm, 0);
+        g_term_in = "x\0y\n";
+        g_term_left = 4;   /* the NUL is a byte typed, not the string's end */
+        expect(vibeos_term_read(&a, buf, 16, 1) == 4 && memcmp(kf_uptr(buf), "x\0y\n", 4) == 0,
+               "VEOF set to 0 is disabled: a NUL typed is a byte of the line");
+        g_term_left = 0;
+        g_term_in = 0;
+    }
     g_term_in = 0;
 
     vibeos_term_set_session(&a, ks_id(me)->sid);
@@ -6467,29 +6516,31 @@ static void t_pty(void) {
     expect(SYS3(1, (uint64_t)m, ustr("x"), 1) == 1, "and may still write");
     (void)SYS1(3, (uint64_t)m);
     {
-        long held[9];
+        long held[VIBEOS_PTY_MAX + 1u];
         uint32_t i, got = 0;
 
-        for (i = 0; i < 9u; i++) {
+        for (i = 0; i < VIBEOS_PTY_MAX + 1u; i++) {
             held[i] = SYS2(2, ustr("/dev/ptmx"), RW_NB);
             got += held[i] >= 0;
         }
-        expect(got == 8u && held[8] == -VIBEOS_ENOSPC, "eight pairs, and the ninth is ENOSPC");
-        for (i = 0; i < 8u; i++) {
+        expect(got == VIBEOS_PTY_MAX && held[VIBEOS_PTY_MAX] == -VIBEOS_ENOSPC,
+               "every pair taken, and one more is ENOSPC");
+        for (i = 0; i < VIBEOS_PTY_MAX; i++) {
             (void)SYS1(3, (uint64_t)held[i]);
         }
         /* One user cannot take them all: what is left is everybody else's. */
         ks_ps(me)->cred.euid = 1000u;
-        for (got = 0, i = 0; i < 5u; i++) {
+        for (got = 0, i = 0; i < VIBEOS_PTY_PER_USER + 1u; i++) {
             held[i] = SYS2(2, ustr("/dev/ptmx"), RW_NB);
             got += held[i] >= 0;
         }
-        expect(got == 4u && held[4] == -VIBEOS_ENOSPC, "a user holds four pairs at most");
+        expect(got == VIBEOS_PTY_PER_USER && held[VIBEOS_PTY_PER_USER] == -VIBEOS_ENOSPC,
+               "a user holds its share of pairs at most");
         ks_ps(me)->cred.euid = 0u;
-        held[5] = SYS2(2, ustr("/dev/ptmx"), RW_NB);
-        expect(held[5] >= 0, "and root still gets one");
-        (void)SYS1(3, (uint64_t)held[5]);
-        for (i = 0; i < 4u; i++) {
+        held[VIBEOS_PTY_PER_USER + 1u] = SYS2(2, ustr("/dev/ptmx"), RW_NB);
+        expect(held[VIBEOS_PTY_PER_USER + 1u] >= 0, "and root still gets one");
+        (void)SYS1(3, (uint64_t)held[VIBEOS_PTY_PER_USER + 1u]);
+        for (i = 0; i < VIBEOS_PTY_PER_USER; i++) {
             (void)SYS1(3, (uint64_t)held[i]);
         }
         held[0] = SYS2(2, ustr("/dev/ptmx"), RW_NB);

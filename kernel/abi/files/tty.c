@@ -40,7 +40,10 @@ static void tty_defaults(vibeos_term_t *t) {
     };
     uint32_t i;
 
-    t->m.iflag = VIBEOS_TTY_ICRNL | VIBEOS_TTY_IXON;
+    /* IUTF8 on, as a Linux terminal in a UTF-8 locale has it: an erase after
+     * an accented letter took one of its two bytes and left the other in the
+     * line - in a password, a different hash (M-160). */
+    t->m.iflag = VIBEOS_TTY_ICRNL | VIBEOS_TTY_IXON | VIBEOS_TTY_IUTF8;
     t->m.oflag = VIBEOS_TTY_OPOST | VIBEOS_TTY_ONLCR;
     t->m.cflag = VIBEOS_TTY_CFLAG_DEFAULT;
     t->m.lflag = VIBEOS_TTY_ISIG | VIBEOS_TTY_ICANON | VIBEOS_TTY_ECHO | VIBEOS_TTY_ECHOE |
@@ -183,6 +186,34 @@ static void tty_rub_out(vibeos_term_t *t) {
     t->ops->rub(t->ctx);
 }
 
+/* A control character echoed as ^X under ECHOCTL - two cells - apart from the
+ * newline and the tab, which are themselves. */
+static int tty_echoes_as_caret(const vibeos_term_t *t, uint8_t c) {
+    return (t->m.lflag & VIBEOS_TTY_ECHOCTL) && (c < 0x20u || c == 0x7Fu) && c != '\n' && c != '\t';
+}
+
+/* Take the last character of the open line back, as many bytes as it is under
+ * IUTF8, and off the screen as many cells as its echo took (M-160). */
+static void tty_erase_one(vibeos_term_t *t, int show) {
+    uint8_t last;
+
+    if (t->len <= t->ready) {
+        return;
+    }
+    if (t->m.iflag & VIBEOS_TTY_IUTF8) {
+        while (t->len > t->ready + 1u && (t->line[t->len - 1u] & 0xC0u) == 0x80u) {
+            t->len--;
+        }
+    }
+    last = t->line[--t->len];
+    if (show) {
+        tty_rub_out(t);
+        if (tty_echoes_as_caret(t, last)) {
+            tty_rub_out(t);
+        }
+    }
+}
+
 /* The signal a typed character stands for under the present modes, or 0. A
  * character set to 0 is disabled, as POSIX's _POSIX_VDISABLE. */
 static uint32_t tty_sig_of(vibeos_term_t *t, uint8_t c) {
@@ -320,28 +351,23 @@ static void tty_pump(vibeos_term_t *t, uint64_t want) {
         /* Erase: the character before, if the open line has one. Backspace is
          * taken as well as the erase character - a PC keyboard sends the one,
          * a serial console the other. */
-        if (c == (int)t->m.cc[VIBEOS_TTY_VERASE] || c == '\b') {
-            if (t->len > t->ready) {
-                t->len--;
-                if (echo && (lf & VIBEOS_TTY_ECHOE)) {
-                    tty_rub_out(t);
-                }
-            }
+        /* A special character set to 0 is disabled (_POSIX_VDISABLE), as the
+         * signals' already were: a NUL typed erased a character, killed the
+         * line or ended the file (M-160). */
+        if ((t->m.cc[VIBEOS_TTY_VERASE] != 0u && c == (int)t->m.cc[VIBEOS_TTY_VERASE]) || c == '\b') {
+            tty_erase_one(t, echo && (lf & VIBEOS_TTY_ECHOE));
             continue;
         }
-        if (c == (int)t->m.cc[VIBEOS_TTY_VKILL]) {
+        if (t->m.cc[VIBEOS_TTY_VKILL] != 0u && c == (int)t->m.cc[VIBEOS_TTY_VKILL]) {
             while (t->len > t->ready) {
-                t->len--;
-                if (echo && (lf & VIBEOS_TTY_ECHOE)) {
-                    tty_rub_out(t);
-                }
+                tty_erase_one(t, echo && (lf & VIBEOS_TTY_ECHOE));
             }
             continue;
         }
         /* End of file: what is typed so far is given to the reader as it is,
          * and on an empty line that is nothing - a read of 0, which is how a
          * program is told there is no more. */
-        if (c == (int)t->m.cc[VIBEOS_TTY_VEOF]) {
+        if (t->m.cc[VIBEOS_TTY_VEOF] != 0u && c == (int)t->m.cc[VIBEOS_TTY_VEOF]) {
             if (t->len == t->ready) {
                 t->eof = 1;
             }
@@ -349,7 +375,12 @@ static void tty_pump(vibeos_term_t *t, uint64_t want) {
             continue;
         }
         t->line[t->len++] = (uint8_t)c;
-        if (echo || (c == '\n' && (lf & VIBEOS_TTY_ECHONL))) {
+        if (echo && tty_echoes_as_caret(t, (uint8_t)c)) {
+            /* ^X, not the raw byte: an ESC echoed as itself starts a sequence
+             * on the terminal that shows it (M-160). */
+            tty_echo(t, '^');
+            tty_echo(t, (char)(c == 0x7F ? '?' : c + 64));
+        } else if (echo || (c == '\n' && (lf & VIBEOS_TTY_ECHONL))) {
             tty_echo(t, (char)c);
         }
         if (c == '\n' || t->len == VIBEOS_TERM_LINE) {

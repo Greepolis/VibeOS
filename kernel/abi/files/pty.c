@@ -21,7 +21,7 @@
 #include "vibeos/devfs.h"
 #include "vibeos/tty.h"
 
-#define PTY_MAX 8u
+#define PTY_MAX VIBEOS_PTY_MAX
 #define PTY_RING 4096u
 #define PTY_CHUNK 128u
 
@@ -45,7 +45,7 @@ typedef struct {
     pty_ring_t out;  /* slave to master: the screen */
 } pty_t;
 
-#define PTY_PER_USER 4u
+#define PTY_PER_USER VIBEOS_PTY_PER_USER
 /* quota: PTY_PER_USER pairs for each user but root, enforced in
  * vibeos_pty_open_master: one user's programs cannot take every terminal. */
 static pty_t g_pty[PTY_MAX];
@@ -143,10 +143,14 @@ static void pty_free_if_done(pty_t *p) {
 static void master_release(vibeos_file_t *f) {
     pty_t *p = pty_of(f);
 
+    /* The terminal has gone from under its session - hung up while this
+     * master is still counted (M-160): once it is not, the last slave's
+     * release on another core can free the slot and a new pair take it, and
+     * a hangup made after that went to the new tenant's session. */
+    vibeos_term_hangup(&p->term);
     ks_lock(&p->lock, "pty");
     p->masters--;
     ks_unlock(&p->lock);
-    vibeos_term_hangup(&p->term);   /* the terminal has gone from under its session */
     ks_wake_waiters();
     pty_free_if_done(p);
 }

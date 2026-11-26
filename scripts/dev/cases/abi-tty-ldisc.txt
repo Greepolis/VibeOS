@@ -1,0 +1,40 @@
+# The line discipline's details from review v10 (M-160), proved by
+# t_term_instances in tests/kernel/linux_abi_tests.c.
+#
+#  1. IUTF8 is not honoured. Expect "IUTF8: an erase takes a whole UTF-8
+#     character".
+#  2. a control character is echoed raw. Expect "ECHOCTL: an ESC typed is
+#     shown as ^[".
+#  3. an erase takes one cell of a ^X. Expect "and an erase takes back both of
+#     its cells".
+#  4. a special character set to 0 is live. Expect "VEOF set to 0 is
+#     disabled".
+#
+# Target source: kernel/abi/files/tty.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/tty.c scripts/dev/cases/abi-tty-ldisc.txt
+
+### IUTF8 is not honoured
+--- old
+    if (t->m.iflag & VIBEOS_TTY_IUTF8) {
++++ new
+    if (0) {
+
+### a control character is echoed raw
+--- old
+        if (echo && tty_echoes_as_caret(t, (uint8_t)c)) {
++++ new
+        if (0 && echo && tty_echoes_as_caret(t, (uint8_t)c)) {
+
+### an erase takes one cell of a ^X
+--- old
+        if (tty_echoes_as_caret(t, last)) {
+            tty_rub_out(t);
+        }
++++ new
+        (void)last;
+
+### a special character set to 0 is live
+--- old
+        if (t->m.cc[VIBEOS_TTY_VEOF] != 0u && c == (int)t->m.cc[VIBEOS_TTY_VEOF]) {
++++ new
+        if (c == (int)t->m.cc[VIBEOS_TTY_VEOF]) {
