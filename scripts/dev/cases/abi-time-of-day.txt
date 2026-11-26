@@ -1,0 +1,20 @@
+# gettimeofday and adjtimex tell the time of day (M-157), as time() and
+# CLOCK_REALTIME do: both gave the uptime, and the host test asserted it.
+#
+#  1. gettimeofday gives the uptime. Expect "gettimeofday: the time of day".
+#  2. adjtimex gives the uptime. Expect "adjtimex reads".
+#
+# Target source: kernel/abi/linux/timer.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/timer.c scripts/dev/cases/abi-time-of-day.txt
+
+### gettimeofday gives the uptime
+--- old
+        linux_tv_of(ks_ticks() + ks_wall_base_ticks(), &tv);
++++ new
+        linux_tv_of(ks_ticks(), &tv);
+
+### adjtimex gives the uptime
+--- old
+    linux_tv_of(ks_ticks() + ks_wall_base_ticks(), &tx->time);
++++ new
+    linux_tv_of(ks_ticks(), &tx->time);

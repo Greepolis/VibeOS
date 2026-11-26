@@ -5903,8 +5903,12 @@ static void t_timers(void) {
     tv = kf_ualloc(16);
     tz = kf_ualloc(8);
     memset(kf_uptr(tz), 0xFF, 8);
-    expect(SYS2(96, tv, tz) == 0 && ((linux_timeval_t *)kf_uptr(tv))->tv_sec == (int64_t)(ks_ticks() / 100u) &&
-           ((linux_timezone_t *)kf_uptr(tz))->tz_minuteswest == 0, "gettimeofday, and a zone of nothing");
+    /* The time of day, as time() and CLOCK_REALTIME give it - it gave the
+     * uptime, and this test asserted that (M-157). */
+    expect(SYS2(96, tv, tz) == 0 &&
+               ((linux_timeval_t *)kf_uptr(tv))->tv_sec == (int64_t)((ks_ticks() + ks_wall_base_ticks()) / 100u) &&
+               ((linux_timezone_t *)kf_uptr(tz))->tz_minuteswest == 0,
+           "gettimeofday: the time of day, and a zone of nothing");
     tms = kf_ualloc(32);
     r = SYS1(100, tms);
     expect(r == (long)ks_ticks() && ((linux_tms_t *)kf_uptr(tms))->tms_utime == 7,
@@ -8465,7 +8469,8 @@ int test_linux_gaps(void) {
         int64_t *v = (int64_t *)kf_uptr(tv);
 
         memset(t, 0, sizeof(*t));
-        decided(159, SYS1(159, tx) == LINUX_TIME_ERROR && (t->status & LINUX_STA_UNSYNC) && t->tick == 10000,
+        decided(159, SYS1(159, tx) == LINUX_TIME_ERROR && (t->status & LINUX_STA_UNSYNC) && t->tick == 10000 &&
+                         t->time.tv_sec == (int64_t)((ks_ticks() + ks_wall_base_ticks()) / 100u),
                 "adjtimex reads: unsynchronised, TIME_ERROR, a 100 Hz tick");
         t->modes = 0x0001u;   /* ADJ_OFFSET */
         decided(159, SYS1(159, tx) == -VIBEOS_EPERM, "and refuses to set, as clock_settime does");

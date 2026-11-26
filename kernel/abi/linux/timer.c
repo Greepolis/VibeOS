@@ -372,7 +372,7 @@ static long linux_sys_gettimeofday(uint64_t tv_uptr, uint64_t tz_uptr) {
     linux_timezone_t tz;
 
     if (tv_uptr != 0u) {
-        linux_tv_of(ks_ticks(), &tv);
+        linux_tv_of(ks_ticks() + ks_wall_base_ticks(), &tv);   /* the time of day, as time() and CLOCK_REALTIME (M-157) */
         if (vibeos_uaccess_copy((void *)(uintptr_t)tv_uptr, &tv, sizeof(tv)) != 0) {
             return -VIBEOS_EFAULT;
         }
@@ -431,7 +431,7 @@ static void linux_timex_now(linux_timex_t *tx) {
     tx->constant = 2;
     tx->precision = 1;
     tx->tolerance = 32768000;   /* 500 ppm, scaled by 2^16: Linux's MAXFREQ_SCALED >> 16 */
-    linux_tv_of(ks_ticks(), &tx->time);
+    linux_tv_of(ks_ticks() + ks_wall_base_ticks(), &tx->time);   /* the realtime clock's, as it says (M-157) */
     tx->tick = 1000000 / 100;   /* microseconds per USER_HZ tick */
 }
 
