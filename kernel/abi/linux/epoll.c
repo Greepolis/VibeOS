@@ -194,6 +194,14 @@ static void ep_release(vibeos_file_t *ep) {
     ep_forget(ep);
 }
 
+/* Entries in use in every instance: for the host test that a description's
+ * going takes its entries with it, which could not be seen from a program
+ * (sabotage case 4 of abi-epoll.txt went NOT RED: the slot a new description
+ * lands in is not always the freed one). */
+uint32_t linux_epoll_entries(void) {
+    return __atomic_load_n(&g_ep_used, __ATOMIC_ACQUIRE);
+}
+
 /* Once on the machine; before every test on the host, whose file table is reset
  * under the pool - so the pool is emptied here, not assumed empty. */
 void linux_epoll_init(void) {

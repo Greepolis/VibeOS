@@ -41,6 +41,8 @@
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
+/* Entries in use in epoll's pool (kernel/abi/linux/epoll.c). */
+uint32_t linux_epoll_entries(void);
 
 static int g_fail;
 
@@ -3059,8 +3061,14 @@ static void t_epoll(void) {
     dup = SYS1(32, (uint64_t)f[0]);
     expect(SYS1(3, (uint64_t)f[0]) == 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 1,
            "closing one of two descriptors of a description leaves the entry");
-    expect(SYS1(3, (uint64_t)dup) == 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,
-           "closing the last takes it away");
+    {
+        uint32_t before = linux_epoll_entries();
+
+        expect(SYS1(3, (uint64_t)dup) == 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,
+               "closing the last takes it away");
+        expect(linux_epoll_entries() + 1u == before,
+               "and its entry with it, whichever slot the next description lands in");
+    }
     /* What a left-behind entry would do: the slot goes to the next description
      * made, and the entry watches that instead. */
     expect(SYS2(290, 1, 0) >= 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,

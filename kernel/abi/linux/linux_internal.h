@@ -74,6 +74,7 @@ extern const vibeos_file_ops_t linux_fops_signalfd;
  * the hook is registered here, and the pool emptied, by the ABI's init. */
 extern const vibeos_file_ops_t linux_fops_epoll;
 void linux_epoll_init(void);
+uint32_t linux_epoll_entries(void);
 
 /* inotify (inotify.c): its type, the bytes a read would return now (FIONREAD),
  * and its tables emptied by the ABI's init. */
