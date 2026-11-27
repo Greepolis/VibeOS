@@ -52,11 +52,22 @@ int vibeos_fs_mount(vibeos_fsmount_t *mnt, const vibeos_fs_ops_t *ops,
          * the wrappers below report that as a refusal rather than a crash. */
         return -1;
     }
+    /* All of it first, then what is given: filled field by field, the umask
+     * and the in-flight count added on 2026-11-26 were whatever the caller's
+     * stack held - a Debug test's mount took the permission bits off every
+     * node, while every Release build happened to find zeros. CLAUDE.md's
+     * "a struct filled field by field gains a hole", again. */
+    {
+        uint8_t *p = (uint8_t *)mnt;
+        uint32_t i;
+
+        for (i = 0; i < (uint32_t)sizeof(*mnt); i++) {
+            p[i] = 0;
+        }
+    }
     mnt->ops = ops;
     mnt->fs = fs;
     mnt->type = type;
-    mnt->lock_word = 0;
-    mnt->flags = 0;
     mnt->mounted = 1;
     return 0;
 }
