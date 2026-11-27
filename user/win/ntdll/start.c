@@ -333,6 +333,19 @@ static void resolve_imports(uint64_t base) {
         uint64_t lookup = base + (rd32(d) ? rd32(d) : rd32(d + 16u));
         uint64_t iat = base + rd32(d + 16u);
         uint64_t from = load_dll(dll, 0);
+        uint64_t span_base = iat, span = 8u, n = 0;
+        uint32_t old = 0;
+
+        /* Writable while it is filled. An MSVC program keeps its import address
+         * table in .rdata, read-only - FinalCommander faulted on the first
+         * store here (S7 step 3); mingw's are in .idata, writable, which is why
+         * nothing had. Windows' loader opens the table the same way and gives
+         * the page its protection back after. */
+        while (vibeos_nt_rd64(lookup + n * 8u) != 0u) {
+            n++;
+        }
+        span = (n + 1u) * 8u;
+        (void)NtProtectVirtualMemory((uint64_t)-1, &span_base, &span, 0x04u /* PAGE_READWRITE */, &old);
 
         for (;; lookup += 8u, iat += 8u) {
             uint64_t thunk = vibeos_nt_rd64(lookup);
@@ -348,6 +361,11 @@ static void resolve_imports(uint64_t base) {
                 at = pe_export(from, fn);
             }
             *(volatile uint64_t *)(uintptr_t)iat = at ? at : stub_for(dll, fn);
+        }
+        if (old != 0u && old != 0x04u) {
+            uint32_t was = 0;
+
+            (void)NtProtectVirtualMemory((uint64_t)-1, &span_base, &span, old, &was);
         }
     }
 }

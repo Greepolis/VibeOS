@@ -205,6 +205,9 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "/usr/lib/vibeos/test/SCRIPTT.ELF\n"
                                   /* FinalCommander at a pseudo-terminal (S7). */
                                   "/usr/lib/vibeos/test/FCMDT.ELF /usr/bin/fcmd\n"
+                                  /* And its Windows build, through the NT
+                                   * personality (S7 step 3). */
+                                  "/usr/lib/vibeos/test/FCMDT.ELF /usr/lib/windows/system32/fcmd.exe\n"
                                   /* bash, if this image was built with it. */
                                   "/usr/bin/bash /usr/lib/vibeos/test/BASHT.SH\n"
                                   /* The NT personality's first program

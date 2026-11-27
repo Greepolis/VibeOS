@@ -1313,8 +1313,12 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         )
         # The rest as placeholders that load and export nothing (W2): every
         # import from one binds to one of ntdll's named stubs, so a program runs
-        # until the first it calls, and says which.
-        foreach(VIBEOS_PH hid imm32 setupapi)
+        # until the first it calls, and says which. The second line is what
+        # FinalCommander imports beyond the rest (docs/shell/s7.md step 3): a
+        # DLL missing from the disk ends a process before its first line.
+        set(VIBEOS_WIN_PLACEHOLDERS hid imm32 setupapi
+            ws2_32 ole32 oleaut32 combase propsys crypt32 bcrypt bcryptprimitives iphlpapi mpr psapi secur32 api-ms-win-core-synch-l1-2-0)
+        foreach(VIBEOS_PH ${VIBEOS_WIN_PLACEHOLDERS})
             add_custom_command(
                 OUTPUT "${VIBEOS_WIN_DIR}/${VIBEOS_PH}.dll"
                 COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
@@ -1360,7 +1364,20 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
                     "${VIBEOS_WIN_DIR}/kernel32.dll" "${VIBEOS_WIN_DIR}/user32.dll"
                     "${VIBEOS_WIN_DIR}/gdi32.dll" "${VIBEOS_WIN_DIR}/hid.dll"
                     "${VIBEOS_WIN_DIR}/imm32.dll" "${VIBEOS_WIN_DIR}/setupapi.dll"
-                    "${VIBEOS_WIN_DIR}/advapi32.dll")
+                    "${VIBEOS_WIN_DIR}/advapi32.dll"
+                    "${VIBEOS_WIN_DIR}/ws2_32.dll"
+                    "${VIBEOS_WIN_DIR}/ole32.dll"
+                    "${VIBEOS_WIN_DIR}/oleaut32.dll"
+                    "${VIBEOS_WIN_DIR}/combase.dll"
+                    "${VIBEOS_WIN_DIR}/propsys.dll"
+                    "${VIBEOS_WIN_DIR}/crypt32.dll"
+                    "${VIBEOS_WIN_DIR}/bcrypt.dll"
+                    "${VIBEOS_WIN_DIR}/bcryptprimitives.dll"
+                    "${VIBEOS_WIN_DIR}/iphlpapi.dll"
+                    "${VIBEOS_WIN_DIR}/mpr.dll"
+                    "${VIBEOS_WIN_DIR}/psapi.dll"
+                    "${VIBEOS_WIN_DIR}/secur32.dll"
+                    "${VIBEOS_WIN_DIR}/api-ms-win-core-synch-l1-2-0.dll")
         find_program(VIBEOS_MINGW_OBJDUMP_WIN x86_64-w64-mingw32-objdump)
         if(VIBEOS_BUILD_TESTS AND VIBEOS_MINGW_OBJDUMP_WIN AND Python3_EXECUTABLE)
             add_test(NAME vibeos-msvcrt-exports

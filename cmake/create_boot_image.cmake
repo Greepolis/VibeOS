@@ -194,7 +194,8 @@ endif()
 # finds them too.
 set(WIN_SYS_DIR "${EFI_ROOT_DIR}/usr/lib/windows/system32")
 foreach(WIN_DLL ntdll.dll msvcrt.dll kernel32.dll user32.dll advapi32.dll shell32.dll gdi32.dll hid.dll
-                imm32.dll setupapi.dll)
+                imm32.dll setupapi.dll
+                ws2_32.dll ole32.dll oleaut32.dll combase.dll propsys.dll crypt32.dll bcrypt.dll bcryptprimitives.dll iphlpapi.dll mpr.dll psapi.dll secur32.dll api-ms-win-core-synch-l1-2-0.dll)
     if(EXISTS "${CMAKE_BINARY_DIR}/win/${WIN_DLL}")
         file(MAKE_DIRECTORY "${WIN_SYS_DIR}")
         file(COPY_FILE "${CMAKE_BINARY_DIR}/win/${WIN_DLL}" "${WIN_SYS_DIR}/${WIN_DLL}" ONLY_IF_DIFFERENT)
@@ -207,6 +208,11 @@ foreach(WIN_TEST hello.exe stubcall.exe)
     endif()
 endforeach()
 # Wine's cmd, when scripts/dev/corpus-build.sh has built it (docs/shell/s6.md).
+# FinalCommander's Windows build (docs/shell/s7.md step 3), beside cmd.
+if(EXISTS "${CMAKE_BINARY_DIR}/corpus/fcmd.exe")
+    file(MAKE_DIRECTORY "${WIN_SYS_DIR}")
+    file(COPY_FILE "${CMAKE_BINARY_DIR}/corpus/fcmd.exe" "${WIN_SYS_DIR}/fcmd.exe" ONLY_IF_DIFFERENT)
+endif()
 if(EXISTS "${CMAKE_BINARY_DIR}/corpus/cmd.exe")
     file(MAKE_DIRECTORY "${WIN_SYS_DIR}")
     file(COPY_FILE "${CMAKE_BINARY_DIR}/corpus/cmd.exe" "${WIN_SYS_DIR}/cmd.exe" ONLY_IF_DIFFERENT)
