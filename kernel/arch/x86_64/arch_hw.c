@@ -1646,15 +1646,98 @@ static void hw_fat_unlock(void) {
 /* A mount's lock, for the drivers that ask the VFS to serialise them
  * (vibeos_fs_ops_t.serialize): the same spin, on the mount's own word, so two
  * volumes are entered at once. */
+/* Who holds a mount's lock (M-146). A boot wedged with a core spinning here and
+ * nobody visibly holding it, and the lock could not say who had it: a holder
+ * that blocked in a driver, or ended, inside a filesystem operation looks
+ * exactly like that. Each lock word remembers its holder's task slot, core and
+ * the tick it was taken at, and a waiter past a second says so, once, in one
+ * line. A few slots, by the word's address; one beyond them goes unnamed and
+ * is counted. */
+#define HW_MNT_HOLDERS 16u
+typedef struct {
+    volatile uint32_t *word;
+    int32_t slot;
+    uint32_t cpu;
+    uint64_t since;
+} hw_mnt_holder_t;
+static hw_mnt_holder_t g_mnt_holders[HW_MNT_HOLDERS];   /* quota: none - one per mount's lock, a diagnostic */
+static uint64_t g_mnt_holders_full;
+
+static hw_mnt_holder_t *hw_mnt_holder(volatile uint32_t *word, int take) {
+    uint32_t i;
+
+    for (i = 0; i < HW_MNT_HOLDERS; i++) {
+        if (g_mnt_holders[i].word == word) {
+            return &g_mnt_holders[i];
+        }
+    }
+    if (!take) {
+        return 0;
+    }
+    for (i = 0; i < HW_MNT_HOLDERS; i++) {
+        volatile uint32_t *none = 0;
+
+        if (__atomic_compare_exchange_n(&g_mnt_holders[i].word, &none, word, 0, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE)) {
+            return &g_mnt_holders[i];
+        }
+    }
+    __atomic_add_fetch(&g_mnt_holders_full, 1u, __ATOMIC_RELAXED);
+    return 0;
+}
+
+/* A waiter's patience, in TSC cycles: about a second on any machine this runs
+ * on. Not in timer ticks - the first version waited for ticks, and a holder
+ * with interrupts off stops the tick, so the line never came in exactly the
+ * case it is for (found by holding the lock on purpose: the boot went silent
+ * with nothing printed). */
+#define HW_MNT_WAIT_TSC 2000000000ull
+
 static void hw_vfs_mount_lock(volatile uint32_t *word) {
+    uint64_t start = hw_tsc();
+    int said = 0;
+    hw_mnt_holder_t *h;
+
     while (__sync_lock_test_and_set(word, 1u)) {
         while (*word) {
             __asm__ __volatile__("pause" ::: "memory");
+            if (!said && hw_tsc() - start > HW_MNT_WAIT_TSC) {
+                const hw_mnt_holder_t *o = hw_mnt_holder(word, 0);
+                int32_t slot = o ? o->slot : -1;
+
+                said = 1;
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[VFS] MOUNT_LOCK_WAIT cpu=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
+                vibeos_x86_64_serial_puts(" holder_slot=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)slot);
+                vibeos_x86_64_serial_puts(" holder_pid=0x");
+                vibeos_x86_64_serial_print_hex(slot >= 0 ? hw_task_pid_of(&g_tasks[slot]) : 0u);
+                vibeos_x86_64_serial_puts(" holder_state=");
+                vibeos_x86_64_serial_puts(slot >= 0 ? vibeos_task_state_name(vibeos_task_state((uint32_t)slot))
+                                                    : "unknown");
+                vibeos_x86_64_serial_puts(" holder_cpu=0x");
+                vibeos_x86_64_serial_print_hex(o ? o->cpu : 0u);
+                vibeos_x86_64_serial_puts(" held_ticks=0x");
+                vibeos_x86_64_serial_print_hex(o ? g_timer_ticks - o->since : 0u);
+                vibeos_x86_64_serial_puts("\n");
+                vibeos_x86_64_serial_unlock();
+            }
         }
+    }
+    if ((h = hw_mnt_holder(word, 1)) != 0) {
+        h->slot = hw_current_task();
+        h->cpu = vibeos_x86_64_cpu_id();
+        h->since = g_timer_ticks;
     }
 }
 
 static void hw_vfs_mount_unlock(volatile uint32_t *word) {
+    hw_mnt_holder_t *h = hw_mnt_holder(word, 0);
+
+    if (h) {
+        h->slot = -1;
+    }
     __sync_lock_release(word);
 }
 

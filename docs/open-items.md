@@ -15,7 +15,7 @@ is [next-steps.md](next-steps.md).
 | M-068 | The kernel announced "all user tasks retired" and sampled the frame accounting while svc-reclaim was still running - thrashing at the minimum with swap full, ... | open (internal) |
 | M-070 | One boot in 24 with the reclaim load: svc-reclaim - single-threaded, no fork - killed by a not-present read in a block it had not yet checked, with ... | open (internal) |
 | M-118 | (internal) The corpus workload bb-ps saw its parent - the shell, blocked in wait4 for `ps` - as `R` where Linux and every other boot say `S`: ... | open |
-| M-146 | One boot of 3d735038 wedged on 2026-11-21 in `userland_running`, right after `svc-press` stopped, with a game loading the host: CPU 0 spinning in ... | open |
+| M-146 | One boot of 3d735038 wedged on 2026-11-21 in `userland_running`, right after `svc-press` stopped, with a game loading the host: CPU 0 spinning in ... | open, instrumented (2026-11-27): a mount's lock records its holder - task slot, ... |
 
 ## [Windows personality: open items](implementation_progress/windows_open_items.md) - 60
 
