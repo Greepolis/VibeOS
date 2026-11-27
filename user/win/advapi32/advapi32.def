@@ -67,3 +67,4 @@ SetSecurityDescriptorDacl
 GetFileSecurityW
 GetSecurityDescriptorOwner
 LookupAccountSidW
+SystemFunction036

@@ -1,0 +1,4 @@
+; bcryptprimitives.dll: the half of bcrypt.c it exports (docs/shell/s7.md step 3).
+LIBRARY bcryptprimitives.dll
+EXPORTS
+ProcessPrng

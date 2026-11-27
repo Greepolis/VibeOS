@@ -270,6 +270,13 @@ typedef struct {
 } vibeos_nt_system_basic_t;
 
 #define VIBEOS_NT_SYSTEM_BASIC_INFORMATION 0u
+/* Not Windows': random bytes from the kernel's pool, for our bcrypt,
+ * bcryptprimitives and advapi32 (docs/shell/s7.md step 3). Windows reaches the
+ * same pool through an ioctl on \Device\CNG, and this kernel has neither a
+ * device namespace nor NtDeviceIoControlFile yet; this class stands in until
+ * it does (WO-110), so its number is far from any of Windows' classes. */
+#define VIBEOS_NT_SYSTEM_VIBEOS_RANDOM 0xF000u
+#define VIBEOS_NT_RANDOM_MAX (1u << 20)
 
 /* MEMORY_BASIC_INFORMATION, NtQueryVirtualMemory's MemoryBasicInformation
  * (class 0): 48 bytes on x64. */

@@ -440,6 +440,18 @@ static RUNTIME_FUNCTION *lookup_dynamic(ULONG64 pc, ULONG64 *base) {
     return func;
 }
 
+/* RtlPcToFileHeader(PcValue, BaseOfImage): the base of the loaded image that
+ * holds the address, written and returned, or null in both. The C runtime's
+ * exception handling asks it of a return address (docs/shell/s7.md step 3). */
+RTL_API void *RtlPcToFileHeader(void *pc, void **base) {
+    void *b = (void *)(uintptr_t)vibeos_ntdll_module_of((uint64_t)(uintptr_t)pc);
+
+    if (base) {
+        *base = b;
+    }
+    return b;
+}
+
 /* RtlLookupFunctionEntry(ControlPc, ImageBase, HistoryTable): the .pdata entry
  * covering pc, or NULL. A loaded module first, a dynamic table otherwise. */
 RTL_API RUNTIME_FUNCTION *RtlLookupFunctionEntry(ULONG64 pc, ULONG64 *base, void *history) {

@@ -668,6 +668,30 @@ uint64_t LoadLibraryA(const char *name) {
     return LoadLibraryW(w);
 }
 
+/* The flags choose where Windows searches (LOAD_LIBRARY_SEARCH_*) and whether
+ * a DLL is mapped as data; this loader has one search order, system32 first,
+ * and maps every DLL as an image, so both are answered as a plain load - a
+ * DLL loaded "as data" is a DLL whose code is also there. The reserved file
+ * handle must be null, as on Windows. Rust's standard library calls this
+ * before main (docs/shell/s7.md step 3). */
+uint64_t LoadLibraryExW(const uint16_t *name, uint64_t file, uint32_t flags) {
+    (void)flags;
+    if (file != 0u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return LoadLibraryW(name);
+}
+
+uint64_t LoadLibraryExA(const char *name, uint64_t file, uint32_t flags) {
+    (void)flags;
+    if (file != 0u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return LoadLibraryA(name);
+}
+
 /* The loader never unloads: a DLL stays for the life of the process, and
  * freeing it succeeds and changes nothing. */
 BOOL32 FreeLibrary(uint64_t module) {
@@ -3758,4 +3782,314 @@ int32_t GetCPInfoExW(uint32_t cp, uint32_t flags, uint8_t *info) {
 int32_t IsDBCSLeadByte(uint8_t c) {
     (void)c;
     return 0;
+}
+
+/* ---- what a Rust program calls before main (docs/shell/s7.md step 3) ------------------
+ * FinalCommander's Windows build is the first program here written in Rust, and
+ * its standard library asks these before the program's first line: the clock,
+ * the processor, whether a debugger is attached, its locks. */
+
+BOOL32 QueryPerformanceCounter(int64_t *count) {
+    return failed(NtQueryPerformanceCounter(count, 0)) ? 0 : 1;
+}
+
+BOOL32 QueryPerformanceFrequency(int64_t *freq) {
+    int64_t c = 0;
+
+    return failed(NtQueryPerformanceCounter(&c, freq)) ? 0 : 1;
+}
+
+/* As precise as the clock is: it moves a tick at a time, and the "precise"
+ * variant has no finer clock to read than the plain one. */
+void GetSystemTimePreciseAsFileTime(int64_t *ft) {
+    (void)NtQuerySystemTime(ft);
+}
+
+/* PF_* numbers. What every x86-64 processor has is answered yes; the rest no,
+ * including PF_FASTFAIL_AVAILABLE (23): __fastfail is int 0x29, which this
+ * kernel does not take, so a program told no ends itself another way. */
+BOOL32 IsProcessorFeaturePresent(uint32_t feature) {
+    switch (feature) {
+    case 3u:    /* PF_MMX_INSTRUCTIONS_AVAILABLE */
+    case 6u:    /* PF_XMMI_INSTRUCTIONS_AVAILABLE: SSE */
+    case 8u:    /* PF_RDTSC_INSTRUCTION_AVAILABLE */
+    case 9u:    /* PF_PAE_ENABLED */
+    case 10u:   /* PF_XMMI64_INSTRUCTIONS_AVAILABLE: SSE2 */
+    case 12u:   /* PF_NX_ENABLED */
+    case 14u:   /* PF_COMPARE_EXCHANGE128 */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* The PEB's own byte, which is what Windows reads too. */
+BOOL32 IsDebuggerPresent(void) {
+    return *(volatile uint8_t *)(uintptr_t)(peb() + VIBEOS_PEB_BEING_DEBUGGED) != 0u;
+}
+
+/* An SLIST_HEADER is sixteen bytes, empty when zero. */
+void InitializeSListHead(void *head) {
+    uint64_t *h = (uint64_t *)head;
+
+    h[0] = 0u;
+    h[1] = 0u;
+}
+
+/* The command line in the ANSI code page, converted once: Windows hands every
+ * caller the same buffer, and a C runtime keeps the pointer. */
+const char *GetCommandLineA(void) {
+    static char line[32768];
+    static int done;
+
+    if (!done) {
+        if (WideCharToMultiByte(0u /* CP_ACP */, 0u, GetCommandLineW(), -1, line,
+                                (int32_t)sizeof(line), 0, 0) <= 0) {
+            line[0] = 0;
+        }
+        done = 1;
+    }
+    return line;
+}
+
+BOOL32 AreFileApisANSI(void) {
+    return 1;
+}
+
+/* The code pages WideCharToMultiByte and MultiByteToWideChar convert. */
+BOOL32 IsValidCodePage(uint32_t cp) {
+    return cp == 1252u || cp == 65001u /* UTF-8 */ || cp == 20127u /* US-ASCII */ ||
+           cp == 437u;
+}
+
+/* There are no fibers here. */
+BOOL32 IsThreadAFiber(void) {
+    return 0;
+}
+
+/* The stack a thread keeps for its overflow handler. A thread's stack is all
+ * of what it was given, so there is nothing to reserve: the size asked for is
+ * accepted and the previous one, none, is reported. */
+BOOL32 SetThreadStackGuarantee(uint32_t *size) {
+    if (!size) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    *size = 0u;
+    return 1;
+}
+
+/* A pointer XORed with a per-process cookie and rotated, as Windows does, so
+ * that one stored where an attacker can write it is not a usable address. The
+ * cookie comes from the kernel's random pool the first time it is needed. */
+static uint64_t pointer_cookie(void) {
+    static uint64_t cookie;
+
+    if (cookie == 0u) {
+        uint64_t c = 0;
+
+        (void)NtQuerySystemInformation(VIBEOS_NT_SYSTEM_VIBEOS_RANDOM, &c, sizeof(c), 0);
+        cookie = c | 1u;
+    }
+    return cookie;
+}
+
+void *EncodePointer(void *p) {
+    uint64_t c = pointer_cookie(), v = (uint64_t)(uintptr_t)p ^ c;
+    unsigned r = (unsigned)(c & 63u);
+
+    return (void *)(uintptr_t)(r ? (v >> r) | (v << (64u - r)) : v);
+}
+
+void *DecodePointer(void *p) {
+    uint64_t c = pointer_cookie(), v = (uint64_t)(uintptr_t)p;
+    unsigned r = (unsigned)(c & 63u);
+
+    v = r ? (v << r) | (v >> (64u - r)) : v;
+    return (void *)(uintptr_t)(v ^ c);
+}
+
+/* ---- slim reader/writer locks, exclusive side ------------------------------------------
+ * SRWLOCK_INIT is zero, so the word counts the threads that want the lock:
+ * zero is free, and whoever takes it from nonzero waits on the keyed event
+ * under the lock's address - the critical section's scheme with the count
+ * starting at zero. The shared side is not written; nothing here imports it
+ * yet, and a program that does is bound to a named stub and says so. */
+void InitializeSRWLock(void *lock) {
+    *(volatile int64_t *)lock = 0;
+}
+
+void AcquireSRWLockExclusive(void *lock) {
+    if (__atomic_fetch_add((volatile int64_t *)lock, 1, __ATOMIC_ACQ_REL) != 0) {
+        (void)NtWaitForKeyedEvent(0, lock, 0, 0);
+    }
+}
+
+uint8_t TryAcquireSRWLockExclusive(void *lock) {
+    int64_t free_ = 0;
+
+    return __atomic_compare_exchange_n((volatile int64_t *)lock, &free_, 1, 0, __ATOMIC_ACQ_REL,
+                                       __ATOMIC_ACQUIRE)
+               ? 1u
+               : 0u;
+}
+
+void ReleaseSRWLockExclusive(void *lock) {
+    if (__atomic_sub_fetch((volatile int64_t *)lock, 1, __ATOMIC_ACQ_REL) != 0) {
+        (void)NtReleaseKeyedEvent(0, lock, 0, 0);   /* somebody wanted it: hand it on */
+    }
+}
+
+/* ---- what the MSVC C runtime asks at start (docs/shell/s7.md step 3) -------------------
+ * FinalCommander links Microsoft's C runtime statically, and its start builds
+ * the ctype tables, the locale's case maps and the time zone from these. */
+
+#define ERROR_INVALID_FLAGS 1004u
+
+/* Lower case for what RtlUpcaseUnicodeChar raises: ASCII and Latin-1. Beyond
+ * that a character is its own lower case - true of most of the BMP and wrong
+ * for the rest of the cased scripts, which nothing here maps yet. */
+static uint16_t wlower(uint16_t c) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 0xC0u && c <= 0xDEu && c != 0xD7u)) {
+        return (uint16_t)(c + 0x20u);
+    }
+    return c;
+}
+
+static uint32_t wcount(const uint16_t *s, int32_t n) {
+    return n < 0 ? wlen(s) + 1u : (uint32_t)n;   /* -1: through the terminator */
+}
+
+/* CT_CTYPE1 only, the classes C's <ctype.h> is built from. A character past
+ * Latin-1 is reported as a defined letter: the C runtime asks so that
+ * isalpha() of a non-ASCII letter is true, and no finer table exists here. */
+BOOL32 GetStringTypeW(uint32_t type, const uint16_t *src, int32_t n, uint16_t *out) {
+    uint32_t i, len;
+
+    if (type != 1u /* CT_CTYPE1 */) {
+        set_error(ERROR_INVALID_FLAGS);
+        return 0;
+    }
+    if (!src || !out) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    len = wcount(src, n);
+    for (i = 0; i < len; i++) {
+        uint16_t c = src[i], t = 0x200u;   /* C1_DEFINED */
+
+        if (c >= 'A' && c <= 'Z') {
+            t |= 0x101u;   /* C1_ALPHA | C1_UPPER */
+        } else if (c >= 'a' && c <= 'z') {
+            t |= 0x102u;   /* C1_ALPHA | C1_LOWER */
+        } else if (c >= '0' && c <= '9') {
+            t |= 0x04u;   /* C1_DIGIT */
+        } else if (c == ' ' || c == 0xA0u) {
+            t |= 0x48u;   /* C1_SPACE | C1_BLANK */
+        } else if (c == '\t') {
+            t |= 0x68u;   /* C1_SPACE | C1_CNTRL | C1_BLANK */
+        } else if (c >= 0x0Au && c <= 0x0Du) {
+            t |= 0x28u;   /* C1_SPACE | C1_CNTRL */
+        } else if (c < 0x20u || (c >= 0x7Fu && c < 0xA0u)) {
+            t |= 0x20u;   /* C1_CNTRL */
+        } else if (c < 0x7Fu || (c >= 0xA1u && c <= 0xBFu) || c == 0xD7u || c == 0xF7u) {
+            t |= 0x10u;   /* C1_PUNCT */
+        } else if (c >= 0xC0u && c <= 0xDEu) {
+            t |= 0x101u;
+        } else if (c >= 0xDFu && c <= 0xFFu) {
+            t |= 0x102u;
+        } else {
+            t |= 0x100u;   /* C1_ALPHA */
+        }
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')) {
+            t |= 0x80u;   /* C1_XDIGIT */
+        }
+        out[i] = t;
+    }
+    return 1;
+}
+
+/* LCMAP_LOWERCASE and LCMAP_UPPERCASE; the locale is not consulted, as no
+ * locale here cases differently. A size of zero asks how much is needed. */
+int32_t LCMapStringW(uint32_t locale, uint32_t flags, const uint16_t *src, int32_t n,
+                     uint16_t *dst, int32_t cap) {
+    uint32_t i, len;
+    uint32_t mode = flags & 0x300u;
+
+    (void)locale;
+    if (!src || cap < 0 || (cap > 0 && !dst) || mode == 0u || mode == 0x300u ||
+        (flags & ~0x300u) != 0u) {
+        set_error(mode == 0u || (flags & ~0x300u) ? ERROR_INVALID_FLAGS : ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    len = wcount(src, n);
+    if (cap == 0) {
+        return (int32_t)len;
+    }
+    if ((uint32_t)cap < len) {
+        set_error(122u /* ERROR_INSUFFICIENT_BUFFER */);
+        return 0;
+    }
+    for (i = 0; i < len; i++) {
+        dst[i] = mode == 0x100u ? wlower(src[i]) : RtlUpcaseUnicodeChar(src[i]);
+    }
+    return (int32_t)len;
+}
+
+/* CSTR_LESS_THAN, CSTR_EQUAL, CSTR_GREATER by code unit, case folded upwards
+ * when asked - which is what "ordinal, ignoring case" means on Windows. A
+ * length of -1 is up to the terminator, not through it. */
+int32_t CompareStringOrdinal(const uint16_t *a, int32_t na, const uint16_t *b, int32_t nb,
+                             BOOL32 ignore_case) {
+    uint32_t la, lb, i;
+
+    if (!a || !b) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    la = na < 0 ? wlen(a) : (uint32_t)na;
+    lb = nb < 0 ? wlen(b) : (uint32_t)nb;
+    for (i = 0; i < la && i < lb; i++) {
+        uint16_t x = ignore_case ? RtlUpcaseUnicodeChar(a[i]) : a[i];
+        uint16_t y = ignore_case ? RtlUpcaseUnicodeChar(b[i]) : b[i];
+
+        if (x != y) {
+            return x < y ? 1 : 3;
+        }
+    }
+    return la < lb ? 1 : la > lb ? 3 : 2;
+}
+
+/* With no debugger attached Windows drops the string too. */
+void OutputDebugStringA(const char *s) {
+    (void)s;
+}
+
+/* The machine keeps UTC (E4-029): no bias, no daylight rule, and
+ * TIME_ZONE_ID_UNKNOWN, which is what Windows answers for a zone without one. */
+uint32_t GetTimeZoneInformation(void *tzi) {
+    uint32_t i;
+
+    for (i = 0; i < 172u; i++) {
+        ((uint8_t *)tzi)[i] = 0;
+    }
+    return 0u;
+}
+
+uint32_t GetDynamicTimeZoneInformation(void *dtzi) {
+    uint32_t i;
+
+    for (i = 0; i < 432u; i++) {
+        ((uint8_t *)dtzi)[i] = 0;
+    }
+    return 0u;
+}
+
+/* What the C runtime calls when it gives up - a failed stack cookie above
+ * all: the filter the program set, else EXCEPTION_EXECUTE_HANDLER, which tells
+ * the caller to end the process. */
+int32_t UnhandledExceptionFilter(void *pointers) {
+    int32_t (*f)(void *) = (int32_t (*)(void *))g_exception_filter;
+
+    return f ? f(pointers) : 1;
 }

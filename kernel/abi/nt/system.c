@@ -9,6 +9,7 @@
 
 #include "nt_internal.h"
 #include "vibeos/mm_stats.h"
+#include "vibeos/random.h"
 
 /* The clock in 100-ns units, the unit of every NT time. It advances a tick at a
  * time, as Linux's clocks do here: a resolution the timer has, not one it
@@ -49,6 +50,32 @@ static long nt_query_performance_counter(uint64_t counter, uint64_t freq) {
     return st;
 }
 
+/* The private random class: Length bytes from the pool, a chunk at a time so
+ * that nothing large sits on the kernel stack. The pool never makes a caller
+ * wait - ProcessPrng cannot fail and has no way to say "not yet" - which is
+ * /dev/urandom's contract, not /dev/random's. */
+static long nt_random(uint64_t buf, uint32_t len, uint64_t ret_len) {
+    uint8_t chunk[256];
+    uint32_t done = 0;
+
+    if (len > VIBEOS_NT_RANDOM_MAX) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
+    while (done < len) {
+        uint32_t n = len - done < sizeof(chunk) ? len - done : (uint32_t)sizeof(chunk);
+
+        vibeos_random_read(chunk, n);
+        if (nt_copy_out(buf + done, chunk, n) != 0) {
+            return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+        }
+        done += n;
+    }
+    if (ret_len != 0u && nt_copy_out(ret_len, &done, sizeof(done)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
 /* NtQuerySystemInformation(Class, Buffer, Length, ReturnLength). W1 answers
  * SystemBasicInformation; any other class is STATUS_INVALID_INFO_CLASS, and a
  * length other than the structure's STATUS_INFO_LENGTH_MISMATCH with nothing
@@ -62,6 +89,9 @@ static long nt_query_system_information(uint64_t cls, uint64_t buf, uint64_t len
     uint32_t mask = ks_cpus_online_mask();
     uint32_t i, n = 0;
 
+    if ((uint32_t)cls == VIBEOS_NT_SYSTEM_VIBEOS_RANDOM) {
+        return nt_random(buf, (uint32_t)len, ret_len);
+    }
     if ((uint32_t)cls != VIBEOS_NT_SYSTEM_BASIC_INFORMATION) {
         return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
     }

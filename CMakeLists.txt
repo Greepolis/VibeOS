@@ -1317,7 +1317,31 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         # FinalCommander imports beyond the rest (docs/shell/s7.md step 3): a
         # DLL missing from the disk ends a process before its first line.
         set(VIBEOS_WIN_PLACEHOLDERS hid imm32 setupapi
-            ws2_32 ole32 oleaut32 combase propsys crypt32 bcrypt bcryptprimitives iphlpapi mpr psapi secur32 api-ms-win-core-synch-l1-2-0)
+            ws2_32 ole32 oleaut32 combase propsys crypt32 iphlpapi mpr psapi secur32)
+        # Three of FinalCommander's that do something (docs/shell/s7.md step 3):
+        # the API set Rust's locks wait through, and two faces of one random
+        # source. Each is a small DLL against our ntdll alone.
+        foreach(VIBEOS_SMALL "api-ms-win-core-synch-l1-2-0|apiset/synch.c|apiset/synch.def|vibeos_synch_main"
+                             "bcrypt|bcrypt/bcrypt.c|bcrypt/bcrypt.def|vibeos_bcrypt_main"
+                             "bcryptprimitives|bcrypt/bcrypt.c|bcrypt/bcryptprimitives.def|vibeos_bcrypt_main")
+            string(REPLACE "|" ";" VIBEOS_SMALL_F "${VIBEOS_SMALL}")
+            list(GET VIBEOS_SMALL_F 0 VIBEOS_SMALL_NAME)
+            list(GET VIBEOS_SMALL_F 1 VIBEOS_SMALL_SRC)
+            list(GET VIBEOS_SMALL_F 2 VIBEOS_SMALL_DEF)
+            list(GET VIBEOS_SMALL_F 3 VIBEOS_SMALL_ENTRY)
+            add_custom_command(
+                OUTPUT "${VIBEOS_WIN_DIR}/${VIBEOS_SMALL_NAME}.dll"
+                COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
+                        -o "${VIBEOS_WIN_DIR}/${VIBEOS_SMALL_NAME}.dll"
+                        "${VIBEOS_WIN_SRC}/${VIBEOS_SMALL_SRC}" "${VIBEOS_WIN_SRC}/${VIBEOS_SMALL_DEF}"
+                        -e ${VIBEOS_SMALL_ENTRY} -Wl,--dynamicbase
+                        -L${VIBEOS_WIN_DIR} -lntdll
+                DEPENDS "${VIBEOS_WIN_SRC}/${VIBEOS_SMALL_SRC}" "${VIBEOS_WIN_SRC}/${VIBEOS_SMALL_DEF}"
+                        "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h" "${VIBEOS_WIN_DIR}/libntdll.a"
+                COMMENT "Building our ${VIBEOS_SMALL_NAME}.dll with mingw-w64"
+                VERBATIM
+            )
+        endforeach()
         foreach(VIBEOS_PH ${VIBEOS_WIN_PLACEHOLDERS})
             add_custom_command(
                 OUTPUT "${VIBEOS_WIN_DIR}/${VIBEOS_PH}.dll"

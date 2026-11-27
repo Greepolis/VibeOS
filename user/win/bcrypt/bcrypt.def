@@ -1,0 +1,4 @@
+; bcrypt.dll: the half of bcrypt.c it exports (docs/shell/s7.md step 3).
+LIBRARY bcrypt.dll
+EXPORTS
+BCryptGenRandom

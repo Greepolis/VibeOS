@@ -28,7 +28,8 @@ def def_names(path):
             started = True
             continue
         if started:
-            names.append(line.split()[0])
+            # name=dll.func is a forwarder: exported under the name before '='.
+            names.append(line.split()[0].split('=')[0])
     return names
 
 

@@ -1,0 +1,6 @@
+; api-ms-win-core-synch-l1-2-0.dll: what synch.c defines (docs/shell/s7.md step 3).
+LIBRARY api-ms-win-core-synch-l1-2-0.dll
+EXPORTS
+WaitOnAddress
+WakeByAddressAll
+WakeByAddressSingle

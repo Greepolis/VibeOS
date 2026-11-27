@@ -124,8 +124,10 @@ static int dll_eq(const char *a, const char *b) {
 }
 
 /* The address `base` exports under `name`, or 0. Exports are sorted by name, so
- * this searches by halves - kernel32's tests import six hundred names. */
-static uint64_t pe_export(uint64_t base, const char *name) {
+ * this searches by halves - kernel32's tests import six hundred names. An
+ * address inside the export directory is a forwarder, a string; pe_export
+ * below follows it. */
+static uint64_t pe_export_raw(uint64_t base, const char *name) {
     uint32_t size = 0;
     uint32_t rva = pe_dir(base, 0u /* export */, &size);
     uint64_t dir, names, ords, funcs;
@@ -159,6 +161,52 @@ static uint64_t pe_export(uint64_t base, const char *name) {
         }
     }
     return 0;
+}
+
+static uint64_t load_dll(const char *name, int optional);
+
+/* pe_export_raw, following forwarders: "NTDLL.RtlCaptureContext" is the
+ * function of that name in ntdll.dll, loaded if it is not yet. Windows'
+ * kernel32 forwards the unwinding calls to ntdll this way, and a wrapper
+ * cannot stand in for one - RtlCaptureContext called from a wrapper captures
+ * the wrapper (docs/shell/s7.md step 3). A forwarder by ordinal ("DLL.#5"),
+ * a chain longer than four, or a DLL that is not there is not exported. */
+static uint64_t pe_export_depth(uint64_t base, const char *name, uint32_t depth) {
+    uint32_t size = 0, rva = pe_dir(base, 0u, &size);
+    uint64_t at = pe_export_raw(base, name);
+    char dll[64], fn[128];
+    const char *f;
+    uint32_t i, dot = 0;
+
+    if (!at || at < base + rva || at >= base + rva + size) {
+        return at;
+    }
+    f = (const char *)(uintptr_t)at;
+    for (i = 0; f[i]; i++) {
+        dot = f[i] == '.' ? i : dot;
+    }
+    if (depth >= 4u || dot == 0u || dot + 5u > sizeof(dll) || f[dot + 1u] == '#' ||
+        i - dot > sizeof(fn)) {
+        return 0;
+    }
+    for (i = 0; i < dot; i++) {
+        dll[i] = f[i];
+    }
+    dll[i++] = '.';
+    dll[i++] = 'd';
+    dll[i++] = 'l';
+    dll[i++] = 'l';
+    dll[i] = 0;
+    for (i = 0; f[dot + 1u + i]; i++) {
+        fn[i] = f[dot + 1u + i];
+    }
+    fn[i] = 0;
+    base = load_dll(dll, 1);
+    return base ? pe_export_depth(base, fn, depth + 1u) : 0;
+}
+
+static uint64_t pe_export(uint64_t base, const char *name) {
+    return pe_export_depth(base, name, 0u);
 }
 
 /* ---- the stubs a missing function is bound to ---------------------------------------- */
@@ -464,9 +512,9 @@ static int is_module(uint64_t base) {
 }
 
 /* LdrGetProcedureAddress(Module, Name, Ordinal, Address): by name if Name is
- * given, by ordinal otherwise. An address inside the export directory is a
- * forwarder - a string, not code - and none of our DLLs has one, so it is
- * refused rather than handed out as a function. */
+ * given, by ordinal otherwise. A forwarder by name is followed (pe_export);
+ * by ordinal it is still an address inside the export directory - a string,
+ * not code - and is refused rather than handed out as a function. */
 NTSTATUS_T LdrGetProcedureAddress(void *module,
                                   const vibeos_astring_t *name,
                                   uint32_t ordinal, void **address) {

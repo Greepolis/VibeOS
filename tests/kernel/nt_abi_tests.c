@@ -245,6 +245,24 @@ static void t_system(void) {
                ST(VIBEOS_STATUS_INFO_LENGTH_MISMATCH), "and a mismatched length");
     expect(nt(VIBEOS_NT_NR_NtQuerySystemInformation, 5, buf, 64, 0, 0) ==
                ST(VIBEOS_STATUS_INVALID_INFO_CLASS), "a class W1 does not answer");
+    {
+        /* The random class fills every byte it is asked for and none past it:
+         * 600 bytes is three chunks, the last one short. */
+        uint64_t rb = kf_ualloc(640);
+        uint8_t *r = (uint8_t *)kf_uptr(rb);
+        uint32_t k, zeros = 0;
+
+        for (k = 0; k < 640u; k++) {
+            r[k] = 0;
+        }
+        r[600] = 0xA5u;
+        expect(nt(VIBEOS_NT_NR_NtQuerySystemInformation, VIBEOS_NT_SYSTEM_VIBEOS_RANDOM, rb, 600, 0, 0) ==
+                   ST(VIBEOS_STATUS_SUCCESS), "the random class answers");
+        for (k = 0; k < 600u; k++) {
+            zeros += r[k] == 0u;
+        }
+        expect(zeros < 16u && r[600] == 0xA5u, "with random bytes, to the length and not past it");
+    }
 }
 
 /* ---- the object manager (W2) ---------------------------------------------------------- */

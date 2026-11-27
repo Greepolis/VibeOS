@@ -1602,3 +1602,15 @@ int vibeos_advapi32_main(uint64_t instance, uint32_t reason, void *reserved) {
     (void)reserved;
     return 1;
 }
+
+/* SystemFunction036, RtlGenRandom by its header name: random bytes from the
+ * kernel's pool, as bcrypt's (docs/shell/s7.md step 3, WO-110). */
+uint8_t SystemFunction036(void *buf, uint32_t len) {
+    if (!buf && len) {
+        return 0;
+    }
+    return (NtQuerySystemInformation(VIBEOS_NT_SYSTEM_VIBEOS_RANDOM, buf, len, 0) & 0xC0000000u) ==
+                   0xC0000000u
+               ? 0u
+               : 1u;
+}
