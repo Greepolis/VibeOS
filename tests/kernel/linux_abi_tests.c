@@ -6444,6 +6444,31 @@ static void t_pty(void) {
     expect(s >= 3 && SYS2(5, (uint64_t)s, st) == 0 && (memcpy(&sb, kf_uptr(st), sizeof(sb)), 1) &&
            sb.st_rdev == ((136u << 8) | *(uint32_t *)kf_uptr(np)) && (sb.st_mode & 0777u) == 0620u,
            "the slave is (136, N), 0620");
+    {
+        /* What musl's ttyname does: readlink /proc/self/fd/N, then stat that
+         * path and keep it only if it is the descriptor's own file - st_dev
+         * and st_ino equal to fstat's. login found no name for a pty this way
+         * (H-045). */
+        char link[48];
+        uint64_t lb = kf_ualloc(64), st2 = kf_ualloc(sizeof(linux_stat_t));
+        linux_stat_t byname;
+        long ln;
+
+        snprintf(link, sizeof(link), "/proc/self/fd/%ld", s);
+        ln = SYS3(89, ustr(link), lb, 63);
+        if (ln > 0) {
+            ((char *)kf_uptr(lb))[ln] = 0;
+        }
+        expect(ln > 0 && strcmp((char *)kf_uptr(lb), name) == 0 && SYS2(4, ustr(name), st2) == 0 &&
+                   (memcpy(&byname, kf_uptr(st2), sizeof(byname)), 1) && byname.st_dev == sb.st_dev &&
+                   byname.st_ino == sb.st_ino,
+               "ttyname's question: the descriptor's link names its pts, and stat of the name is the same file");
+        if (!(ln > 0 && byname.st_dev == sb.st_dev && byname.st_ino == sb.st_ino)) {
+            printf("  (link=%s dev %llx/%llx ino %llx/%llx)\n", ln > 0 ? (char *)kf_uptr(lb) : "?",
+                   (unsigned long long)byname.st_dev, (unsigned long long)sb.st_dev,
+                   (unsigned long long)byname.st_ino, (unsigned long long)sb.st_ino);
+        }
+    }
     expect(dir_type("/dev", "ptmx") == 2 && dir_type("/dev", "pts") == 4, "/dev lists ptmx and the pts directory");
 
     expect(SYS3(1, (uint64_t)m, ustr("hi\n"), 3) == 3, "the master types");

@@ -102,6 +102,15 @@ int main(void) {
     NEED(m >= 0 && unlockpt(m) == 0, "no pseudo-terminal");
     s = open(ptsname(m), O_RDWR | O_NOCTTY);
     NEED(s >= 0, "no slave");
+    {
+        /* What a C library says the pty is called. Written down on
+         * 2026-11-26 as broken for a pty while fixing H-045, and measured on
+         * 2026-11-27 to be right: the failure then had another cause. Kept as
+         * a check, so that the claim cannot come back unmeasured. */
+        const char *tn = ttyname(s);
+
+        NEED(tn && strcmp(tn, ptsname(m)) == 0, "ttyname does not name the pty");
+    }
     signal(SIGALRM, on_alarm);
     fflush(stdout);
     child = fork();
