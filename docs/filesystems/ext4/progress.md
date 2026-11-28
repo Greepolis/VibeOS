@@ -215,6 +215,12 @@ writes an `ext4` volume it can keep true (the table below the step), and
   in between showed it - e2fsck, "root node fails checksum" (seed
   1000017949). The first change to an indexed directory now makes it linear
   here too; `ext4-dotdot.txt` puts the old code back and goes red.
+- **Found by the nightly, 2026-11-28**: replacing a whole file
+  (`write_file`) made one `write_at` call, and a write is short by design -
+  past the extent window, or past the 64 runs one call may give back. A file
+  whose free space came in many pieces after a long run of sparse writes was
+  replaced by its first 114 KiB of 145 (seed 132903). It goes on from where the write stopped now;
+  `fs-ext4-write-file-short.txt` puts the single call back and goes red.
 - **The oracle's own limits, 2026-11-20.** A cut that leaves a write over a
   file with several names, one of them unlinked by a commit the cut has not
   reached, shows the written bytes under that name too; the judge took only

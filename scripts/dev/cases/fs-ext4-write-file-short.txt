@@ -1,0 +1,13 @@
+# A whole-file write stops at the first short write_at (nightly seed 132903,
+# 2026-11-28): free space in many pieces runs a call out of runs, and the
+# file was replaced by its first 114 KiB. Reproduced by that seed.
+#
+# Target source: kernel/fs/ext4_write.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-ext4-seed.sh build-gcc-Release 132903" python3 scripts/dev/sabotage.py kernel/fs/ext4_write.c scripts/dev/cases/fs-ext4-write-file-short.txt
+
+### write_file takes one write_at for the whole file
+--- old
+            r = x_write_at(fs, &node, done, (const uint8_t *)buf + done, len - done);
++++ new
+            r = x_write_at(fs, &node, done, (const uint8_t *)buf + done, len - done);
+            len = r > 0 ? done + (uint32_t)r : len;

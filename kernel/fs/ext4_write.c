@@ -4538,8 +4538,24 @@ static long x_write_file(void *fsv, const char *path, const void *buf, uint32_t 
     } else if (node.is_dir || x_truncate(fs, &node, 0) != 0) {
         return -1;
     }
-    r = x_write_at(fs, &node, 0, buf, len);
-    return r < 0 ? -1 : r;
+    /* A write may be short by design - past the extent window, or past the
+     * runs one call may take back (E4-008, E4-009) - and its caller is meant
+     * to go on from there. This one did not, so a file whose free space came
+     * in many pieces was replaced by its first 114 KiB, reported as written
+     * in part: the nightly torture's seed 132903 (2026-11-28). */
+    {
+        uint32_t done = 0;
+
+        while (done < len) {
+            r = x_write_at(fs, &node, done, (const uint8_t *)buf + done, len - done);
+            if (r <= 0) {
+                return done ? (long)done : (r < 0 ? -1 : 0);
+            }
+            done += (uint32_t)r;
+        }
+        r = (long)done;
+    }
+    return r;
 }
 
 /* ---- one operation, one transaction (ext4_journal.c) ------------------- */

@@ -842,7 +842,13 @@ static int run(char **a, int n) {
             buf[i] = pat(seed, i);
         }
         r = vibeos_fs_write_file(&g_mnt, a[1], buf, (uint32_t)len);
-        return r == (long)len ? 0 : -1;
+        if (r != (long)len) {
+            /* What the driver said, not only that it refused: a bare -1 here
+             * hid which refusal seed 132903 met (E4 nightly, 2026-11-28). */
+            fprintf(stderr, "writefile %s: driver returned %ld\n", a[1], r);
+            return -1;
+        }
+        return 0;
     }
     if (strcmp(c, "fill") == 0 && n == 4) {
         unsigned count = (unsigned)strtoul(a[2], NULL, 10);
