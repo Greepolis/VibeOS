@@ -10,6 +10,7 @@
 #include "vibeos/fileops.h"
 #include "vibeos/cred.h"
 #include "vibeos/filelock.h"
+#include "vibeos/tty.h"
 
 /* The file a handle names, if the handle was granted `need` - every bit of it.
  * The only way a file service reaches a file: the mask a handle was opened or
@@ -886,6 +887,67 @@ static uint32_t nt_may_remove_path(const char *path, const vibeos_cred_t *who) {
                ? VIBEOS_STATUS_SUCCESS : VIBEOS_STATUS_ACCESS_DENIED;
 }
 
+/* The terminal a description is, or null: the console, or either end of a
+ * pseudo-terminal - the ones Linux's terminal ioctls answer for. */
+static vibeos_term_t *nt_term_of(const vibeos_file_t *f) {
+    if (f->ops == &vibeos_fops_console) {
+        return vibeos_tty_console();
+    }
+    if (f->ops == &vibeos_fops_pts || f->ops == &vibeos_fops_ptmx) {
+        return vibeos_pty_term(f);
+    }
+    return 0;
+}
+
+static uint32_t nt_console_query(vibeos_file_t *f, uint8_t *b) {
+    vibeos_term_t *t = nt_term_of(f);
+    vibeos_nt_console_info_t ci;
+    vibeos_tty_modes_t m;
+    vibeos_tty_size_t sz;
+    uint32_t i;
+
+    if (!t) {
+        return VIBEOS_STATUS_INVALID_HANDLE;
+    }
+    vibeos_term_get(t, &m);
+    vibeos_term_get_size(t, &sz);
+    ci.mode = ((m.lflag & VIBEOS_TTY_ISIG) ? VIBEOS_NT_CONSOLE_PROCESSED_INPUT : 0u) |
+              ((m.lflag & VIBEOS_TTY_ICANON) ? VIBEOS_NT_CONSOLE_LINE_INPUT : 0u) |
+              ((m.lflag & VIBEOS_TTY_ECHO) ? VIBEOS_NT_CONSOLE_ECHO_INPUT : 0u);
+    ci.pending = vibeos_term_pending(t);
+    ci.rows = sz.rows;
+    ci.cols = sz.cols;
+    ci.pad = 0;
+    for (i = 0; i < sizeof(ci); i++) {
+        b[i] = ((const uint8_t *)&ci)[i];
+    }
+    return VIBEOS_STATUS_SUCCESS;
+}
+
+/* The three bits into the terminal's modes; the rest of them as they were.
+ * Out of line mode a read returns as soon as one byte is there (MIN 1), which
+ * is what ReadConsoleInput needs. Echo of an erase follows echo itself. */
+static uint32_t nt_console_set(vibeos_file_t *f, uint32_t mode) {
+    vibeos_term_t *t = nt_term_of(f);
+    vibeos_tty_modes_t m;
+    const uint32_t ours = VIBEOS_TTY_ISIG | VIBEOS_TTY_ICANON | VIBEOS_TTY_ECHO | VIBEOS_TTY_ECHOE;
+
+    if (!t) {
+        return VIBEOS_STATUS_INVALID_HANDLE;
+    }
+    vibeos_term_get(t, &m);
+    m.lflag &= ~ours;
+    m.lflag |= ((mode & VIBEOS_NT_CONSOLE_PROCESSED_INPUT) ? VIBEOS_TTY_ISIG : 0u) |
+               ((mode & VIBEOS_NT_CONSOLE_LINE_INPUT) ? VIBEOS_TTY_ICANON : 0u) |
+               ((mode & VIBEOS_NT_CONSOLE_ECHO_INPUT) ? VIBEOS_TTY_ECHO | VIBEOS_TTY_ECHOE : 0u);
+    if (!(mode & VIBEOS_NT_CONSOLE_LINE_INPUT)) {
+        m.cc[VIBEOS_TTY_VMIN] = 1u;
+        m.cc[VIBEOS_TTY_VTIME] = 0u;
+    }
+    vibeos_term_set(t, &m, 0);
+    return VIBEOS_STATUS_SUCCESS;
+}
+
 /* NtQueryInformationFile(File, IoStatusBlock, Information, Length, Class). */
 static long nt_query_information_file(uint64_t file, uint64_t iosb_u, uint64_t out, uint64_t len,
                                       uint64_t cls) {
@@ -902,6 +964,7 @@ static long nt_query_information_file(uint64_t file, uint64_t iosb_u, uint64_t o
         case NT_FI_NAME: need = 4u; break;
         case NT_FI_NETWORK_OPEN: need = 56u; break;
         case NT_FI_ALL: need = 100u; break;
+        case VIBEOS_NT_FILE_VIBEOS_CONSOLE: need = (uint32_t)sizeof(vibeos_nt_console_info_t); break;
         default: return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
     }
     if (len < need) {
@@ -934,6 +997,13 @@ static long nt_query_information_file(uint64_t file, uint64_t iosb_u, uint64_t o
             break;
         case NT_FI_ATTRIBUTE_TAG:
             put32(b, 0, nt_attrs_of(&s));
+            break;
+        case VIBEOS_NT_FILE_VIBEOS_CONSOLE:
+            st = nt_console_query(f, b);
+            if (st != VIBEOS_STATUS_SUCCESS) {
+                vibeos_file_put(f);
+                return NT_STATUS(st);
+            }
             break;
         case NT_FI_NETWORK_OPEN:
             nt_basic(b, 0, &s);       /* the four times, then sizes, then attributes */
@@ -987,6 +1057,7 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
         case NT_FI_POSITION: case NT_FI_END_OF_FILE: case NT_FI_ALLOCATION: need = 8u; break;
         case NT_FI_DISPOSITION: need = 1u; break;
         case NT_FI_RENAME: need = 20u; break;
+        case VIBEOS_NT_FILE_VIBEOS_CONSOLE: need = 4u; break;
         default: return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
     }
     if (len < need) {
@@ -1003,6 +1074,9 @@ static long nt_set_information_file(uint64_t file, uint64_t iosb_u, uint64_t in,
         return NT_STATUS(nt_file_refusal(file, nt_set_needs((uint32_t)cls)));
     }
     switch ((uint32_t)cls) {
+        case VIBEOS_NT_FILE_VIBEOS_CONSOLE:
+            st = nt_console_set(f, (uint32_t)get64(b, 0) & 0xFFFFFFFFu);
+            break;
         case NT_FI_POSITION:
             if (get64(b, 0) >= 0x8000000000000000ull) {
                 st = VIBEOS_STATUS_INVALID_PARAMETER;   /* a LARGE_INTEGER, signed */
@@ -1312,9 +1386,25 @@ static long nt_query_volume_information_file(uint64_t file, uint64_t iosb_u, uin
             put32(b, 24, 1u);
             put32(b, 28, sf.block_size);
             break;
-        case 4:
-            put32(b, 0, 7u);   /* FILE_DEVICE_DISK */
+        case 4: {
+            /* FILE_FS_DEVICE_INFORMATION's type, by what the file is: GetFileType
+             * is this answer, and a terminal reported as a disk is a program
+             * that finds no console - FinalCommander's Windows build could not
+             * open CONIN$ for that (S7 step 3). A character device is the
+             * console, a pipe or a socket a named pipe, the rest a disk. */
+            vibeos_file_stat_t ks;
+            uint32_t kind;
+
+            vibeos_file_stat_clear(&ks);
+            if (f->ops->stat) {
+                (void)f->ops->stat(f, &ks);
+            }
+            kind = ks.mode & VIBEOS_S_IFMT;
+            put32(b, 0, kind == VIBEOS_S_IFCHR ? 0x50u /* FILE_DEVICE_CONSOLE */
+                        : kind == VIBEOS_S_IFIFO || kind == VIBEOS_S_IFSOCK ? 0x11u /* NAMED_PIPE */
+                        : 7u /* FILE_DEVICE_DISK */);
             break;
+        }
         default: {
             /* Case-preserved names, Unicode on disk; the name in UTF-16. */
             uint32_t n = 0, cap = len < sizeof(b) ? (uint32_t)len : (uint32_t)sizeof(b);

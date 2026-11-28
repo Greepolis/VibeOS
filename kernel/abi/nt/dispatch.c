@@ -22,6 +22,8 @@ extern const uint32_t nt_system_row_count;
 extern const vibeos_row_t nt_object_rows[];
 extern const uint32_t nt_object_row_count;
 extern const vibeos_row_t nt_sync_rows[];
+extern const vibeos_row_t nt_iocp_rows[];
+extern const uint32_t nt_iocp_row_count;
 extern const uint32_t nt_sync_row_count;
 extern const vibeos_row_t nt_section_rows[];
 extern const uint32_t nt_section_row_count;
@@ -45,6 +47,7 @@ static const struct {
     { nt_system_rows, &nt_system_row_count },
     { nt_object_rows, &nt_object_row_count },
     { nt_sync_rows, &nt_sync_row_count },
+    { nt_iocp_rows, &nt_iocp_row_count },
     { nt_section_rows, &nt_section_row_count },
     { nt_memory_rows, &nt_memory_row_count },
     { nt_thread_rows, &nt_thread_row_count },
@@ -94,6 +97,7 @@ void vibeos_nt_abi_init(void) {
 
     vibeos_abi_nt_reset();
     nt_ob_reset();
+    nt_iocp_reset();
     for (i = 0; i < (uint32_t)(sizeof(g_tables) / sizeof(g_tables[0])); i++) {
         if (vibeos_abi_nt_register(g_tables[i].rows, *g_tables[i].count) != 0) {
             ks_log(VIBEOS_LOG_ERROR, 64u, i, 0,

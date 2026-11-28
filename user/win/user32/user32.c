@@ -576,6 +576,99 @@ BOOL32 GetCursorPos(void *pt) {
     return 1;
 }
 
+/* ---- a console program's questions about windows (docs/shell/s7.md step 3) -------------
+ * FinalCommander asks which window is in front, to read the modifier keys
+ * only while its console is, and sizes its console's window on Alt+F9; crossterm
+ * asks the keyboard layout to name a key typed with Ctrl. There is no window
+ * system, so there is no window: every answer is the one Windows gives about a
+ * window that does not exist - null, zero, FALSE - and each caller checks for
+ * it. Keys are what the console's input events say, not a keyboard's state. */
+
+uint64_t GetForegroundWindow(void) {
+    return 0;
+}
+
+uint64_t FindWindowW(const uint16_t *cls, const uint16_t *name) {
+    (void)cls;
+    (void)name;
+    return 0;
+}
+
+uint64_t GetWindow(uint64_t w, uint32_t cmd) {
+    (void)cmd;
+    set_error(ERROR_INVALID_WINDOW_HANDLE);
+    (void)w;
+    return 0;
+}
+
+uint64_t GetAncestor(uint64_t w, uint32_t flags) {
+    (void)w;
+    (void)flags;
+    return 0;
+}
+
+BOOL32 IsWindowVisible(uint64_t w) {
+    (void)w;
+    return 0;
+}
+
+BOOL32 IsZoomed(uint64_t w) {
+    (void)w;
+    return 0;
+}
+
+BOOL32 ShowWindow(uint64_t w, int32_t cmd) {
+    (void)w;
+    (void)cmd;
+    return 0;   /* "was not visible", which is all a missing window can be */
+}
+
+uint32_t GetWindowThreadProcessId(uint64_t w, uint32_t *pid) {
+    (void)w;
+    if (pid) {
+        *pid = 0;
+    }
+    set_error(ERROR_INVALID_WINDOW_HANDLE);
+    return 0;
+}
+
+intptr_t SendMessageA(uint64_t w, uint32_t msg, uintptr_t wp, intptr_t lp) {
+    (void)w;
+    (void)msg;
+    (void)wp;
+    (void)lp;
+    set_error(ERROR_INVALID_WINDOW_HANDLE);
+    return 0;
+}
+
+/* Never down: nothing watches the keyboard but the console. */
+int16_t GetAsyncKeyState(int32_t vk) {
+    (void)vk;
+    return 0;
+}
+
+/* en-US, the one layout there is. */
+uint64_t GetKeyboardLayout(uint32_t thread) {
+    (void)thread;
+    return 0x04090409u;
+}
+
+/* The character a key makes under a layout. A key whose record carries no
+ * character here carries none under any layout: 0, "no translation", is what
+ * Windows answers for such a key, and crossterm then names the key by its
+ * virtual code. */
+int32_t ToUnicodeEx(uint32_t vk, uint32_t scan, const uint8_t *state, uint16_t *out, int32_t cap,
+                    uint32_t flags, uint64_t layout) {
+    (void)vk;
+    (void)scan;
+    (void)state;
+    (void)out;
+    (void)cap;
+    (void)flags;
+    (void)layout;
+    return 0;
+}
+
 int vibeos_user32_main(uint64_t instance, uint32_t reason, void *reserved) {
     (void)instance;
     (void)reason;

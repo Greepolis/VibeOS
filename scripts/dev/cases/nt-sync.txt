@@ -20,11 +20,11 @@
 
 ### wait-all settles for the first signalled object
 --- old
-            for (i = 0; i < n && signaled_now(o[i], tid, pulses[i]); i++) {
+            for (i = 0; i < n && (o[i] ? signaled_now(o[i], tid, pulses[i]) : fready[i]); i++) {
             }
             if (i == n) {
 +++ new
-            for (i = 0; i < n && signaled_now(o[i], tid, pulses[i]); i++) {
+            for (i = 0; i < n && (o[i] ? signaled_now(o[i], tid, pulses[i]) : fready[i]); i++) {
             }
             if (i >= 1u) {
 

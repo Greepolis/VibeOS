@@ -204,6 +204,7 @@ set(VIBEOS_NT_ABI_SOURCES
     kernel/abi/nt/start.c
     kernel/abi/nt/object.c
     kernel/abi/nt/sync.c
+    kernel/abi/nt/iocp.c
     kernel/abi/nt/section.c
     kernel/abi/nt/memory.c
     kernel/abi/nt/thread.c

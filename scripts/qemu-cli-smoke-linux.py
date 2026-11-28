@@ -3574,6 +3574,23 @@ def main():
                     problems.append("fcmd_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
             elif disk_img and CORPUS_MODE == "require":
                 problems.append("corpus_program_absent:fcmd")
+            # Its Windows build, through the NT personality (docs/shell/s7.md
+            # step 3). Read off its own run - the stretch of the log from its
+            # FCMDT line to the next command - because the Linux build's
+            # FCMD_OK is in the same log, and a search of the whole log was
+            # green for both while the Windows one stopped at its first
+            # missing function.
+            fcmd_exe = os.path.join(efi_root, "usr", "lib", "windows", "system32", "fcmd.exe")
+            if disk_img and os.path.exists(fcmd_exe):
+                start = text.find("FCMDT.ELF /usr/lib/windows/system32/fcmd.exe")
+                if start < 0:
+                    problems.append("fcmd_exe_did_not_start")
+                else:
+                    after = text.find("write(ring3): $ ", start + 1)
+                    run = text[start:after if after > 0 else len(text)]
+                    if not re.search(r"write\(ring3\): FCMD_OK: ", run):
+                        m = re.search(r"FCMD_FAIL: ([^\r\n]*)", run)
+                        problems.append("fcmd_exe_failed" + (":" + m.group(1).replace(" ", "_") if m else ""))
             if disk_img and os.path.exists(os.path.join(efi_root, "EFI", "BOOT", "BASH.ELF")):
                 differs = bash_script_differs(text)
                 if differs:
@@ -3960,7 +3977,8 @@ def main():
             # failure prints which. The one unimplemented service it asks for
             # on purpose is the only one a healthy boot may name, as syscall
             # 1999 is on the Linux side; any other is a program asking for a
-            # step nobody has written.
+            # step nobody has written. It was NtYieldExecution until S7 step 3
+            # wrote that one for FinalCommander's Windows build.
             nt_absent = False
             hello_exe = os.path.join(efi_root, "win", "hello.exe")
             if os.path.exists(hello_exe):
@@ -3969,9 +3987,9 @@ def main():
                     problems.append("nt_program_did_not_run" +
                                     ("=" + failed.group(1) if failed else ""))
                 asked = re.findall(r"unimplemented NT service nr=0x[0-9a-f]+ (\w+)", text)
-                if "NtYieldExecution" not in asked:
+                if "NtFlushProcessWriteBuffers" not in asked:
                     problems.append("nt_probe_not_counted")
-                for name in sorted(set(asked) - {"NtYieldExecution"}):
+                for name in sorted(set(asked) - {"NtFlushProcessWriteBuffers"}):
                     problems.append("nt_unimplemented_service=" + name)
                 # A DLL loaded from the disk (W2): our msvcrt, linked by our
                 # ntdll's loader and called.

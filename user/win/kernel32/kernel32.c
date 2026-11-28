@@ -435,6 +435,60 @@ static uint32_t nt_disposition(uint32_t d) {
     }
 }
 
+/* "CONIN$", "CONOUT$" or "CON", any case: 1, 2 or 3; else 0. */
+static int console_name(const uint16_t *s) {
+    static const char *const names[3] = {"conin$", "conout$", "con"};
+    int k;
+
+    for (k = 0; k < 3; k++) {
+        const char *m = names[k];
+        uint32_t i;
+
+        for (i = 0; m[i] && s[i] && (s[i] | 0x20u) == (uint16_t)(uint8_t)m[i]; i++) {
+        }
+        if (!m[i] && !s[i]) {
+            return k + 1;
+        }
+    }
+    return 0;
+}
+
+/* The process's console by name, which a terminal program opens rather than
+ * trusting its standard handles (crossterm does, for FinalCommander - S7
+ * step 3). The console here is the terminal the standard handles were given,
+ * so the name opens a second handle to that: CONIN$ to the input's, CONOUT$
+ * and CON to the output's. A process whose standard handle is not a terminal
+ * has no console, and the name is not found, as for a detached process on
+ * Windows. */
+uint32_t GetFileType(uint64_t h);
+uint64_t GetStdHandle(uint32_t which);
+
+void vibeos_k32_console_input(uint64_t h, int input);   /* cmd_api.c */
+
+static uint64_t open_console(const uint16_t *name, int inherit) {
+    uint64_t std = GetStdHandle(console_name(name) == 1 ? 0xFFFFFFF6u /* STD_INPUT */
+                                                        : 0xFFFFFFF5u /* STD_OUTPUT */);
+    uint64_t h = 0;
+    NTSTATUS_T st;
+
+    if (std == 0u || std == INVALID_HANDLE || GetFileType(std) != 2u /* FILE_TYPE_CHAR */) {
+        set_error(2u /* ERROR_FILE_NOT_FOUND */);
+        return INVALID_HANDLE;
+    }
+    st = NtDuplicateObject(VIBEOS_NT_CURRENT_PROCESS, std, VIBEOS_NT_CURRENT_PROCESS, &h, 0,
+                           inherit ? VIBEOS_OBJ_INHERIT : 0u, 2u /* DUPLICATE_SAME_ACCESS */);
+    if (failed(st)) {
+        fail(st);
+        return INVALID_HANDLE;
+    }
+    /* Its mode is the input's or the screen's (cmd_api.c), said for every
+     * open: a closed CONIN$'s number comes back as the next CONOUT$, and
+     * crossterm's VT-processing bit then turned the terminal's echo back on. */
+    vibeos_k32_console_input(h, console_name(name) == 1);
+    set_error(0);
+    return h;
+}
+
 uint64_t CreateFileW(const uint16_t *name, uint32_t access, uint32_t share, const void *sa,
                      uint32_t disposition, uint32_t flags, uint64_t template_file) {
     named_t n;
@@ -448,6 +502,9 @@ uint64_t CreateFileW(const uint16_t *name, uint32_t access, uint32_t share, cons
     if (!name || d == 0xFFFFFFFFu) {
         set_error(!name ? 3u /* ERROR_PATH_NOT_FOUND */ : ERROR_INVALID_PARAMETER);
         return INVALID_HANDLE;
+    }
+    if (console_name(name)) {
+        return open_console(name, inherits(sa));
     }
     if (!RtlDosPathNameToNtPathName_U(name, &nt_name, 0, 0)) {
         set_error(3u);
@@ -534,8 +591,14 @@ static uint32_t waited(NTSTATUS_T st) {
     return st;
 }
 
+int vibeos_k32_console_has_events(uint64_t h);   /* cmd_api.c */
+
 uint32_t WaitForSingleObjectEx(uint64_t h, uint32_t ms, BOOL32 alertable) {
     int64_t t;
+
+    if (vibeos_k32_console_has_events(h)) {
+        return 0u;   /* WAIT_OBJECT_0: the console's buffer holds records */
+    }
     return waited(NtWaitForSingleObject(h, alertable ? 1u : 0u, interval(ms, &t)));
 }
 
@@ -546,6 +609,13 @@ uint32_t WaitForSingleObject(uint64_t h, uint32_t ms) {
 uint32_t WaitForMultipleObjectsEx(uint32_t count, const uint64_t *handles, BOOL32 all,
                                   uint32_t ms, BOOL32 alertable) {
     int64_t t;
+    uint32_t i;
+
+    for (i = 0; !all && i < count && i < 64u; i++) {
+        if (vibeos_k32_console_has_events(handles[i])) {
+            return i;   /* WAIT_OBJECT_0 + i, as WaitForSingleObjectEx above */
+        }
+    }
     return waited(NtWaitForMultipleObjects(count, handles, all ? 0u : 1u, alertable ? 1u : 0u,
                                            interval(ms, &t)));
 }
@@ -1841,7 +1911,7 @@ uint32_t GetFileType(uint64_t h) {
     if (failed(st)) {
         return 2u;   /* FILE_TYPE_CHAR: what is not on a volume is the console here */
     }
-    return dev[0] == 7u ? 1u /* FILE_TYPE_DISK */ : 2u;
+    return dev[0] == 7u ? 1u /* FILE_TYPE_DISK */ : dev[0] == 0x11u ? 3u /* FILE_TYPE_PIPE */ : 2u;
 }
 
 /* A critical section, as Windows lays it out - LockCount at 8 (-1 free, else
@@ -4092,4 +4162,248 @@ int32_t UnhandledExceptionFilter(void *pointers) {
     int32_t (*f)(void *) = (int32_t (*)(void *))g_exception_filter;
 
     return f ? f(pointers) : 1;
+}
+
+/* ---- what Rust's std::fs asks of a handle (docs/shell/s7.md step 3) -------------------
+ * read_dir is FindFirstFileExW; metadata and canonicalize ask the handle by
+ * class; remove and rename set it by class. Each Win32 class is an NT class
+ * with the same layout, or one built from them. */
+
+/* The info level only says whether the short name is wanted, and none is kept;
+ * the search operations narrower than a name match (directories only) are
+ * advisory on Windows too. FIND_FIRST_EX_CASE_SENSITIVE is not honoured: names
+ * compare as the volume compares them. */
+uint64_t FindFirstFileExW(const uint16_t *pattern, uint32_t level, void *data, uint32_t op,
+                          void *filter, uint32_t flags) {
+    (void)op;
+    (void)flags;
+    if (level > 1u || filter) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return INVALID_HANDLE;
+    }
+    return FindFirstFileW(pattern, data);
+}
+
+static BOOL32 query_class(uint64_t h, uint32_t cls, void *out, uint32_t size) {
+    vibeos_nt_iosb_t iosb;
+    NTSTATUS_T st = NtQueryInformationFile(h, &iosb, out, size, cls);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+BOOL32 GetFileInformationByHandleEx(uint64_t h, uint32_t cls, void *out, uint32_t size) {
+    uint8_t all[100];
+
+    switch (cls) {
+    case 0u:   /* FileBasicInfo: FILE_BASIC_INFORMATION */
+        return query_class(h, 4u, out, size);
+    case 1u:   /* FileStandardInfo: FILE_STANDARD_INFORMATION */
+        return query_class(h, 5u, out, size);
+    case 2u:   /* FileNameInfo: FILE_NAME_INFORMATION */
+        return query_class(h, 9u, out, size);
+    case 9u:   /* FileAttributeTagInfo: FILE_ATTRIBUTE_TAG_INFORMATION */
+        return query_class(h, 35u, out, size);
+    case 18u: {   /* FileIdInfo: the volume's serial, then a 128-bit id */
+        vibeos_nt_iosb_t iosb;
+        NTSTATUS_T st = NtQueryInformationFile(h, &iosb, all, sizeof(all), 18u /* All */);
+        uint8_t *o = (uint8_t *)out;
+        uint32_t i;
+
+        if (size < 24u) {
+            set_error(24u /* ERROR_BAD_LENGTH */);
+            return 0;
+        }
+        if (failed(st) && st != 0x80000005u) {
+            return fail(st);
+        }
+        for (i = 0; i < 24u; i++) {
+            o[i] = 0;
+        }
+        *(uint64_t *)o = 0x56494245u;   /* the serial GetFileInformationByHandle gives */
+        *(uint64_t *)(o + 8) = *(uint64_t *)(all + 64);
+        return 1;
+    }
+    default:
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+}
+
+BOOL32 SetFileInformationByHandle(uint64_t h, uint32_t cls, const void *in, uint32_t size) {
+    static const uint32_t nt_class[7] = {
+        4u,    /* FileBasicInfo */
+        0u,    /* FileStandardInfo: cannot be set */
+        0u,    /* FileNameInfo: cannot be set */
+        10u,   /* FileRenameInfo */
+        13u,   /* FileDispositionInfo */
+        19u,   /* FileAllocationInfo */
+        20u,   /* FileEndOfFileInfo */
+    };
+    vibeos_nt_iosb_t iosb;
+    NTSTATUS_T st;
+
+    if (cls >= 7u || nt_class[cls] == 0u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    st = NtSetInformationFile(h, &iosb, (void *)(uintptr_t)in, size, nt_class[cls]);
+    return failed(st) ? fail(st) : 1;
+}
+
+/* The handle's path. The kernel names a file from the volume's root, as
+ * Windows' FileNameInformation does; VOLUME_NAME_DOS, the default, puts the
+ * one drive in front as "\\?\C:", VOLUME_NAME_NONE (4) leaves it off, and the
+ * GUID and NT forms are refused - there is one volume and no device names.
+ * The answer is the length without the terminator, or, when it does not fit,
+ * the size needed with it. */
+uint32_t GetFinalPathNameByHandleW(uint64_t h, uint16_t *buf, uint32_t cap, uint32_t flags) {
+    static const uint16_t dos[] = {'\\', '\\', '?', '\\', 'C', ':'};
+    uint8_t info[4u + 2u * NAME_CHARS];
+    vibeos_nt_iosb_t iosb;
+    uint32_t n, pre, i, vol = flags & 0xF0u;
+    NTSTATUS_T st;
+
+    if (vol != 0u && vol != 4u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    st = NtQueryInformationFile(h, &iosb, info, sizeof(info), 9u /* Name */);
+    if (failed(st) || st == 0x80000005u) {
+        return st == 0x80000005u ? (set_error(ERROR_FILENAME_EXCED_RANGE), 0u) : (uint32_t)fail(st);
+    }
+    n = *(uint32_t *)info / 2u;
+    pre = vol == 0u ? 6u : 0u;
+    if (cap < pre + n + 1u || !buf) {
+        return pre + n + 1u;
+    }
+    for (i = 0; i < pre; i++) {
+        buf[i] = dos[i];
+    }
+    for (i = 0; i < n; i++) {
+        buf[pre + i] = *(const uint16_t *)(info + 4u + 2u * i);
+    }
+    buf[pre + n] = 0;
+    return pre + n;
+}
+
+/* ---- I/O completion ports (docs/shell/s7.md step 3) -------------------------------------
+ * The port alone: created, posted to, removed from - what a Rust runtime's
+ * driver and its wakers use. Associating a file, so that its overlapped I/O
+ * completes into the port, is not done yet (WO-113) and is refused with
+ * ERROR_NOT_SUPPORTED rather than accepted and never delivered. */
+
+#define WAIT_TIMEOUT_ERROR 258u
+
+static const int64_t *ms_timeout(uint32_t ms, int64_t *t) {
+    if (ms == 0xFFFFFFFFu) {
+        return 0;   /* INFINITE */
+    }
+    *t = -(int64_t)ms * 10000;
+    return t;
+}
+
+uint64_t CreateIoCompletionPort(uint64_t file, uint64_t existing, uint64_t key, uint32_t threads) {
+    uint64_t port = 0;
+    NTSTATUS_T st;
+
+    (void)key;
+    if (file != INVALID_HANDLE) {
+        set_error(50u /* ERROR_NOT_SUPPORTED */);
+        return 0;
+    }
+    if (existing != 0u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    st = NtCreateIoCompletion(&port, 0x001F0003u /* IO_COMPLETION_ALL_ACCESS */, 0, threads);
+    return failed(st) ? (uint64_t)fail(st) : port;
+}
+
+BOOL32 PostQueuedCompletionStatus(uint64_t port, uint32_t bytes, uint64_t key, void *overlapped) {
+    NTSTATUS_T st = NtSetIoCompletion(port, key, (uint64_t)(uintptr_t)overlapped, 0, bytes);
+
+    return failed(st) ? fail(st) : 1;
+}
+
+/* A removed completion whose status failed is FALSE with that error and the
+ * fields filled, as on Windows; a timeout is FALSE, WAIT_TIMEOUT and a null
+ * OVERLAPPED. */
+BOOL32 GetQueuedCompletionStatus(uint64_t port, uint32_t *bytes, uint64_t *key, void **overlapped,
+                                 uint32_t ms) {
+    vibeos_nt_iosb_t iosb;
+    uint64_t ctx = 0;
+    int64_t t;
+    NTSTATUS_T st = NtRemoveIoCompletion(port, key, &ctx, &iosb, ms_timeout(ms, &t));
+
+    *overlapped = 0;
+    if (st == VIBEOS_STATUS_TIMEOUT) {
+        set_error(WAIT_TIMEOUT_ERROR);
+        return 0;
+    }
+    if (failed(st)) {
+        return fail(st);
+    }
+    *overlapped = (void *)(uintptr_t)ctx;
+    *bytes = (uint32_t)iosb.information;
+    if (failed((NTSTATUS_T)iosb.status)) {
+        return fail((NTSTATUS_T)iosb.status);
+    }
+    return 1;
+}
+
+/* OVERLAPPED_ENTRY and FILE_IO_COMPLETION_INFORMATION share a layout, so the
+ * caller's array goes straight down, as Windows' kernel32 passes it. */
+BOOL32 GetQueuedCompletionStatusEx(uint64_t port, void *entries, uint32_t count, uint32_t *removed,
+                                   uint32_t ms, BOOL32 alertable) {
+    int64_t t;
+    NTSTATUS_T st = NtRemoveIoCompletionEx(port, entries, count, removed, ms_timeout(ms, &t),
+                                           alertable ? 1u : 0u);
+
+    if (st == VIBEOS_STATUS_TIMEOUT || st == VIBEOS_STATUS_USER_APC) {
+        *removed = 0;
+        set_error(st == VIBEOS_STATUS_TIMEOUT ? WAIT_TIMEOUT_ERROR : 0xC0u /* WAIT_IO_COMPLETION */);
+        return 0;
+    }
+    return failed(st) ? fail(st) : 1;
+}
+
+/* GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS (4) names the module by an address
+ * inside it - what Rust's standard library asks of one of its own functions;
+ * otherwise by name, as GetModuleHandleW. PIN (1) and UNCHANGED_REFCOUNT (2)
+ * change nothing, as nothing is ever unloaded. */
+void *RtlPcToFileHeader(void *pc, void **base);   /* ntdll */
+
+BOOL32 GetModuleHandleExW(uint32_t flags, const uint16_t *name, uint64_t *module) {
+    uint64_t h;
+
+    if (!module || (flags & ~7u) != 0u || (flags & 3u) == 3u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (flags & 4u) {
+        void *base = 0;
+
+        h = (uint64_t)(uintptr_t)RtlPcToFileHeader((void *)(uintptr_t)name, &base);
+        if (!h) {
+            set_error(ERROR_MOD_NOT_FOUND);
+        }
+    } else {
+        h = GetModuleHandleW(name);
+    }
+    *module = h;
+    return h != 0u;
+}
+
+/* CREATE_WAITABLE_TIMER_MANUAL_RESET (1) is CreateWaitableTimerW's manual;
+ * CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (2), which Rust's thread::sleep asks
+ * for first, is accepted - the timer fires on the tick, which is the only
+ * resolution there is (docs/shell/s7.md step 3). The access is all of it. */
+uint64_t CreateWaitableTimerExW(const void *sa, const uint16_t *name, uint32_t flags,
+                                uint32_t access) {
+    (void)access;
+    if ((flags & ~3u) != 0u) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return CreateWaitableTimerW(sa, (flags & 1u) ? 1 : 0, name);
 }

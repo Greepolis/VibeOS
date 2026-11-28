@@ -6,7 +6,7 @@ and closed in its own register, whose row is the record; re-run the script
 after changing one (`static-checks.sh` fails until you do). The order of work
 is [next-steps.md](next-steps.md).
 
-64 open in 2 registers.
+67 open in 2 registers.
 
 ## [Review findings tracker](implementation_progress/review_findings_tracker.md) - 4
 
@@ -17,7 +17,7 @@ is [next-steps.md](next-steps.md).
 | M-118 | (internal) The corpus workload bb-ps saw its parent - the shell, blocked in wait4 for `ps` - as `R` where Linux and every other boot say `S`: ... | open |
 | M-146 | One boot of 3d735038 wedged on 2026-11-21 in `userland_running`, right after `svc-press` stopped, with a game loading the host: CPU 0 spinning in ... | open, instrumented (2026-11-27): a mount's lock records its holder - task slot, ... |
 
-## [Windows personality: open items](implementation_progress/windows_open_items.md) - 60
+## [Windows personality: open items](implementation_progress/windows_open_items.md) - 63
 
 | ID | What | Status |
 |---|---|---|
@@ -81,3 +81,6 @@ is [next-steps.md](next-steps.md).
 | WO-103 | SystemParametersInfo and EnumDisplayDevices are missing (user32:sysparams, monitor) | open (with the UI) |
 | WO-104 | GDI regions, mapping modes, graphics modes and paths are missing (gdi32:gdiobj, clipping, dc, mapping stop at CreateRectRgn, SetMapMode, SetGraphicsMode) | open |
 | WO-105 | Pattern and DIB brushes, ExtCreatePen, DIBs and DIB sections, palettes, fonts and ICM are missing, and nothing is drawn (gdi32:brush, pen, bitmap, path, ... | open |
+| WO-113 | S7: A file associated with an I/O completion port: overlapped I/O does not complete into a port, so CreateIoCompletionPort with a file handle is refused with ... | open: needs overlapped I/O in the NT file layer, and is what Rust's socket and ... |
+| WO-114 | S7: The console's input records are keys only: no mouse, focus, menu or window-size events; a cursor position GetConsoleScreenBufferInfo does not know; ... | open |
+| WO-115 | S7: FinalCommander's Windows build takes some forty seconds for its first listing of `C:\` on the gate's machine, where the Linux build takes a few: not yet ... | open |

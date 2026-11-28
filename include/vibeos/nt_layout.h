@@ -135,6 +135,9 @@
 #define VIBEOS_EVENT_QUERY_STATE    0x0001u
 #define VIBEOS_EVENT_MODIFY_STATE   0x0002u
 #define VIBEOS_EVENT_ALL_ACCESS     0x001F0003u
+#define VIBEOS_IO_COMPLETION_QUERY_STATE  0x0001u
+#define VIBEOS_IO_COMPLETION_MODIFY_STATE 0x0002u
+#define VIBEOS_IO_COMPLETION_ALL_ACCESS   0x001F0003u
 
 /* NtDuplicateObject's options. */
 #define VIBEOS_DUPLICATE_CLOSE_SOURCE 0x1u
@@ -277,6 +280,26 @@ typedef struct {
  * it does (WO-110), so its number is far from any of Windows' classes. */
 #define VIBEOS_NT_SYSTEM_VIBEOS_RANDOM 0xF000u
 #define VIBEOS_NT_RANDOM_MAX (1u << 20)
+
+/* Not Windows' either: a terminal as kernel32's console sees it, through
+ * NtQueryInformationFile and NtSetInformationFile (docs/shell/s7.md step 3).
+ * Windows' kernel32 asks condrv with ioctls; this kernel has no
+ * NtDeviceIoControlFile, so the class stands in as the random one does
+ * (WO-110). Queried: the input mode's three bits a terminal has, the bytes a
+ * read would get now, and the window's size. Set: the input mode, which
+ * becomes the terminal's modes. A description that is not a terminal is
+ * STATUS_INVALID_HANDLE, which kernel32 turns into "not a console". */
+#define VIBEOS_NT_FILE_VIBEOS_CONSOLE 0xF001u
+#define VIBEOS_NT_CONSOLE_PROCESSED_INPUT 0x1u   /* ISIG */
+#define VIBEOS_NT_CONSOLE_LINE_INPUT      0x2u   /* ICANON */
+#define VIBEOS_NT_CONSOLE_ECHO_INPUT      0x4u   /* ECHO */
+typedef struct {
+    uint32_t mode;      /* VIBEOS_NT_CONSOLE_* */
+    uint32_t pending;   /* bytes a read gets without waiting */
+    uint16_t rows;
+    uint16_t cols;
+    uint32_t pad;
+} vibeos_nt_console_info_t;
 
 /* MEMORY_BASIC_INFORMATION, NtQueryVirtualMemory's MemoryBasicInformation
  * (class 0): 48 bytes on x64. */

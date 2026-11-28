@@ -47,3 +47,15 @@ EXPORTS
     wvsprintfW
     CharNextExA
     IsCharAlphaNumericW
+GetForegroundWindow
+FindWindowW
+GetWindow
+GetAncestor
+IsWindowVisible
+IsZoomed
+ShowWindow
+GetWindowThreadProcessId
+SendMessageA
+GetAsyncKeyState
+GetKeyboardLayout
+ToUnicodeEx

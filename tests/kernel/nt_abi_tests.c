@@ -3568,6 +3568,82 @@ static long sec_query(uint64_t sec, uint32_t cls, uint64_t len, vibeos_nt_sectio
     return r;
 }
 
+/* S7 step 3: WaitOnAddress's sleep. An alert sent before the wait is kept
+ * for it - the wake that lands between a waiter's last look and its sleep -
+ * and taken by it; a wait with none ends with its time. */
+static void t_alert_by_thread_id(void) {
+    uint64_t zero = kf_ualloc(8);
+
+    fresh(63);
+    *(int64_t *)kf_uptr(zero) = 0;
+    expect(nt(VIBEOS_NT_NR_NtAlertThreadByThreadId, 63, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a thread is alerted by its id");
+    expect(nt(VIBEOS_NT_NR_NtWaitForAlertByThreadId, 0, zero, 0, 0, 0) == ST(VIBEOS_STATUS_ALERTED),
+           "an alert sent before the wait ends it at once");
+    expect(nt(VIBEOS_NT_NR_NtWaitForAlertByThreadId, 0, zero, 0, 0, 0) == ST(VIBEOS_STATUS_TIMEOUT),
+           "and is taken by it: the next wait has none");
+    expect(nt(VIBEOS_NT_NR_NtAlertThreadByThreadId, 9999, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_CID),
+           "a thread that does not exist is refused");
+}
+
+/* S7 step 3: an I/O completion port - posted to, removed from, in order, a
+ * timeout when it is empty, and its queue given back when it closes. */
+static void t_io_completion(void) {
+    uint64_t hp = kf_ualloc(8), ents = kf_ualloc(32u * 4u), got = kf_ualloc(4), zero = kf_ualloc(8);
+    uint64_t key = kf_ualloc(8), ctx = kf_ualloc(8), iosb = kf_ualloc(16), port, rest[2];
+    const uint64_t *e = (const uint64_t *)kf_uptr(ents);
+    uint64_t z1[1];
+    uint32_t i, made = 0;
+
+    fresh(61);
+    *(int64_t *)kf_uptr(zero) = 0;
+    z1[0] = zero;
+    expect(nt(VIBEOS_NT_NR_NtCreateIoCompletion, hp, 0x001F0003u, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a port is made");
+    port = *(uint64_t *)kf_uptr(hp);
+    rest[0] = 0x111;
+    kf_next_sp(stack_args(rest, 1));
+    expect(nt(VIBEOS_NT_NR_NtSetIoCompletion, port, 7, 0xC0DE, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a completion is posted");
+    rest[0] = 0x222;
+    kf_next_sp(stack_args(rest, 1));
+    (void)nt(VIBEOS_NT_NR_NtSetIoCompletion, port, 8, 0xBEEF, 0xC0000001u, 0);
+    rest[0] = zero;
+    rest[1] = 0;
+    kf_next_sp(stack_args(rest, 2));
+    expect(nt(VIBEOS_NT_NR_NtRemoveIoCompletionEx, port, ents, 4, got, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint32_t *)kf_uptr(got) == 2u,
+           "a remove takes every queued completion up to its count");
+    expect(e[0] == 7u && e[1] == 0xC0DEu && e[2] == 0u && e[3] == 0x111u && e[4] == 8u &&
+               e[5] == 0xBEEFu && e[6] == 0xC0000001u && e[7] == 0x222u,
+           "in the order posted, each as key, context, status and count");
+    kf_next_sp(stack_args(z1, 1));
+    expect(nt(VIBEOS_NT_NR_NtRemoveIoCompletion, port, key, ctx, iosb, 0) == ST(VIBEOS_STATUS_TIMEOUT),
+           "an empty port with a zero timeout says so at once");
+    rest[0] = 5;
+    kf_next_sp(stack_args(rest, 1));
+    (void)nt(VIBEOS_NT_NR_NtSetIoCompletion, port, 9, 0x99, 0, 0);
+    kf_next_sp(stack_args(z1, 1));
+    expect(nt(VIBEOS_NT_NR_NtRemoveIoCompletion, port, key, ctx, iosb, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(uint64_t *)kf_uptr(key) == 9u && *(uint64_t *)kf_uptr(ctx) == 0x99u &&
+               ((uint64_t *)kf_uptr(iosb))[1] == 5u,
+           "and the single remove takes one");
+    expect(nt(VIBEOS_NT_NR_NtClose, port, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS), "the port closes");
+    /* A closed port's queue is free again: a process makes and closes many
+     * more than its share, one at a time. */
+    for (i = 0; i < 40u; i++) {
+        if (nt(VIBEOS_NT_NR_NtCreateIoCompletion, hp, 0x001F0003u, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS)) {
+            made++;
+            (void)nt(VIBEOS_NT_NR_NtClose, *(uint64_t *)kf_uptr(hp), 0, 0, 0, 0);
+        }
+    }
+    expect(made == 40u, "a closed port gives its queue back");
+    for (i = 0, made = 0; i < 8u; i++) {
+        made += nt(VIBEOS_NT_NR_NtCreateIoCompletion, hp, 0x001F0003u, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS);
+    }
+    expect(made == 4u, "and one process holds four at most");
+}
+
 static void t_data_sections(void) {
     vibeos_nt_section_basic_t sb;
     vibeos_nt_memory_basic_t m;
@@ -3793,5 +3869,7 @@ int test_nt_abi(void) {
     t_reg_rights();
     t_placeholders();
     t_data_sections();
+    t_io_completion();
+    t_alert_by_thread_id();
     return g_fail ? -1 : 0;
 }

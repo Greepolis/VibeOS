@@ -226,8 +226,24 @@ BOOL32 SetStdHandle(uint32_t which, uint64_t h) {
 
 /* ---- the console ------------------------------------------------------------------ */
 
+/* The terminal behind a handle, as the kernel's private console class says
+ * (VIBEOS_NT_FILE_VIBEOS_CONSOLE): 1 with its modes, pending bytes and size,
+ * or 0 for a handle that is not a terminal - a file, a pipe - which is not a
+ * console, whatever its type. */
+static int console_info(uint64_t h, vibeos_nt_console_info_t *ci) {
+    vibeos_nt_iosb_t iosb;
+
+    if (h == INVALID_H || h == 0u) {
+        return 0;
+    }
+    return NtQueryInformationFile(h, &iosb, ci, sizeof(*ci), VIBEOS_NT_FILE_VIBEOS_CONSOLE) ==
+           VIBEOS_STATUS_SUCCESS;
+}
+
 static int is_console(uint64_t h) {
-    if (h != INVALID_H && h != 0u && GetFileType(h) == 2u) {
+    vibeos_nt_console_info_t ci;
+
+    if (console_info(h, &ci)) {
         return 1;
     }
     SetLastError(ERR_INVALID_HANDLE);
@@ -237,19 +253,367 @@ static int is_console(uint64_t h) {
 uint32_t GetConsoleCP(void) { return GetACP(); }
 uint32_t GetConsoleOutputCP(void) { return GetACP(); }
 
-/* ENABLE_PROCESSED_INPUT | LINE_INPUT | ECHO_INPUT: what a terminal in its
- * canonical mode does. A change of mode is accepted and not applied yet. */
+/* ---- console modes (docs/shell/s7.md step 3) ----------------------------------------
+ * On Windows the input buffer and the screen buffer are two objects with two
+ * modes; here both are one terminal. A handle is the input's if it is the
+ * standard input or was opened as CONIN$ (kernel32.c marks those), and the
+ * screen's otherwise. Of the input mode, processed, line and echo are the
+ * terminal's own (ISIG, ICANON, ECHO) and are set there; the other bits - mouse,
+ * window, quick edit, extended, VT input - are kept here and given back, which
+ * is what a program that saves the mode and restores it needs. The output mode
+ * is kept whole: the terminal processes VT sequences and wraps, always. */
+#define K32_CONSOLE_INPUTS 8u
+static uint64_t g_con_in[K32_CONSOLE_INPUTS];
+static uint32_t g_con_in_extra = 0x1F0u & ~0x10u;   /* EXTENDED|QUICK_EDIT|INSERT, as Windows starts */
+static uint32_t g_con_out_mode = 0x7u;               /* PROCESSED | WRAP | VT processing */
+
+void vibeos_k32_console_input(uint64_t h, int input) {
+    uint32_t i;
+
+    if (!input) {
+        for (i = 0; i < K32_CONSOLE_INPUTS; i++) {
+            if (g_con_in[i] == h) {
+                g_con_in[i] = 0;
+            }
+        }
+        return;
+    }
+    for (i = 0; i < K32_CONSOLE_INPUTS; i++) {
+        if (g_con_in[i] == 0u || g_con_in[i] == h) {
+            g_con_in[i] = h;
+            return;
+        }
+    }
+    g_con_in[K32_CONSOLE_INPUTS - 1u] = h;
+}
+
+static int is_input(uint64_t h) {
+    uint32_t i;
+
+    if (h == GetStdHandle(0xFFFFFFF6u)) {
+        return 1;
+    }
+    for (i = 0; i < K32_CONSOLE_INPUTS; i++) {
+        if (g_con_in[i] == h) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 BOOL32 GetConsoleMode(uint64_t h, uint32_t *mode) {
-    if (!is_console(h)) {
+    vibeos_nt_console_info_t ci;
+
+    if (!console_info(h, &ci)) {
+        SetLastError(ERR_INVALID_HANDLE);
         return 0;
     }
-    *mode = 7u;
+    *mode = is_input(h) ? (ci.mode & 7u) | g_con_in_extra : g_con_out_mode;
     return 1;
 }
 
 BOOL32 SetConsoleMode(uint64_t h, uint32_t mode) {
-    (void)mode;
+    vibeos_nt_iosb_t iosb;
+    uint32_t bits = mode & 7u;
+    NTSTATUS_T st;
+
+    if (!is_console(h)) {
+        return 0;
+    }
+    if (!is_input(h)) {
+        g_con_out_mode = mode & 0x1Fu;
+        return 1;
+    }
+    st = NtSetInformationFile(h, &iosb, &bits, sizeof(bits), VIBEOS_NT_FILE_VIBEOS_CONSOLE);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        SetLastError(RtlNtStatusToDosError((vibeos_ntstatus_t)st));
+        return 0;
+    }
+    g_con_in_extra = mode & ~7u;
+    return 1;
+}
+
+/* No window: the console is a terminal somebody else draws. A null window is
+ * what Windows answers for a process without a console window, and what a
+ * program asking is ready for. */
+uint64_t GetConsoleWindow(void) {
+    return 0;
+}
+
+/* The cursor's size and visibility: a terminal is told with VT sequences,
+ * which is how a program that sets this also hides it, so this is accepted. */
+BOOL32 SetConsoleCursorInfo(uint64_t h, const void *info) {
+    (void)info;
     return is_console(h);
+}
+
+/* ---- console input as events (docs/shell/s7.md step 3) --------------------------------
+ * Windows' console hands a program INPUT_RECORDs, a key going down and coming
+ * up, by virtual key; a terminal hands it bytes, with the keys that are not
+ * characters as VT sequences. The queue below is filled from whatever a read
+ * gets without waiting and parsed into key events, the way conhost turns a
+ * VT input stream into records. One queue for the process: there is one
+ * console. Only keys: no mouse, no focus, no resize events yet. */
+
+#define K32_EVENTS 128u
+#define K32_REC 20u   /* sizeof(INPUT_RECORD) */
+static uint8_t g_ev[K32_EVENTS][K32_REC];
+static uint32_t g_ev_head, g_ev_count;
+
+#define SHIFT_PRESSED 0x10u
+#define LEFT_ALT_PRESSED 0x2u
+#define LEFT_CTRL_PRESSED 0x8u
+
+static void put_key(uint16_t vk, uint16_t ch, uint32_t state, int down) {
+    uint8_t *r;
+    uint32_t i;
+
+    if (g_ev_count >= K32_EVENTS) {
+        return;   /* typed faster than read: the newest is dropped, as a full buffer does */
+    }
+    r = g_ev[(g_ev_head + g_ev_count) % K32_EVENTS];
+    for (i = 0; i < K32_REC; i++) {
+        r[i] = 0;
+    }
+    *(uint16_t *)r = 1u;                 /* KEY_EVENT */
+    *(int32_t *)(r + 4) = down;          /* bKeyDown */
+    *(uint16_t *)(r + 8) = 1u;           /* wRepeatCount */
+    *(uint16_t *)(r + 10) = vk;          /* wVirtualKeyCode */
+    *(uint16_t *)(r + 14) = ch;          /* uChar.UnicodeChar */
+    *(uint32_t *)(r + 16) = state;       /* dwControlKeyState */
+    g_ev_count++;
+}
+
+static void key(uint16_t vk, uint16_t ch, uint32_t state) {
+    put_key(vk, ch, state, 1);
+    put_key(vk, ch, state, 0);
+}
+
+/* The virtual key of a character a terminal sends as itself. */
+static uint16_t vk_of(uint32_t c, uint32_t *state) {
+    if (c >= 'a' && c <= 'z') {
+        return (uint16_t)(c - 'a' + 'A');
+    }
+    if (c >= 'A' && c <= 'Z') {
+        *state |= SHIFT_PRESSED;
+        return (uint16_t)c;
+    }
+    if (c >= '0' && c <= '9') {
+        return (uint16_t)c;
+    }
+    return c == ' ' ? 0x20u : 0u;
+}
+
+/* VT modifier parameter: 1 + shift(1) + alt(2) + ctrl(4). */
+static uint32_t vt_mods(uint32_t m) {
+    uint32_t s = 0;
+
+    if (m >= 2u) {
+        m -= 1u;
+        s |= (m & 1u) ? SHIFT_PRESSED : 0u;
+        s |= (m & 2u) ? LEFT_ALT_PRESSED : 0u;
+        s |= (m & 4u) ? LEFT_CTRL_PRESSED : 0u;
+    }
+    return s;
+}
+
+/* CSI n ~ numbers, xterm's. */
+static uint16_t vk_tilde(uint32_t n) {
+    static const uint16_t f[] = {
+        0, 0x24, 0x2D, 0x2E, 0x23, 0x21, 0x22, 0x24, 0x23, 0, 0,   /* 1..8: home ins del end pgup pgdn home end */
+        0x70, 0x71, 0x72, 0x73, 0x74, 0, 0x75, 0x76, 0x77, 0x78, 0x79, 0, 0x7A, 0x7B,   /* 11..24: F1..F12 */
+    };
+
+    return n < sizeof(f) / sizeof(f[0]) ? f[n] : 0u;
+}
+
+/* Parse `b[0..n)` into the queue; returns how many bytes were used. A
+ * sequence cut off at the end is an escape key and the rest, read again as
+ * characters - the terminal sends a sequence in one write, so a cut one is a
+ * person pressing Escape and then typing. */
+static uint32_t parse_one(const uint8_t *b, uint32_t n) {
+    uint32_t c = b[0], state = 0;
+
+    if (c == 0x1Bu) {
+        if (n >= 3u && (b[1] == '[' || b[1] == 'O')) {
+            uint32_t i = 2, p[2] = {0, 0}, np = 0;
+
+            while (i < n && b[i] >= '0' && b[i] <= '9') {
+                p[np] = p[np] * 10u + (b[i++] - '0');
+                if (i < n && b[i] == ';' && np == 0u) {
+                    np = 1;
+                    i++;
+                }
+            }
+            if (i < n) {
+                uint8_t fin = b[i];
+                uint16_t vk = 0;
+
+                state = vt_mods(np ? p[1] : 0u);
+                switch (fin) {
+                case 'A': vk = 0x26; break;   /* VK_UP */
+                case 'B': vk = 0x28; break;   /* VK_DOWN */
+                case 'C': vk = 0x27; break;   /* VK_RIGHT */
+                case 'D': vk = 0x25; break;   /* VK_LEFT */
+                case 'H': vk = 0x24; break;   /* VK_HOME */
+                case 'F': vk = 0x23; break;   /* VK_END */
+                case 'P': vk = 0x70; break;   /* F1..F4, SS3 or CSI 1;m */
+                case 'Q': vk = 0x71; break;
+                case 'R': vk = 0x72; break;
+                case 'S': vk = 0x73; break;
+                case 'Z': vk = 0x09; state |= SHIFT_PRESSED; break;   /* back tab */
+                case '~': vk = vk_tilde(p[0]); break;
+                default: break;
+                }
+                if (vk) {
+                    key(vk, vk == 0x09 ? 9u : 0u, state);
+                }
+                return i + 1u;   /* an unknown sequence is consumed and dropped */
+            }
+        }
+        if (n >= 2u && b[1] >= 0x20u && b[1] < 0x7Fu && b[1] != '[' && b[1] != 'O') {
+            uint32_t s = LEFT_ALT_PRESSED;
+            uint16_t vk = vk_of(b[1], &s);
+
+            key(vk, b[1], s);   /* Alt and a character: ESC first, as xterm sends it */
+            return 2;
+        }
+        key(0x1B, 0x1Bu, 0);   /* VK_ESCAPE */
+        return 1;
+    }
+    if (c == 0x0Du || c == 0x0Au) {
+        key(0x0D, 0x0Du, 0);   /* VK_RETURN */
+        return 1;
+    }
+    if (c == 0x7Fu || c == 0x08u) {
+        key(0x08, 0x08u, 0);   /* VK_BACK */
+        return 1;
+    }
+    if (c == 0x09u) {
+        key(0x09, 0x09u, 0);
+        return 1;
+    }
+    if (c < 0x20u) {
+        /* Ctrl and a letter: the letter's key, the control code as the
+         * character, as conhost reports it. */
+        key((uint16_t)(c + 0x40u), (uint16_t)c, LEFT_CTRL_PRESSED);
+        return 1;
+    }
+    if (c < 0x80u) {
+        uint16_t vk = vk_of(c, &state);
+
+        key(vk, (uint16_t)c, state);
+        return 1;
+    }
+    {
+        /* UTF-8: the character, two records for one past the BMP. */
+        uint32_t more = c >= 0xF0u ? 3u : c >= 0xE0u ? 2u : c >= 0xC0u ? 1u : 0u, j;
+
+        if (more == 0u || n < 1u + more) {
+            key(0, 0xFFFDu, 0);
+            return 1;
+        }
+        c &= 0x3Fu >> more;
+        for (j = 1; j <= more; j++) {
+            c = (c << 6) | (b[j] & 0x3Fu);
+        }
+        if (c >= 0x10000u) {
+            key(0, (uint16_t)(0xD800u + ((c - 0x10000u) >> 10)), 0);
+            key(0, (uint16_t)(0xDC00u + ((c - 0x10000u) & 0x3FFu)), 0);
+        } else {
+            key(0, (uint16_t)c, 0);
+        }
+        return 1u + more;
+    }
+}
+
+/* What a read gets now, into the queue; never waits. */
+static int fill_events(uint64_t h) {
+    vibeos_nt_console_info_t ci;
+    uint8_t b[64];
+    uint32_t got = 0, at = 0;
+
+    if (!console_info(h, &ci)) {
+        SetLastError(ERR_INVALID_HANDLE);
+        return 0;
+    }
+    if (ci.pending == 0u || g_ev_count + 8u > K32_EVENTS) {
+        return 1;
+    }
+    if (!ReadFile(h, b, ci.pending < sizeof(b) ? ci.pending : (uint32_t)sizeof(b), &got, 0)) {
+        return 0;
+    }
+    while (at < got) {
+        at += parse_one(b + at, got - at);
+    }
+    return 1;
+}
+
+/* Is `h` a console input with records already taken from the terminal? Then
+ * it is signalled, as Windows' input handle is while its buffer holds events:
+ * a peek moves the bytes into the queue, and a wait that asked only the
+ * terminal would then sleep on records already here - FinalCommander peeks
+ * before crossterm waits, and every key after the first was lost that way. */
+int vibeos_k32_console_has_events(uint64_t h) {
+    return g_ev_count != 0u && is_input(h);
+}
+
+BOOL32 GetNumberOfConsoleInputEvents(uint64_t h, uint32_t *count) {
+    if (!fill_events(h)) {
+        return 0;
+    }
+    *count = g_ev_count;
+    return 1;
+}
+
+static uint32_t take_events(void *out, uint32_t max, int remove) {
+    uint32_t n = 0, i;
+
+    while (n < max && n < g_ev_count) {
+        const uint8_t *r = g_ev[(g_ev_head + n) % K32_EVENTS];
+
+        for (i = 0; i < K32_REC; i++) {
+            ((uint8_t *)out)[n * K32_REC + i] = r[i];
+        }
+        n++;
+    }
+    if (remove) {
+        g_ev_head = (g_ev_head + n) % K32_EVENTS;
+        g_ev_count -= n;
+    }
+    return n;
+}
+
+BOOL32 PeekConsoleInputW(uint64_t h, void *out, uint32_t max, uint32_t *got) {
+    if (!fill_events(h)) {
+        return 0;
+    }
+    *got = take_events(out, max, 0);
+    return 1;
+}
+
+/* Waits for at least one record, as Windows' does. */
+BOOL32 ReadConsoleInputW(uint64_t h, void *out, uint32_t max, uint32_t *got) {
+    for (;;) {
+        if (!fill_events(h)) {
+            return 0;
+        }
+        if (g_ev_count != 0u || max == 0u) {
+            break;
+        }
+        (void)NtWaitForSingleObject(h, 0, 0);
+    }
+    *got = take_events(out, max, 1);
+    return 1;
+}
+
+BOOL32 FlushConsoleInputBuffer(uint64_t h) {
+    if (!fill_events(h)) {
+        return 0;
+    }
+    g_ev_head = 0;
+    g_ev_count = 0;
+    return 1;
 }
 
 BOOL32 SetConsoleCtrlHandler(void *handler, BOOL32 add) {
@@ -271,16 +635,28 @@ BOOL32 SetConsoleTextAttribute(uint64_t h, uint16_t attr) {
 /* CONSOLE_SCREEN_BUFFER_INFO, 22 bytes of 16-bit fields. The size is the one a
  * terminal is assumed to have until the call can ask it. */
 BOOL32 GetConsoleScreenBufferInfo(uint64_t h, void *info) {
-    static const uint16_t v[11] = {80, 25, 0, 0, 7, 0, 0, 79, 24, 80, 25};
-    uint16_t *o = info;
-    uint32_t i;
+    vibeos_nt_console_info_t ci;
+    uint16_t *o = info, w, r;
 
-    if (!is_console(h)) {
+    if (!console_info(h, &ci)) {
+        SetLastError(ERR_INVALID_HANDLE);
         return 0;
     }
-    for (i = 0; i < 11u; i++) {
-        o[i] = v[i];
-    }
+    /* The terminal's window, 80 by 25 when nobody has said: the buffer is the
+     * window, as it is in Windows Terminal. The cursor is not known. */
+    w = ci.cols ? ci.cols : 80u;
+    r = ci.rows ? ci.rows : 25u;
+    o[0] = w;       /* dwSize */
+    o[1] = r;
+    o[2] = 0;       /* dwCursorPosition */
+    o[3] = 0;
+    o[4] = 7;       /* wAttributes */
+    o[5] = 0;       /* srWindow: left, top, right, bottom */
+    o[6] = 0;
+    o[7] = (uint16_t)(w - 1u);
+    o[8] = (uint16_t)(r - 1u);
+    o[9] = w;       /* dwMaximumWindowSize */
+    o[10] = r;
     return 1;
 }
 

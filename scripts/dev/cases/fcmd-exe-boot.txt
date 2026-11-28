@@ -1,0 +1,16 @@
+# FinalCommander's Windows build at boot (docs/shell/s7.md step 3). Needs
+# scripts/dev/corpus-build.sh; expects fcmd_exe_failed.
+#
+# Target source: user/win/kernel32/cmd_api.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py user/win/kernel32/cmd_api.c scripts/dev/cases/fcmd-exe-boot.txt
+#
+# fcmd_exe_did_not_start is reached from outside this file and is a case to
+# run by hand: in kernel/arch/x86_64/userland.c, take the self-test's line
+# "FCMDT.ELF /usr/lib/windows/system32/fcmd.exe" out, and the gate says
+# fcmd_exe_did_not_start.
+
+### a console handle whose buffer holds records is not signalled
+--- old
+    return g_ev_count != 0u && is_input(h);
++++ new
+    return 0 && g_ev_count != 0u && is_input(h);

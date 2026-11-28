@@ -132,10 +132,23 @@ static long now_ms(void) {
 /* Everything the program has written so far, without waiting. */
 static void drain(int wait_ms) {
     struct pollfd p = {0, POLLIN, 0};
+    static long said;
     ssize_t n;
 
     p.fd = g_m;
+    if (!said) {
+        said = now_ms();
+    }
     while (poll(&p, 1, wait_ms) > 0) {
+        /* A line now and then while output keeps coming too: this loop
+         * reads for as long as the program writes, and the Windows build
+         * redraws its "reading" panel for most of a minute under a loaded
+         * host - silence the gate takes for a wedged boot (S7 step 3). */
+        if (now_ms() - said >= 10000) {
+            said = now_ms();
+            printf("FCMD_READING %zu bytes\n", g_len);
+            fflush(stdout);
+        }
         if (g_len + 4096u >= sizeof(g_buf)) {
             memmove(g_buf, g_buf + sizeof(g_buf) / 2u, g_len - sizeof(g_buf) / 2u);
             g_len -= sizeof(g_buf) / 2u;

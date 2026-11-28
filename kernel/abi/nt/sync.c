@@ -506,6 +506,18 @@ static uint64_t wait_deadline(int64_t t, int *forever_out, int forever) {
     }
 }
 
+/* The two a wait outside this file needs too (iocp.c): a timeout as a tick
+ * deadline, and whether a signal must end the wait. */
+uint64_t nt_wait_deadline(int64_t t) {
+    int forever;
+
+    return wait_deadline(t, &forever, 0);
+}
+
+int nt_signal_ends_wait(int me) {
+    return nt_interrupted(me);
+}
+
 /* Is object i signalled for this waiter: its type says so, or - for a
  * notification event - a pulse happened while it waited. */
 static int signaled_now(nt_ob_t *o, uint32_t tid, uint32_t pulses_at_start) {
@@ -520,6 +532,7 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64
     vibeos_file_t *f[VIBEOS_NT_MAX_WAIT_OBJECTS];
     nt_ob_t *o[VIBEOS_NT_MAX_WAIT_OBJECTS];
     uint32_t pulses[VIBEOS_NT_MAX_WAIT_OBJECTS];
+    int fready[VIBEOS_NT_MAX_WAIT_OBJECTS];
     uint32_t i, got = 0, st = VIBEOS_STATUS_SUCCESS;
     int me = ks_current();
     uint32_t tid = my_tid();
@@ -534,7 +547,7 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64
     }
     for (i = 0; i < n; i++) {
         st = nt_handle_ref(handles[i], 0, VIBEOS_SYNCHRONIZE, &f[i], 0);
-        if (st == VIBEOS_STATUS_SUCCESS && (!f[i]->ops->nt_type || !f[i]->ops->nt_type->signaled)) {
+        if (st == VIBEOS_STATUS_SUCCESS && f[i]->ops->nt_type && !f[i]->ops->nt_type->signaled) {
             vibeos_file_put(f[i]);
             st = VIBEOS_STATUS_OBJECT_TYPE_MISMATCH;
         }
@@ -566,23 +579,32 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64
 
     nt_ob_lock();
     for (i = 0; i < n; i++) {
-        o[i] = nt_ob_of(f[i]);
-        o[i]->waiters++;
-        pulses[i] = o[i]->u.ev.pulses;
+        o[i] = f[i]->ops->nt_type ? nt_ob_of(f[i]) : 0;
+        if (o[i]) {
+            o[i]->waiters++;
+            pulses[i] = o[i]->u.ev.pulses;
+        }
     }
     nt_ob_unlock();
 
     for (;;) {
         int done = 0;
 
+        /* A description that is not an NT object - a terminal, a pipe - is
+         * signalled while a read would not wait, which is what a console's
+         * input handle is on Windows (S7 step 3). Asked before the object lock:
+         * its own lock is not one to take under it. */
+        for (i = 0; i < n; i++) {
+            fready[i] = !o[i] && (!f[i]->ops->ready || (f[i]->ops->ready(f[i]) & VIBEOS_READY_IN));
+        }
         nt_ob_lock();
         if (all) {
-            for (i = 0; i < n && signaled_now(o[i], tid, pulses[i]); i++) {
+            for (i = 0; i < n && (o[i] ? signaled_now(o[i], tid, pulses[i]) : fready[i]); i++) {
             }
             if (i == n) {
                 uint32_t abandoned = 0;
                 for (i = 0; i < n; i++) {
-                    abandoned |= o[i]->file->ops->nt_type->acquire(o[i], tid);
+                    abandoned |= o[i] ? o[i]->file->ops->nt_type->acquire(o[i], tid) : 0u;
                 }
                 result = NT_STATUS(abandoned ? VIBEOS_STATUS_ABANDONED_WAIT_0
                                              : VIBEOS_STATUS_WAIT_0);
@@ -590,8 +612,8 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64
             }
         } else {
             for (i = 0; i < n; i++) {
-                if (signaled_now(o[i], tid, pulses[i])) {
-                    uint32_t ab = o[i]->file->ops->nt_type->acquire(o[i], tid);
+                if (o[i] ? signaled_now(o[i], tid, pulses[i]) : fready[i]) {
+                    uint32_t ab = o[i] ? o[i]->file->ops->nt_type->acquire(o[i], tid) : 0u;
                     result = NT_STATUS((ab ? VIBEOS_STATUS_ABANDONED_WAIT_0
                                            : VIBEOS_STATUS_WAIT_0) + i);
                     done = 1;
@@ -601,7 +623,9 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64
         }
         if (done) {
             for (i = 0; i < n; i++) {
-                o[i]->waiters--;
+                if (o[i]) {
+                    o[i]->waiters--;
+                }
             }
             nt_ob_unlock();
             break;
@@ -630,7 +654,9 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64
         result == NT_STATUS(VIBEOS_STATUS_ALERTED)) {
         nt_ob_lock();
         for (i = 0; i < n; i++) {
-            o[i]->waiters--;
+            if (o[i]) {
+                o[i]->waiters--;
+            }
         }
         nt_ob_unlock();
     }
@@ -666,6 +692,99 @@ static long nt_delay_execution(uint64_t alertable, uint64_t interval_u) {
         ks_wait_tick();
     } while (ks_ticks() < deadline);
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
+/* NtYieldExecution: SwitchToThread. The core goes to another task if one is
+ * waiting for it, and STATUS_NO_YIELD_PERFORMED says when none was - as on
+ * Windows, and as sched_yield decides here: idling a core nobody wants would
+ * cost the caller a tick for nothing. */
+static long nt_yield_execution(void) {
+    if (!ks_others_runnable()) {
+        return NT_STATUS(0x40000024u);   /* STATUS_NO_YIELD_PERFORMED */
+    }
+    ks_idle();
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
+/* ---- alerts by thread id (docs/shell/s7.md step 3) --------------------------------------
+ * What Windows' WaitOnAddress sleeps on: a thread waits until it is alerted,
+ * and an alert sent before the wait is kept for it, so a wake that lands
+ * between a waiter's last look at memory and its sleep is not lost. One
+ * pending alert per thread, kept by its slot and the slot's tenancy, so an
+ * alert to a thread that has ended is not inherited by the slot's next one.
+ * An alert wakes the waiting cores at once (ks_wake_waiters) rather than at
+ * the next tick: a Rust lock handed from one thread to another was a tick per
+ * hand-over, and FinalCommander's first listing took twenty seconds of them. */
+#define NT_ALERT_SLOTS 256u
+
+typedef struct {
+    uint32_t seq;
+    uint32_t pending;
+} nt_alert_t;
+
+/* quota: none - one entry per task slot, indexed by it; nothing a process
+ * does takes more than its own threads' entries. */
+static nt_alert_t g_alert[NT_ALERT_SLOTS];   /* under the object lock */
+
+/* NtAlertThreadByThreadId(ThreadId). */
+static long nt_alert_thread_by_id(uint64_t tid) {
+    int slot = ks_task_by_tid((uint32_t)tid);
+
+    if (slot < 0 || (uint32_t)slot >= NT_ALERT_SLOTS) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_CID);
+    }
+    nt_ob_lock();
+    g_alert[slot].seq = ks_seq(slot);
+    g_alert[slot].pending = 1u;
+    nt_ob_unlock();
+    ks_wake_waiters();
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
+/* Takes the caller's pending alert, if it has one: 1 if it did. */
+static int alert_take(int me) {
+    int got = 0;
+
+    nt_ob_lock();
+    if (g_alert[me].pending && g_alert[me].seq == ks_seq(me)) {
+        got = 1;
+    }
+    g_alert[me].pending = 0u;
+    nt_ob_unlock();
+    return got;
+}
+
+/* NtWaitForAlertByThreadId(Address, Timeout): ALERTED, TIMEOUT, or USER_APC
+ * for a signal that must end the wait. The address is Windows' hint for its
+ * debugger and is not looked at. */
+static long nt_wait_for_alert(uint64_t addr, uint64_t timeout_u) {
+    int me = ks_current();
+    int64_t t = 0;
+    int forever = timeout_u == 0u;
+    uint64_t deadline = 0;
+
+    (void)addr;
+    if (me < 0 || (uint32_t)me >= NT_ALERT_SLOTS) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_CID);
+    }
+    if (!forever) {
+        if (nt_copy_in(&t, timeout_u, sizeof(t)) != 0) {
+            return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+        }
+        deadline = nt_wait_deadline(t);
+    }
+    for (;;) {
+        if (alert_take(me)) {
+            return NT_STATUS(VIBEOS_STATUS_ALERTED);
+        }
+        if (!forever && ks_ticks() >= deadline) {
+            return NT_STATUS(VIBEOS_STATUS_TIMEOUT);
+        }
+        if (nt_interrupted(me)) {
+            return NT_STATUS(VIBEOS_STATUS_USER_APC);
+        }
+        ks_wait_tick();
+    }
 }
 
 /* NtWaitForSingleObject(Handle, Alertable, Timeout). */
@@ -1099,6 +1218,11 @@ static long nt_release_keyed(uint64_t h, uint64_t key, uint64_t alertable, uint6
       nt_query_semaphore(ARG(0), NT_ARG32(1), ARG(2), NT_ARG32(3), ARG(4))) \
     X(VIBEOS_NT_NR_NtDelayExecution, NtDelayExecution, NANOSLEEP, PTRS(IN(1, 8)), \
       nt_apc_after(FRAME, nt_delay_execution(ARG(0) & 0xFFu, ARG(1)))) \
+    X(VIBEOS_NT_NR_NtYieldExecution, NtYieldExecution, YIELD, NOPTR, nt_yield_execution()) \
+    X(VIBEOS_NT_NR_NtAlertThreadByThreadId, NtAlertThreadByThreadId, FUTEX, NOPTR, \
+      nt_alert_thread_by_id(ARG(0))) \
+    X(VIBEOS_NT_NR_NtWaitForAlertByThreadId, NtWaitForAlertByThreadId, FUTEX, PTRS(IN_OPT(1, 8)), \
+      nt_apc_after(FRAME, nt_wait_for_alert(ARG(0), ARG(1)))) \
     X(VIBEOS_NT_NR_NtWaitForSingleObject, NtWaitForSingleObject, FUTEX, PTRS(IN_OPT(2, 8)), \
       nt_apc_after(FRAME, nt_wait_single(ARG(0), ARG(1), ARG(2)))) \
     X(VIBEOS_NT_NR_NtWaitForMultipleObjects, NtWaitForMultipleObjects, FUTEX, \

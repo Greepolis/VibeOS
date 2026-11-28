@@ -11,7 +11,7 @@
 # The other two assertions are reached from outside the kernel and are recorded
 # here as cases to run by hand, since sabotage.py takes one target per run:
 #
-#  - user/win/hello/hello.c, "if (NtYieldExecution() !=" -> "if (NtClose(0) !=":
+#  - user/win/hello/hello.c, "if (NtFlushProcessWriteBuffers() !=" -> "if (NtClose(0) !=":
 #    hello asks a service nobody wrote and the probe never arrives. Expect
 #    nt_unimplemented_service=NtClose and nt_probe_not_counted.
 #  - kernel/abi/nt/dispatch.c, "ks_con_puts(s->name);" -> "ks_con_puts(\"\");"

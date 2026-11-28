@@ -121,6 +121,9 @@ typedef struct nt_ob {
             int32_t max;
         } sem;
         struct {
+            int port;             /* its queue in iocp.c's table, -1 once gone */
+        } io;
+        struct {
             uint32_t kind;        /* NotificationTimer 0, SynchronizationTimer 1 */
             uint32_t armed;
             uint32_t state;
@@ -271,6 +274,9 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, int alertable, uint64
  * sends the frame into ntdll for it. */
 int nt_apc_pending(int slot);
 uint32_t nt_alertable_end(int me);
+uint64_t nt_wait_deadline(int64_t t);   /* sync.c: an NT timeout as a tick */
+int nt_signal_ends_wait(int me);        /* sync.c: a signal that must end a wait */
+void nt_iocp_reset(void);               /* iocp.c */
 long nt_apc_after(ks_regs_t *frame, long result);
 /* The thread a handle names, granted `need`: its slot and tenancy (thread.c). */
 uint32_t nt_thread_target(uint64_t h, uint32_t need, int *slot, uint32_t *seq);

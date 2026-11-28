@@ -75,6 +75,15 @@ NT_IMPORT NTSTATUS_T NtWaitForKeyedEvent(uint64_t handle, const void *key, uint8
                                          const int64_t *timeout);
 NT_IMPORT NTSTATUS_T NtReleaseKeyedEvent(uint64_t handle, const void *key, uint8_t alertable,
                                          const int64_t *timeout);
+NT_IMPORT NTSTATUS_T NtCreateIoCompletion(uint64_t *port, uint32_t access, void *attributes,
+                                          uint32_t threads);
+NT_IMPORT NTSTATUS_T NtSetIoCompletion(uint64_t port, uint64_t key, uint64_t ctx, NTSTATUS_T status,
+                                       uint64_t info);
+NT_IMPORT NTSTATUS_T NtRemoveIoCompletion(uint64_t port, uint64_t *key, uint64_t *ctx,
+                                          vibeos_nt_iosb_t *iosb, const int64_t *timeout);
+NT_IMPORT NTSTATUS_T NtRemoveIoCompletionEx(uint64_t port, void *entries, uint32_t count,
+                                            uint32_t *removed, const int64_t *timeout,
+                                            uint8_t alertable);
 NT_IMPORT NTSTATUS_T NtWriteFile(uint64_t file, uint64_t event, void *apc, void *apc_ctx,
                                  vibeos_nt_iosb_t *iosb, const void *buf, uint32_t len,
                                  const int64_t *offset, const uint32_t *key);
@@ -88,6 +97,9 @@ NT_IMPORT NTSTATUS_T NtQueryPerformanceCounter(int64_t *counter, int64_t *freque
  * STATUS_NOT_IMPLEMENTED: hello.exe asks it on purpose, as the Linux self-test
  * asks for syscall 1999, so the count is seen moving. */
 NT_IMPORT NTSTATUS_T NtYieldExecution(void);
+NT_IMPORT NTSTATUS_T NtFlushProcessWriteBuffers(void);
+NT_IMPORT NTSTATUS_T NtAlertThreadByThreadId(uint64_t tid);
+NT_IMPORT NTSTATUS_T NtWaitForAlertByThreadId(const void *address, const int64_t *timeout);
 /* W2's; declared so a sabotage case can make hello.exe ask a service nobody
  * wrote and watch the gate name it (scripts/dev/cases/nt-hello-boot.txt). */
 NT_IMPORT NTSTATUS_T NtClose(uint64_t handle);

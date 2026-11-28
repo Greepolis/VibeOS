@@ -781,7 +781,7 @@ int nt_hello_start(void) {
         sbi.page_size != 4096u || sbi.processors == 0u || got != sizeof(sbi)) {
         return fail("NT_HELLO_FAIL system_basic\n");
     }
-    if (NtYieldExecution() != VIBEOS_STATUS_NOT_IMPLEMENTED) {
+    if (NtFlushProcessWriteBuffers() != VIBEOS_STATUS_NOT_IMPLEMENTED) {
         return fail("NT_HELLO_FAIL not_implemented\n");
     }
     {
