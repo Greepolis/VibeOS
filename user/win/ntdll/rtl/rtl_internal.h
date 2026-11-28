@@ -49,6 +49,10 @@ int vibeos_rtl_heap_check(size_t *total);
  * NtAllocateVirtualMemory on Windows' side; null if there is none. */
 void *vibeos_rtl_pages(size_t bytes);
 
+/* Give the core away for a moment: what a lock in Rtl does while another
+ * thread holds it (NtYieldExecution on Windows' side). */
+void vibeos_rtl_yield(void);
+
 /* PEB->ProcessParameters, as a byte block read through VIBEOS_RUPP_*; NULL when
  * the process has none. */
 uint8_t *vibeos_rtl_process_params(void);

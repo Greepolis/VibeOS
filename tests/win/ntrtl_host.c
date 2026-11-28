@@ -57,6 +57,10 @@ size_t g_host_pages_budget = (size_t)-1;
 int g_host_pages_calls;
 uint8_t *g_host_pages_last;
 
+/* The host tests run one thread: a lock is never contended, so never waited on. */
+void vibeos_rtl_yield(void) {
+}
+
 void *vibeos_rtl_pages(size_t bytes) {
     size_t at;
 

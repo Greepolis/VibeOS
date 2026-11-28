@@ -21,8 +21,12 @@
  * block may span the seam - the list cares about addresses, not about who
  * asked for them. What is "ours" is any address inside a segment.
  *
- * One thread per process today, so there is no lock. W5 brings threads and
- * this is the first place that has to take one. */
+ * It locks itself (heap_lock): every entry point that reads or changes the
+ * list or the segments holds it. This comment said for months that there was
+ * one thread per process and so no lock, and threads arrived in W5 without
+ * the lock; nothing had two threads allocating at once until FinalCommander,
+ * whose Rust runtime runs ten, and one boot in three it died in
+ * vibeos_rtl_alloc on a free-list link of 0x40 (docs/shell/s7.md step 3). */
 
 #include "rtl_internal.h"
 
@@ -54,6 +58,21 @@ static struct {
 static uint32_t g_nseg;
 static size_t g_total;
 static freeblk_t *g_free;
+
+/* A spinning lock that gives the core away while it waits (vibeos_rtl_yield):
+ * held for a list walk at most, and never across a call that could take it
+ * again - grow and insert_free are called with it held and take nothing. */
+static volatile int g_heap_lock;
+
+static void heap_lock(void) {
+    while (__atomic_exchange_n(&g_heap_lock, 1, __ATOMIC_ACQUIRE) != 0) {
+        vibeos_rtl_yield();
+    }
+}
+
+static void heap_unlock(void) {
+    __atomic_store_n(&g_heap_lock, 0, __ATOMIC_RELEASE);
+}
 
 /* The process heap's handle: what PEB->ProcessHeap holds and every Heap
  * function is given. Its address, nothing more - there is one heap. */
@@ -124,7 +143,7 @@ static int grow(size_t need) {
     return 1;
 }
 
-void *vibeos_rtl_alloc(size_t size) {
+static void *heap_alloc(size_t size) {
     freeblk_t *prev, *cur;
     size_t need, asked = size;
     int grown = 0;
@@ -190,28 +209,44 @@ static blk_t *block_of(const void *p) {
     return blk;
 }
 
-void vibeos_rtl_free(void *p) {
-    blk_t *blk = block_of(p);
+void *vibeos_rtl_alloc(size_t size) {
+    void *p;
 
+    heap_lock();
+    p = heap_alloc(size);
+    heap_unlock();
+    return p;
+}
+
+void vibeos_rtl_free(void *p) {
+    blk_t *blk;
+
+    heap_lock();
+    blk = block_of(p);
     if (blk) {
         insert_free((freeblk_t *)blk);
     }
+    heap_unlock();
 }
 
 size_t vibeos_rtl_size(const void *p) {
-    const blk_t *blk = block_of(p);
+    const blk_t *blk;
+    size_t n = (size_t)-1;
 
-    if (!blk) {
-        return (size_t)-1;
+    heap_lock();
+    blk = block_of(p);
+    if (blk) {
+        n = blk->size - HDR - (size_t)(blk->magic & 0xFFu);
     }
-    return blk->size - HDR - (size_t)(blk->magic & 0xFFu);
+    heap_unlock();
+    return n;
 }
 
 /* Every block of every run of adjacent segments, walked by its headers: the
  * sizes add up to the run exactly, each block is allocated or free, the free
  * ones are on the list in address order and none sits beside another (it would
  * have merged). 0, or the number of the first rule broken. */
-int vibeos_rtl_heap_check(size_t *total) {
+static int heap_check(size_t *total) {
     const freeblk_t *f = g_free;
     uint32_t i = 0;
 
@@ -250,6 +285,15 @@ int vibeos_rtl_heap_check(size_t *total) {
         i++;
     }
     return f ? 5 : 0;   /* the list names a block no segment holds */
+}
+
+int vibeos_rtl_heap_check(size_t *total) {
+    int r;
+
+    heap_lock();
+    r = heap_check(total);
+    heap_unlock();
+    return r;
 }
 
 /* ---- Windows' heap functions ------------------------------------------------------
@@ -319,7 +363,9 @@ RTL_API void *RtlReAllocateHeap(void *heap, uint32_t flags, void *p, size_t size
         if ((flags & HEAP_ZERO_MEMORY) && size > old) {
             memset((uint8_t *)p + old, 0, size - old);
         }
+        heap_lock();
         blk->magic = M_ALLOC | (uint64_t)(blk->size - HDR - size);
+        heap_unlock();
         return p;
     }
     n = RtlAllocateHeap(heap, flags & ~HEAP_ZERO_MEMORY, size);
@@ -338,6 +384,7 @@ void vibeos_rtl_heap_stats(size_t *free_bytes, size_t *largest, size_t *blocks) 
     freeblk_t *c;
     size_t f = 0, l = 0, n = 0;
 
+    heap_lock();
     for (c = g_free; c; c = c->next) {
         f += c->h.size;
         if (c->h.size > l) {
@@ -345,6 +392,7 @@ void vibeos_rtl_heap_stats(size_t *free_bytes, size_t *largest, size_t *blocks) 
         }
         n++;
     }
+    heap_unlock();
     if (free_bytes) {
         *free_bytes = f;
     }

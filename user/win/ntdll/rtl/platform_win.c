@@ -45,6 +45,10 @@ void vibeos_rtl_dbg_write(const char *buf, size_t len) {
     (void)NtWriteFile(h, 0, 0, 0, &iosb, buf, (uint32_t)len, 0, 0);
 }
 
+void vibeos_rtl_yield(void) {
+    (void)NtYieldExecution();
+}
+
 /* Committed memory, made by the page fault when it is first touched (W3): a
  * segment the heap has not reached costs nothing. */
 void *vibeos_rtl_pages(size_t bytes) {
