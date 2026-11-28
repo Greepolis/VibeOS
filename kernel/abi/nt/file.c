@@ -901,10 +901,13 @@ static vibeos_term_t *nt_term_of(const vibeos_file_t *f) {
 
 static uint32_t nt_console_query(vibeos_file_t *f, uint8_t *b) {
     vibeos_term_t *t = nt_term_of(f);
-    vibeos_nt_console_info_t ci;
-    vibeos_tty_modes_t m;
-    vibeos_tty_size_t sz;
-    uint32_t i;
+    /* Zeroed: clang's analyzer cannot see that the terminal fills both, and
+     * an unfilled field would reach the program as kernel stack. Written
+     * field by field, as every other class here is: a byte copy of the
+     * struct read its bytes through a cast the analyzer took for garbage. */
+    vibeos_nt_console_info_t ci = {0};
+    vibeos_tty_modes_t m = {0};
+    vibeos_tty_size_t sz = {0};
 
     if (!t) {
         return VIBEOS_STATUS_INVALID_HANDLE;
@@ -917,10 +920,10 @@ static uint32_t nt_console_query(vibeos_file_t *f, uint8_t *b) {
     ci.pending = vibeos_term_pending(t);
     ci.rows = sz.rows;
     ci.cols = sz.cols;
-    ci.pad = 0;
-    for (i = 0; i < sizeof(ci); i++) {
-        b[i] = ((const uint8_t *)&ci)[i];
-    }
+    put32(b, 0u, ci.mode);
+    put32(b, 4u, ci.pending);
+    put32(b, 8u, (uint32_t)ci.rows | ((uint32_t)ci.cols << 16));
+    put32(b, 12u, 0u);
     return VIBEOS_STATUS_SUCCESS;
 }
 
